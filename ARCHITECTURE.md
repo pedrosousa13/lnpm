@@ -2,10 +2,12 @@
 
 > A faster, more reliable alternative to yalc for local package development.
 
+> **Note:** This project was built with AI assistance (Claude by Anthropic).
+
 ## Design Principles
 
 1. **Speed** - Go for fast startup, hard links for instant syncing
-2. **Visibility** - SQLite-backed state, always know what's linked where
+2. **Visibility** - bbolt-backed state, always know what's linked where
 3. **Reliability** - Hard links avoid symlink resolution issues
 4. **Simplicity** - Minimal commands, sensible defaults
 5. **Universal** - Works with npm, yarn, pnpm, and bun
@@ -30,7 +32,7 @@
                                   │
                                   ▼
                           ┌───────────────┐
-                          │   SQLite DB   │
+                          │   bbolt DB    │
                           │ ~/.lnpm/lnpm.db│
                           └───────────────┘
 ```
@@ -39,20 +41,20 @@
 
 ```
 ~/.lnpm/
-├── lnpm.db                      # SQLite database
+├── lnpm.db                      # bbolt database (key-value store)
+├── config.yaml                  # Global config (optional)
 ├── store/                       # Package store
 │   └── {package-name}/
 │       └── {content-hash}/      # Versioned by content hash
 │           ├── package.json
 │           ├── dist/
 │           └── ...
-└── config.toml                  # Global config (optional)
 
 project/
 ├── .lnpm/                       # Local package cache (hard linked)
 │   └── {package-name}/
 │       └── ...
-├── lnpm.lock                    # Lock file
+├── lnpm.lock                    # Lock file (YAML)
 ├── node_modules/
 │   └── {package-name} -> ../.lnpm/{package-name}  # Symlink to .lnpm
 └── package.json                 # Modified with file: protocol
@@ -94,74 +96,60 @@ Hard links only work within the same filesystem. lnpm will:
 
 ---
 
-## SQLite Schema
+## Database Schema (bbolt)
 
-```sql
--- Package versions stored in the global store
-CREATE TABLE packages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    version TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    source_path TEXT NOT NULL,
-    store_path TEXT NOT NULL,
-    files_count INTEGER NOT NULL DEFAULT 0,
-    total_size INTEGER NOT NULL DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(name, content_hash)
-);
+lnpm uses [bbolt](https://github.com/etcd-io/bbolt), an embedded key-value database (same as used by etcd).
 
-CREATE INDEX idx_packages_name ON packages(name);
-CREATE INDEX idx_packages_hash ON packages(content_hash);
+### Buckets
 
--- Projects that consume packages
-CREATE TABLE projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    path TEXT NOT NULL UNIQUE,
-    name TEXT,
-    package_manager TEXT CHECK(package_manager IN ('npm', 'yarn', 'pnpm', 'bun')),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+```
+packages           - Package data (key: ID, value: JSON)
+packages_by_name   - Index (key: name, value: ID)
+projects           - Project data (key: ID, value: JSON)
+projects_by_path   - Index (key: path, value: ID)
+links              - Link data (key: ID, value: JSON)
+links_by_package   - Index (key: package_id, value: [link_ids])
+links_by_project   - Index (key: project_id, value: [link_ids])
+files              - File manifest (key: package_id, value: [FileEntry])
+meta               - Metadata (next_id counter)
+```
 
-CREATE INDEX idx_projects_path ON projects(path);
+### Data Structures (JSON)
 
--- Links between packages and projects
-CREATE TABLE links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    link_type TEXT NOT NULL DEFAULT 'hardlink' CHECK(link_type IN ('hardlink', 'copy')),
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(package_id, project_id)
-);
+```json
+// Package
+{
+  "id": 1,
+  "name": "my-package",
+  "version": "1.0.0",
+  "content_hash": "abc123...",
+  "source_path": "/path/to/source",
+  "store_path": "/home/user/.lnpm/store/my-package/abc123",
+  "files_count": 42,
+  "total_size": 123456,
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
 
-CREATE INDEX idx_links_package ON links(package_id);
-CREATE INDEX idx_links_project ON links(project_id);
+// Project
+{
+  "id": 1,
+  "path": "/path/to/project",
+  "name": "my-app",
+  "package_manager": "pnpm",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
 
--- Active watch sessions
-CREATE TABLE watches (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
-    pid INTEGER,
-    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(package_id)
-);
-
--- File manifest for incremental updates
-CREATE TABLE files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
-    relative_path TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    mode INTEGER NOT NULL,
-    UNIQUE(package_id, relative_path)
-);
-
-CREATE INDEX idx_files_package ON files(package_id);
+// Link
+{
+  "id": 1,
+  "package_id": 1,
+  "project_id": 1,
+  "link_type": "hardlink",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
 ```
 
 ---

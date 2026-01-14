@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
+	"runtime"
 
 	"github.com/user/lnpm/internal/pack"
 )
@@ -142,12 +142,19 @@ func (l *Linker) determineLinkType(storePath string) LinkType {
 		return Copy
 	}
 
-	// Check if on same filesystem (Linux/macOS specific)
-	storeStat, ok1 := storeInfo.Sys().(*syscall.Stat_t)
-	projectStat, ok2 := projectInfo.Sys().(*syscall.Stat_t)
+	// On Windows, hard links work within the same volume
+	// We try hard link first and fall back to copy on failure
+	if runtime.GOOS == "windows" {
+		// For Windows, we'll try hard links and fall back if they fail
+		return HardLink
+	}
 
-	if ok1 && ok2 {
-		if storeStat.Dev == projectStat.Dev {
+	// Check if on same filesystem (Unix-specific using device ID)
+	storeDev := getDeviceID(storeInfo)
+	projectDev := getDeviceID(projectInfo)
+
+	if storeDev != 0 && projectDev != 0 {
+		if storeDev == projectDev {
 			return HardLink
 		}
 		return Copy
