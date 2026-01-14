@@ -9,19 +9,65 @@ import (
 	"github.com/user/lnpm/internal/link"
 	"github.com/user/lnpm/internal/pack"
 	"github.com/user/lnpm/internal/store"
+	"github.com/user/lnpm/internal/workspace"
 )
 
 // RunPublish executes the publish command
-func RunPublish(push bool, tag string) error {
-	// Get current directory
+func RunPublish(push bool, tag string, all bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
 	}
 
+	// Handle --all for monorepo publishing
+	if all {
+		return publishAll(cwd, push, tag)
+	}
+
+	return publishSingle(cwd, push, tag)
+}
+
+// publishAll publishes all packages in a monorepo workspace
+func publishAll(cwd string, push bool, tag string) error {
+	ws, err := workspace.Detect(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to detect workspace: %w", err)
+	}
+
+	if ws == nil {
+		return fmt.Errorf("no workspace found. --all requires a monorepo with workspaces configured")
+	}
+
+	packages, err := ws.ListPackages()
+	if err != nil {
+		return fmt.Errorf("failed to list packages: %w", err)
+	}
+
+	if len(packages) == 0 {
+		return fmt.Errorf("no packages found in workspace")
+	}
+
+	fmt.Printf("Publishing %d packages from %s workspace...\n\n", len(packages), ws.Type)
+
+	successCount := 0
+	for _, pkg := range packages {
+		fmt.Printf("─── %s@%s ───\n", pkg.Name, pkg.Version)
+		if err := publishSingle(pkg.Path, push, tag); err != nil {
+			fmt.Printf("✗ Failed: %v\n\n", err)
+		} else {
+			successCount++
+			fmt.Println()
+		}
+	}
+
+	fmt.Printf("Published %d/%d packages\n", successCount, len(packages))
+	return nil
+}
+
+// publishSingle publishes a single package
+func publishSingle(pkgPath string, push bool, tag string) error {
 	// Pack the package
-	fmt.Printf("Packing %s...\n", cwd)
-	pkgJSON, files, err := pack.Pack(cwd)
+	pkgJSON, files, err := pack.Pack(pkgPath)
 	if err != nil {
 		return fmt.Errorf("failed to pack: %w", err)
 	}
@@ -55,7 +101,7 @@ func RunPublish(push bool, tag string) error {
 
 	fmt.Printf("Publishing %s@%s (%d files)...\n", pkgJSON.Name, pkgJSON.Version, len(files))
 
-	storePath, err := s.Store(pkgJSON.Name, contentHash, files, cwd)
+	storePath, err := s.Store(pkgJSON.Name, contentHash, files, pkgPath)
 	if err != nil {
 		return fmt.Errorf("failed to store package: %w", err)
 	}
@@ -71,7 +117,7 @@ func RunPublish(push bool, tag string) error {
 		Name:        pkgJSON.Name,
 		Version:     pkgJSON.Version,
 		ContentHash: contentHash,
-		SourcePath:  cwd,
+		SourcePath:  pkgPath,
 		StorePath:   storePath,
 		FilesCount:  len(files),
 		TotalSize:   totalSize,

@@ -22,11 +22,13 @@ This command:
 Examples:
   lnpm publish           # Publish current package
   lnpm publish --push    # Publish and update all linked projects
-  lnpm publish --tag beta   # Publish with a tag`,
+  lnpm publish --tag beta   # Publish with a tag
+  lnpm publish --all     # Publish all packages in monorepo`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
 		tag, _ := cmd.Flags().GetString("tag")
-		return RunPublish(push, tag)
+		all, _ := cmd.Flags().GetBool("all")
+		return RunPublish(push, tag, all)
 	},
 }
 
@@ -205,10 +207,40 @@ This command checks:
 	},
 }
 
+// retreatCmd removes all lnpm changes from the current project
+var retreatCmd = &cobra.Command{
+	Use:   "retreat",
+	Short: "Remove all lnpm changes from current project",
+	Long: `Remove all lnpm links and restore original dependencies.
+
+This command:
+  1. Restores original package.json dependencies
+  2. Removes node_modules symlinks
+  3. Deletes .lnpm/ directory
+  4. Deletes lnpm.lock file
+
+Use this before publishing to npm or when done with local development.
+
+Examples:
+  lnpm retreat          # Preview changes
+  lnpm retreat --force  # Actually remove everything`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		force, _ := cmd.Flags().GetBool("force")
+		return RunRetreat(force)
+	},
+}
+
 func init() {
+	// Register retreat command
+	rootCmd.AddCommand(retreatCmd)
+
 	// publish flags
 	publishCmd.Flags().Bool("push", false, "Push to all linked projects after publish")
 	publishCmd.Flags().String("tag", "", "Tag for this publish")
+	publishCmd.Flags().Bool("all", false, "Publish all packages in monorepo")
+
+	// retreat flags
+	retreatCmd.Flags().Bool("force", false, "Actually remove everything (required)")
 
 	// add flags
 	addCmd.Flags().Bool("dev", false, "Add as devDependency")

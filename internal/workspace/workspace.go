@@ -1,0 +1,235 @@
+package workspace
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
+	"gopkg.in/yaml.v3"
+)
+
+// Workspace represents a monorepo workspace
+type Workspace struct {
+	Root     string   // Root directory of the workspace
+	Type     string   // "npm", "yarn", "pnpm", "bun"
+	Packages []string // Paths to package directories
+}
+
+// Package represents a package in the workspace
+type Package struct {
+	Name    string
+	Version string
+	Path    string
+}
+
+// Detect detects if the current directory is part of a monorepo workspace
+func Detect(startPath string) (*Workspace, error) {
+	// Walk up looking for workspace root
+	current := startPath
+	for {
+		ws, err := detectWorkspaceAt(current)
+		if err == nil && ws != nil {
+			return ws, nil
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+
+	return nil, nil
+}
+
+// detectWorkspaceAt checks if a directory is a workspace root
+func detectWorkspaceAt(dir string) (*Workspace, error) {
+	// Check for pnpm-workspace.yaml
+	pnpmWorkspace := filepath.Join(dir, "pnpm-workspace.yaml")
+	if _, err := os.Stat(pnpmWorkspace); err == nil {
+		return parsePnpmWorkspace(dir, pnpmWorkspace)
+	}
+
+	// Check for package.json with workspaces field
+	pkgJSON := filepath.Join(dir, "package.json")
+	if _, err := os.Stat(pkgJSON); err == nil {
+		return parsePackageJSONWorkspace(dir, pkgJSON)
+	}
+
+	return nil, nil
+}
+
+// parsePnpmWorkspace parses a pnpm-workspace.yaml file
+func parsePnpmWorkspace(root, path string) (*Workspace, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var config struct {
+		Packages []string `yaml:"packages"`
+	}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+
+	if len(config.Packages) == 0 {
+		return nil, nil
+	}
+
+	packages, err := expandGlobs(root, config.Packages)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Workspace{
+		Root:     root,
+		Type:     "pnpm",
+		Packages: packages,
+	}, nil
+}
+
+// parsePackageJSONWorkspace parses workspaces from package.json
+func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var pkgJSON struct {
+		Workspaces interface{} `json:"workspaces"`
+	}
+	if err := json.Unmarshal(data, &pkgJSON); err != nil {
+		return nil, err
+	}
+
+	if pkgJSON.Workspaces == nil {
+		return nil, nil
+	}
+
+	var patterns []string
+
+	// Workspaces can be an array or an object with "packages" field
+	switch ws := pkgJSON.Workspaces.(type) {
+	case []interface{}:
+		for _, p := range ws {
+			if s, ok := p.(string); ok {
+				patterns = append(patterns, s)
+			}
+		}
+	case map[string]interface{}:
+		if pkgs, ok := ws["packages"].([]interface{}); ok {
+			for _, p := range pkgs {
+				if s, ok := p.(string); ok {
+					patterns = append(patterns, s)
+				}
+			}
+		}
+	}
+
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+
+	packages, err := expandGlobs(root, patterns)
+	if err != nil {
+		return nil, err
+	}
+
+	// Detect workspace type from lock file
+	wsType := "npm"
+	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
+		wsType = "yarn"
+	} else if _, err := os.Stat(filepath.Join(root, "bun.lockb")); err == nil {
+		wsType = "bun"
+	}
+
+	return &Workspace{
+		Root:     root,
+		Type:     wsType,
+		Packages: packages,
+	}, nil
+}
+
+// expandGlobs expands workspace glob patterns to actual package directories
+func expandGlobs(root string, patterns []string) ([]string, error) {
+	var packages []string
+	seen := make(map[string]bool)
+
+	for _, pattern := range patterns {
+		// Remove trailing negation patterns
+		if strings.HasPrefix(pattern, "!") {
+			continue
+		}
+
+		// Expand glob
+		matches, err := doublestar.Glob(os.DirFS(root), pattern)
+		if err != nil {
+			continue
+		}
+
+		for _, match := range matches {
+			pkgPath := filepath.Join(root, match)
+
+			// Check if it's a directory with package.json
+			pkgJSON := filepath.Join(pkgPath, "package.json")
+			if _, err := os.Stat(pkgJSON); err != nil {
+				continue
+			}
+
+			if !seen[pkgPath] {
+				seen[pkgPath] = true
+				packages = append(packages, pkgPath)
+			}
+		}
+	}
+
+	return packages, nil
+}
+
+// ListPackages returns all packages in the workspace with their metadata
+func (w *Workspace) ListPackages() ([]Package, error) {
+	var packages []Package
+
+	for _, pkgPath := range w.Packages {
+		pkgJSON := filepath.Join(pkgPath, "package.json")
+		data, err := os.ReadFile(pkgJSON)
+		if err != nil {
+			continue
+		}
+
+		var pkg struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &pkg); err != nil {
+			continue
+		}
+
+		packages = append(packages, Package{
+			Name:    pkg.Name,
+			Version: pkg.Version,
+			Path:    pkgPath,
+		})
+	}
+
+	return packages, nil
+}
+
+// IsInWorkspace checks if a path is inside this workspace
+func (w *Workspace) IsInWorkspace(path string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+
+	for _, pkgPath := range w.Packages {
+		if absPath == pkgPath || strings.HasPrefix(absPath, pkgPath+string(filepath.Separator)) {
+			return true
+		}
+	}
+
+	return false
+}
