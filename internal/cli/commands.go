@@ -124,12 +124,11 @@ Examples:
   lnpm watch --exec "npm run build" # Run build before push
   lnpm watch --ignore "*.test.ts"   # Ignore test files`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		exec, _ := cmd.Flags().GetString("exec")
+		execCmd, _ := cmd.Flags().GetString("exec")
 		ignore, _ := cmd.Flags().GetStringSlice("ignore")
+		debounce, _ := cmd.Flags().GetInt("debounce")
 
-		fmt.Printf("Starting watch (exec=%s, ignore=%v)...\n", exec, ignore)
-		// TODO: Implement watch logic
-		return nil
+		return RunWatch(execCmd, ignore, debounce)
 	},
 }
 
