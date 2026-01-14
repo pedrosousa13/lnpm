@@ -177,14 +177,14 @@ var gcCmd = &cobra.Command{
 Examples:
   lnpm gc              # Remove packages with no links
   lnpm gc --dry-run    # Show what would be removed
-  lnpm gc --older-than 30d   # Remove packages older than 30 days`,
+  lnpm gc --older-than 30d   # Remove packages older than 30 days
+  lnpm gc --fix-links  # Clean up orphaned link records`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		olderThan, _ := cmd.Flags().GetString("older-than")
+		fixLinks, _ := cmd.Flags().GetBool("fix-links")
 
-		fmt.Printf("Running garbage collection (dry-run=%v, older-than=%s)...\n", dryRun, olderThan)
-		// TODO: Implement gc logic
-		return nil
+		return RunGC(dryRun, olderThan, fixLinks)
 	},
 }
 
@@ -201,9 +201,7 @@ This command checks:
   - Cross-filesystem issues
   - Stale watch records`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Running lnpm doctor...")
-		// TODO: Implement doctor logic
-		return nil
+		return RunDoctor()
 	},
 }
 
@@ -234,4 +232,5 @@ func init() {
 	// gc flags
 	gcCmd.Flags().Bool("dry-run", false, "Show what would be removed")
 	gcCmd.Flags().String("older-than", "", "Remove packages older than duration (e.g., 30d)")
+	gcCmd.Flags().Bool("fix-links", false, "Clean up orphaned link records")
 }
