@@ -26,10 +26,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
 		tag, _ := cmd.Flags().GetString("tag")
-
-		fmt.Printf("Publishing package (push=%v, tag=%s)...\n", push, tag)
-		// TODO: Implement publish logic
-		return nil
+		return RunPublish(push, tag)
 	},
 }
 
@@ -56,10 +53,7 @@ Examples:
 		pkg := args[0]
 		dev, _ := cmd.Flags().GetBool("dev")
 		pure, _ := cmd.Flags().GetBool("pure")
-
-		fmt.Printf("Adding package %s (dev=%v, pure=%v)...\n", pkg, dev, pure)
-		// TODO: Implement add logic
-		return nil
+		return RunAdd(pkg, dev, pure)
 	},
 }
 
@@ -81,16 +75,14 @@ Examples:
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
-
-		if all {
-			fmt.Println("Removing all linked packages...")
-		} else if len(args) > 0 {
-			fmt.Printf("Removing package %s...\n", args[0])
-		} else {
+		var packageName string
+		if len(args) > 0 {
+			packageName = args[0]
+		}
+		if !all && packageName == "" {
 			return fmt.Errorf("please specify a package name or use --all")
 		}
-		// TODO: Implement remove logic
-		return nil
+		return RunRemove(packageName, all)
 	},
 }
 
@@ -111,10 +103,7 @@ Examples:
   lnpm push --force  # Force re-link all files`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
-
-		fmt.Printf("Pushing updates (force=%v)...\n", force)
-		// TODO: Implement push logic
-		return nil
+		return RunPush(force)
 	},
 }
 
@@ -155,9 +144,7 @@ var statusCmd = &cobra.Command{
 
 This provides full visibility into what lnpm is managing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Checking lnpm status...")
-		// TODO: Implement status logic
-		return nil
+		return RunStatus()
 	},
 }
 
@@ -172,18 +159,13 @@ Examples:
   lnpm list --store              # List all packages in store
   lnpm list my-package --projects   # List projects using my-package`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, _ := cmd.Flags().GetBool("store")
-		projects, _ := cmd.Flags().GetBool("projects")
-
-		if store {
-			fmt.Println("Listing packages in store...")
-		} else if len(args) > 0 && projects {
-			fmt.Printf("Listing projects using %s...\n", args[0])
-		} else {
-			fmt.Println("Listing packages in current project...")
+		showStore, _ := cmd.Flags().GetBool("store")
+		showProjects, _ := cmd.Flags().GetBool("projects")
+		var packageName string
+		if len(args) > 0 {
+			packageName = args[0]
 		}
-		// TODO: Implement list logic
-		return nil
+		return RunList(showStore, packageName, showProjects)
 	},
 }
 

@@ -1,15 +1,12 @@
 package db
 
 import (
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
-
-	// SQLite driver - uncomment when modernc.org/sqlite is added to go.mod
-	// _ "modernc.org/sqlite"
 )
 
 var (
@@ -17,54 +14,64 @@ var (
 	once     sync.Once
 )
 
-// DB wraps the SQLite database connection
+// DB wraps the JSON file-based database
 type DB struct {
-	conn *sql.DB
 	path string
+	data *DBData
+	mu   sync.RWMutex
+}
+
+// DBData represents the database structure
+type DBData struct {
+	Packages map[int64]*Package     `json:"packages"`
+	Projects map[int64]*Project     `json:"projects"`
+	Links    map[int64]*Link        `json:"links"`
+	Files    map[int64][]*FileEntry `json:"files"`
+	NextID   int64                  `json:"next_id"`
 }
 
 // Package represents a published package
 type Package struct {
-	ID          int64
-	Name        string
-	Version     string
-	ContentHash string
-	SourcePath  string
-	StorePath   string
-	FilesCount  int
-	TotalSize   int64
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Version     string    `json:"version"`
+	ContentHash string    `json:"content_hash"`
+	SourcePath  string    `json:"source_path"`
+	StorePath   string    `json:"store_path"`
+	FilesCount  int       `json:"files_count"`
+	TotalSize   int64     `json:"total_size"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Project represents a project that consumes packages
 type Project struct {
-	ID             int64
-	Path           string
-	Name           string
-	PackageManager string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID             int64     `json:"id"`
+	Path           string    `json:"path"`
+	Name           string    `json:"name"`
+	PackageManager string    `json:"package_manager"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // Link represents a link between a package and a project
 type Link struct {
-	ID        int64
-	PackageID int64
-	ProjectID int64
-	LinkType  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID        int64     `json:"id"`
+	PackageID int64     `json:"package_id"`
+	ProjectID int64     `json:"project_id"`
+	LinkType  string    `json:"link_type"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // FileEntry represents a file in a package
 type FileEntry struct {
-	ID           int64
-	PackageID    int64
-	RelativePath string
-	ContentHash  string
-	Size         int64
-	Mode         os.FileMode
+	ID           int64       `json:"id"`
+	PackageID    int64       `json:"package_id"`
+	RelativePath string      `json:"relative_path"`
+	ContentHash  string      `json:"content_hash"`
+	Size         int64       `json:"size"`
+	Mode         os.FileMode `json:"mode"`
 }
 
 // GetDB returns the singleton database instance
@@ -86,41 +93,54 @@ func initDB() (*DB, error) {
 		return nil, err
 	}
 
-	dbPath := filepath.Join(storePath, "lnpm.db")
+	dbPath := filepath.Join(storePath, "lnpm.json")
 
 	// Ensure store directory exists
 	if err := os.MkdirAll(storePath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+	db := &DB{
+		path: dbPath,
+		data: &DBData{
+			Packages: make(map[int64]*Package),
+			Projects: make(map[int64]*Project),
+			Links:    make(map[int64]*Link),
+			Files:    make(map[int64][]*FileEntry),
+			NextID:   1,
+		},
 	}
 
-	// Enable foreign keys
-	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	// Load existing data if file exists
+	if data, err := os.ReadFile(dbPath); err == nil {
+		if err := json.Unmarshal(data, db.data); err != nil {
+			return nil, fmt.Errorf("failed to parse database: %w", err)
+		}
 	}
 
-	// Initialize schema
-	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	// Ensure maps are initialized
+	if db.data.Packages == nil {
+		db.data.Packages = make(map[int64]*Package)
+	}
+	if db.data.Projects == nil {
+		db.data.Projects = make(map[int64]*Project)
+	}
+	if db.data.Links == nil {
+		db.data.Links = make(map[int64]*Link)
+	}
+	if db.data.Files == nil {
+		db.data.Files = make(map[int64][]*FileEntry)
 	}
 
-	return &DB{conn: conn, path: dbPath}, nil
+	return db, nil
 }
 
 // getStorePath returns the lnpm store path
 func getStorePath() (string, error) {
-	// Check LNPM_STORE environment variable first
 	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
 		return storePath, nil
 	}
 
-	// Default to ~/.lnpm
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
@@ -129,304 +149,254 @@ func getStorePath() (string, error) {
 	return filepath.Join(homeDir, ".lnpm"), nil
 }
 
-// Close closes the database connection
+// save persists the database to disk
+func (db *DB) save() error {
+	data, err := json.MarshalIndent(db.data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(db.path, data, 0644)
+}
+
+// nextID returns the next available ID
+func (db *DB) nextID() int64 {
+	id := db.data.NextID
+	db.data.NextID++
+	return id
+}
+
+// Close saves and closes the database
 func (db *DB) Close() error {
-	return db.conn.Close()
+	return db.save()
 }
 
 // --- Package operations ---
 
-// InsertPackage inserts a new package
+// InsertPackage inserts or updates a package
 func (db *DB) InsertPackage(pkg *Package) error {
-	result, err := db.conn.Exec(`
-		INSERT INTO packages (name, version, content_hash, source_path, store_path, files_count, total_size)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(name, content_hash) DO UPDATE SET
-			version = excluded.version,
-			source_path = excluded.source_path,
-			updated_at = CURRENT_TIMESTAMP
-	`, pkg.Name, pkg.Version, pkg.ContentHash, pkg.SourcePath, pkg.StorePath, pkg.FilesCount, pkg.TotalSize)
-	if err != nil {
-		return err
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Check if package with same name and hash exists
+	for _, existing := range db.data.Packages {
+		if existing.Name == pkg.Name && existing.ContentHash == pkg.ContentHash {
+			// Update existing
+			existing.Version = pkg.Version
+			existing.SourcePath = pkg.SourcePath
+			existing.StorePath = pkg.StorePath
+			existing.FilesCount = pkg.FilesCount
+			existing.TotalSize = pkg.TotalSize
+			existing.UpdatedAt = time.Now()
+			pkg.ID = existing.ID
+			return db.save()
+		}
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	pkg.ID = id
-	return nil
+
+	// Insert new
+	pkg.ID = db.nextID()
+	pkg.CreatedAt = time.Now()
+	pkg.UpdatedAt = time.Now()
+	db.data.Packages[pkg.ID] = pkg
+
+	return db.save()
 }
 
 // GetPackageByName returns the latest package with the given name
 func (db *DB) GetPackageByName(name string) (*Package, error) {
-	row := db.conn.QueryRow(`
-		SELECT id, name, version, content_hash, source_path, store_path, files_count, total_size, created_at, updated_at
-		FROM packages
-		WHERE name = ?
-		ORDER BY updated_at DESC
-		LIMIT 1
-	`, name)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
-	var pkg Package
-	err := row.Scan(&pkg.ID, &pkg.Name, &pkg.Version, &pkg.ContentHash, &pkg.SourcePath,
-		&pkg.StorePath, &pkg.FilesCount, &pkg.TotalSize, &pkg.CreatedAt, &pkg.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	var latest *Package
+	for _, pkg := range db.data.Packages {
+		if pkg.Name == name {
+			if latest == nil || pkg.UpdatedAt.After(latest.UpdatedAt) {
+				latest = pkg
+			}
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &pkg, nil
+	return latest, nil
 }
 
 // GetPackageByHash returns a package by its content hash
 func (db *DB) GetPackageByHash(name, hash string) (*Package, error) {
-	row := db.conn.QueryRow(`
-		SELECT id, name, version, content_hash, source_path, store_path, files_count, total_size, created_at, updated_at
-		FROM packages
-		WHERE name = ? AND content_hash = ?
-	`, name, hash)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
-	var pkg Package
-	err := row.Scan(&pkg.ID, &pkg.Name, &pkg.Version, &pkg.ContentHash, &pkg.SourcePath,
-		&pkg.StorePath, &pkg.FilesCount, &pkg.TotalSize, &pkg.CreatedAt, &pkg.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	for _, pkg := range db.data.Packages {
+		if pkg.Name == name && pkg.ContentHash == hash {
+			return pkg, nil
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &pkg, nil
+	return nil, nil
 }
 
 // ListPackages returns all packages in the store
 func (db *DB) ListPackages() ([]*Package, error) {
-	rows, err := db.conn.Query(`
-		SELECT id, name, version, content_hash, source_path, store_path, files_count, total_size, created_at, updated_at
-		FROM packages
-		ORDER BY name, updated_at DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
-	var packages []*Package
-	for rows.Next() {
-		var pkg Package
-		err := rows.Scan(&pkg.ID, &pkg.Name, &pkg.Version, &pkg.ContentHash, &pkg.SourcePath,
-			&pkg.StorePath, &pkg.FilesCount, &pkg.TotalSize, &pkg.CreatedAt, &pkg.UpdatedAt)
-		if err != nil {
-			return nil, err
-		}
-		packages = append(packages, &pkg)
+	packages := make([]*Package, 0, len(db.data.Packages))
+	for _, pkg := range db.data.Packages {
+		packages = append(packages, pkg)
 	}
-	return packages, rows.Err()
+	return packages, nil
 }
 
 // DeletePackage deletes a package by ID
 func (db *DB) DeletePackage(id int64) error {
-	_, err := db.conn.Exec("DELETE FROM packages WHERE id = ?", id)
-	return err
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	delete(db.data.Packages, id)
+	delete(db.data.Files, id)
+	return db.save()
 }
 
 // --- Project operations ---
 
 // InsertProject inserts or updates a project
 func (db *DB) InsertProject(proj *Project) error {
-	result, err := db.conn.Exec(`
-		INSERT INTO projects (path, name, package_manager)
-		VALUES (?, ?, ?)
-		ON CONFLICT(path) DO UPDATE SET
-			name = excluded.name,
-			package_manager = excluded.package_manager,
-			updated_at = CURRENT_TIMESTAMP
-	`, proj.Path, proj.Name, proj.PackageManager)
-	if err != nil {
-		return err
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Check if project with same path exists
+	for _, existing := range db.data.Projects {
+		if existing.Path == proj.Path {
+			existing.Name = proj.Name
+			existing.PackageManager = proj.PackageManager
+			existing.UpdatedAt = time.Now()
+			proj.ID = existing.ID
+			return db.save()
+		}
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	proj.ID = id
-	return nil
+
+	// Insert new
+	proj.ID = db.nextID()
+	proj.CreatedAt = time.Now()
+	proj.UpdatedAt = time.Now()
+	db.data.Projects[proj.ID] = proj
+
+	return db.save()
 }
 
 // GetProjectByPath returns a project by its path
 func (db *DB) GetProjectByPath(path string) (*Project, error) {
-	row := db.conn.QueryRow(`
-		SELECT id, path, name, package_manager, created_at, updated_at
-		FROM projects
-		WHERE path = ?
-	`, path)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
-	var proj Project
-	err := row.Scan(&proj.ID, &proj.Path, &proj.Name, &proj.PackageManager, &proj.CreatedAt, &proj.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	for _, proj := range db.data.Projects {
+		if proj.Path == path {
+			return proj, nil
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &proj, nil
+	return nil, nil
 }
 
 // --- Link operations ---
 
 // InsertLink creates a link between a package and project
 func (db *DB) InsertLink(link *Link) error {
-	result, err := db.conn.Exec(`
-		INSERT INTO links (package_id, project_id, link_type)
-		VALUES (?, ?, ?)
-		ON CONFLICT(package_id, project_id) DO UPDATE SET
-			link_type = excluded.link_type,
-			updated_at = CURRENT_TIMESTAMP
-	`, link.PackageID, link.ProjectID, link.LinkType)
-	if err != nil {
-		return err
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Check if link exists
+	for _, existing := range db.data.Links {
+		if existing.PackageID == link.PackageID && existing.ProjectID == link.ProjectID {
+			existing.LinkType = link.LinkType
+			existing.UpdatedAt = time.Now()
+			link.ID = existing.ID
+			return db.save()
+		}
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	link.ID = id
-	return nil
+
+	// Insert new
+	link.ID = db.nextID()
+	link.CreatedAt = time.Now()
+	link.UpdatedAt = time.Now()
+	db.data.Links[link.ID] = link
+
+	return db.save()
 }
 
 // GetLinksForPackage returns all links for a package
 func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
-	rows, err := db.conn.Query(`
-		SELECT id, package_id, project_id, link_type, created_at, updated_at
-		FROM links
-		WHERE package_id = ?
-	`, packageID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
 	var links []*Link
-	for rows.Next() {
-		var link Link
-		err := rows.Scan(&link.ID, &link.PackageID, &link.ProjectID, &link.LinkType, &link.CreatedAt, &link.UpdatedAt)
-		if err != nil {
-			return nil, err
+	for _, link := range db.data.Links {
+		if link.PackageID == packageID {
+			links = append(links, link)
 		}
-		links = append(links, &link)
 	}
-	return links, rows.Err()
+	return links, nil
 }
 
 // GetLinksForProject returns all links for a project
 func (db *DB) GetLinksForProject(projectID int64) ([]*Link, error) {
-	rows, err := db.conn.Query(`
-		SELECT id, package_id, project_id, link_type, created_at, updated_at
-		FROM links
-		WHERE project_id = ?
-	`, projectID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
 	var links []*Link
-	for rows.Next() {
-		var link Link
-		err := rows.Scan(&link.ID, &link.PackageID, &link.ProjectID, &link.LinkType, &link.CreatedAt, &link.UpdatedAt)
-		if err != nil {
-			return nil, err
+	for _, link := range db.data.Links {
+		if link.ProjectID == projectID {
+			links = append(links, link)
 		}
-		links = append(links, &link)
 	}
-	return links, rows.Err()
+	return links, nil
 }
 
 // DeleteLink removes a link
 func (db *DB) DeleteLink(packageID, projectID int64) error {
-	_, err := db.conn.Exec("DELETE FROM links WHERE package_id = ? AND project_id = ?", packageID, projectID)
-	return err
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	for id, link := range db.data.Links {
+		if link.PackageID == packageID && link.ProjectID == projectID {
+			delete(db.data.Links, id)
+			return db.save()
+		}
+	}
+	return nil
 }
 
 // GetProjectsForPackage returns all projects linked to a package
 func (db *DB) GetProjectsForPackage(packageID int64) ([]*Project, error) {
-	rows, err := db.conn.Query(`
-		SELECT p.id, p.path, p.name, p.package_manager, p.created_at, p.updated_at
-		FROM projects p
-		JOIN links l ON l.project_id = p.id
-		WHERE l.package_id = ?
-	`, packageID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
 	var projects []*Project
-	for rows.Next() {
-		var proj Project
-		err := rows.Scan(&proj.ID, &proj.Path, &proj.Name, &proj.PackageManager, &proj.CreatedAt, &proj.UpdatedAt)
-		if err != nil {
-			return nil, err
+	for _, link := range db.data.Links {
+		if link.PackageID == packageID {
+			if proj, ok := db.data.Projects[link.ProjectID]; ok {
+				projects = append(projects, proj)
+			}
 		}
-		projects = append(projects, &proj)
 	}
-	return projects, rows.Err()
+	return projects, nil
 }
 
 // --- File operations ---
 
 // InsertFiles inserts file entries for a package
 func (db *DB) InsertFiles(packageID int64, files []*FileEntry) error {
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
-	// Delete existing files for this package
-	if _, err := tx.Exec("DELETE FROM files WHERE package_id = ?", packageID); err != nil {
-		return err
-	}
-
-	// Insert new files
-	stmt, err := tx.Prepare(`
-		INSERT INTO files (package_id, relative_path, content_hash, size, mode)
-		VALUES (?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
+	// Assign IDs
 	for _, f := range files {
-		if _, err := stmt.Exec(packageID, f.RelativePath, f.ContentHash, f.Size, f.Mode); err != nil {
-			return err
-		}
+		f.ID = db.nextID()
+		f.PackageID = packageID
 	}
 
-	return tx.Commit()
+	db.data.Files[packageID] = files
+	return db.save()
 }
 
 // GetFilesForPackage returns all files for a package
 func (db *DB) GetFilesForPackage(packageID int64) ([]*FileEntry, error) {
-	rows, err := db.conn.Query(`
-		SELECT id, package_id, relative_path, content_hash, size, mode
-		FROM files
-		WHERE package_id = ?
-	`, packageID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 
-	var files []*FileEntry
-	for rows.Next() {
-		var f FileEntry
-		err := rows.Scan(&f.ID, &f.PackageID, &f.RelativePath, &f.ContentHash, &f.Size, &f.Mode)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, &f)
-	}
-	return files, rows.Err()
+	return db.data.Files[packageID], nil
 }
