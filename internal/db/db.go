@@ -1,12 +1,15 @@
 package db
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 var (
@@ -14,20 +17,23 @@ var (
 	once     sync.Once
 )
 
-// DB wraps the JSON file-based database
-type DB struct {
-	path string
-	data *DBData
-	mu   sync.RWMutex
-}
+// Bucket names
+var (
+	bucketPackages       = []byte("packages")
+	bucketPackagesByName = []byte("packages_by_name")
+	bucketProjects       = []byte("projects")
+	bucketProjectsByPath = []byte("projects_by_path")
+	bucketLinks          = []byte("links")
+	bucketLinksByPackage = []byte("links_by_package")
+	bucketLinksByProject = []byte("links_by_project")
+	bucketFiles          = []byte("files")
+	bucketMeta           = []byte("meta")
+)
 
-// DBData represents the database structure
-type DBData struct {
-	Packages map[int64]*Package     `json:"packages"`
-	Projects map[int64]*Project     `json:"projects"`
-	Links    map[int64]*Link        `json:"links"`
-	Files    map[int64][]*FileEntry `json:"files"`
-	NextID   int64                  `json:"next_id"`
+// DB wraps the bbolt database
+type DB struct {
+	db *bolt.DB
+	mu sync.RWMutex
 }
 
 // Package represents a published package
@@ -93,43 +99,44 @@ func initDB() (*DB, error) {
 		return nil, err
 	}
 
-	dbPath := filepath.Join(storePath, "lnpm.json")
-
 	// Ensure store directory exists
 	if err := os.MkdirAll(storePath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
-	db := &DB{
-		path: dbPath,
-		data: &DBData{
-			Packages: make(map[int64]*Package),
-			Projects: make(map[int64]*Project),
-			Links:    make(map[int64]*Link),
-			Files:    make(map[int64][]*FileEntry),
-			NextID:   1,
-		},
+	dbPath := filepath.Join(storePath, "lnpm.db")
+
+	// Open bbolt database
+	boltDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Load existing data if file exists
-	if data, err := os.ReadFile(dbPath); err == nil {
-		if err := json.Unmarshal(data, db.data); err != nil {
-			return nil, fmt.Errorf("failed to parse database: %w", err)
+	db := &DB{db: boltDB}
+
+	// Initialize buckets
+	err = boltDB.Update(func(tx *bolt.Tx) error {
+		buckets := [][]byte{
+			bucketPackages,
+			bucketPackagesByName,
+			bucketProjects,
+			bucketProjectsByPath,
+			bucketLinks,
+			bucketLinksByPackage,
+			bucketLinksByProject,
+			bucketFiles,
+			bucketMeta,
 		}
-	}
-
-	// Ensure maps are initialized
-	if db.data.Packages == nil {
-		db.data.Packages = make(map[int64]*Package)
-	}
-	if db.data.Projects == nil {
-		db.data.Projects = make(map[int64]*Project)
-	}
-	if db.data.Links == nil {
-		db.data.Links = make(map[int64]*Link)
-	}
-	if db.data.Files == nil {
-		db.data.Files = make(map[int64][]*FileEntry)
+		for _, bucket := range buckets {
+			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
+				return fmt.Errorf("failed to create bucket %s: %w", bucket, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		boltDB.Close()
+		return nil, err
 	}
 
 	return db, nil
@@ -149,25 +156,37 @@ func getStorePath() (string, error) {
 	return filepath.Join(homeDir, ".lnpm"), nil
 }
 
-// save persists the database to disk
-func (db *DB) save() error {
-	data, err := json.MarshalIndent(db.data, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(db.path, data, 0644)
+// Close closes the database
+func (db *DB) Close() error {
+	return db.db.Close()
+}
+
+// Helper functions for ID encoding
+func itob(v int64) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(v))
+	return b
+}
+
+func btoi(b []byte) int64 {
+	return int64(binary.BigEndian.Uint64(b))
 }
 
 // nextID returns the next available ID
-func (db *DB) nextID() int64 {
-	id := db.data.NextID
-	db.data.NextID++
-	return id
-}
+func (db *DB) nextID(tx *bolt.Tx) (int64, error) {
+	b := tx.Bucket(bucketMeta)
+	key := []byte("next_id")
 
-// Close saves and closes the database
-func (db *DB) Close() error {
-	return db.save()
+	var id int64 = 1
+	if v := b.Get(key); v != nil {
+		id = btoi(v)
+	}
+
+	if err := b.Put(key, itob(id+1)); err != nil {
+		return 0, err
+	}
+
+	return id, nil
 }
 
 // --- Package operations ---
@@ -177,28 +196,56 @@ func (db *DB) InsertPackage(pkg *Package) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Check if package with same name and hash exists
-	for _, existing := range db.data.Packages {
-		if existing.Name == pkg.Name && existing.ContentHash == pkg.ContentHash {
-			// Update existing
-			existing.Version = pkg.Version
-			existing.SourcePath = pkg.SourcePath
-			existing.StorePath = pkg.StorePath
-			existing.FilesCount = pkg.FilesCount
-			existing.TotalSize = pkg.TotalSize
-			existing.UpdatedAt = time.Now()
-			pkg.ID = existing.ID
-			return db.save()
+	return db.db.Update(func(tx *bolt.Tx) error {
+		packages := tx.Bucket(bucketPackages)
+		byName := tx.Bucket(bucketPackagesByName)
+
+		// Check if package with same name exists (update case)
+		if existingIDBytes := byName.Get([]byte(pkg.Name)); existingIDBytes != nil {
+			existingID := btoi(existingIDBytes)
+			if data := packages.Get(itob(existingID)); data != nil {
+				var existing Package
+				if err := json.Unmarshal(data, &existing); err == nil {
+					// Update existing package
+					existing.Version = pkg.Version
+					existing.ContentHash = pkg.ContentHash
+					existing.SourcePath = pkg.SourcePath
+					existing.StorePath = pkg.StorePath
+					existing.FilesCount = pkg.FilesCount
+					existing.TotalSize = pkg.TotalSize
+					existing.UpdatedAt = time.Now()
+					pkg.ID = existing.ID
+
+					data, err := json.Marshal(&existing)
+					if err != nil {
+						return err
+					}
+					return packages.Put(itob(existing.ID), data)
+				}
+			}
 		}
-	}
 
-	// Insert new
-	pkg.ID = db.nextID()
-	pkg.CreatedAt = time.Now()
-	pkg.UpdatedAt = time.Now()
-	db.data.Packages[pkg.ID] = pkg
+		// Insert new package
+		id, err := db.nextID(tx)
+		if err != nil {
+			return err
+		}
+		pkg.ID = id
+		pkg.CreatedAt = time.Now()
+		pkg.UpdatedAt = time.Now()
 
-	return db.save()
+		data, err := json.Marshal(pkg)
+		if err != nil {
+			return err
+		}
+
+		if err := packages.Put(itob(id), data); err != nil {
+			return err
+		}
+
+		// Index by name
+		return byName.Put([]byte(pkg.Name), itob(id))
+	})
 }
 
 // GetPackageByName returns the latest package with the given name
@@ -206,15 +253,26 @@ func (db *DB) GetPackageByName(name string) (*Package, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	var latest *Package
-	for _, pkg := range db.data.Packages {
-		if pkg.Name == name {
-			if latest == nil || pkg.UpdatedAt.After(latest.UpdatedAt) {
-				latest = pkg
-			}
+	var pkg *Package
+	err := db.db.View(func(tx *bolt.Tx) error {
+		byName := tx.Bucket(bucketPackagesByName)
+		packages := tx.Bucket(bucketPackages)
+
+		idBytes := byName.Get([]byte(name))
+		if idBytes == nil {
+			return nil
 		}
-	}
-	return latest, nil
+
+		data := packages.Get(idBytes)
+		if data == nil {
+			return nil
+		}
+
+		pkg = &Package{}
+		return json.Unmarshal(data, pkg)
+	})
+
+	return pkg, err
 }
 
 // GetPackageByHash returns a package by its content hash
@@ -222,12 +280,23 @@ func (db *DB) GetPackageByHash(name, hash string) (*Package, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	for _, pkg := range db.data.Packages {
-		if pkg.Name == name && pkg.ContentHash == hash {
-			return pkg, nil
-		}
-	}
-	return nil, nil
+	var result *Package
+	err := db.db.View(func(tx *bolt.Tx) error {
+		packages := tx.Bucket(bucketPackages)
+
+		return packages.ForEach(func(k, v []byte) error {
+			var pkg Package
+			if err := json.Unmarshal(v, &pkg); err != nil {
+				return nil // Skip invalid entries
+			}
+			if pkg.Name == name && pkg.ContentHash == hash {
+				result = &pkg
+			}
+			return nil
+		})
+	})
+
+	return result, err
 }
 
 // ListPackages returns all packages in the store
@@ -235,11 +304,21 @@ func (db *DB) ListPackages() ([]*Package, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	packages := make([]*Package, 0, len(db.data.Packages))
-	for _, pkg := range db.data.Packages {
-		packages = append(packages, pkg)
-	}
-	return packages, nil
+	var packages []*Package
+	err := db.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketPackages)
+
+		return b.ForEach(func(k, v []byte) error {
+			var pkg Package
+			if err := json.Unmarshal(v, &pkg); err != nil {
+				return nil // Skip invalid entries
+			}
+			packages = append(packages, &pkg)
+			return nil
+		})
+	})
+
+	return packages, err
 }
 
 // DeletePackage deletes a package by ID
@@ -247,9 +326,24 @@ func (db *DB) DeletePackage(id int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	delete(db.data.Packages, id)
-	delete(db.data.Files, id)
-	return db.save()
+	return db.db.Update(func(tx *bolt.Tx) error {
+		packages := tx.Bucket(bucketPackages)
+		byName := tx.Bucket(bucketPackagesByName)
+		files := tx.Bucket(bucketFiles)
+
+		// Get package name for index cleanup
+		data := packages.Get(itob(id))
+		if data != nil {
+			var pkg Package
+			if json.Unmarshal(data, &pkg) == nil {
+				byName.Delete([]byte(pkg.Name))
+			}
+		}
+
+		packages.Delete(itob(id))
+		files.Delete(itob(id))
+		return nil
+	})
 }
 
 // --- Project operations ---
@@ -259,24 +353,50 @@ func (db *DB) InsertProject(proj *Project) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Check if project with same path exists
-	for _, existing := range db.data.Projects {
-		if existing.Path == proj.Path {
-			existing.Name = proj.Name
-			existing.PackageManager = proj.PackageManager
-			existing.UpdatedAt = time.Now()
-			proj.ID = existing.ID
-			return db.save()
+	return db.db.Update(func(tx *bolt.Tx) error {
+		projects := tx.Bucket(bucketProjects)
+		byPath := tx.Bucket(bucketProjectsByPath)
+
+		// Check if project with same path exists (update case)
+		if existingIDBytes := byPath.Get([]byte(proj.Path)); existingIDBytes != nil {
+			existingID := btoi(existingIDBytes)
+			if data := projects.Get(itob(existingID)); data != nil {
+				var existing Project
+				if err := json.Unmarshal(data, &existing); err == nil {
+					existing.Name = proj.Name
+					existing.PackageManager = proj.PackageManager
+					existing.UpdatedAt = time.Now()
+					proj.ID = existing.ID
+
+					data, err := json.Marshal(&existing)
+					if err != nil {
+						return err
+					}
+					return projects.Put(itob(existing.ID), data)
+				}
+			}
 		}
-	}
 
-	// Insert new
-	proj.ID = db.nextID()
-	proj.CreatedAt = time.Now()
-	proj.UpdatedAt = time.Now()
-	db.data.Projects[proj.ID] = proj
+		// Insert new project
+		id, err := db.nextID(tx)
+		if err != nil {
+			return err
+		}
+		proj.ID = id
+		proj.CreatedAt = time.Now()
+		proj.UpdatedAt = time.Now()
 
-	return db.save()
+		data, err := json.Marshal(proj)
+		if err != nil {
+			return err
+		}
+
+		if err := projects.Put(itob(id), data); err != nil {
+			return err
+		}
+
+		return byPath.Put([]byte(proj.Path), itob(id))
+	})
 }
 
 // GetProjectByPath returns a project by its path
@@ -284,12 +404,26 @@ func (db *DB) GetProjectByPath(path string) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	for _, proj := range db.data.Projects {
-		if proj.Path == path {
-			return proj, nil
+	var proj *Project
+	err := db.db.View(func(tx *bolt.Tx) error {
+		byPath := tx.Bucket(bucketProjectsByPath)
+		projects := tx.Bucket(bucketProjects)
+
+		idBytes := byPath.Get([]byte(path))
+		if idBytes == nil {
+			return nil
 		}
-	}
-	return nil, nil
+
+		data := projects.Get(idBytes)
+		if data == nil {
+			return nil
+		}
+
+		proj = &Project{}
+		return json.Unmarshal(data, proj)
+	})
+
+	return proj, err
 }
 
 // --- Link operations ---
@@ -299,23 +433,88 @@ func (db *DB) InsertLink(link *Link) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Check if link exists
-	for _, existing := range db.data.Links {
-		if existing.PackageID == link.PackageID && existing.ProjectID == link.ProjectID {
-			existing.LinkType = link.LinkType
-			existing.UpdatedAt = time.Now()
-			link.ID = existing.ID
-			return db.save()
+	return db.db.Update(func(tx *bolt.Tx) error {
+		links := tx.Bucket(bucketLinks)
+		byPackage := tx.Bucket(bucketLinksByPackage)
+		byProject := tx.Bucket(bucketLinksByProject)
+
+		// Check if link already exists
+		var existingLinkID int64
+		err := links.ForEach(func(k, v []byte) error {
+			var l Link
+			if err := json.Unmarshal(v, &l); err != nil {
+				return nil
+			}
+			if l.PackageID == link.PackageID && l.ProjectID == link.ProjectID {
+				existingLinkID = l.ID
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
-	}
 
-	// Insert new
-	link.ID = db.nextID()
-	link.CreatedAt = time.Now()
-	link.UpdatedAt = time.Now()
-	db.data.Links[link.ID] = link
+		if existingLinkID > 0 {
+			// Update existing link
+			data := links.Get(itob(existingLinkID))
+			if data != nil {
+				var existing Link
+				if json.Unmarshal(data, &existing) == nil {
+					existing.LinkType = link.LinkType
+					existing.UpdatedAt = time.Now()
+					link.ID = existing.ID
 
-	return db.save()
+					data, err := json.Marshal(&existing)
+					if err != nil {
+						return err
+					}
+					return links.Put(itob(existing.ID), data)
+				}
+			}
+		}
+
+		// Insert new link
+		id, err := db.nextID(tx)
+		if err != nil {
+			return err
+		}
+		link.ID = id
+		link.CreatedAt = time.Now()
+		link.UpdatedAt = time.Now()
+
+		data, err := json.Marshal(link)
+		if err != nil {
+			return err
+		}
+
+		if err := links.Put(itob(id), data); err != nil {
+			return err
+		}
+
+		// Update indexes (store as JSON arrays of IDs)
+		pkgKey := itob(link.PackageID)
+		projKey := itob(link.ProjectID)
+
+		// Add to package index
+		var pkgLinks []int64
+		if existing := byPackage.Get(pkgKey); existing != nil {
+			json.Unmarshal(existing, &pkgLinks)
+		}
+		pkgLinks = append(pkgLinks, id)
+		pkgLinksData, _ := json.Marshal(pkgLinks)
+		byPackage.Put(pkgKey, pkgLinksData)
+
+		// Add to project index
+		var projLinks []int64
+		if existing := byProject.Get(projKey); existing != nil {
+			json.Unmarshal(existing, &projLinks)
+		}
+		projLinks = append(projLinks, id)
+		projLinksData, _ := json.Marshal(projLinks)
+		byProject.Put(projKey, projLinksData)
+
+		return nil
+	})
 }
 
 // GetLinksForPackage returns all links for a package
@@ -323,13 +522,34 @@ func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	var links []*Link
-	for _, link := range db.data.Links {
-		if link.PackageID == packageID {
-			links = append(links, link)
+	var result []*Link
+	err := db.db.View(func(tx *bolt.Tx) error {
+		links := tx.Bucket(bucketLinks)
+		byPackage := tx.Bucket(bucketLinksByPackage)
+
+		data := byPackage.Get(itob(packageID))
+		if data == nil {
+			return nil
 		}
-	}
-	return links, nil
+
+		var linkIDs []int64
+		if err := json.Unmarshal(data, &linkIDs); err != nil {
+			return nil
+		}
+
+		for _, id := range linkIDs {
+			linkData := links.Get(itob(id))
+			if linkData != nil {
+				var link Link
+				if json.Unmarshal(linkData, &link) == nil {
+					result = append(result, &link)
+				}
+			}
+		}
+		return nil
+	})
+
+	return result, err
 }
 
 // GetLinksForProject returns all links for a project
@@ -337,13 +557,34 @@ func (db *DB) GetLinksForProject(projectID int64) ([]*Link, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	var links []*Link
-	for _, link := range db.data.Links {
-		if link.ProjectID == projectID {
-			links = append(links, link)
+	var result []*Link
+	err := db.db.View(func(tx *bolt.Tx) error {
+		links := tx.Bucket(bucketLinks)
+		byProject := tx.Bucket(bucketLinksByProject)
+
+		data := byProject.Get(itob(projectID))
+		if data == nil {
+			return nil
 		}
-	}
-	return links, nil
+
+		var linkIDs []int64
+		if err := json.Unmarshal(data, &linkIDs); err != nil {
+			return nil
+		}
+
+		for _, id := range linkIDs {
+			linkData := links.Get(itob(id))
+			if linkData != nil {
+				var link Link
+				if json.Unmarshal(linkData, &link) == nil {
+					result = append(result, &link)
+				}
+			}
+		}
+		return nil
+	})
+
+	return result, err
 }
 
 // DeleteLink removes a link
@@ -351,13 +592,70 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	for id, link := range db.data.Links {
-		if link.PackageID == packageID && link.ProjectID == projectID {
-			delete(db.data.Links, id)
-			return db.save()
+	return db.db.Update(func(tx *bolt.Tx) error {
+		links := tx.Bucket(bucketLinks)
+		byPackage := tx.Bucket(bucketLinksByPackage)
+		byProject := tx.Bucket(bucketLinksByProject)
+
+		// Find the link ID
+		var linkID int64
+		links.ForEach(func(k, v []byte) error {
+			var l Link
+			if json.Unmarshal(v, &l) == nil {
+				if l.PackageID == packageID && l.ProjectID == projectID {
+					linkID = l.ID
+				}
+			}
+			return nil
+		})
+
+		if linkID == 0 {
+			return nil
 		}
-	}
-	return nil
+
+		// Delete the link
+		links.Delete(itob(linkID))
+
+		// Update package index
+		pkgKey := itob(packageID)
+		if data := byPackage.Get(pkgKey); data != nil {
+			var ids []int64
+			json.Unmarshal(data, &ids)
+			newIDs := make([]int64, 0, len(ids))
+			for _, id := range ids {
+				if id != linkID {
+					newIDs = append(newIDs, id)
+				}
+			}
+			if len(newIDs) > 0 {
+				newData, _ := json.Marshal(newIDs)
+				byPackage.Put(pkgKey, newData)
+			} else {
+				byPackage.Delete(pkgKey)
+			}
+		}
+
+		// Update project index
+		projKey := itob(projectID)
+		if data := byProject.Get(projKey); data != nil {
+			var ids []int64
+			json.Unmarshal(data, &ids)
+			newIDs := make([]int64, 0, len(ids))
+			for _, id := range ids {
+				if id != linkID {
+					newIDs = append(newIDs, id)
+				}
+			}
+			if len(newIDs) > 0 {
+				newData, _ := json.Marshal(newIDs)
+				byProject.Put(projKey, newData)
+			} else {
+				byProject.Delete(projKey)
+			}
+		}
+
+		return nil
+	})
 }
 
 // GetProjectsForPackage returns all projects linked to a package
@@ -365,15 +663,41 @@ func (db *DB) GetProjectsForPackage(packageID int64) ([]*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	var projects []*Project
-	for _, link := range db.data.Links {
-		if link.PackageID == packageID {
-			if proj, ok := db.data.Projects[link.ProjectID]; ok {
-				projects = append(projects, proj)
+	var result []*Project
+	err := db.db.View(func(tx *bolt.Tx) error {
+		links := tx.Bucket(bucketLinks)
+		byPackage := tx.Bucket(bucketLinksByPackage)
+		projects := tx.Bucket(bucketProjects)
+
+		data := byPackage.Get(itob(packageID))
+		if data == nil {
+			return nil
+		}
+
+		var linkIDs []int64
+		if err := json.Unmarshal(data, &linkIDs); err != nil {
+			return nil
+		}
+
+		for _, id := range linkIDs {
+			linkData := links.Get(itob(id))
+			if linkData != nil {
+				var link Link
+				if json.Unmarshal(linkData, &link) == nil {
+					projData := projects.Get(itob(link.ProjectID))
+					if projData != nil {
+						var proj Project
+						if json.Unmarshal(projData, &proj) == nil {
+							result = append(result, &proj)
+						}
+					}
+				}
 			}
 		}
-	}
-	return projects, nil
+		return nil
+	})
+
+	return result, err
 }
 
 // --- File operations ---
@@ -383,14 +707,26 @@ func (db *DB) InsertFiles(packageID int64, files []*FileEntry) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Assign IDs
-	for _, f := range files {
-		f.ID = db.nextID()
-		f.PackageID = packageID
-	}
+	return db.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketFiles)
 
-	db.data.Files[packageID] = files
-	return db.save()
+		// Assign IDs
+		for _, f := range files {
+			id, err := db.nextID(tx)
+			if err != nil {
+				return err
+			}
+			f.ID = id
+			f.PackageID = packageID
+		}
+
+		data, err := json.Marshal(files)
+		if err != nil {
+			return err
+		}
+
+		return b.Put(itob(packageID), data)
+	})
 }
 
 // GetFilesForPackage returns all files for a package
@@ -398,5 +734,17 @@ func (db *DB) GetFilesForPackage(packageID int64) ([]*FileEntry, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	return db.data.Files[packageID], nil
+	var files []*FileEntry
+	err := db.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketFiles)
+
+		data := b.Get(itob(packageID))
+		if data == nil {
+			return nil
+		}
+
+		return json.Unmarshal(data, &files)
+	})
+
+	return files, err
 }
