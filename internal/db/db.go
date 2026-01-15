@@ -714,17 +714,25 @@ func (db *DB) InsertFiles(packageID int64, files []*FileEntry) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	return db.db.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketFiles)
 
-		// Assign IDs
-		for _, f := range files {
-			id, err := db.nextID(tx)
-			if err != nil {
-				return err
-			}
-			f.ID = id
+		// Assign IDs - pre-allocate to avoid multiple ID generations
+		startID, err := db.nextID(tx)
+		if err != nil {
+			return err
+		}
+
+		// Batch assign IDs
+		for i, f := range files {
+			f.ID = startID + int64(i)
 			f.PackageID = packageID
+		}
+
+		// Update next ID counter once for all files
+		meta := tx.Bucket(bucketMeta)
+		if err := meta.Put([]byte("next_id"), itob(startID+int64(len(files)))); err != nil {
+			return err
 		}
 
 		data, err := json.Marshal(files)

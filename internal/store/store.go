@@ -83,80 +83,125 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		debug.Log("store: different filesystem, will try reflink or copy")
 	}
 
-	// Process files: try reflink/hardlink first, collect failures for parallel copy
+	// Process files in parallel: try reflink/hardlink first, collect failures for copy
 	total := len(files)
 	var reflinkCount, hardLinkCount, copyCount int32
 	warnedAboutCopy := false
+	var filesToCopyMu sync.Mutex
 	var filesToCopy []*pack.FileInfo
 
-	// First pass: try fast methods (reflink/hardlink)
-	for i, f := range files {
-		destFile := filepath.Join(destPath, f.RelPath)
+	// Parallel pass: try fast methods (reflink/hardlink)
+	numWorkers := min(runtime.NumCPU(), 8)
+	if len(files) < numWorkers {
+		numWorkers = len(files)
+	}
 
-		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(destFile), 0755); err != nil {
-			return "", fmt.Errorf("failed to create directory for %s: %w", f.RelPath, err)
-		}
+	var wg sync.WaitGroup
+	fileChan := make(chan *pack.FileInfo, len(files))
+	errChan := make(chan error, 1)
+	var processed int32
 
-		linked := false
+	// Start workers for parallel linking
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for f := range fileChan {
+				destFile := filepath.Join(destPath, f.RelPath)
 
-		// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
-		if reflinkFile(f.Path, destFile) == nil {
-			linked = true
-			atomic.AddInt32(&reflinkCount, 1)
-		}
+				// Create parent directories
+				if err := os.MkdirAll(filepath.Dir(destFile), 0755); err != nil {
+					select {
+					case errChan <- fmt.Errorf("failed to create directory for %s: %w", f.RelPath, err):
+					default:
+					}
+					return
+				}
 
-		// 2. Try hard link if on same filesystem and reflink didn't work
-		if !linked && useHardLink {
-			if err := os.Link(f.Path, destFile); err == nil {
-				linked = true
-				atomic.AddInt32(&hardLinkCount, 1)
+				linked := false
+
+				// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
+				if reflinkFile(f.Path, destFile) == nil {
+					linked = true
+					atomic.AddInt32(&reflinkCount, 1)
+				}
+
+				// 2. Try hard link if on same filesystem and reflink didn't work
+				if !linked && useHardLink {
+					if err := os.Link(f.Path, destFile); err == nil {
+						linked = true
+						atomic.AddInt32(&hardLinkCount, 1)
+					}
+				}
+
+				// 3. Queue for parallel copy if linking didn't work
+				if !linked {
+					filesToCopyMu.Lock()
+					filesToCopy = append(filesToCopy, f)
+					filesToCopyMu.Unlock()
+				}
+
+				current := atomic.AddInt32(&processed, 1)
+				if total >= 1000 && current%1000 == 0 {
+					fmt.Printf("\r  Processing... %d/%d files", current, total)
+				}
 			}
-		}
+		}()
+	}
 
-		// 3. Queue for parallel copy if linking didn't work
-		if !linked {
-			if !warnedAboutCopy && sameFS {
-				fmt.Printf("  ⚠ Linking not supported, copying files instead\n")
-				warnedAboutCopy = true
-			}
-			filesToCopy = append(filesToCopy, f)
-		}
+	// Queue all files
+	for _, f := range files {
+		fileChan <- f
+	}
+	close(fileChan)
 
-		if total >= 1000 && (i+1)%1000 == 0 {
-			fmt.Printf("\r  Processing... %d/%d files", i+1, total)
-		}
+	// Wait for linking phase to complete
+	wg.Wait()
+
+	// Check for errors
+	select {
+	case err := <-errChan:
+		return "", err
+	default:
+	}
+
+	// Show warning if needed
+	if len(filesToCopy) > 0 && !warnedAboutCopy && sameFS {
+		fmt.Printf("  ⚠ Linking not supported, copying files instead\n")
 	}
 
 	// Parallel copy for files that couldn't be linked
 	if len(filesToCopy) > 0 {
 		debug.Logf("store: copying %d files in parallel", len(filesToCopy))
 
-		// Use worker pool for parallel copying
-		numWorkers := min(runtime.NumCPU(), 8) // Cap at 8 workers
-		if len(filesToCopy) < numWorkers {
-			numWorkers = len(filesToCopy)
+		// Reuse worker pool for parallel copying
+		numCopyWorkers := min(runtime.NumCPU(), 8)
+		if len(filesToCopy) < numCopyWorkers {
+				numCopyWorkers = len(filesToCopy)
 		}
 
-		var wg sync.WaitGroup
-		fileChan := make(chan *pack.FileInfo, len(filesToCopy))
-		errChan := make(chan error, numWorkers)
-		var processed int32
+		var wg2 sync.WaitGroup
+		copyChan := make(chan *pack.FileInfo, len(filesToCopy))
+		errChan2 := make(chan error, 1)
+		var copyProcessed int32
 
-		// Start workers
-		for w := 0; w < numWorkers; w++ {
-			wg.Add(1)
+		// Start copy workers
+		for w := 0; w < numCopyWorkers; w++ {
+			wg2.Add(1)
 			go func() {
-				defer wg.Done()
-				for f := range fileChan {
+				defer wg2.Done()
+				for f := range copyChan {
 					destFile := filepath.Join(destPath, f.RelPath)
 					if err := copyFile(f.Path, destFile, f.Mode); err != nil {
-						errChan <- fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
+						select {
+						case errChan2 <- fmt.Errorf("failed to copy %s: %w", f.RelPath, err):
+						default:
+						}
 						return
 					}
 					atomic.AddInt32(&copyCount, 1)
 
-					current := atomic.AddInt32(&processed, 1)
+					current := atomic.AddInt32(&copyProcessed, 1)
 					if total >= 1000 && current%1000 == 0 {
 						fmt.Printf("\r  Copying... %d/%d files", current, len(filesToCopy))
 					}
@@ -164,19 +209,20 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 			}()
 		}
 
-		// Queue files
+		// Queue copy files
 		for _, f := range filesToCopy {
-			fileChan <- f
+			copyChan <- f
 		}
-		close(fileChan)
+		close(copyChan)
 
-		// Wait for completion
-		wg.Wait()
-		close(errChan)
+		// Wait for copy completion
+		wg2.Wait()
 
-		// Check for errors
-		if err := <-errChan; err != nil {
+		// Check for copy errors
+		select {
+		case err := <-errChan2:
 			return "", err
+		default:
 		}
 	}
 

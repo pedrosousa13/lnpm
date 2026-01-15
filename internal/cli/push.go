@@ -123,10 +123,17 @@ func RunPush(force bool) error {
 		return fmt.Errorf("failed to access store: %w", err)
 	}
 
-	// Store the updated package
-	storePath, err := s.Store(pkgJSON.Name, newHash, files, cwd)
-	if err != nil {
-		return fmt.Errorf("failed to store package: %w", err)
+	// Check if we need to store (hash changed or doesn't exist)
+	var storePath string
+	if pkg.ContentHash != newHash || !s.Exists(pkgJSON.Name, newHash) {
+		// Store the updated package
+		storePath, err = s.Store(pkgJSON.Name, newHash, files, cwd)
+		if err != nil {
+			return fmt.Errorf("failed to store package: %w", err)
+		}
+	} else {
+		// Reuse existing store path
+		storePath = s.PackagePath(pkgJSON.Name, newHash)
 	}
 
 	// Calculate total size
@@ -136,6 +143,7 @@ func RunPush(force bool) error {
 	}
 
 	// Update package in database
+	hashChanged := pkg.ContentHash != newHash
 	pkg.Version = pkgJSON.Version
 	pkg.ContentHash = newHash
 	pkg.SourcePath = cwd
@@ -147,20 +155,22 @@ func RunPush(force bool) error {
 		return fmt.Errorf("failed to update package: %w", err)
 	}
 
-	// Update file manifest
-	fileEntries := make([]*db.FileEntry, len(files))
-	for i, f := range files {
-		fileEntries[i] = &db.FileEntry{
-			PackageID:    pkg.ID,
-			RelativePath: f.RelPath,
-			ContentHash:  f.ContentHash,
-			Size:         f.Size,
-			Mode:         f.Mode,
-			ModTime:      f.ModTime,
+	// Only update file manifest if content hash changed
+	if hashChanged {
+		fileEntries := make([]*db.FileEntry, len(files))
+		for i, f := range files {
+			fileEntries[i] = &db.FileEntry{
+				PackageID:    pkg.ID,
+				RelativePath: f.RelPath,
+				ContentHash:  f.ContentHash,
+				Size:         f.Size,
+				Mode:         f.Mode,
+				ModTime:      f.ModTime,
+			}
 		}
-	}
-	if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
-		return fmt.Errorf("failed to update files: %w", err)
+		if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
+			return fmt.Errorf("failed to update files: %w", err)
+		}
 	}
 
 	// Get linked projects
