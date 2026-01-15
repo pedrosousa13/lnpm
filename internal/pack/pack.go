@@ -252,7 +252,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 	if len(filesToHash) > 0 {
 		var wg sync.WaitGroup
 		wg.Add(len(filesToHash))
-		
+
 		pool, err := ants.NewPoolWithFunc(runtime.NumCPU()*2, func(i interface{}) {
 			defer wg.Done()
 			file := i.(*FileInfo)
@@ -274,7 +274,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 				return nil, fmt.Errorf("failed to hash files: %w", err)
 			}
 		}
-		
+
 		// Wait for all workers to complete before proceeding
 		wg.Wait()
 	}

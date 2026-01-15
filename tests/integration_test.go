@@ -198,7 +198,7 @@ func TestPublishAllNx(t *testing.T) {
 func TestNxAddInternalDependency(t *testing.T) {
 	// This test modifies global environment variables, so it cannot run in parallel
 	// with other tests that also use LNPM_STORE
-	
+
 	var err error
 
 	// Save original working directory
@@ -210,7 +210,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 	// Use a separate store directory for this test to avoid conflicts
 	testStoreDir := filepath.Join(os.TempDir(), "lnpm-test-nx")
 	defer func() { _ = os.RemoveAll(testStoreDir) }()
-	
+
 	// Save original LNPM_STORE value to restore it
 	originalStore := os.Getenv("LNPM_STORE")
 	_ = os.Setenv("LNPM_STORE", testStoreDir)
