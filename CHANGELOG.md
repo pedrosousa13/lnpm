@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.7](https://github.com/pedrosousa13/lnpm/compare/v1.7.6...v1.7.7) (2026-01-15)
+
+
+### Bug Fixes
+
+* race condition in pack ([e5f6793](https://github.com/pedrosousa13/lnpm/commit/e5f67935af042be7e952276aa9f741938c749f17))
+
 ## [1.7.6](https://github.com/pedrosousa13/lnpm/compare/v1.7.5...v1.7.6) (2026-01-15)
 
 
