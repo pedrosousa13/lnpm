@@ -131,12 +131,32 @@ npm publish
 
 ### Shell Completions
 
+**Quick setup (recommended):**
 ```bash
+lnpm completion install
+```
+
+This auto-detects your shell and installs completions. Follow the on-screen instructions to enable.
+
+**Alternative - Dynamic loading** (add to shell config):
+```bash
+# Zsh (~/.zshrc)
+eval "$(lnpm completion zsh)"
+
+# Bash (~/.bashrc)
+eval "$(lnpm completion bash)"
+
+# Fish (~/.config/fish/config.fish)
+lnpm completion fish | source
+```
+
+**Manual installation:**
+```bash
+# Zsh
+lnpm completion zsh > ~/.zsh/completions/_lnpm
+
 # Bash
 lnpm completion bash > /etc/bash_completion.d/lnpm
-
-# Zsh
-lnpm completion zsh > "${fpath[1]}/_lnpm"
 
 # Fish
 lnpm completion fish > ~/.config/fish/completions/lnpm.fish
