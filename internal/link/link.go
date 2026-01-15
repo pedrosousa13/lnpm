@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
@@ -157,8 +158,13 @@ func (l *Linker) createNodeModulesSymlink(packageName string) error {
 
 	// Create relative symlink
 	// From: node_modules/{package}
-	// To: ../.lnpm/{package}
-	relTarget := filepath.Join("..", ".lnpm", packageName)
+	// To: ../.lnpm/{package} (or ../../ for scoped packages)
+	// Scoped packages like @org/pkg are nested deeper, need extra ../
+	upLevels := ".."
+	if strings.Contains(packageName, "/") {
+		upLevels = filepath.Join("..", "..")
+	}
+	relTarget := filepath.Join(upLevels, ".lnpm", packageName)
 
 	if err := os.Symlink(relTarget, linkPath); err != nil {
 		return fmt.Errorf("failed to create node_modules symlink: %w", err)

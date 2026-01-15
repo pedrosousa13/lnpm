@@ -166,6 +166,16 @@ func TestLinkScopedPackage(t *testing.T) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Error("node_modules/@org/my-package is not a symlink")
 	}
+
+	// Verify symlink points to correct location (scoped packages need ../../)
+	target, err := os.Readlink(nodeModulesPath)
+	if err != nil {
+		t.Fatalf("failed to read symlink: %v", err)
+	}
+	expectedTarget := filepath.Join("..", "..", ".lnpm", "@org", "my-package")
+	if target != expectedTarget {
+		t.Errorf("symlink target = %q, want %q", target, expectedTarget)
+	}
 }
 
 func TestLinkMultiplePackages(t *testing.T) {
