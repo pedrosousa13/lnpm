@@ -117,7 +117,7 @@ lnpm watch --exec "nx build my-lib"
 
 **📖 See [MONOREPO.md](MONOREPO.md) for complete guides on:**
 - Turborepo integration
-- Nx integration  
+- Nx integration
 - PNPM/NPM/Yarn workspaces
 - Best practices and troubleshooting
 
@@ -195,7 +195,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 
 ## How It Works
 
-1. **Publish** — Links or copies package files to `~/.lnpm/store/{name}/{hash}/`
+1. **Publish** — Uses `npm pack` rules to determine files, then links or copies to `~/.lnpm/store/{name}/{hash}/`
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
 4. **Push/Watch** — Updates store and re-links changed files
@@ -207,6 +207,18 @@ src/index.ts    ──►   (reflink/hardlink)
 dist/index.js   ──►     ~/.lnpm/store/      ══► .lnpm/pkg/     ──► node_modules/pkg
 package.json    ──►       pkg/abc123/      (reflink/hardlink)     (symlink)
 ```
+
+### File Filtering
+
+lnpm uses **npm's standard packing rules** (via `npm pack --dry-run`) to determine which files to include, ensuring consistency with actual npm publish behavior. This means:
+
+- Respects `package.json` `files` field
+- Honors `.npmignore` or falls back to `.gitignore`
+- Follows npm's default exclusions (`.git`, `node_modules`, etc.)
+- **Additional safety**: Explicit `.git` filtering prevents any VCS files from being linked
+- Automatic fallback to custom filtering if npm is unavailable
+
+This approach prevents issues with git hooks (like Husky) running in linked packages and ensures lnpm behaves identically to npm publish.
 
 ### Smart Linking Strategy
 

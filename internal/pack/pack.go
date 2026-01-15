@@ -2,12 +2,15 @@ package pack
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cespare/xxhash/v2"
@@ -107,12 +110,30 @@ func PackIncremental(packageDir string, cache map[string]*CachedFile) (*PackageJ
 	}
 	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
-	// Build file list
-	files, err := collectFilesIncremental(packageDir, pkgJSON.Files, cache)
-	if err != nil {
-		return nil, nil, err
+	// Try to use npm pack for file list (universal standard)
+	fileList, useNpmPack := getNpmPackFileList(packageDir)
+
+	var files []*FileInfo
+	if useNpmPack {
+		debug.Logf("pack: using npm pack file list (%d files)", len(fileList))
+		// Use npm pack output with explicit .git safety filter
+		files, err = collectFilesFromList(packageDir, fileList, cache)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		debug.Log("pack: npm pack unavailable, using custom filtering")
+		// Fall back to custom file collection
+		files, err = collectFilesIncremental(packageDir, pkgJSON.Files, cache)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	debug.Logf("pack: collected %d files", len(files))
+
+	// Apply explicit .git safety filter (defense in depth)
+	files = filterGitFiles(files)
+
+	debug.Logf("pack: collected %d files (after safety filters)", len(files))
 
 	return pkgJSON, files, nil
 }
@@ -493,5 +514,217 @@ func shouldIgnore(relPath string) bool {
 		strings.Contains(relPath, "/.") {
 		return true
 	}
+	return false
+}
+
+// npmPackOutput represents the JSON output from npm pack --dry-run --json
+type npmPackOutput struct {
+	Files []npmPackFile `json:"files"`
+}
+
+type npmPackFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Mode int    `json:"mode"`
+}
+
+var (
+	// Cache npm availability check
+	npmAvailable     *bool
+	npmCheckTime     time.Time
+	npmCacheDuration = 30 * time.Second
+)
+
+// getNpmPackFileList attempts to get file list from npm pack --dry-run --json
+// Returns file list and whether npm pack was successful
+func getNpmPackFileList(packageDir string) ([]string, bool) {
+	// Check if npm is available (with caching)
+	if !isNpmAvailable() {
+		return nil, false
+	}
+
+	// Execute npm pack --dry-run --json
+	cmd := exec.Command("npm", "pack", "--dry-run", "--json")
+	cmd.Dir = packageDir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		debug.Logf("pack: npm pack failed: %v (stderr: %s)", err, stderr.String())
+		return nil, false
+	}
+
+	// Parse JSON output
+	var output []npmPackOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		debug.Logf("pack: failed to parse npm pack output: %v", err)
+		return nil, false
+	}
+
+	if len(output) == 0 {
+		debug.Log("pack: npm pack returned empty output")
+		return nil, false
+	}
+
+	// Extract file paths
+	files := make([]string, 0, len(output[0].Files))
+	for _, f := range output[0].Files {
+		// npm pack returns paths like "package/file.js", strip "package/" prefix
+		path := strings.TrimPrefix(f.Path, "package/")
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+
+	debug.Logf("pack: npm pack found %d files", len(files))
+	return files, true
+}
+
+// isNpmAvailable checks if npm binary is available in PATH
+// Results are cached for 30 seconds to avoid repeated checks
+func isNpmAvailable() bool {
+	now := time.Now()
+	if npmAvailable != nil && now.Sub(npmCheckTime) < npmCacheDuration {
+		return *npmAvailable
+	}
+
+	// Check if npm is in PATH
+	_, err := exec.LookPath("npm")
+	available := err == nil
+
+	npmAvailable = &available
+	npmCheckTime = now
+
+	if !available {
+		debug.Log("pack: npm not found in PATH, using custom filtering")
+	}
+
+	return available
+}
+
+// collectFilesFromList collects files from a predetermined list (from npm pack)
+// Applies incremental caching and explicit .git filtering
+func collectFilesFromList(packageDir string, fileList []string, cache map[string]*CachedFile) ([]*FileInfo, error) {
+	files := make([]*FileInfo, 0, len(fileList))
+	cacheHits := 0
+
+	for _, relPath := range fileList {
+		// Skip if it contains .git (defense in depth)
+		if isGitRelatedPath(relPath) {
+			debug.Logf("pack: filtering git-related file: %s", relPath)
+			continue
+		}
+
+		path := filepath.Join(packageDir, filepath.FromSlash(relPath))
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				debug.Logf("pack: skipping missing file: %s", relPath)
+				continue
+			}
+			return nil, fmt.Errorf("failed to stat %s: %w", relPath, err)
+		}
+
+		if info.IsDir() {
+			continue // Skip directories
+		}
+
+		// Normalize path separators
+		relPath = filepath.ToSlash(relPath)
+
+		// Check cache - skip hashing if size+mtime unchanged
+		mtime := info.ModTime().UnixNano()
+		size := info.Size()
+		if cache != nil {
+			if cached, ok := cache[relPath]; ok {
+				if cached.Size == size && cached.ModTime == mtime {
+					// File unchanged, reuse cached hash
+					cacheHits++
+					files = append(files, &FileInfo{
+						Path:        path,
+						RelPath:     relPath,
+						Size:        size,
+						Mode:        info.Mode(),
+						ContentHash: cached.ContentHash,
+						ModTime:     mtime,
+					})
+					continue
+				}
+			}
+		}
+
+		// Calculate content hash (cache miss or no cache)
+		hash, err := hashFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash %s: %w", relPath, err)
+		}
+
+		files = append(files, &FileInfo{
+			Path:        path,
+			RelPath:     relPath,
+			Size:        size,
+			Mode:        info.Mode(),
+			ContentHash: hash,
+			ModTime:     mtime,
+		})
+	}
+
+	if cache != nil && cacheHits > 0 {
+		debug.Logf("pack: cache hits %d/%d files (%.0f%%)", cacheHits, len(fileList), float64(cacheHits)/float64(len(fileList))*100)
+	}
+
+	return files, nil
+}
+
+// filterGitFiles removes any files related to .git directories
+// This is a defense-in-depth safety filter applied after all other filtering
+func filterGitFiles(files []*FileInfo) []*FileInfo {
+	filtered := make([]*FileInfo, 0, len(files))
+	removedCount := 0
+
+	for _, f := range files {
+		if isGitRelatedPath(f.RelPath) {
+			debug.Logf("pack: safety filter removed: %s", f.RelPath)
+			removedCount++
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+
+	if removedCount > 0 {
+		debug.Logf("pack: safety filter removed %d git-related files", removedCount)
+	}
+
+	return filtered
+}
+
+// isGitRelatedPath checks if a path is related to .git directories
+func isGitRelatedPath(relPath string) bool {
+	// Normalize path separators
+	normalized := filepath.ToSlash(strings.ToLower(relPath))
+
+	// Check for exact .git match or .git prefix
+	if normalized == ".git" {
+		return true
+	}
+
+	// Check if path contains .git directory
+	if strings.HasPrefix(normalized, ".git/") {
+		return true
+	}
+
+	// Check if .git appears anywhere in the path
+	if strings.Contains(normalized, "/.git/") || strings.Contains(normalized, "\\.git\\") {
+		return true
+	}
+
+	// Check for git-related files
+	base := filepath.Base(normalized)
+	if base == ".gitignore" || base == ".gitattributes" || base == ".gitmodules" {
+		return true
+	}
+
 	return false
 }

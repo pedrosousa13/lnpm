@@ -158,3 +158,158 @@ func TestPublishAllYarn(t *testing.T) {
 		t.Error("Expected @yarn-test/library to be published")
 	}
 }
+
+// TestPublishAllNx tests publishing all packages in an Nx workspace
+func TestPublishAllNx(t *testing.T) {
+	// Change to nx fixture directory
+	oldWd, _ := os.Getwd()
+	defer os.Chdir(oldWd)
+
+	fixtureDir := filepath.Join("fixtures", "nx")
+	if err := os.Chdir(fixtureDir); err != nil {
+		t.Fatalf("Failed to change to fixture directory: %v", err)
+	}
+
+	// Clean up any existing database and .lnpm directories
+	os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
+	os.RemoveAll(".lnpm")
+	os.RemoveAll(filepath.Join("libs", "feature-auth", ".lnpm"))
+
+	// Test publish --all
+	err := cli.RunPublish(false, "", true)
+	if err != nil {
+		t.Fatalf("Failed to publish all packages: %v", err)
+	}
+
+	// Verify packages were published
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("Failed to get database: %v", err)
+	}
+
+	pkg, err := database.GetPackageByName("@nx-test/feature-auth")
+	if err != nil || pkg == nil {
+		t.Error("Expected @nx-test/feature-auth to be published")
+	}
+}
+
+// TestNxAddInternalDependency tests that adding a package to an internal Nx package
+// doesn't modify the top-level workspace package.json
+func TestNxAddInternalDependency(t *testing.T) {
+	var err error
+
+	// Save original working directory
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	nxFixtureDir := filepath.Join("fixtures", "nx")
+
+	// Use a separate store directory for this test to avoid conflicts
+	testStoreDir := filepath.Join(os.TempDir(), "lnpm-test-nx")
+	defer os.RemoveAll(testStoreDir)
+	os.Setenv("LNPM_STORE", testStoreDir)
+	defer os.Unsetenv("LNPM_STORE")
+
+	// Clean up .lnpm directories in fixtures but preserve global ~/.lnpm for published packages
+	os.RemoveAll(filepath.Join(nxFixtureDir, ".lnpm"))
+	os.RemoveAll(filepath.Join(nxFixtureDir, "libs", "feature-auth", ".lnpm"))
+
+	// Reset the sub-package package.json to original state
+	originalSubPkgJSON := `{
+  "name": "@nx-test/feature-auth",
+  "version": "1.0.0",
+  "main": "src/index.js"
+}`
+	subPkgJSONPath := filepath.Join(nxFixtureDir, "libs", "feature-auth", "package.json")
+	if err := os.WriteFile(subPkgJSONPath, []byte(originalSubPkgJSON), 0644); err != nil {
+		t.Fatalf("Failed to reset sub-package package.json: %v", err)
+	}
+
+	// First, publish the npm package we need for the test
+	// Let's use the npm workspace package-a for this
+
+	// Always publish the package fresh for this test - clean everything first
+	os.RemoveAll(testStoreDir)
+
+	// Go back to original directory
+	os.Chdir(originalWd)
+
+	// Publish package-a first
+	npmPkgDir := filepath.Join("fixtures", "npm-workspace", "packages", "package-a")
+	if err := os.Chdir(npmPkgDir); err != nil {
+		t.Fatalf("Failed to change to package-a directory: %v", err)
+	}
+
+	err = cli.RunPublish(true, "", false)
+	if err != nil {
+		t.Fatalf("Failed to publish package-a: %v", err)
+	}
+
+	// Go back to original directory
+	os.Chdir(originalWd)
+
+	// Now publish the feature-auth package so we have something to add
+	subPkgDir := filepath.Join(nxFixtureDir, "libs", "feature-auth")
+	if err := os.Chdir(subPkgDir); err != nil {
+		t.Fatalf("Failed to change to sub-package directory: %v", err)
+	}
+
+	err = cli.RunPublish(true, "", false)
+	if err != nil {
+		t.Fatalf("Failed to publish feature-auth package: %v", err)
+	}
+
+	// Go back to original directory
+	os.Chdir(originalWd)
+
+	// Change to nx workspace root
+	if err := os.Chdir(nxFixtureDir); err != nil {
+		t.Fatalf("Failed to change to nx workspace: %v", err)
+	}
+
+	// Read the original top-level package.json
+	rootPkgJSONPath := "package.json"
+	originalRootData, err := os.ReadFile(rootPkgJSONPath)
+	if err != nil {
+		t.Fatalf("Failed to read root package.json: %v", err)
+	}
+
+	// Change to the sub-package directory
+	subPkgPath := filepath.Join("libs", "feature-auth")
+	if err := os.Chdir(subPkgPath); err != nil {
+		t.Fatalf("Failed to change to sub-package directory: %v", err)
+	}
+
+	// Read the original sub-package package.json
+	subPkgJSONPath = "package.json"
+	originalSubData, err := os.ReadFile(subPkgJSONPath)
+	if err != nil {
+		t.Fatalf("Failed to read sub-package package.json: %v", err)
+	}
+
+	// Add the published package to the sub-package
+	err = cli.RunAdd("@npm-test/package-a", false, false)
+	if err != nil {
+		t.Fatalf("Failed to add package: %v", err)
+	}
+
+	// Verify the sub-package package.json was updated
+	updatedSubData, err := os.ReadFile(subPkgJSONPath)
+	if err != nil {
+		t.Fatalf("Failed to read updated sub-package package.json: %v", err)
+	}
+
+	if string(updatedSubData) == string(originalSubData) {
+		t.Error("Expected sub-package package.json to be updated")
+	}
+
+	// Verify the top-level package.json was NOT updated
+	updatedRootData, err := os.ReadFile(filepath.Join("..", "..", "package.json"))
+	if err != nil {
+		t.Fatalf("Failed to read updated root package.json: %v", err)
+	}
+
+	if string(updatedRootData) != string(originalRootData) {
+		t.Error("Expected top-level package.json to remain unchanged")
+	}
+}
