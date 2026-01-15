@@ -94,7 +94,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 
 		if !dryRun {
 			for _, l := range linksToRemove {
-				database.DeleteLink(l.packageID, l.projectID)
+				_ = database.DeleteLink(l.packageID, l.projectID)
 			}
 			fmt.Printf("✓ Removed %d orphaned link(s)\n", len(linksToRemove))
 		}
@@ -117,7 +117,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 					os.RemoveAll(pkg.StorePath)
 				}
 				// Remove from database
-				database.DeletePackage(pkg.ID)
+				_ = database.DeletePackage(pkg.ID)
 			}
 			fmt.Printf("✓ Removed %d package(s), freed %s\n", len(packagesToRemove), formatSize(totalSize))
 		}

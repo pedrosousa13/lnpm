@@ -86,7 +86,7 @@ func RunRemove(packageName string, all bool) error {
 		if proj != nil {
 			pkg, _ := database.GetPackageByName(name)
 			if pkg != nil {
-				database.DeleteLink(pkg.ID, proj.ID)
+				_ = database.DeleteLink(pkg.ID, proj.ID)
 			}
 		}
 

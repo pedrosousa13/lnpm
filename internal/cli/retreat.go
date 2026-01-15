@@ -91,7 +91,7 @@ func RunRetreat(force bool) error {
 		if database != nil && proj != nil {
 			dbPkg, _ := database.GetPackageByName(name)
 			if dbPkg != nil {
-				database.DeleteLink(dbPkg.ID, proj.ID)
+				_ = database.DeleteLink(dbPkg.ID, proj.ID)
 			}
 		}
 	}

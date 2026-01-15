@@ -171,10 +171,6 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 			}
 		}
 
-		// Always include default files
-		if !useWhitelist && !isDefaultInclude(relPath) {
-			// In non-whitelist mode, include everything not excluded
-		}
 
 		// Calculate content hash
 		hash, err := hashFile(path)
@@ -328,8 +324,8 @@ func hashFile(path string) (string, error) {
 func HashFiles(files []*FileInfo) string {
 	h := xxhash.New()
 	for _, f := range files {
-		h.Write([]byte(f.RelPath))
-		h.Write([]byte(f.ContentHash))
+		_, _ = h.Write([]byte(f.RelPath))
+		_, _ = h.Write([]byte(f.ContentHash))
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
 }

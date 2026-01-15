@@ -336,12 +336,12 @@ func (db *DB) DeletePackage(id int64) error {
 		if data != nil {
 			var pkg Package
 			if json.Unmarshal(data, &pkg) == nil {
-				byName.Delete([]byte(pkg.Name))
+				_ = byName.Delete([]byte(pkg.Name))
 			}
 		}
 
-		packages.Delete(itob(id))
-		files.Delete(itob(id))
+		_ = packages.Delete(itob(id))
+		_ = files.Delete(itob(id))
 		return nil
 	})
 }
@@ -498,20 +498,20 @@ func (db *DB) InsertLink(link *Link) error {
 		// Add to package index
 		var pkgLinks []int64
 		if existing := byPackage.Get(pkgKey); existing != nil {
-			json.Unmarshal(existing, &pkgLinks)
+			_ = json.Unmarshal(existing, &pkgLinks)
 		}
 		pkgLinks = append(pkgLinks, id)
 		pkgLinksData, _ := json.Marshal(pkgLinks)
-		byPackage.Put(pkgKey, pkgLinksData)
+		_ = byPackage.Put(pkgKey, pkgLinksData)
 
 		// Add to project index
 		var projLinks []int64
 		if existing := byProject.Get(projKey); existing != nil {
-			json.Unmarshal(existing, &projLinks)
+			_ = json.Unmarshal(existing, &projLinks)
 		}
 		projLinks = append(projLinks, id)
 		projLinksData, _ := json.Marshal(projLinks)
-		byProject.Put(projKey, projLinksData)
+		_ = byProject.Put(projKey, projLinksData)
 
 		return nil
 	})
@@ -599,7 +599,7 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 
 		// Find the link ID
 		var linkID int64
-		links.ForEach(func(k, v []byte) error {
+		_ = links.ForEach(func(k, v []byte) error {
 			var l Link
 			if json.Unmarshal(v, &l) == nil {
 				if l.PackageID == packageID && l.ProjectID == projectID {
@@ -614,13 +614,13 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 		}
 
 		// Delete the link
-		links.Delete(itob(linkID))
+		_ = links.Delete(itob(linkID))
 
 		// Update package index
 		pkgKey := itob(packageID)
 		if data := byPackage.Get(pkgKey); data != nil {
 			var ids []int64
-			json.Unmarshal(data, &ids)
+			_ = json.Unmarshal(data, &ids)
 			newIDs := make([]int64, 0, len(ids))
 			for _, id := range ids {
 				if id != linkID {
@@ -629,9 +629,9 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 			}
 			if len(newIDs) > 0 {
 				newData, _ := json.Marshal(newIDs)
-				byPackage.Put(pkgKey, newData)
+				_ = byPackage.Put(pkgKey, newData)
 			} else {
-				byPackage.Delete(pkgKey)
+				_ = byPackage.Delete(pkgKey)
 			}
 		}
 
@@ -639,7 +639,7 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 		projKey := itob(projectID)
 		if data := byProject.Get(projKey); data != nil {
 			var ids []int64
-			json.Unmarshal(data, &ids)
+			_ = json.Unmarshal(data, &ids)
 			newIDs := make([]int64, 0, len(ids))
 			for _, id := range ids {
 				if id != linkID {
@@ -648,9 +648,9 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 			}
 			if len(newIDs) > 0 {
 				newData, _ := json.Marshal(newIDs)
-				byProject.Put(projKey, newData)
+				_ = byProject.Put(projKey, newData)
 			} else {
-				byProject.Delete(projKey)
+				_ = byProject.Delete(projKey)
 			}
 		}
 

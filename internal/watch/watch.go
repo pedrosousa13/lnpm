@@ -202,7 +202,7 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Handle new directories
 	if event.Op&fsnotify.Create == fsnotify.Create {
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-			w.watcher.Add(event.Name)
+			_ = w.watcher.Add(event.Name)
 		}
 	}
 
