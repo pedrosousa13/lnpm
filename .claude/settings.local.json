@@ -3,7 +3,9 @@
     "allow": [
       "Bash(golangci-lint run:*)",
       "Bash(go build:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(curl:*)",
+      "Bash(gh run list:*)"
     ]
   }
 }
