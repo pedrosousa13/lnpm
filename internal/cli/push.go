@@ -18,19 +18,16 @@ func RunPush(force bool) error {
 		return fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	// Pack the package to get current state
-	pkgJSON, files, err := pack.Pack(cwd)
-	if err != nil {
-		return fmt.Errorf("failed to pack: %w", err)
-	}
-
-	// Calculate content hash
-	newHash := pack.HashFiles(files)
-
 	// Get database
 	database, err := db.GetDB()
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Quick check: read package.json name to check if published
+	pkgJSON, files, err := pack.Pack(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to pack: %w", err)
 	}
 
 	// Get existing package from database
@@ -39,9 +36,14 @@ func RunPush(force bool) error {
 		return fmt.Errorf("failed to look up package: %w", err)
 	}
 
+	// If not published yet, delegate to publish (skip re-packing)
 	if pkg == nil {
-		return fmt.Errorf("package %s not published yet. Run 'lnpm publish' first", pkgJSON.Name)
+		fmt.Printf("Package %s not published yet, publishing...\n", pkgJSON.Name)
+		return finishPublish(cwd, pkgJSON, files, database, false)
 	}
+
+	// Calculate content hash
+	newHash := pack.HashFiles(files)
 
 	// Check if content has changed
 	if pkg.ContentHash == newHash && !force {

@@ -72,15 +72,13 @@ func publishSingle(pkgPath string, push bool, tag string) error {
 		return fmt.Errorf("failed to pack: %w", err)
 	}
 
-	// Calculate content hash
-	contentHash := pack.HashFiles(files)
-
 	// Check if already published with same hash
 	database, err := db.GetDB()
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
+	contentHash := pack.HashFiles(files)
 	existing, err := database.GetPackageByHash(pkgJSON.Name, contentHash)
 	if err != nil {
 		return fmt.Errorf("failed to check existing package: %w", err)
@@ -92,6 +90,13 @@ func publishSingle(pkgPath string, push bool, tag string) error {
 		fmt.Println("Use --push to update linked projects anyway")
 		return nil
 	}
+
+	return finishPublish(pkgPath, pkgJSON, files, database, push)
+}
+
+// finishPublish completes publishing with pre-packed data (used by push too)
+func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.FileInfo, database *db.DB, push bool) error {
+	contentHash := pack.HashFiles(files)
 
 	// Store the package
 	s, err := store.New()

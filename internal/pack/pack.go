@@ -128,6 +128,7 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 // collectFiles walks the directory and collects files based on include/exclude rules
 func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 	var files []*FileInfo
+	fileCount := 0
 
 	// Load .npmignore or .gitignore patterns
 	ignorePatterns := loadIgnorePatterns(packageDir)
@@ -182,6 +183,11 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 			return fmt.Errorf("failed to hash %s: %w", relPath, err)
 		}
 
+		fileCount++
+		if fileCount%1000 == 0 {
+			fmt.Printf("\r  Scanning... %d files", fileCount)
+		}
+
 		files = append(files, &FileInfo{
 			Path:        path,
 			RelPath:     relPath,
@@ -192,6 +198,10 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 
 		return nil
 	})
+
+	if fileCount >= 1000 {
+		fmt.Printf("\r                              \r") // Clear progress line
+	}
 
 	return files, err
 }

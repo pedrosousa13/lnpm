@@ -73,7 +73,8 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 
 	debug.Log("store: copying files")
 	// Copy each file
-	for _, f := range files {
+	total := len(files)
+	for i, f := range files {
 		destFile := filepath.Join(destPath, f.RelPath)
 
 		// Create parent directories
@@ -85,6 +86,14 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		if err := copyFile(f.Path, destFile, f.Mode); err != nil {
 			return "", fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
 		}
+
+		if total >= 1000 && (i+1)%1000 == 0 {
+			fmt.Printf("\r  Copying... %d/%d files", i+1, total)
+		}
+	}
+
+	if total >= 1000 {
+		fmt.Printf("\r                              \r") // Clear progress line
 	}
 
 	return destPath, nil
