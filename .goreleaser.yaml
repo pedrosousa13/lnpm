@@ -66,14 +66,6 @@ changelog:
     - title: "Other"
       order: 999
 
-scoops:
-  - repository:
-      owner: pedrosousa13
-      name: scoop-bucket
-    homepage: "https://github.com/pedrosousa13/lnpm"
-    description: "Fast local npm package development tool"
-    license: "MIT"
-
 nfpms:
   - id: packages
     package_name: lnpm

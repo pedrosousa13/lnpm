@@ -7,7 +7,8 @@
       "Bash(curl:*)",
       "Bash(gh run list:*)",
       "Bash(gh workflow list:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(gh run view:*)"
     ]
   }
 }
