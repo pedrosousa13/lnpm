@@ -407,3 +407,91 @@ type FileEntryData struct {
 	Mode    os.FileMode
 	Hash    string
 }
+
+// ReadPackageJSON reads and returns just the package.json without scanning files
+func ReadPackageJSON(dir string) (*PackageJSON, error) {
+	return readPackageJSON(dir)
+}
+
+// HasFileChanges quickly checks if any source files are newer than stored versions
+// Uses modification time comparison to avoid full file hashing
+func HasFileChanges(packageDir string, storedFiles []*FileEntry) bool {
+	// Build a map of stored files for quick lookup
+	storedMap := make(map[string]*FileEntry, len(storedFiles))
+	for _, f := range storedFiles {
+		storedMap[f.RelativePath] = f
+	}
+
+	// Check for modified or new files
+	hasChanges := false
+	filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(packageDir, path)
+		if err != nil {
+			return nil
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		// Check if this is a file we would include (quick check)
+		if shouldIgnore(relPath) {
+			return nil
+		}
+
+		stored, exists := storedMap[relPath]
+		if !exists {
+			// New file detected
+			debug.Logf("pack: new file detected: %s", relPath)
+			hasChanges = true
+			return filepath.SkipAll
+		}
+
+		// Check if modified (size or mtime changed)
+		modTime := info.ModTime().UnixNano()
+		if info.Size() != stored.Size || modTime > stored.ModTime {
+			debug.Logf("pack: file changed: %s (size: %d->%d, mtime: %d->%d)",
+				relPath, stored.Size, info.Size(), stored.ModTime, modTime)
+			hasChanges = true
+			return filepath.SkipAll
+		}
+
+		return nil
+	})
+
+	// Check for deleted files
+	if !hasChanges {
+		for relPath := range storedMap {
+			fullPath := filepath.Join(packageDir, filepath.FromSlash(relPath))
+			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+				debug.Logf("pack: file deleted: %s", relPath)
+				hasChanges = true
+				break
+			}
+		}
+	}
+
+	return hasChanges
+}
+
+// FileEntry represents a stored file entry (from database)
+type FileEntry struct {
+	RelativePath string
+	Size         int64
+	ModTime      int64
+	ContentHash  string
+}
+
+// shouldIgnore does a quick check if a path should be ignored
+// This is a fast pre-filter before full pattern matching
+func shouldIgnore(relPath string) bool {
+	// Quick checks for common patterns
+	if strings.HasPrefix(relPath, "node_modules/") ||
+		strings.HasPrefix(relPath, ".git/") ||
+		strings.HasPrefix(relPath, ".lnpm/") ||
+		strings.Contains(relPath, "/.") {
+		return true
+	}
+	return false
+}

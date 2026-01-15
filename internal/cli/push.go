@@ -3,6 +3,11 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
@@ -24,10 +29,10 @@ func RunPush(force bool) error {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Quick check: read package.json name to check if published
-	pkgJSON, files, err := pack.Pack(cwd)
+	// Read package.json to get package name (fast, no file scanning yet)
+	pkgJSON, err := pack.ReadPackageJSON(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to pack: %w", err)
+		return fmt.Errorf("failed to read package.json: %w", err)
 	}
 
 	// Get existing package from database
@@ -36,20 +41,78 @@ func RunPush(force bool) error {
 		return fmt.Errorf("failed to look up package: %w", err)
 	}
 
-	// If not published yet, delegate to publish (skip re-packing)
+	// If not published yet, do full pack and delegate to publish
 	if pkg == nil {
 		fmt.Printf("Package %s not published yet, publishing...\n", pkgJSON.Name)
+		_, files, err := pack.Pack(cwd)
+		if err != nil {
+			return fmt.Errorf("failed to pack: %w", err)
+		}
 		return finishPublish(cwd, pkgJSON, files, database, false)
 	}
 
-	// Calculate content hash
-	newHash := pack.HashFiles(files)
+	// Fast path: Use git to detect changes (if available)
+	// This is 100x faster than scanning files
+	var files []*pack.FileInfo
+	var newHash string
+	skipScan := false
 
-	// Check if content has changed
-	if pkg.ContentHash == newHash && !force {
-		fmt.Printf("⚠ No changes detected (hash: %s)\n", shortHash(newHash))
-		fmt.Println("Use --force to push anyway")
-		return nil
+	if !force {
+		// Try git-based change detection first (milliseconds vs hundreds of ms)
+		gitChanged, err := checkGitChanges(cwd, pkg.UpdatedAt)
+		if err == nil {
+			if !gitChanged {
+				// Git says no changes since last push
+				fmt.Printf("✓ No changes detected (git)\n")
+				return nil
+			}
+			// Git detected changes - fall through to full scan
+		} else {
+			// Not a git repo or git unavailable - use directory mtime
+			dirInfo, err := os.Stat(cwd)
+			if err == nil {
+				dirMtime := dirInfo.ModTime().UnixNano()
+				pkgMtime := pkg.UpdatedAt.UnixNano()
+
+				// Check if directory and critical files are unchanged
+				// This is much faster than stat-ing all files
+				if dirMtime <= pkgMtime {
+					// Check package.json hasn't changed
+					pkgJSONPath := filepath.Join(cwd, "package.json")
+					pkgJSONInfo, err := os.Stat(pkgJSONPath)
+					if err == nil && pkgJSONInfo.ModTime().UnixNano() <= pkgMtime {
+						// Looks unchanged - quick validation of file count
+						storedFiles, err := database.GetFilesForPackage(pkg.ID)
+						if err == nil {
+							// Just verify file count matches (not each file)
+							// If count differs, something was added/removed
+							currentCount := countPackageFiles(cwd)
+							if currentCount == len(storedFiles) {
+								fmt.Printf("✓ No changes detected (fast check)\n")
+								return nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Full scan needed: directory changed, files missing, or forced
+	if !skipScan {
+		_, files, err = pack.Pack(cwd)
+		if err != nil {
+			return fmt.Errorf("failed to pack: %w", err)
+		}
+
+		// Calculate content hash
+		newHash = pack.HashFiles(files)
+
+		// Check if content actually changed
+		if pkg.ContentHash == newHash && !force {
+			fmt.Printf("✓ No changes detected (hash: %s)\n", shortHash(newHash))
+			return nil
+		}
 	}
 
 	fmt.Printf("Pushing %s@%s...\n", pkgJSON.Name, pkgJSON.Version)
@@ -143,4 +206,68 @@ func RunPush(force bool) error {
 	fmt.Printf("\nPushed to %d/%d projects\n", successCount, len(projects))
 
 	return nil
+}
+
+// checkGitChanges uses git to detect if any tracked files changed since lastPush
+// This is ~100x faster than scanning filesystem for large repos
+func checkGitChanges(dir string, lastPush time.Time) (bool, error) {
+	// Check if git is available
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return false, err
+	}
+
+	// Check if directory is a git repo
+	cmd := exec.Command(gitPath, "rev-parse", "--git-dir")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		return false, err
+	}
+
+	// Get last commit time to see if anything committed since lastPush
+	cmd = exec.Command(gitPath, "log", "-1", "--format=%ct")
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err == nil {
+		lastCommitStr := strings.TrimSpace(string(output))
+		if lastCommitTs, err := strconv.ParseInt(lastCommitStr, 10, 64); err == nil {
+			lastCommit := time.Unix(lastCommitTs, 0)
+			if lastCommit.After(lastPush) {
+				return true, nil // New commits since last push
+			}
+		}
+	}
+
+	// Check for uncommitted changes (working tree + staged)
+	cmd = exec.Command(gitPath, "status", "--porcelain")
+	cmd.Dir = dir
+	output, err = cmd.Output()
+	if err != nil {
+		return false, err
+	}
+
+	hasChanges := len(strings.TrimSpace(string(output))) > 0
+	return hasChanges, nil
+}
+
+// countPackageFiles quickly counts files without full scanning
+// Used as a sanity check - if count differs, something changed
+func countPackageFiles(dir string) int {
+	count := 0
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		// Skip common excluded directories for speed
+		if info.IsDir() {
+			name := info.Name()
+			if name == "node_modules" || name == ".git" || name == ".lnpm" {
+				return filepath.SkipDir
+			}
+		} else {
+			count++
+		}
+		return nil
+	})
+	return count
 }

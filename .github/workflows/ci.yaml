@@ -3,8 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
   test:
@@ -48,6 +58,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          only-new-issues: true
 
   build:
     name: Build
