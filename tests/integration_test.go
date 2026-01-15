@@ -13,7 +13,7 @@ import (
 func TestPublishAllTurborepo(t *testing.T) {
 	// Change to turborepo fixture directory
 	oldWd, _ := os.Getwd()
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	fixtureDir := filepath.Join("fixtures", "turborepo")
 	if err := os.Chdir(fixtureDir); err != nil {
@@ -57,7 +57,7 @@ func TestPublishAllTurborepo(t *testing.T) {
 func TestPublishAllPNPM(t *testing.T) {
 	// Change to pnpm fixture directory
 	oldWd, _ := os.Getwd()
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	fixtureDir := filepath.Join("fixtures", "pnpm-workspace")
 	if err := os.Chdir(fixtureDir); err != nil {
@@ -94,7 +94,7 @@ func TestPublishAllPNPM(t *testing.T) {
 func TestPublishAllNPM(t *testing.T) {
 	// Change to npm fixture directory
 	oldWd, _ := os.Getwd()
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	fixtureDir := filepath.Join("fixtures", "npm-workspace")
 	if err := os.Chdir(fixtureDir); err != nil {
