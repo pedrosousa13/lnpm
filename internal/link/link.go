@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -30,8 +31,10 @@ func New(projectPath string) *Linker {
 // Link links a package from the store to the project
 // It creates hard links in .lnpm/{package}/ and a symlink in node_modules/{package}
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (LinkType, error) {
+	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 	// Determine link type based on filesystem
 	linkType := l.determineLinkType(storePath)
+	debug.Logf("link: using %s mode", linkType)
 
 	// Create .lnpm/{package} directory
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
@@ -112,8 +115,8 @@ func (l *Linker) createNodeModulesSymlink(packageName string) error {
 		return fmt.Errorf("failed to create scope directory: %w", err)
 	}
 
-	// Remove existing symlink/file
-	if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+	// Remove existing symlink/file/directory
+	if err := os.RemoveAll(linkPath); err != nil {
 		return fmt.Errorf("failed to remove existing node_modules entry: %w", err)
 	}
 

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +31,10 @@ Quick start:
   lnpm push        # Push updates to all linked projects
   lnpm watch       # Watch and auto-sync changes`,
 	Version: version,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		debugFlag, _ := cmd.Flags().GetBool("debug")
+		debug.Init(debugFlag)
+	},
 }
 
 // Execute runs the root command
@@ -39,6 +44,7 @@ func Execute() error {
 
 func init() {
 	rootCmd.SetVersionTemplate(fmt.Sprintf("lnpm version %s\n", version))
+	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Enable debug logging")
 
 	// Add subcommands
 	rootCmd.AddCommand(publishCmd)

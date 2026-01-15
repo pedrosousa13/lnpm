@@ -11,6 +11,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cespare/xxhash/v2"
+	"github.com/pedrosousa13/lnpm/internal/debug"
 )
 
 // PackageJSON represents the relevant fields from package.json
@@ -83,17 +84,20 @@ var defaultExcludes = []string{
 
 // Pack determines which files should be included in a package publish
 func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
+	debug.Logf("pack: scanning %s", packageDir)
 	// Read package.json
 	pkgJSON, err := readPackageJSON(packageDir)
 	if err != nil {
 		return nil, nil, err
 	}
+	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
 	// Build file list
 	files, err := collectFiles(packageDir, pkgJSON.Files)
 	if err != nil {
 		return nil, nil, err
 	}
+	debug.Logf("pack: collected %d files", len(files))
 
 	return pkgJSON, files, nil
 }

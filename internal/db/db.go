@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -98,6 +99,7 @@ func initDB() (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	debug.Logf("db: store path %s", storePath)
 
 	// Ensure store directory exists
 	if err := os.MkdirAll(storePath, 0755); err != nil {
@@ -105,6 +107,7 @@ func initDB() (*DB, error) {
 	}
 
 	dbPath := filepath.Join(storePath, "lnpm.db")
+	debug.Logf("db: opening %s", dbPath)
 
 	// Open bbolt database
 	boltDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
@@ -193,6 +196,7 @@ func (db *DB) nextID(tx *bolt.Tx) (int64, error) {
 
 // InsertPackage inserts or updates a package
 func (db *DB) InsertPackage(pkg *Package) error {
+	debug.Logf("db: insert package %s@%s", pkg.Name, pkg.Version)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -250,6 +254,7 @@ func (db *DB) InsertPackage(pkg *Package) error {
 
 // GetPackageByName returns the latest package with the given name
 func (db *DB) GetPackageByName(name string) (*Package, error) {
+	debug.Logf("db: get package by name %s", name)
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -430,6 +435,7 @@ func (db *DB) GetProjectByPath(path string) (*Project, error) {
 
 // InsertLink creates a link between a package and project
 func (db *DB) InsertLink(link *Link) error {
+	debug.Logf("db: insert link pkg=%d proj=%d", link.PackageID, link.ProjectID)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 

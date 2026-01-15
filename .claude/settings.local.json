@@ -8,7 +8,9 @@
       "Bash(gh run list:*)",
       "Bash(gh workflow list:*)",
       "Bash(gh api:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(go run:*)",
+      "Bash(LNPM_DEBUG=1 go run:*)"
     ]
   }
 }

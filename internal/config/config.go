@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,6 +62,7 @@ func loadConfigFile() (*Config, error) {
 
 	// Find config file
 	configPath := getConfigPath()
+	debug.Logf("config: loading from %s", configPath)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -11,6 +11,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/fsnotify/fsnotify"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/store"
@@ -85,6 +86,7 @@ func New(packagePath string, opts Options) (*Watcher, error) {
 
 // Start begins watching for changes
 func (w *Watcher) Start() error {
+	debug.Logf("watch: starting watch on %s", w.packagePath)
 	// Add all directories recursively
 	if err := w.addWatchRecursive(w.packagePath); err != nil {
 		return err
@@ -198,6 +200,7 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	if w.shouldIgnore(event.Name) {
 		return
 	}
+	debug.Logf("watch: event %s %s", event.Op, event.Name)
 
 	// Handle new directories
 	if event.Op&fsnotify.Create == fsnotify.Create {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -58,6 +59,7 @@ func (s *Store) Exists(name, hash string) bool {
 // Store copies files to the store
 func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir string) (string, error) {
 	destPath := s.PackagePath(name, hash)
+	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, hash[:8], len(files), destPath)
 
 	// Remove existing if present (for updates)
 	if err := os.RemoveAll(destPath); err != nil {
@@ -69,6 +71,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		return "", fmt.Errorf("failed to create store directory: %w", err)
 	}
 
+	debug.Log("store: copying files")
 	// Copy each file
 	for _, f := range files {
 		destFile := filepath.Join(destPath, f.RelPath)

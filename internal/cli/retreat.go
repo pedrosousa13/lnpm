@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -112,11 +114,21 @@ func RunRetreat(force bool) error {
 		fmt.Println("  ✓ Removed lnpm.lock")
 	}
 
+	// Run package manager install to restore packages
+	pm := config.DetectPackageManager(cwd)
+	installCmd := config.GetInstallCommand(pm)
+	fmt.Printf("Running %s...\n", installCmd)
+
+	cmd := exec.Command("sh", "-c", installCmd)
+	cmd.Dir = cwd
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("⚠ Install failed: %v\n", err)
+	}
+
 	fmt.Println()
 	fmt.Println("✓ Retreat complete!")
-	fmt.Println()
-	fmt.Println("You may want to run your package manager's install command:")
-	fmt.Println("  npm install / yarn install / pnpm install / bun install")
 
 	return nil
 }
