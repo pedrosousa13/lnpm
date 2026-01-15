@@ -46,7 +46,9 @@ func tryReflink(src, dst string) bool {
 	)
 
 	if errno == 0 {
-		dstFile.Sync()
+		if err := dstFile.Sync(); err != nil {
+			return false
+		}
 		return true
 	}
 

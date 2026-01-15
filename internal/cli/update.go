@@ -155,7 +155,9 @@ func installLatestViaBinary(version string) error {
 	// Replace with new binary
 	if err := os.Rename(newBin, binPath); err != nil {
 		// Restore backup on failure
-		os.Rename(backup, binPath)
+		if restoreErr := os.Rename(backup, binPath); restoreErr != nil {
+			return fmt.Errorf("failed to install new binary: %w (and failed to restore backup: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("failed to install new binary: %w", err)
 	}
 
