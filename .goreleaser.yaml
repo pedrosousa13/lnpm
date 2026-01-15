@@ -90,7 +90,7 @@ nfpms:
 
 release:
   github:
-    owner: user
+    owner: pedrosousa13
     name: lnpm
   draft: false
   prerelease: auto
