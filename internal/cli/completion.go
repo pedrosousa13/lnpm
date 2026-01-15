@@ -149,7 +149,9 @@ func installBashCompletion() error {
 
 	fmt.Printf("✓ Installed bash completion to %s\n\n", compFile)
 
-	if filepath.HasPrefix(compDir, home) {
+	// Check if completion is in user home directory (not system-wide)
+	relPath, err := filepath.Rel(home, compDir)
+	if err == nil && !filepath.IsAbs(relPath) && relPath != ".." && !filepath.HasPrefix(relPath, ".."+string(filepath.Separator)) {
 		fmt.Println("Add this to your ~/.bashrc (if not already present):")
 		fmt.Printf("\n  [ -f ~/.bash_completion.d/lnpm ] && . ~/.bash_completion.d/lnpm\n\n")
 	}
