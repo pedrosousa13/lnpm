@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/panjf2000/ants/v2"
@@ -249,7 +250,11 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 
 	// Second pass: hash files in parallel using ants pool
 	if len(filesToHash) > 0 {
+		var wg sync.WaitGroup
+		wg.Add(len(filesToHash))
+		
 		pool, err := ants.NewPoolWithFunc(runtime.NumCPU()*2, func(i interface{}) {
+			defer wg.Done()
 			file := i.(*FileInfo)
 			hash, err := hashFile(file.Path)
 			if err != nil {
@@ -269,6 +274,9 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 				return nil, fmt.Errorf("failed to hash files: %w", err)
 			}
 		}
+		
+		// Wait for all workers to complete before proceeding
+		wg.Wait()
 	}
 
 	// Combine results
