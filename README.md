@@ -156,6 +156,21 @@ lnpm config store_path /data    # Set value
 lnpm config --path              # Show config file path
 ```
 
+## Debugging
+
+Enable debug mode for verbose logging:
+
+```bash
+# Flag
+lnpm --debug publish
+lnpm -d status
+
+# Environment variable
+LNPM_DEBUG=1 lnpm publish
+```
+
+Debug output goes to stderr with timestamps, useful for diagnosing slow operations or unexpected behavior.
+
 ## How It Works
 
 1. **Publish** — Copies package files to `~/.lnpm/store/{name}/{hash}/`
