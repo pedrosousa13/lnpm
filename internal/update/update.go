@@ -212,5 +212,5 @@ func PrintUpdateNotice(r *Result) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\nUpdate available: %s → %s\n", r.CurrentVersion, r.LatestVersion)
-	fmt.Fprintf(os.Stderr, "Run: go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest\n")
+	fmt.Fprintf(os.Stderr, "Run: lnpm update\n")
 }

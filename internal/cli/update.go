@@ -73,7 +73,7 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 	fmt.Printf("Installing %s...\n", result.LatestVersion)
 
 	// Detect installation method and update accordingly
-	if hasGo() {
+	if wasInstalledViaGo() {
 		return installLatestViaGo()
 	}
 
@@ -88,10 +88,44 @@ func getLatestVersion(currentVersion string) (*update.Result, error) {
 	return result, nil
 }
 
-// hasGo checks if Go is installed
-func hasGo() bool {
-	_, err := exec.LookPath("go")
-	return err == nil
+// wasInstalledViaGo checks if lnpm was installed via 'go install'
+// by checking if the binary is in GOPATH/bin or GOBIN
+func wasInstalledViaGo() bool {
+	binPath, err := os.Executable()
+	if err != nil {
+		return false
+	}
+
+	binPath, err = filepath.EvalSymlinks(binPath)
+	if err != nil {
+		return false
+	}
+
+	// Check if in GOBIN
+	if gobin := os.Getenv("GOBIN"); gobin != "" {
+		if strings.HasPrefix(binPath, gobin) {
+			return true
+		}
+	}
+
+	// Check if in GOPATH/bin
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		gopathBin := filepath.Join(gopath, "bin")
+		if strings.HasPrefix(binPath, gopathBin) {
+			return true
+		}
+	}
+
+	// Check default GOPATH location ($HOME/go/bin)
+	if home, err := os.UserHomeDir(); err == nil {
+		defaultGoBin := filepath.Join(home, "go", "bin")
+		if strings.HasPrefix(binPath, defaultGoBin) {
+			return true
+		}
+	}
+
+	// Not in a Go bin directory, assume installed via install script
+	return false
 }
 
 // installLatestViaGo uses 'go install' to update

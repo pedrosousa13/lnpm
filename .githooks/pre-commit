@@ -1,30 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[pre-commit] Running golangci-lint..."
+echo "[pre-commit] Running lint on staged changes..."
 
-if ! command -v golangci-lint >/dev/null 2>&1; then
-  echo "[pre-commit] golangci-lint not found." >&2
-  echo "Install it with: brew install golangci-lint" >&2
-  echo "or: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest" >&2
+# Use the Makefile target for consistency
+if ! make lint-staged; then
+  echo "[pre-commit] Lint failed on staged changes." >&2
   exit 1
 fi
 
-# Prefer linting only new code if a previous commit exists; otherwise lint all.
-if git rev-parse --verify HEAD >/dev/null 2>&1; then
-  # Create a temporary patch from staged changes and lint only those.
-  TMP_PATCH=$(mktemp)
-  # Use non-binary diff to avoid nulls; suitable for golangci-lint --new-from-patch
-  git diff --cached --no-color > "$TMP_PATCH"
-  if ! golangci-lint run --new-from-patch="$TMP_PATCH" --new=false; then
-    echo "[pre-commit] golangci-lint found issues in staged changes." >&2
-    rm -f "$TMP_PATCH"
-    exit 1
-  fi
-  rm -f "$TMP_PATCH"
-else
-  # First commit: just run full lint.
-  golangci-lint run
-fi
-
-echo "[pre-commit] golangci-lint passed."
+echo "[pre-commit] Lint passed."
