@@ -424,7 +424,7 @@ func HasFileChanges(packageDir string, storedFiles []*FileEntry) bool {
 
 	// Check for modified or new files
 	hasChanges := false
-	filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}

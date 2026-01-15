@@ -254,7 +254,7 @@ func checkGitChanges(dir string, lastPush time.Time) (bool, error) {
 // Used as a sanity check - if count differs, something changed
 func countPackageFiles(dir string) int {
 	count := 0
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
