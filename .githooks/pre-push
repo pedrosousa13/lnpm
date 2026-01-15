@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-push] Running tests and lint..."
+
+# Read refs from stdin (optional); not strictly needed for running full checks
+# while read -r local_ref local_sha remote_ref remote_sha; do :; done
+
+# Run tests
+if ! go test ./...; then
+  echo "[pre-push] go test failed. Aborting push." >&2
+  exit 1
+fi
+
+# Run linter if available
+if command -v golangci-lint >/dev/null 2>&1; then
+  if ! golangci-lint run; then
+    echo "[pre-push] golangci-lint found issues. Aborting push." >&2
+    exit 1
+  fi
+else
+  echo "[pre-push] golangci-lint not found; skipping lint."
+  echo "Install: brew install golangci-lint" >&2
+fi
+
+echo "[pre-push] All checks passed."

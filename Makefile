@@ -89,3 +89,35 @@ help:
 	@echo "  clean         - Remove build artifacts"
 	@echo "  run ARGS=...  - Build and run with arguments"
 	@echo "  watch         - Watch for changes and rebuild"
+	@echo "  hooks-enable  - Enable git hooks at .githooks"
+	@echo "  lint-staged   - Run linter on staged changes only"
+
+# Enable git hooks (pre-commit runs golangci-lint)
+.PHONY: hooks-enable
+hooks-enable:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit .githooks/pre-push || true
+	@echo "Git hooks enabled (core.hooksPath=.githooks)."
+
+# Lint only staged changes using a generated patch
+.PHONY: lint-staged
+lint-staged:
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint not installed. Install: brew install golangci-lint"; \
+		exit 1; \
+	fi
+	@if ! git rev-parse --verify HEAD >/dev/null 2>&1; then \
+		echo "No previous commit; running full lint"; \
+		golangci-lint run ./...; \
+		exit 0; \
+	fi
+	@TMP_PATCH=$$(mktemp); \
+	git diff --cached --no-color > $$TMP_PATCH; \
+	if [ -s $$TMP_PATCH ]; then \
+		golangci-lint run --new-from-patch=$$TMP_PATCH --new=false; RC=$$?; \
+		rm -f $$TMP_PATCH; \
+		exit $$RC; \
+	else \
+		echo "No staged changes to lint."; \
+		rm -f $$TMP_PATCH; \
+	fi

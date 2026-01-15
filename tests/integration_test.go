@@ -131,7 +131,7 @@ func TestPublishAllNPM(t *testing.T) {
 func TestPublishAllYarn(t *testing.T) {
 	// Change to yarn fixture directory
 	oldWd, _ := os.Getwd()
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	fixtureDir := filepath.Join("fixtures", "yarn-workspace")
 	if err := os.Chdir(fixtureDir); err != nil {
@@ -163,7 +163,7 @@ func TestPublishAllYarn(t *testing.T) {
 func TestPublishAllNx(t *testing.T) {
 	// Change to nx fixture directory
 	oldWd, _ := os.Getwd()
-	defer os.Chdir(oldWd)
+	defer func() { _ = os.Chdir(oldWd) }()
 
 	fixtureDir := filepath.Join("fixtures", "nx")
 	if err := os.Chdir(fixtureDir); err != nil {
@@ -200,7 +200,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 
 	// Save original working directory
 	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	nxFixtureDir := filepath.Join("fixtures", "nx")
 
@@ -232,7 +232,9 @@ func TestNxAddInternalDependency(t *testing.T) {
 	os.RemoveAll(testStoreDir)
 
 	// Go back to original directory
-	os.Chdir(originalWd)
+	if err := os.Chdir(originalWd); err != nil {
+		t.Fatalf("Failed to change back to original directory: %v", err)
+	}
 
 	// Publish package-a first
 	npmPkgDir := filepath.Join("fixtures", "npm-workspace", "packages", "package-a")
@@ -246,7 +248,9 @@ func TestNxAddInternalDependency(t *testing.T) {
 	}
 
 	// Go back to original directory
-	os.Chdir(originalWd)
+	if err := os.Chdir(originalWd); err != nil {
+		t.Fatalf("Failed to change back to original directory: %v", err)
+	}
 
 	// Now publish the feature-auth package so we have something to add
 	subPkgDir := filepath.Join(nxFixtureDir, "libs", "feature-auth")
@@ -260,7 +264,9 @@ func TestNxAddInternalDependency(t *testing.T) {
 	}
 
 	// Go back to original directory
-	os.Chdir(originalWd)
+	if err := os.Chdir(originalWd); err != nil {
+		t.Fatalf("Failed to change back to original directory: %v", err)
+	}
 
 	// Change to nx workspace root
 	if err := os.Chdir(nxFixtureDir); err != nil {
