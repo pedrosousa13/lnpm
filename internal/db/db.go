@@ -79,6 +79,7 @@ type FileEntry struct {
 	ContentHash  string      `json:"content_hash"`
 	Size         int64       `json:"size"`
 	Mode         os.FileMode `json:"mode"`
+	ModTime      int64       `json:"mod_time"` // Unix nano timestamp for quick change detection
 }
 
 // GetDB returns the singleton database instance
@@ -753,4 +754,13 @@ func (db *DB) GetFilesForPackage(packageID int64) ([]*FileEntry, error) {
 	})
 
 	return files, err
+}
+
+// GetFilesForPackageByName returns files using package name lookup
+func (db *DB) GetFilesForPackageByName(name string) ([]*FileEntry, error) {
+	pkg, err := db.GetPackageByName(name)
+	if err != nil || pkg == nil {
+		return nil, err
+	}
+	return db.GetFilesForPackage(pkg.ID)
 }

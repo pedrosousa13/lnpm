@@ -31,6 +31,10 @@ type Watcher struct {
 	changeMu       sync.Mutex
 	debounceTimer  *time.Timer
 
+	// File cache for incremental hashing
+	fileCache   map[string]*pack.CachedFile
+	fileCacheMu sync.RWMutex
+
 	// Callbacks
 	onSync func(files []string, projects int)
 	onError func(error)
@@ -51,8 +55,8 @@ type Options struct {
 
 // New creates a new watcher for the given package directory
 func New(packagePath string, opts Options) (*Watcher, error) {
-	// Read package.json to get name
-	pkgJSON, _, err := pack.Pack(packagePath)
+	// Read package.json to get name and build initial file cache
+	pkgJSON, files, err := pack.Pack(packagePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read package: %w", err)
 	}
@@ -67,6 +71,18 @@ func New(packagePath string, opts Options) (*Watcher, error) {
 		debounce = 100
 	}
 
+	// Build initial file cache from pack results
+	cache := make(map[string]*pack.CachedFile, len(files))
+	for _, f := range files {
+		cache[f.RelPath] = &pack.CachedFile{
+			RelPath:     f.RelPath,
+			Size:        f.Size,
+			ModTime:     f.ModTime,
+			ContentHash: f.ContentHash,
+			Mode:        f.Mode,
+		}
+	}
+
 	w := &Watcher{
 		packagePath:    packagePath,
 		packageName:    pkgJSON.Name,
@@ -75,6 +91,7 @@ func New(packagePath string, opts Options) (*Watcher, error) {
 		debounceMs:     debounce,
 		execCmd:        opts.ExecCmd,
 		pendingChanges: make(map[string]struct{}),
+		fileCache:      cache,
 		onSync:         opts.OnSync,
 		onError:        opts.OnError,
 		stopCh:         make(chan struct{}),
@@ -259,11 +276,30 @@ func (w *Watcher) processPendingChanges() {
 
 // syncChanges pushes changes to the store and all linked projects
 func (w *Watcher) syncChanges() (int, error) {
-	// Re-pack the package
-	pkgJSON, files, err := pack.Pack(w.packagePath)
+	// Re-pack with incremental hashing using cached state
+	w.fileCacheMu.RLock()
+	cache := w.fileCache
+	w.fileCacheMu.RUnlock()
+
+	pkgJSON, files, err := pack.PackIncremental(w.packagePath, cache)
 	if err != nil {
 		return 0, fmt.Errorf("failed to pack: %w", err)
 	}
+
+	// Update cache with new file state
+	newCache := make(map[string]*pack.CachedFile, len(files))
+	for _, f := range files {
+		newCache[f.RelPath] = &pack.CachedFile{
+			RelPath:     f.RelPath,
+			Size:        f.Size,
+			ModTime:     f.ModTime,
+			ContentHash: f.ContentHash,
+			Mode:        f.Mode,
+		}
+	}
+	w.fileCacheMu.Lock()
+	w.fileCache = newCache
+	w.fileCacheMu.Unlock()
 
 	// Calculate new hash
 	newHash := pack.HashFiles(files)
@@ -320,6 +356,7 @@ func (w *Watcher) syncChanges() (int, error) {
 			ContentHash:  f.ContentHash,
 			Size:         f.Size,
 			Mode:         f.Mode,
+			ModTime:      f.ModTime,
 		}
 	}
 	if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
@@ -332,14 +369,21 @@ func (w *Watcher) syncChanges() (int, error) {
 		return 0, fmt.Errorf("failed to get linked projects: %w", err)
 	}
 
+	// Convert files to FileInfo once (avoid walking store per project)
+	fileData := make([]pack.FileEntryData, len(files))
+	for i, f := range files {
+		fileData[i] = pack.FileEntryData{
+			RelPath: f.RelPath,
+			Size:    f.Size,
+			Mode:    f.Mode,
+			Hash:    f.ContentHash,
+		}
+	}
+	storeFiles := pack.FileInfoFromStore(storePath, fileData)
+
 	// Update all linked projects
 	successCount := 0
 	for _, proj := range projects {
-		storeFiles, err := s.GetFiles(pkg.Name, newHash)
-		if err != nil {
-			continue
-		}
-
 		linker := link.New(proj.Path)
 		_, err = linker.Link(pkg.Name, storePath, storeFiles)
 		if err == nil {

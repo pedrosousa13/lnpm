@@ -29,6 +29,7 @@ type FileInfo struct {
 	Size        int64       // File size
 	Mode        os.FileMode // File permissions
 	ContentHash string      // xxhash of content
+	ModTime     int64       // Unix nano timestamp
 }
 
 // defaultIncludes are files always included regardless of config
@@ -84,6 +85,20 @@ var defaultExcludes = []string{
 
 // Pack determines which files should be included in a package publish
 func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
+	return PackIncremental(packageDir, nil)
+}
+
+// CachedFile holds previous file state for incremental packing
+type CachedFile struct {
+	RelPath     string
+	Size        int64
+	ModTime     int64
+	ContentHash string
+	Mode        os.FileMode
+}
+
+// PackIncremental packs with optional cached state to skip rehashing unchanged files
+func PackIncremental(packageDir string, cache map[string]*CachedFile) (*PackageJSON, []*FileInfo, error) {
 	debug.Logf("pack: scanning %s", packageDir)
 	// Read package.json
 	pkgJSON, err := readPackageJSON(packageDir)
@@ -93,7 +108,7 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
 	// Build file list
-	files, err := collectFiles(packageDir, pkgJSON.Files)
+	files, err := collectFilesIncremental(packageDir, pkgJSON.Files, cache)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -127,8 +142,14 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 
 // collectFiles walks the directory and collects files based on include/exclude rules
 func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
+	return collectFilesIncremental(packageDir, filesField, nil)
+}
+
+// collectFilesIncremental walks directory with optional cache for skipping unchanged files
+func collectFilesIncremental(packageDir string, filesField []string, cache map[string]*CachedFile) ([]*FileInfo, error) {
 	var files []*FileInfo
 	fileCount := 0
+	cacheHits := 0
 
 	// Load .npmignore or .gitignore patterns
 	ignorePatterns := loadIgnorePatterns(packageDir)
@@ -176,24 +197,45 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 			}
 		}
 
-
-		// Calculate content hash
-		hash, err := hashFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to hash %s: %w", relPath, err)
-		}
-
 		fileCount++
 		if fileCount%1000 == 0 {
 			fmt.Printf("\r  Scanning... %d files", fileCount)
 		}
 
+		// Check cache - skip hashing if size+mtime unchanged
+		mtime := info.ModTime().UnixNano()
+		size := info.Size()
+		if cache != nil {
+			if cached, ok := cache[relPath]; ok {
+				if cached.Size == size && cached.ModTime == mtime {
+					// File unchanged, reuse cached hash
+					cacheHits++
+					files = append(files, &FileInfo{
+						Path:        path,
+						RelPath:     relPath,
+						Size:        size,
+						Mode:        info.Mode(),
+						ContentHash: cached.ContentHash,
+						ModTime:     mtime,
+					})
+					return nil
+				}
+			}
+		}
+
+		// Calculate content hash (cache miss or no cache)
+		hash, err := hashFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to hash %s: %w", relPath, err)
+		}
+
 		files = append(files, &FileInfo{
 			Path:        path,
 			RelPath:     relPath,
-			Size:        info.Size(),
+			Size:        size,
 			Mode:        info.Mode(),
 			ContentHash: hash,
+			ModTime:     mtime,
 		})
 
 		return nil
@@ -201,6 +243,9 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 
 	if fileCount >= 1000 {
 		fmt.Printf("\r                              \r") // Clear progress line
+	}
+	if cache != nil && cacheHits > 0 {
+		debug.Logf("pack: cache hits %d/%d files (%.0f%%)", cacheHits, fileCount, float64(cacheHits)/float64(fileCount)*100)
 	}
 
 	return files, err
@@ -342,4 +387,28 @@ func HashFiles(files []*FileInfo) string {
 		_, _ = h.Write([]byte(f.ContentHash))
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+// FileInfoFromStore creates FileInfo slice from store path and relative paths
+// Used to avoid re-walking store directory when file list is known from DB
+func FileInfoFromStore(storePath string, entries []FileEntryData) []*FileInfo {
+	files := make([]*FileInfo, len(entries))
+	for i, e := range entries {
+		files[i] = &FileInfo{
+			Path:        filepath.Join(storePath, e.RelPath),
+			RelPath:     e.RelPath,
+			Size:        e.Size,
+			Mode:        e.Mode,
+			ContentHash: e.Hash,
+		}
+	}
+	return files
+}
+
+// FileEntryData is a minimal struct for file data needed for linking
+type FileEntryData struct {
+	RelPath string
+	Size    int64
+	Mode    os.FileMode
+	Hash    string
 }

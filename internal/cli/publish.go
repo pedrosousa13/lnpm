@@ -141,6 +141,7 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 			ContentHash:  f.ContentHash,
 			Size:         f.Size,
 			Mode:         f.Mode,
+			ModTime:      f.ModTime,
 		}
 	}
 	if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {

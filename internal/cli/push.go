@@ -93,6 +93,7 @@ func RunPush(force bool) error {
 			ContentHash:  f.ContentHash,
 			Size:         f.Size,
 			Mode:         f.Mode,
+			ModTime:      f.ModTime,
 		}
 	}
 	if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
@@ -114,15 +115,20 @@ func RunPush(force bool) error {
 	// Push to all linked projects
 	fmt.Printf("Updating %d linked projects...\n", len(projects))
 
+	// Convert files to FileInfo once (avoid walking store per project)
+	fileData := make([]pack.FileEntryData, len(files))
+	for i, f := range files {
+		fileData[i] = pack.FileEntryData{
+			RelPath: f.RelPath,
+			Size:    f.Size,
+			Mode:    f.Mode,
+			Hash:    f.ContentHash,
+		}
+	}
+	storeFiles := pack.FileInfoFromStore(storePath, fileData)
+
 	successCount := 0
 	for _, proj := range projects {
-		// Get updated files from store
-		storeFiles, err := s.GetFiles(pkg.Name, newHash)
-		if err != nil {
-			fmt.Printf("  ✗ %s: failed to get files: %v\n", proj.Path, err)
-			continue
-		}
-
 		// Re-link
 		linker := link.New(proj.Path)
 		_, err = linker.Link(pkg.Name, storePath, storeFiles)

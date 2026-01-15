@@ -2,16 +2,22 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/update"
 	"github.com/spf13/cobra"
 )
+
+var updateResult <-chan *update.Result
 
 var version = "dev"
 
 // SetVersion sets the CLI version (called from main)
 func SetVersion(v string) {
 	version = v
+	rootCmd.Version = v
+	rootCmd.SetVersionTemplate(fmt.Sprintf("lnpm version %s\n", v))
 }
 
 var rootCmd = &cobra.Command{
@@ -34,6 +40,20 @@ Quick start:
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		debugFlag, _ := cmd.Flags().GetBool("debug")
 		debug.Init(debugFlag)
+		// Start async version check (non-blocking)
+		updateResult = update.CheckAsync(version)
+	},
+	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		// Wait briefly for update check result
+		if updateResult == nil {
+			return
+		}
+		select {
+		case result := <-updateResult:
+			update.PrintUpdateNotice(result)
+		case <-time.After(500 * time.Millisecond):
+			// Check took too long, skip
+		}
 	},
 }
 
