@@ -80,10 +80,11 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 	return installLatestViaBinary(result.LatestVersion)
 }
 
-// getLatestVersion checks for the latest version
+// getLatestVersion checks for the latest version (fresh check, no cache)
 func getLatestVersion(currentVersion string) (*update.Result, error) {
-	ch := update.CheckAsync(currentVersion)
-	result := <-ch
+	// Use fresh check when user explicitly runs 'lnpm update' command
+	// This ensures we always fetch latest from GitHub, not cached version
+	result := update.CheckFresh(currentVersion)
 	return result, nil
 }
 

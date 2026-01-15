@@ -36,6 +36,32 @@ type Result struct {
 	UpdateAvailable bool
 }
 
+// CheckFresh checks for latest version without using cache
+// Used when user explicitly runs 'lnpm update'
+func CheckFresh(currentVersion string) *Result {
+	if currentVersion == "dev" || currentVersion == "" {
+		return nil
+	}
+
+	debug.Logf("update: checking for fresh version %s (bypassing cache)", currentVersion)
+
+	// Fetch from GitHub directly
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	latest, err := fetchLatestVersion(ctx)
+	if err != nil {
+		debug.Logf("update: fetch failed: %v", err)
+		return nil
+	}
+
+	// Update cache
+	_, cachePath := loadCache()
+	saveCache(cachePath, latest)
+
+	return compareVersions(currentVersion, latest)
+}
+
 // CheckAsync starts a background version check and returns a channel
 // that will receive the result. The channel is buffered so it won't block.
 func CheckAsync(currentVersion string) <-chan *Result {
