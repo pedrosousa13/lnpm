@@ -5,7 +5,9 @@
       "Bash(go build:*)",
       "Bash(find:*)",
       "Bash(curl:*)",
-      "Bash(gh run list:*)"
+      "Bash(gh run list:*)",
+      "Bash(gh workflow list:*)",
+      "Bash(gh api:*)"
     ]
   }
 }
