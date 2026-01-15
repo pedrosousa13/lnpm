@@ -76,4 +76,5 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(gcCmd)
 	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(updateCmd)
 }
