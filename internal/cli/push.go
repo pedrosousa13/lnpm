@@ -234,10 +234,25 @@ func checkGitChanges(dir string, lastPush time.Time) (bool, error) {
 		return false, err
 	}
 
-	// Get last commit time to see if anything committed since lastPush
-	cmd = exec.Command(gitPath, "log", "-1", "--format=%ct")
+	// Check for any changes (staged or unstaged) in tracked files
+	// This allows iterative development: stage changes and push without committing
+	cmd = exec.Command(gitPath, "status", "--porcelain")
 	cmd.Dir = dir
 	output, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+
+	// If there are any changes in tracked files, consider it changed
+	statusOutput := strings.TrimSpace(string(output))
+	if len(statusOutput) > 0 {
+		return true, nil
+	}
+
+	// No working tree/staged changes - check if HEAD changed since last push
+	cmd = exec.Command(gitPath, "log", "-1", "--format=%ct")
+	cmd.Dir = dir
+	output, err = cmd.Output()
 	if err == nil {
 		lastCommitStr := strings.TrimSpace(string(output))
 		if lastCommitTs, err := strconv.ParseInt(lastCommitStr, 10, 64); err == nil {
@@ -248,16 +263,7 @@ func checkGitChanges(dir string, lastPush time.Time) (bool, error) {
 		}
 	}
 
-	// Check for uncommitted changes (working tree + staged)
-	cmd = exec.Command(gitPath, "status", "--porcelain")
-	cmd.Dir = dir
-	output, err = cmd.Output()
-	if err != nil {
-		return false, err
-	}
-
-	hasChanges := len(strings.TrimSpace(string(output))) > 0
-	return hasChanges, nil
+	return false, nil
 }
 
 // countPackageFiles quickly counts files without full scanning
