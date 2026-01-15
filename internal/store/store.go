@@ -5,6 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/pack"
@@ -56,7 +59,7 @@ func (s *Store) Exists(name, hash string) bool {
 	return err == nil
 }
 
-// Store copies files to the store
+// Store copies or hard links files to the store
 func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir string) (string, error) {
 	destPath := s.PackagePath(name, hash)
 	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, hash[:8], len(files), destPath)
@@ -71,9 +74,22 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		return "", fmt.Errorf("failed to create store directory: %w", err)
 	}
 
-	debug.Log("store: copying files")
-	// Copy each file
+	// Determine if we can use hard links (same filesystem)
+	useHardLink := s.canUseHardLink(sourceDir)
+	sameFS := useHardLink
+	if useHardLink {
+		debug.Log("store: same filesystem detected, will try reflink or hard link")
+	} else {
+		debug.Log("store: different filesystem, will try reflink or copy")
+	}
+
+	// Process files: try reflink/hardlink first, collect failures for parallel copy
 	total := len(files)
+	var reflinkCount, hardLinkCount, copyCount int32
+	warnedAboutCopy := false
+	var filesToCopy []*pack.FileInfo
+
+	// First pass: try fast methods (reflink/hardlink)
 	for i, f := range files {
 		destFile := filepath.Join(destPath, f.RelPath)
 
@@ -82,18 +98,97 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 			return "", fmt.Errorf("failed to create directory for %s: %w", f.RelPath, err)
 		}
 
-		// Copy file
-		if err := copyFile(f.Path, destFile, f.Mode); err != nil {
-			return "", fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
+		linked := false
+
+		// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
+		if reflinkFile(f.Path, destFile) == nil {
+			linked = true
+			atomic.AddInt32(&reflinkCount, 1)
+		}
+
+		// 2. Try hard link if on same filesystem and reflink didn't work
+		if !linked && useHardLink {
+			if err := os.Link(f.Path, destFile); err == nil {
+				linked = true
+				atomic.AddInt32(&hardLinkCount, 1)
+			}
+		}
+
+		// 3. Queue for parallel copy if linking didn't work
+		if !linked {
+			if !warnedAboutCopy && sameFS {
+				fmt.Printf("  ⚠ Linking not supported, copying files instead\n")
+				warnedAboutCopy = true
+			}
+			filesToCopy = append(filesToCopy, f)
 		}
 
 		if total >= 1000 && (i+1)%1000 == 0 {
-			fmt.Printf("\r  Copying... %d/%d files", i+1, total)
+			fmt.Printf("\r  Processing... %d/%d files", i+1, total)
+		}
+	}
+
+	// Parallel copy for files that couldn't be linked
+	if len(filesToCopy) > 0 {
+		debug.Logf("store: copying %d files in parallel", len(filesToCopy))
+
+		// Use worker pool for parallel copying
+		numWorkers := min(runtime.NumCPU(), 8) // Cap at 8 workers
+		if len(filesToCopy) < numWorkers {
+			numWorkers = len(filesToCopy)
+		}
+
+		var wg sync.WaitGroup
+		fileChan := make(chan *pack.FileInfo, len(filesToCopy))
+		errChan := make(chan error, numWorkers)
+		var processed int32
+
+		// Start workers
+		for w := 0; w < numWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for f := range fileChan {
+					destFile := filepath.Join(destPath, f.RelPath)
+					if err := copyFile(f.Path, destFile, f.Mode); err != nil {
+						errChan <- fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
+						return
+					}
+					atomic.AddInt32(&copyCount, 1)
+
+					current := atomic.AddInt32(&processed, 1)
+					if total >= 1000 && current%1000 == 0 {
+						fmt.Printf("\r  Copying... %d/%d files", current, len(filesToCopy))
+					}
+				}
+			}()
+		}
+
+		// Queue files
+		for _, f := range filesToCopy {
+			fileChan <- f
+		}
+		close(fileChan)
+
+		// Wait for completion
+		wg.Wait()
+		close(errChan)
+
+		// Check for errors
+		if err := <-errChan; err != nil {
+			return "", err
 		}
 	}
 
 	if total >= 1000 {
 		fmt.Printf("\r                              \r") // Clear progress line
+	}
+
+	if reflinkCount > 0 || hardLinkCount > 0 {
+		debug.Logf("store: reflinked %d, hard linked %d, copied %d files", reflinkCount, hardLinkCount, copyCount)
+	} else if copyCount > 0 && !sameFS {
+		fmt.Printf("  ℹ Store and source on different filesystems - files were copied\n")
+		fmt.Printf("  💡 Tip: Move your store to the same filesystem for instant linking\n")
 	}
 
 	return destPath, nil
@@ -176,6 +271,35 @@ func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
 	return files, err
 }
 
+// canUseHardLink checks if the source directory and store are on the same filesystem
+func (s *Store) canUseHardLink(sourceDir string) bool {
+	// Windows: always try hard links, let it fail if needed
+	if runtime.GOOS == "windows" {
+		return true
+	}
+
+	// Unix: check device IDs
+	storeInfo, err := os.Stat(s.basePath)
+	if err != nil {
+		return false
+	}
+
+	sourceInfo, err := os.Stat(sourceDir)
+	if err != nil {
+		return false
+	}
+
+	storeDev := getDeviceID(storeInfo)
+	sourceDev := getDeviceID(sourceInfo)
+
+	if storeDev != 0 && sourceDev != 0 {
+		return storeDev == sourceDev
+	}
+
+	// Default to trying hard link
+	return true
+}
+
 // copyFile copies a file preserving permissions
 func copyFile(src, dst string, mode os.FileMode) error {
 	srcFile, err := os.Open(src)
@@ -195,4 +319,12 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 
 	return dstFile.Sync()
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

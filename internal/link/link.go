@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
@@ -32,7 +33,8 @@ func New(projectPath string) *Linker {
 // It creates hard links in .lnpm/{package}/ and a symlink in node_modules/{package}
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (LinkType, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
-	// Determine link type based on filesystem
+
+	// Determine link type based on config and filesystem
 	linkType := l.determineLinkType(storePath)
 	debug.Logf("link: using %s mode", linkType)
 
@@ -45,7 +47,14 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 		return "", fmt.Errorf("failed to create .lnpm directory: %w", err)
 	}
 
-	// Create hard links or copies
+	// Track what methods we actually used
+	reflinkCount := 0
+	hardLinkCount := 0
+	copyCount := 0
+	actualType := linkType
+	warnedAboutFallback := false
+
+	// Create hard links, reflinks, or copies
 	for _, f := range files {
 		srcPath := filepath.Join(storePath, f.RelPath)
 		dstPath := filepath.Join(lnpmPath, f.RelPath)
@@ -55,19 +64,45 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 			return "", fmt.Errorf("failed to create directory for %s: %w", f.RelPath, err)
 		}
 
-		if linkType == HardLink {
-			if err := os.Link(srcPath, dstPath); err != nil {
-				// If hard link fails, fall back to copy
-				linkType = Copy
-				if err := copyFile(srcPath, dstPath); err != nil {
-					return "", fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
-				}
+		linked := false
+
+		// Try in priority order: reflink -> hardlink -> copy
+		// 1. Try reflink (CoW clone) - works even across directories on same FS
+		if reflinkFile(srcPath, dstPath) == nil {
+			linked = true
+			reflinkCount++
+			if actualType == Copy {
+				actualType = HardLink // Upgraded to linking
 			}
-		} else {
+		}
+
+		// 2. Try hard link if configured and reflink didn't work
+		if !linked && linkType == HardLink {
+			if err := os.Link(srcPath, dstPath); err == nil {
+				linked = true
+				hardLinkCount++
+			} else {
+				// Hard link failed, fall back to copy
+				if !warnedAboutFallback {
+					fmt.Printf("  ⚠ Hard linking failed, falling back to copying files\n")
+					debug.Logf("link: hard link failed: %v", err)
+					warnedAboutFallback = true
+				}
+				actualType = Copy
+			}
+		}
+
+		// 3. Fall back to copy if nothing else worked
+		if !linked {
 			if err := copyFile(srcPath, dstPath); err != nil {
 				return "", fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
 			}
+			copyCount++
 		}
+	}
+
+	if reflinkCount > 0 || hardLinkCount > 0 {
+		debug.Logf("link: reflinked %d, hard linked %d, copied %d files", reflinkCount, hardLinkCount, copyCount)
 	}
 
 	// Create symlink in node_modules
@@ -75,7 +110,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 		return "", err
 	}
 
-	return linkType, nil
+	return actualType, nil
 }
 
 // Unlink removes a linked package from the project
@@ -134,6 +169,21 @@ func (l *Linker) createNodeModulesSymlink(packageName string) error {
 
 // determineLinkType checks if hard links are possible between store and project
 func (l *Linker) determineLinkType(storePath string) LinkType {
+	// Check user config first
+	cfg, err := config.LoadConfig()
+	if err == nil && cfg.LinkMode != "" {
+		switch cfg.LinkMode {
+		case "copy":
+			debug.Log("link: using copy mode (from config)")
+			return Copy
+		case "hardlink":
+			debug.Log("link: using hardlink mode (from config)")
+			// Still need to check filesystem compatibility
+		default:
+			debug.Logf("link: unknown link_mode in config: %s, using auto-detect", cfg.LinkMode)
+		}
+	}
+
 	// Get device IDs for both paths
 	storeInfo, err := os.Stat(storePath)
 	if err != nil {
@@ -160,6 +210,7 @@ func (l *Linker) determineLinkType(storePath string) LinkType {
 		if storeDev == projectDev {
 			return HardLink
 		}
+		debug.Log("link: store and project on different filesystems, using copy")
 		return Copy
 	}
 
