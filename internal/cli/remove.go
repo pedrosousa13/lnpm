@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/internal/link"
-	"github.com/user/lnpm/pkg/lockfile"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // RunRemove executes the remove command

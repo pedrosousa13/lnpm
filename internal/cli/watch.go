@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/internal/watch"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/watch"
 )
 
 // RunWatch executes the watch command

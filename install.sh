@@ -1,11 +1,11 @@
 #!/bin/sh
 # lnpm installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/user/lnpm/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.sh | sh
 
 set -e
 
 # Configuration
-REPO="user/lnpm"
+REPO="pedrosousa13/lnpm"
 BINARY="lnpm"
 INSTALL_DIR="${LNPM_INSTALL_DIR:-$HOME/.local/bin}"
 

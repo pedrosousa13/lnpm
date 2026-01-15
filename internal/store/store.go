@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
 // Store manages the package store at ~/.lnpm/store

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/internal/link"
-	"github.com/user/lnpm/internal/pack"
-	"github.com/user/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // RunPush executes the push command

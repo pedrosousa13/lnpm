@@ -10,10 +10,10 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/fsnotify/fsnotify"
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/internal/link"
-	"github.com/user/lnpm/internal/pack"
-	"github.com/user/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // Watcher watches a package directory for changes and syncs to linked projects

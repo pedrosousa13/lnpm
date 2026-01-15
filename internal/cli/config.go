@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/user/lnpm/internal/config"
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

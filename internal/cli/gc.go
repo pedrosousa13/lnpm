@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/user/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/db"
 )
 
 // RunGC executes the garbage collection command

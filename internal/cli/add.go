@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/lnpm/internal/config"
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/internal/link"
-	"github.com/user/lnpm/internal/store"
-	"github.com/user/lnpm/pkg/lockfile"
+	"github.com/pedrosousa13/lnpm/internal/config"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // RunAdd executes the add command

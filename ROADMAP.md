@@ -30,7 +30,7 @@ gopkg.in/yaml.v3                    // YAML lock file
 **Goal:** Basic publish/add/remove cycle working end-to-end.
 
 ### 1.1 Project Setup
-- [ ] Initialize Go module (`go mod init github.com/user/lnpm`)
+- [ ] Initialize Go module (`go mod init github.com/pedrosousa13/lnpm`)
 - [ ] Set up directory structure:
   ```
   lnpm/

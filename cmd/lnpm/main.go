@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/user/lnpm/internal/cli"
+	"github.com/pedrosousa13/lnpm/internal/cli"
 )
 
 // Version is set at build time via ldflags

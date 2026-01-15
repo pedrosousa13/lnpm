@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/internal/link"
-	"github.com/user/lnpm/internal/pack"
-	"github.com/user/lnpm/internal/store"
-	"github.com/user/lnpm/internal/workspace"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/workspace"
 )
 
 // RunPublish executes the publish command

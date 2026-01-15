@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/pkg/lockfile"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // RunStatus executes the status command

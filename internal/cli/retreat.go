@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/lnpm/internal/db"
-	"github.com/user/lnpm/pkg/lockfile"
+	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // RunRetreat removes all lnpm changes from the current project

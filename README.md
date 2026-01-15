@@ -2,8 +2,8 @@
 
 > Fast, reliable local npm package development tool — a better alternative to yalc.
 
-[![CI](https://github.com/user/lnpm/actions/workflows/ci.yaml/badge.svg)](https://github.com/user/lnpm/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/user/lnpm)](https://goreportcard.com/report/github.com/user/lnpm)
+[![CI](https://github.com/pedrosousa13/lnpm/actions/workflows/ci.yaml/badge.svg)](https://github.com/pedrosousa13/lnpm/actions/workflows/ci.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pedrosousa13/lnpm)](https://goreportcard.com/report/github.com/pedrosousa13/lnpm)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
@@ -20,25 +20,19 @@
 ### Quick Install (Linux/macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/lnpm/main/install.sh | sh
-```
-
-### Homebrew (macOS/Linux)
-
-```bash
-brew install user/tap/lnpm
+curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.sh | sh
 ```
 
 ### Go
 
 ```bash
-go install github.com/user/lnpm/cmd/lnpm@latest
+go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/user/lnpm.git
+git clone https://github.com/pedrosousa13/lnpm.git
 cd lnpm
 make install
 ```
@@ -215,7 +209,7 @@ Contributions are welcome! Please read our contributing guidelines first.
 
 ```bash
 # Clone and build
-git clone https://github.com/user/lnpm.git
+git clone https://github.com/pedrosousa13/lnpm.git
 cd lnpm
 make deps
 make build

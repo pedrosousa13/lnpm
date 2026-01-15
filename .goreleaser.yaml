@@ -66,25 +66,11 @@ changelog:
     - title: "Other"
       order: 999
 
-brews:
-  - name: lnpm
-    repository:
-      owner: user
-      name: homebrew-tap
-    directory: Formula
-    homepage: "https://github.com/user/lnpm"
-    description: "Fast local npm package development tool"
-    license: "MIT"
-    install: |
-      bin.install "lnpm"
-    test: |
-      system "#{bin}/lnpm", "--version"
-
 scoops:
   - repository:
-      owner: user
+      owner: pedrosousa13
       name: scoop-bucket
-    homepage: "https://github.com/user/lnpm"
+    homepage: "https://github.com/pedrosousa13/lnpm"
     description: "Fast local npm package development tool"
     license: "MIT"
 
@@ -92,7 +78,7 @@ nfpms:
   - id: packages
     package_name: lnpm
     vendor: lnpm
-    homepage: "https://github.com/user/lnpm"
+    homepage: "https://github.com/pedrosousa13/lnpm"
     maintainer: "lnpm maintainers"
     description: "Fast local npm package development tool"
     license: "MIT"

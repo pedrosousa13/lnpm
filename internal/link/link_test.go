@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/user/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
 func TestLinkAndUnlink(t *testing.T) {

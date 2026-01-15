@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/user/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/db"
 )
 
 // RunDoctor executes the doctor command

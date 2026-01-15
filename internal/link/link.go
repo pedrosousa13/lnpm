@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/user/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
 // LinkType represents the type of linking used

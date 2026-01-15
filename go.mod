@@ -1,4 +1,4 @@
-module github.com/user/lnpm
+module github.com/pedrosousa13/lnpm
 
 go 1.22
 
