@@ -54,7 +54,7 @@ func tryReflink(src, dst string) bool {
 
 	// Clean up on failure
 	dstFile.Close()
-	os.Remove(dst)
+	_ = os.Remove(dst)
 	return false
 }
 

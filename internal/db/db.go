@@ -139,7 +139,7 @@ func initDB() (*DB, error) {
 		return nil
 	})
 	if err != nil {
-		boltDB.Close()
+		_ = boltDB.Close()
 		return nil, err
 	}
 

@@ -114,7 +114,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 			for _, pkg := range packagesToRemove {
 				// Remove from store
 				if pkg.StorePath != "" {
-					os.RemoveAll(pkg.StorePath)
+					_ = os.RemoveAll(pkg.StorePath)
 				}
 				// Remove from database
 				_ = database.DeletePackage(pkg.ID)

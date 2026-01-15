@@ -74,7 +74,7 @@ func RunRetreat(force bool) error {
 
 		// Remove symlink from node_modules
 		nodeModulesLink := filepath.Join(cwd, "node_modules", name)
-		os.Remove(nodeModulesLink)
+		_ = os.Remove(nodeModulesLink)
 
 		// Restore original package.json dependency
 		if pkg.OriginalVersion != "" {

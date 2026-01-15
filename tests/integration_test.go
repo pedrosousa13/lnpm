@@ -21,7 +21,7 @@ func TestPublishAllTurborepo(t *testing.T) {
 	}
 
 	// Clean up any existing database
-	os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
 	// Test publish --all
 	err := cli.RunPublish(false, "", true)
@@ -65,7 +65,7 @@ func TestPublishAllPNPM(t *testing.T) {
 	}
 
 	// Clean up any existing database
-	os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
 	// Test publish --all
 	err := cli.RunPublish(false, "", true)
@@ -102,7 +102,7 @@ func TestPublishAllNPM(t *testing.T) {
 	}
 
 	// Clean up any existing database
-	os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
 	// Test publish --all
 	err := cli.RunPublish(false, "", true)
@@ -139,7 +139,7 @@ func TestPublishAllYarn(t *testing.T) {
 	}
 
 	// Clean up any existing database
-	os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
 	// Test publish --all
 	err := cli.RunPublish(false, "", true)
@@ -171,9 +171,9 @@ func TestPublishAllNx(t *testing.T) {
 	}
 
 	// Clean up any existing database and .lnpm directories
-	os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
-	os.RemoveAll(".lnpm")
-	os.RemoveAll(filepath.Join("libs", "feature-auth", ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
+	_ = os.RemoveAll(".lnpm")
+	_ = os.RemoveAll(filepath.Join("libs", "feature-auth", ".lnpm"))
 
 	// Test publish --all
 	err := cli.RunPublish(false, "", true)
@@ -206,13 +206,13 @@ func TestNxAddInternalDependency(t *testing.T) {
 
 	// Use a separate store directory for this test to avoid conflicts
 	testStoreDir := filepath.Join(os.TempDir(), "lnpm-test-nx")
-	defer os.RemoveAll(testStoreDir)
-	os.Setenv("LNPM_STORE", testStoreDir)
-	defer os.Unsetenv("LNPM_STORE")
+	defer func() { _ = os.RemoveAll(testStoreDir) }()
+	_ = os.Setenv("LNPM_STORE", testStoreDir)
+	defer func() { _ = os.Unsetenv("LNPM_STORE") }()
 
 	// Clean up .lnpm directories in fixtures but preserve global ~/.lnpm for published packages
-	os.RemoveAll(filepath.Join(nxFixtureDir, ".lnpm"))
-	os.RemoveAll(filepath.Join(nxFixtureDir, "libs", "feature-auth", ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(nxFixtureDir, ".lnpm"))
+	_ = os.RemoveAll(filepath.Join(nxFixtureDir, "libs", "feature-auth", ".lnpm"))
 
 	// Reset the sub-package package.json to original state
 	originalSubPkgJSON := `{
@@ -229,7 +229,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 	// Let's use the npm workspace package-a for this
 
 	// Always publish the package fresh for this test - clean everything first
-	os.RemoveAll(testStoreDir)
+	_ = os.RemoveAll(testStoreDir)
 
 	// Go back to original directory
 	if err := os.Chdir(originalWd); err != nil {

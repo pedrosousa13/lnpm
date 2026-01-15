@@ -36,7 +36,7 @@ func RunDoctor() error {
 			fmt.Printf("  Cannot write to store directory: %v\n", err)
 			issues++
 		} else {
-			os.Remove(testFile)
+			_ = os.Remove(testFile)
 			fmt.Println("✓ OK")
 		}
 	}

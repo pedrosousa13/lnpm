@@ -103,7 +103,7 @@ func RunRemove(packageName string, all bool) error {
 	// Clean up empty lock file
 	if len(lock.List()) == 0 {
 		lockPath := filepath.Join(cwd, "lnpm.lock")
-		os.Remove(lockPath)
+		_ = os.Remove(lockPath)
 	}
 
 	// Run package manager install to restore removed packages

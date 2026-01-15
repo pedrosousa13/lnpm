@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -200,15 +201,35 @@ func RunPush(force bool) error {
 	}
 	storeFiles := pack.FileInfoFromStore(storePath, fileData)
 
-	successCount := 0
+	// Link to all projects in parallel
+	type result struct {
+		path string
+		err  error
+	}
+	results := make(chan result, len(projects))
+	var wg sync.WaitGroup
+
 	for _, proj := range projects {
-		// Re-link
-		linker := link.New(proj.Path)
-		_, err = linker.Link(pkg.Name, storePath, storeFiles)
-		if err != nil {
-			fmt.Printf("  ✗ %s: %v\n", proj.Path, err)
+		wg.Add(1)
+		go func(p *db.Project) {
+			defer wg.Done()
+			linker := link.New(p.Path)
+			_, err := linker.Link(pkg.Name, storePath, storeFiles)
+			results <- result{path: p.Path, err: err}
+		}(proj)
+	}
+
+	// Wait for all links to complete
+	wg.Wait()
+	close(results)
+
+	// Print results in order received (not deterministic order)
+	successCount := 0
+	for res := range results {
+		if res.err != nil {
+			fmt.Printf("  ✗ %s: %v\n", res.path, res.err)
 		} else {
-			fmt.Printf("  ✓ %s\n", proj.Path)
+			fmt.Printf("  ✓ %s\n", res.path)
 			successCount++
 		}
 	}

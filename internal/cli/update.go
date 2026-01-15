@@ -179,7 +179,7 @@ func installLatestViaBinary(version string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(newBin)
+	defer func() { _ = os.Remove(newBin) }()
 
 	// Backup current binary
 	backup := binPath + ".bak"
@@ -202,7 +202,7 @@ func installLatestViaBinary(version string) error {
 	}
 
 	// Remove backup
-	os.Remove(backup)
+	_ = os.Remove(backup)
 
 	fmt.Printf("✓ Successfully updated to latest version\n")
 	fmt.Printf("  Binary location: %s\n", binPath)
@@ -237,26 +237,26 @@ func downloadBinary(url, filename string) (string, error) {
 	// Download file
 	resp, err := http.Get(url)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("download failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("download failed: status %d", resp.StatusCode)
 	}
 
 	filePath := filepath.Join(tmpDir, filename)
 	file, err := os.Create(filePath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("failed to create file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if _, err := io.Copy(file, resp.Body); err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 
@@ -269,7 +269,7 @@ func downloadBinary(url, filename string) (string, error) {
 	}
 
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
 
@@ -282,13 +282,13 @@ func extractTarGz(tarPath, tmpDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gr, err := gzip.NewReader(file)
 	if err != nil {
 		return "", err
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	tr := tar.NewReader(gr)
 	for {
@@ -307,7 +307,7 @@ func extractTarGz(tarPath, tmpDir string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			defer out.Close()
+			defer func() { _ = out.Close() }()
 
 			if _, err := io.Copy(out, tr); err != nil {
 				return "", err
@@ -326,7 +326,7 @@ func extractZip(zipPath, tmpDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	for _, file := range reader.File {
 		if strings.HasSuffix(file.Name, "lnpm.exe") || strings.HasSuffix(file.Name, "lnpm") {
@@ -334,14 +334,14 @@ func extractZip(zipPath, tmpDir string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			defer rc.Close()
+			defer func() { _ = rc.Close() }()
 
 			outPath := filepath.Join(tmpDir, filepath.Base(file.Name))
 			out, err := os.Create(outPath)
 			if err != nil {
 				return "", err
 			}
-			defer out.Close()
+			defer func() { _ = out.Close() }()
 
 			if _, err := io.Copy(out, rc); err != nil {
 				return "", err

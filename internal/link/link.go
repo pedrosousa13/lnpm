@@ -132,7 +132,7 @@ func (l *Linker) Unlink(packageName string) error {
 	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
 	entries, err := os.ReadDir(lnpmDir)
 	if err == nil && len(entries) == 0 {
-		os.Remove(lnpmDir)
+		_ = os.Remove(lnpmDir)
 	}
 
 	return nil
@@ -262,15 +262,15 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode())
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() { _ = dstFile.Close() }()
 
-	buf := make([]byte, 64*1024) // 64KB buffer
+	buf := make([]byte, 1024*1024) // 1MB buffer
 	for {
 		n, err := srcFile.Read(buf)
 		if n > 0 {

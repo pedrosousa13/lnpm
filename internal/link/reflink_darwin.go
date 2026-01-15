@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
+
+	"github.com/pedrosousa13/lnpm/internal/debug"
 )
 
 // SYS_CLONEFILE syscall number for macOS
@@ -16,16 +18,16 @@ const SYS_CLONEFILE = 462
 func tryReflink(src, dst string) bool {
 	// clonefile syscall on macOS
 	// https://www.manpagez.com/man/2/clonefile/
-	const CLONE_NOFOLLOW = 0x0001
-	const CLONE_NOOWNERCOPY = 0x0002
 
 	srcPtr, err := syscall.BytePtrFromString(src)
 	if err != nil {
+		debug.Logf("reflink: BytePtrFromString(src) failed: %v", err)
 		return false
 	}
 
 	dstPtr, err := syscall.BytePtrFromString(dst)
 	if err != nil {
+		debug.Logf("reflink: BytePtrFromString(dst) failed: %v", err)
 		return false
 	}
 
@@ -37,7 +39,12 @@ func tryReflink(src, dst string) bool {
 		uintptr(0), // flags = 0 for default behavior
 	)
 
-	return errno == 0
+	if errno != 0 {
+		debug.Logf("reflink: clonefile failed: %v (errno %d)", errno, errno)
+		return false
+	}
+
+	return true
 }
 
 // reflinkFile attempts to create a reflink copy, falling back to regular copy

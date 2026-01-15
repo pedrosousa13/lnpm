@@ -1,19 +1,16 @@
 package pack
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cespare/xxhash/v2"
+	"github.com/panjf2000/ants/v2"
 	"github.com/pedrosousa13/lnpm/internal/debug"
 )
 
@@ -110,24 +107,10 @@ func PackIncremental(packageDir string, cache map[string]*CachedFile) (*PackageJ
 	}
 	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
-	// Try to use npm pack for file list (universal standard)
-	fileList, useNpmPack := getNpmPackFileList(packageDir)
-
-	var files []*FileInfo
-	if useNpmPack {
-		debug.Logf("pack: using npm pack file list (%d files)", len(fileList))
-		// Use npm pack output with explicit .git safety filter
-		files, err = collectFilesFromList(packageDir, fileList, cache)
-		if err != nil {
-			return nil, nil, err
-		}
-	} else {
-		debug.Log("pack: npm pack unavailable, using custom filtering")
-		// Fall back to custom file collection
-		files, err = collectFilesIncremental(packageDir, pkgJSON.Files, cache)
-		if err != nil {
-			return nil, nil, err
-		}
+	// Collect files using custom filtering
+	files, err := collectFilesIncremental(packageDir, pkgJSON.Files, cache)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Apply explicit .git safety filter (defense in depth)
@@ -163,7 +146,8 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 
 // collectFilesIncremental walks directory with optional cache for skipping unchanged files
 func collectFilesIncremental(packageDir string, filesField []string, cache map[string]*CachedFile) ([]*FileInfo, error) {
-	var files []*FileInfo
+	var filesToHash []*FileInfo
+	var filesFromCache []*FileInfo
 	fileCount := 0
 	cacheHits := 0
 
@@ -174,6 +158,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 	// If files field is specified, use whitelist mode
 	useWhitelist := len(filesField) > 0
 
+	// First pass: collect all files and check cache
 	err := filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -226,7 +211,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 				if cached.Size == size && cached.ModTime == mtime {
 					// File unchanged, reuse cached hash
 					cacheHits++
-					files = append(files, &FileInfo{
+					filesFromCache = append(filesFromCache, &FileInfo{
 						Path:        path,
 						RelPath:     relPath,
 						Size:        size,
@@ -239,19 +224,13 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 			}
 		}
 
-		// Calculate content hash (cache miss or no cache)
-		hash, err := hashFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to hash %s: %w", relPath, err)
-		}
-
-		files = append(files, &FileInfo{
-			Path:        path,
-			RelPath:     relPath,
-			Size:        size,
-			Mode:        info.Mode(),
-			ContentHash: hash,
-			ModTime:     mtime,
+		// Need to hash this file
+		filesToHash = append(filesToHash, &FileInfo{
+			Path:    path,
+			RelPath: relPath,
+			Size:    size,
+			Mode:    info.Mode(),
+			ModTime: mtime,
 		})
 
 		return nil
@@ -264,7 +243,40 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 		debug.Logf("pack: cache hits %d/%d files (%.0f%%)", cacheHits, fileCount, float64(cacheHits)/float64(fileCount)*100)
 	}
 
-	return files, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Second pass: hash files in parallel using ants pool
+	if len(filesToHash) > 0 {
+		pool, err := ants.NewPoolWithFunc(runtime.NumCPU()*2, func(i interface{}) {
+			file := i.(*FileInfo)
+			hash, err := hashFile(file.Path)
+			if err != nil {
+				debug.Logf("pack: failed to hash %s: %v", file.RelPath, err)
+				return
+			}
+			file.ContentHash = hash
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create worker pool: %w", err)
+		}
+		defer pool.Release()
+
+		// Submit all files to pool
+		for _, file := range filesToHash {
+			if err := pool.Invoke(file); err != nil {
+				return nil, fmt.Errorf("failed to hash files: %w", err)
+			}
+		}
+	}
+
+	// Combine results
+	allFiles := make([]*FileInfo, 0, len(filesFromCache)+len(filesToHash))
+	allFiles = append(allFiles, filesFromCache...)
+	allFiles = append(allFiles, filesToHash...)
+
+	return allFiles, nil
 }
 
 // loadIgnorePatterns reads .npmignore or .gitignore
@@ -288,16 +300,15 @@ func loadIgnorePatterns(dir string) []string {
 
 // readIgnoreFile reads an ignore file and returns patterns
 func readIgnoreFile(path string) []string {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	defer file.Close()
 
 	var patterns []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -318,21 +329,34 @@ func isExcluded(relPath string, patterns []string) bool {
 			continue // Skip negation for now
 		}
 
-		// Full path match
-		matched, _ := doublestar.Match(pattern, relPath)
-		if matched {
+		// Handle ** patterns (common in .gitignore)
+		if strings.HasSuffix(pattern, "/**") {
+			prefix := strings.TrimSuffix(pattern, "/**")
+			if relPath == prefix || strings.HasPrefix(relPath, prefix+"/") {
+				return true
+			}
+			continue
+		}
+
+		// Exact match
+		if pattern == relPath {
 			return true
 		}
 
 		// For patterns without path separators, also match against basename
 		// This follows gitignore behavior: "*.log" matches "foo/bar.log"
 		if !strings.Contains(pattern, "/") {
-			if matched, _ := doublestar.Match(pattern, baseName); matched {
+			if matched, _ := filepath.Match(pattern, baseName); matched {
+				return true
+			}
+		} else {
+			// Full path glob match
+			if matched, _ := filepath.Match(pattern, relPath); matched {
 				return true
 			}
 		}
 
-		// Also check if it's a directory prefix
+		// Directory prefix match
 		if strings.HasPrefix(relPath, pattern+"/") {
 			return true
 		}
@@ -348,19 +372,22 @@ func isIncluded(relPath string, patterns []string) bool {
 			return true
 		}
 
-		// Glob match
-		matched, _ := doublestar.Match(pattern, relPath)
-		if matched {
-			return true
-		}
-
 		// Directory match - if pattern is "dist", include "dist/anything"
 		if strings.HasPrefix(relPath, pattern+"/") {
 			return true
 		}
 
-		// Pattern might be a directory, include all contents
-		if matched, _ := doublestar.Match(pattern+"/**", relPath); matched {
+		// Handle ** patterns
+		if strings.HasSuffix(pattern, "/**") {
+			prefix := strings.TrimSuffix(pattern, "/**")
+			if relPath == prefix || strings.HasPrefix(relPath, prefix+"/") {
+				return true
+			}
+			continue
+		}
+
+		// Glob match
+		if matched, _ := filepath.Match(pattern, relPath); matched {
 			return true
 		}
 	}
@@ -371,7 +398,7 @@ func isIncluded(relPath string, patterns []string) bool {
 func isDefaultInclude(relPath string) bool {
 	baseName := filepath.Base(relPath)
 	for _, pattern := range defaultIncludes {
-		matched, _ := doublestar.Match(strings.ToLower(pattern), strings.ToLower(baseName))
+		matched, _ := filepath.Match(strings.ToLower(pattern), strings.ToLower(baseName))
 		if matched {
 			return true
 		}
@@ -385,7 +412,7 @@ func hashFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	h := xxhash.New()
 	if _, err := io.Copy(h, file); err != nil {
@@ -515,167 +542,6 @@ func shouldIgnore(relPath string) bool {
 		return true
 	}
 	return false
-}
-
-// npmPackOutput represents the JSON output from npm pack --dry-run --json
-type npmPackOutput struct {
-	Files []npmPackFile `json:"files"`
-}
-
-type npmPackFile struct {
-	Path string `json:"path"`
-	Size int64  `json:"size"`
-	Mode int    `json:"mode"`
-}
-
-var (
-	// Cache npm availability check
-	npmAvailable     *bool
-	npmCheckTime     time.Time
-	npmCacheDuration = 30 * time.Second
-)
-
-// getNpmPackFileList attempts to get file list from npm pack --dry-run --json
-// Returns file list and whether npm pack was successful
-func getNpmPackFileList(packageDir string) ([]string, bool) {
-	// Check if npm is available (with caching)
-	if !isNpmAvailable() {
-		return nil, false
-	}
-
-	// Execute npm pack --dry-run --json
-	cmd := exec.Command("npm", "pack", "--dry-run", "--json")
-	cmd.Dir = packageDir
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		debug.Logf("pack: npm pack failed: %v (stderr: %s)", err, stderr.String())
-		return nil, false
-	}
-
-	// Parse JSON output
-	var output []npmPackOutput
-	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
-		debug.Logf("pack: failed to parse npm pack output: %v", err)
-		return nil, false
-	}
-
-	if len(output) == 0 {
-		debug.Log("pack: npm pack returned empty output")
-		return nil, false
-	}
-
-	// Extract file paths
-	files := make([]string, 0, len(output[0].Files))
-	for _, f := range output[0].Files {
-		// npm pack returns paths like "package/file.js", strip "package/" prefix
-		path := strings.TrimPrefix(f.Path, "package/")
-		if path != "" {
-			files = append(files, path)
-		}
-	}
-
-	debug.Logf("pack: npm pack found %d files", len(files))
-	return files, true
-}
-
-// isNpmAvailable checks if npm binary is available in PATH
-// Results are cached for 30 seconds to avoid repeated checks
-func isNpmAvailable() bool {
-	now := time.Now()
-	if npmAvailable != nil && now.Sub(npmCheckTime) < npmCacheDuration {
-		return *npmAvailable
-	}
-
-	// Check if npm is in PATH
-	_, err := exec.LookPath("npm")
-	available := err == nil
-
-	npmAvailable = &available
-	npmCheckTime = now
-
-	if !available {
-		debug.Log("pack: npm not found in PATH, using custom filtering")
-	}
-
-	return available
-}
-
-// collectFilesFromList collects files from a predetermined list (from npm pack)
-// Applies incremental caching and explicit .git filtering
-func collectFilesFromList(packageDir string, fileList []string, cache map[string]*CachedFile) ([]*FileInfo, error) {
-	files := make([]*FileInfo, 0, len(fileList))
-	cacheHits := 0
-
-	for _, relPath := range fileList {
-		// Skip if it contains .git (defense in depth)
-		if isGitRelatedPath(relPath) {
-			debug.Logf("pack: filtering git-related file: %s", relPath)
-			continue
-		}
-
-		path := filepath.Join(packageDir, filepath.FromSlash(relPath))
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				debug.Logf("pack: skipping missing file: %s", relPath)
-				continue
-			}
-			return nil, fmt.Errorf("failed to stat %s: %w", relPath, err)
-		}
-
-		if info.IsDir() {
-			continue // Skip directories
-		}
-
-		// Normalize path separators
-		relPath = filepath.ToSlash(relPath)
-
-		// Check cache - skip hashing if size+mtime unchanged
-		mtime := info.ModTime().UnixNano()
-		size := info.Size()
-		if cache != nil {
-			if cached, ok := cache[relPath]; ok {
-				if cached.Size == size && cached.ModTime == mtime {
-					// File unchanged, reuse cached hash
-					cacheHits++
-					files = append(files, &FileInfo{
-						Path:        path,
-						RelPath:     relPath,
-						Size:        size,
-						Mode:        info.Mode(),
-						ContentHash: cached.ContentHash,
-						ModTime:     mtime,
-					})
-					continue
-				}
-			}
-		}
-
-		// Calculate content hash (cache miss or no cache)
-		hash, err := hashFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to hash %s: %w", relPath, err)
-		}
-
-		files = append(files, &FileInfo{
-			Path:        path,
-			RelPath:     relPath,
-			Size:        size,
-			Mode:        info.Mode(),
-			ContentHash: hash,
-			ModTime:     mtime,
-		})
-	}
-
-	if cache != nil && cacheHits > 0 {
-		debug.Logf("pack: cache hits %d/%d files (%.0f%%)", cacheHits, len(fileList), float64(cacheHits)/float64(len(fileList))*100)
-	}
-
-	return files, nil
 }
 
 // filterGitFiles removes any files related to .git directories

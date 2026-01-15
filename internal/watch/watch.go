@@ -117,7 +117,7 @@ func (w *Watcher) Start() error {
 func (w *Watcher) Stop() {
 	close(w.stopCh)
 	<-w.doneCh
-	w.watcher.Close()
+	_ = w.watcher.Close()
 }
 
 // addWatchRecursive adds all directories under path to the watcher

@@ -88,7 +88,7 @@ func installZshCompletion() error {
 	if err != nil {
 		return fmt.Errorf("failed to create completion file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if err := rootCmd.GenZshCompletion(file); err != nil {
 		return fmt.Errorf("failed to generate completion: %w", err)
@@ -142,7 +142,7 @@ func installBashCompletion() error {
 	if err != nil {
 		return fmt.Errorf("failed to create completion file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if err := rootCmd.GenBashCompletion(file); err != nil {
 		return fmt.Errorf("failed to generate completion: %w", err)
@@ -178,7 +178,7 @@ func installFishCompletion() error {
 	if err != nil {
 		return fmt.Errorf("failed to create completion file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if err := rootCmd.GenFishCompletion(file, true); err != nil {
 		return fmt.Errorf("failed to generate completion: %w", err)
