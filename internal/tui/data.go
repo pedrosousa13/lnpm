@@ -66,27 +66,25 @@ func (l LinkItem) FilterValue() string { return l.Name }
 
 // GetPackagesList fetches all packages from the database
 func GetPackagesList() ([]list.Item, error) {
-	log.Println("[TUI] GetPackagesList: starting")
+	// log.Println("[TUI] GetPackagesList: starting")
 	debug.Logf("tui: GetPackagesList started")
-
+	
 	database, err := db.GetDB()
 	if err != nil {
-		log.Printf("[TUI] GetPackagesList: failed to open database: %v\n", err)
+		// log.Printf("[TUI] GetPackagesList: failed to open database: %v\n", err)
 		debug.Logf("tui: GetPackagesList failed to open database: %v", err)
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	log.Println("[TUI] GetPackagesList: database opened successfully")
+	// log.Println("[TUI] GetPackagesList: database opened successfully")
 
 	packages, err := database.ListPackages()
 	if err != nil {
-		log.Printf("[TUI] GetPackagesList: failed to list packages: %v\n", err)
+		// log.Printf("[TUI] GetPackagesList: failed to list packages: %v\n", err)
 		debug.Logf("tui: GetPackagesList failed to list packages: %v", err)
 		return nil, fmt.Errorf("failed to list packages: %w", err)
 	}
-
-	log.Printf("[TUI] GetPackagesList: found %d packages\n", len(packages))
-	debug.Logf("tui: GetPackagesList found %d packages", len(packages))
-
+	
+	// log.Printf("[TUI] GetPackagesList: found %d packages\n", len(packages))
 	items := make([]list.Item, len(packages))
 	for i, pkg := range packages {
 		// Count linked projects for this package
@@ -195,25 +193,25 @@ func GetProjectsList() ([]list.Item, error) {
 
 // GetCurrentProjectLinks fetches links for the current working directory
 func GetCurrentProjectLinks() ([]list.Item, error) {
-	log.Println("[TUI] GetCurrentProjectLinks: starting")
+	// log.Println("[TUI] GetCurrentProjectLinks: starting")
 	debug.Logf("tui: GetCurrentProjectLinks started")
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		log.Printf("[TUI] GetCurrentProjectLinks: failed to get current directory: %v\n", err)
+		// log.Printf("[TUI] GetCurrentProjectLinks: failed to get current directory: %v\n", err)
 		return nil, fmt.Errorf("failed to get current directory: %w", err)
 	}
-	log.Printf("[TUI] GetCurrentProjectLinks: current directory: %s\n", cwd)
+	// log.Printf("[TUI] GetCurrentProjectLinks: current directory: %s\n", cwd)
 
 	lock, err := lockfile.Load(cwd)
 	if err != nil {
 		// No lockfile means no links
-		log.Printf("[TUI] GetCurrentProjectLinks: no lockfile found or error: %v\n", err)
+		// log.Printf("[TUI] GetCurrentProjectLinks: no lockfile found or error: %v\n", err)
 		return []list.Item{}, nil
 	}
 
 	packages := lock.List()
-	log.Printf("[TUI] GetCurrentProjectLinks: found %d packages in lockfile\n", len(packages))
+	// log.Printf("[TUI] GetCurrentProjectLinks: found %d packages in lockfile\n", len(packages))
 
 	items := make([]list.Item, len(packages))
 
