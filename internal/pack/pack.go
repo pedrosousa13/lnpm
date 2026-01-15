@@ -140,11 +140,6 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	return &pkg, nil
 }
 
-// collectFiles walks the directory and collects files based on include/exclude rules
-func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
-	return collectFilesIncremental(packageDir, filesField, nil)
-}
-
 // collectFilesIncremental walks directory with optional cache for skipping unchanged files
 func collectFilesIncremental(packageDir string, filesField []string, cache map[string]*CachedFile) ([]*FileInfo, error) {
 	var files []*FileInfo
