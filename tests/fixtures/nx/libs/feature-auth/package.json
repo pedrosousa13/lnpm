@@ -1,0 +1,5 @@
+{
+  "name": "@nx-test/feature-auth",
+  "version": "1.0.0",
+  "main": "src/index.js"
+}

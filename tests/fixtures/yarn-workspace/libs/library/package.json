@@ -1,0 +1,5 @@
+{
+  "name": "@yarn-test/library",
+  "version": "3.0.0",
+  "main": "index.js"
+}

@@ -57,6 +57,13 @@ lnpm push
 lnpm watch
 ```
 
+## Documentation
+
+- **[Monorepo Guide](MONOREPO.md)** — Turborepo, Nx, PNPM/NPM/Yarn workspaces integration
+- **[Architecture](ARCHITECTURE.md)** — System design and implementation details
+- **[Changelog](CHANGELOG.md)** — Version history and updates
+- **[Roadmap](ROADMAP.md)** — Planned features and improvements
+
 ## Commands
 
 | Command | Description |
@@ -94,12 +101,25 @@ lnpm watch --exec "npm run build"
 
 ### Monorepo Support
 
+lnpm integrates seamlessly with Turborepo, Nx, and all workspace managers:
+
 ```bash
+# lnpm is installed globally (one-time system install)
+# See installation section above
+
 # Publish all workspace packages
 lnpm publish --all
 
-# Works with pnpm-workspace.yaml and package.json workspaces
+# Watch and rebuild with your task runner
+lnpm watch --exec "turbo run build --filter=@my/ui"
+lnpm watch --exec "nx build my-lib"
 ```
+
+**📖 See [MONOREPO.md](MONOREPO.md) for complete guides on:**
+- Turborepo integration
+- Nx integration  
+- PNPM/NPM/Yarn workspaces
+- Best practices and troubleshooting
 
 ### Before Publishing to npm
 
