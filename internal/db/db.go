@@ -110,8 +110,8 @@ func initDB() (*DB, error) {
 	dbPath := filepath.Join(storePath, "lnpm.db")
 	debug.Logf("db: opening %s", dbPath)
 
-	// Open bbolt database
-	boltDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+	// Open bbolt database with longer timeout
+	boltDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 5 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

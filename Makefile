@@ -57,6 +57,20 @@ fmt:
 install: build
 	go install $(LDFLAGS) ./cmd/lnpm
 
+# Install from source to ~/.local/bin (for local development)
+install-local: build
+	@mkdir -p $(HOME)/.local/bin
+	@cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
+	@chmod +x $(HOME)/.local/bin/$(BINARY)
+	@echo "✓ Installed lnpm to $(HOME)/.local/bin/$(BINARY)"
+	@echo "Make sure $(HOME)/.local/bin is in your PATH"
+
+# Uninstall from local installation
+uninstall-local:
+	@rm -f $(HOME)/.local/bin/$(BINARY)
+	@rm -rf $(HOME)/.lnpm
+	@echo "✓ Uninstalled lnpm from local installation"
+
 # Clean build artifacts
 clean:
 	rm -f $(BINARY)
@@ -78,19 +92,21 @@ watch:
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  build         - Build the binary"
-	@echo "  release       - Build for all platforms"
-	@echo "  deps          - Download and tidy dependencies"
-	@echo "  test          - Run tests"
-	@echo "  test-coverage - Run tests with coverage report"
-	@echo "  lint          - Run linter"
-	@echo "  fmt           - Format code"
-	@echo "  install       - Install to GOPATH/bin"
-	@echo "  clean         - Remove build artifacts"
-	@echo "  run ARGS=...  - Build and run with arguments"
-	@echo "  watch         - Watch for changes and rebuild"
-	@echo "  hooks-enable  - Enable git hooks at .githooks"
-	@echo "  lint-staged   - Run linter on staged changes only"
+	@echo "  build              - Build the binary"
+	@echo "  release            - Build for all platforms"
+	@echo "  deps               - Download and tidy dependencies"
+	@echo "  test               - Run tests"
+	@echo "  test-coverage      - Run tests with coverage report"
+	@echo "  lint               - Run linter"
+	@echo "  fmt                - Format code"
+	@echo "  install            - Install to GOPATH/bin"
+	@echo "  install-local      - Build and install to ~/.local/bin"
+	@echo "  uninstall-local    - Remove local installation"
+	@echo "  clean              - Remove build artifacts"
+	@echo "  run ARGS=...       - Build and run with arguments"
+	@echo "  watch              - Watch for changes and rebuild"
+	@echo "  hooks-enable       - Enable git hooks at .githooks"
+	@echo "  lint-staged        - Run linter on staged changes only"
 
 # Enable git hooks (pre-commit runs golangci-lint)
 .PHONY: hooks-enable

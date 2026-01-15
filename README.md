@@ -30,12 +30,37 @@ curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.sh |
 go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest
 ```
 
-### From Source
+### From Source (for Development)
+
+Ideal for testing changes and keeping the tool always updated:
 
 ```bash
 git clone https://github.com/pedrosousa13/lnpm.git
 cd lnpm
-make install
+make install-local  # Builds and installs to ~/.local/bin
+```
+
+Make sure `~/.local/bin` is in your PATH:
+
+```bash
+export PATH="$PATH:$HOME/.local/bin"
+```
+
+### Uninstall
+
+**Via CLI command:**
+```bash
+lnpm uninstall --force
+```
+
+**Via shell script:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/uninstall.sh | sh
+```
+
+**Via Make (if installed from source):**
+```bash
+make uninstall-local
 ```
 
 ## Quick Start
@@ -74,14 +99,42 @@ lnpm watch
 | `lnpm push` | Push changes to all linked projects |
 | `lnpm watch` | Auto-sync on file changes |
 | `lnpm status` | Show current project's links |
+| `lnpm manage` | **NEW** Interactive TUI for managing links |
 | `lnpm list` | List packages in store |
 | `lnpm doctor` | Diagnose issues |
 | `lnpm gc` | Garbage collect unused packages |
 | `lnpm retreat` | Remove all lnpm changes |
+| `lnpm uninstall` | Uninstall lnpm from system |
 | `lnpm config` | View/edit configuration |
 | `lnpm completion` | Generate shell completions |
 
 ## Usage Examples
+
+### Interactive Link Management (NEW)
+
+```bash
+# Start the interactive TUI for managing links
+lnpm manage
+```
+
+**Features:**
+- 📋 **View all packages** and their linked projects
+- 📁 **Browse projects** and their linked packages
+- 🔗 **Manage current project's** linked packages
+- ⌨️ **Keyboard shortcuts:**
+  - `j/k` or `↑↓` - Navigate
+  - `h/l` or `←→` - Switch panels
+  - `Tab` - Cycle between panels
+  - `r` - Remove link (with confirmation)
+  - `p` - Push updates to projects
+  - `o` - Open package source
+  - `u` - Update package version
+  - `Space` - Select items for batch operations
+  - `Ctrl+R` - Refresh data
+  - `?` - Show help
+  - `q` - Quit
+
+**See [TUI_IMPLEMENTATION.md](TUI_IMPLEMENTATION.md) for complete feature documentation.**
 
 ### Basic Workflow
 
@@ -295,6 +348,9 @@ cd lnpm
 make deps
 make build
 make test
+
+# For local development with auto-updates
+make install-local
 ```
 
 ## License

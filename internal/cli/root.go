@@ -74,6 +74,8 @@ func init() {
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(manageCmd)
+	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(gcCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(updateCmd)
