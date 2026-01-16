@@ -219,6 +219,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
 4. **Push/Watch** — Updates store and re-links changed files
+5. **Auto .gitignore** — Automatically adds `.lnpm/` to `.gitignore` on add, removes on retreat
 
 ```
 Source Package          Store                    Project
@@ -239,6 +240,15 @@ lnpm uses **npm's standard packing rules** (via `npm pack --dry-run`) to determi
 - Automatic fallback to custom filtering if npm is unavailable
 
 This approach prevents issues with git hooks (like Husky) running in linked packages and ensures lnpm behaves identically to npm publish.
+
+### Automatic .gitignore Management
+
+lnpm automatically manages `.gitignore` entries to prevent committing linked packages:
+
+- **On `lnpm add`** — Adds `.lnpm/` to `.gitignore` with marker comment `# Added by lnpm`
+- **On `lnpm retreat`** — Removes `.lnpm/` entry and marker from `.gitignore`
+- **Smart detection** — Skips if pattern already exists
+- **Atomic writes** — Uses temp file + rename to prevent corruption
 
 ### Smart Linking Strategy
 
