@@ -177,6 +177,10 @@ link_mode: hardlink
 # Watch debounce in milliseconds (default: 100)
 debounce_ms: 100
 
+# Auto-manage .gitignore (add/remove .lnpm/ entry)
+# Default: true
+manage_gitignore: true
+
 # Patterns to always ignore
 default_ignore:
   - node_modules
@@ -219,7 +223,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
 4. **Push/Watch** — Updates store and re-links changed files
-5. **Auto .gitignore** — Automatically adds `.lnpm/` to `.gitignore` on add, removes on retreat
+5. **Auto .gitignore** — Optionally manages `.lnpm/` in `.gitignore` (enabled by default)
 
 ```
 Source Package          Store                    Project
@@ -243,12 +247,13 @@ This approach prevents issues with git hooks (like Husky) running in linked pack
 
 ### Automatic .gitignore Management
 
-lnpm automatically manages `.gitignore` entries to prevent committing linked packages:
+lnpm automatically manages `.gitignore` entries to prevent committing linked packages (enabled by default, configurable via `manage_gitignore: false`):
 
 - **On `lnpm add`** — Adds `.lnpm/` to `.gitignore` with marker comment `# Added by lnpm`
 - **On `lnpm retreat`** — Removes `.lnpm/` entry and marker from `.gitignore`
 - **Smart detection** — Skips if pattern already exists
 - **Atomic writes** — Uses temp file + rename to prevent corruption
+- **Configurable** — Set `manage_gitignore: false` in config to disable
 
 ### Smart Linking Strategy
 

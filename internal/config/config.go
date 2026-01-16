@@ -23,6 +23,9 @@ type Config struct {
 	// DebounceMs is the default debounce time for watch mode
 	DebounceMs int `yaml:"debounce_ms,omitempty"`
 
+	// ManageGitignore controls automatic .gitignore management (default: true)
+	ManageGitignore *bool `yaml:"manage_gitignore,omitempty"`
+
 	// Hooks configuration
 	Hooks HooksConfig `yaml:"hooks,omitempty"`
 }
@@ -120,6 +123,14 @@ func Get() *Config {
 		}
 	}
 	return cfg
+}
+
+// ShouldManageGitignore returns whether .gitignore should be auto-managed
+func (c *Config) ShouldManageGitignore() bool {
+	if c.ManageGitignore == nil {
+		return true // default: enabled
+	}
+	return *c.ManageGitignore
 }
 
 // PackageManager represents a supported package manager
