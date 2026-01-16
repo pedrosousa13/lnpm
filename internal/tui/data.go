@@ -68,7 +68,7 @@ func (l LinkItem) FilterValue() string { return l.Name }
 func GetPackagesList() ([]list.Item, error) {
 	// log.Println("[TUI] GetPackagesList: starting")
 	debug.Logf("tui: GetPackagesList started")
-	
+
 	database, err := db.GetDB()
 	if err != nil {
 		// log.Printf("[TUI] GetPackagesList: failed to open database: %v\n", err)
@@ -83,7 +83,7 @@ func GetPackagesList() ([]list.Item, error) {
 		debug.Logf("tui: GetPackagesList failed to list packages: %v", err)
 		return nil, fmt.Errorf("failed to list packages: %w", err)
 	}
-	
+
 	// log.Printf("[TUI] GetPackagesList: found %d packages\n", len(packages))
 	items := make([]list.Item, len(packages))
 	for i, pkg := range packages {

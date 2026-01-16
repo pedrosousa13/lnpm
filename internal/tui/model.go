@@ -337,7 +337,8 @@ func (m Model) renderTabs() string {
 			style = style.
 				Background(colorActive).
 				Foreground(colorInverted).
-				Bold(true)
+				Bold(true).
+				PaddingBottom(1) // Match height of inactive tabs (which have a bottom border)
 		} else {
 			// Add a subtle bottom border to inactive tabs to make them look connected
 			style = style.
