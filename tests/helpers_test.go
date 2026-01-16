@@ -477,37 +477,3 @@ func cleanLnpmDirs(root string) error {
 		return nil
 	})
 }
-
-// resetPackageJSON resets package.json to remove any added dependencies
-func resetPackageJSON(path string, originalContent []byte) error {
-	return os.WriteFile(path, originalContent, 0644)
-}
-
-// getPackageJSONDependency reads a specific dependency from package.json
-func getPackageJSONDependency(projectPath, packageName string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(projectPath, "package.json"))
-	if err != nil {
-		return "", err
-	}
-
-	var pkgJSON map[string]interface{}
-	if err := json.Unmarshal(data, &pkgJSON); err != nil {
-		return "", err
-	}
-
-	// Check dependencies
-	if deps, ok := pkgJSON["dependencies"].(map[string]interface{}); ok {
-		if val, ok := deps[packageName].(string); ok {
-			return val, nil
-		}
-	}
-
-	// Check devDependencies
-	if deps, ok := pkgJSON["devDependencies"].(map[string]interface{}); ok {
-		if val, ok := deps[packageName].(string); ok {
-			return val, nil
-		}
-	}
-
-	return "", fmt.Errorf("dependency not found")
-}

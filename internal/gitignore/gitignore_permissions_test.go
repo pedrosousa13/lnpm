@@ -26,7 +26,9 @@ func TestEnsureInGitignore_ReadOnlyFile(t *testing.T) {
 	if err := os.Chmod(gitignorePath, 0444); err != nil {
 		t.Fatalf("Failed to chmod .gitignore: %v", err)
 	}
-	defer os.Chmod(gitignorePath, 0644) // Cleanup
+	defer func() {
+		_ = os.Chmod(gitignorePath, 0644) // Cleanup
+	}()
 
 	// Try to add pattern - should fail
 	_, err := EnsureInGitignore(tmpDir, ".lnpm/")
@@ -47,7 +49,9 @@ func TestEnsureInGitignore_ReadOnlyDirectory(t *testing.T) {
 	if err := os.Chmod(tmpDir, 0555); err != nil {
 		t.Fatalf("Failed to chmod directory: %v", err)
 	}
-	defer os.Chmod(tmpDir, 0755) // Cleanup
+	defer func() {
+		_ = os.Chmod(tmpDir, 0755) // Cleanup
+	}()
 
 	// Try to create .gitignore in read-only directory - should fail
 	_, err := EnsureInGitignore(tmpDir, ".lnpm/")
@@ -99,7 +103,9 @@ func TestRemoveFromGitignore_ReadOnlyFile(t *testing.T) {
 	if err := os.Chmod(gitignorePath, 0444); err != nil {
 		t.Fatalf("Failed to chmod .gitignore: %v", err)
 	}
-	defer os.Chmod(gitignorePath, 0644) // Cleanup
+	defer func() {
+		_ = os.Chmod(gitignorePath, 0644) // Cleanup
+	}()
 
 	// Try to remove pattern - should fail
 	err := RemoveFromGitignore(tmpDir, ".lnpm/")
@@ -128,7 +134,9 @@ func TestRemoveFromGitignore_TempFileCleanup(t *testing.T) {
 	if err := os.Chmod(gitignorePath, 0444); err != nil {
 		t.Fatalf("Failed to chmod .gitignore: %v", err)
 	}
-	defer os.Chmod(gitignorePath, 0644) // Cleanup
+	defer func() {
+		_ = os.Chmod(gitignorePath, 0644) // Cleanup
+	}()
 
 	// Try to remove (will fail)
 	_ = RemoveFromGitignore(tmpDir, ".lnpm/")
@@ -203,7 +211,9 @@ func TestIsInGitignore_ReadOnlyFile(t *testing.T) {
 	if err := os.Chmod(gitignorePath, 0444); err != nil {
 		t.Fatalf("Failed to chmod .gitignore: %v", err)
 	}
-	defer os.Chmod(gitignorePath, 0644) // Cleanup
+	defer func() {
+		_ = os.Chmod(gitignorePath, 0644) // Cleanup
+	}()
 
 	// Should still be able to read
 	exists, err := IsInGitignore(tmpDir, ".lnpm/")
@@ -276,15 +286,15 @@ func TestRemoveFromGitignore_PreservesPermissions(t *testing.T) {
 		t.Fatalf("RemoveFromGitignore failed: %v", err)
 	}
 
-	// Check permissions (should be 0644, the default)
+	// Check permissions (should be preserved)
 	info, err := os.Stat(gitignorePath)
 	if err != nil {
 		t.Fatalf("Failed to stat .gitignore: %v", err)
 	}
 
 	actualMode := info.Mode() & 0777
-	// RemoveFromGitignore writes with 0644
-	expectedMode := os.FileMode(0644)
+	// RemoveFromGitignore should preserve original permissions
+	expectedMode := os.FileMode(0640)
 	if actualMode != expectedMode {
 		t.Errorf("Expected permissions %o, got %o", expectedMode, actualMode)
 	}

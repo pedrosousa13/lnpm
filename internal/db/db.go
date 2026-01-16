@@ -102,12 +102,13 @@ func initDB() (*DB, error) {
 	}
 	debug.Logf("db: store path %s", storePath)
 
-	// Ensure store directory exists
-	if err := os.MkdirAll(storePath, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create store directory: %w", err)
+	// Ensure db directory exists
+	dbDir := filepath.Join(storePath, "db")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	dbPath := filepath.Join(storePath, "lnpm.db")
+	dbPath := filepath.Join(dbDir, "lnpm.db")
 	debug.Logf("db: opening %s", dbPath)
 
 	// Open bbolt database
@@ -163,6 +164,16 @@ func getStorePath() (string, error) {
 // Close closes the database
 func (db *DB) Close() error {
 	return db.db.Close()
+}
+
+// ResetForTesting resets the singleton instance for testing
+// This should only be used in tests
+func ResetForTesting() {
+	if instance != nil {
+		_ = instance.Close()
+	}
+	instance = nil
+	once = sync.Once{}
 }
 
 // Helper functions for ID encoding

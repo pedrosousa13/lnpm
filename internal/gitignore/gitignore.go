@@ -26,9 +26,17 @@ func EnsureInGitignore(projectPath, pattern string) (bool, error) {
 		return false, nil
 	}
 
-	// Read existing content
+	// Read existing content and check permissions
 	var content []byte
-	if _, err := os.Stat(gitignorePath); err == nil {
+	var fileMode os.FileMode = 0644
+	if info, err := os.Stat(gitignorePath); err == nil {
+		fileMode = info.Mode().Perm()
+
+		// Check if file is read-only (no write permission for owner)
+		if fileMode&0200 == 0 {
+			return false, fmt.Errorf(".gitignore is read-only (mode %o)", fileMode)
+		}
+
 		content, err = os.ReadFile(gitignorePath)
 		if err != nil {
 			return false, fmt.Errorf("reading .gitignore: %w", err)
@@ -50,7 +58,7 @@ func EnsureInGitignore(projectPath, pattern string) (bool, error) {
 
 	// Atomic write: write to temp file, then rename
 	tempPath := gitignorePath + ".tmp"
-	if err := os.WriteFile(tempPath, []byte(sb.String()), 0644); err != nil {
+	if err := os.WriteFile(tempPath, []byte(sb.String()), fileMode); err != nil {
 		return false, fmt.Errorf("writing temp .gitignore: %w", err)
 	}
 	if err := os.Rename(tempPath, gitignorePath); err != nil {
@@ -65,9 +73,19 @@ func EnsureInGitignore(projectPath, pattern string) (bool, error) {
 func RemoveFromGitignore(projectPath, pattern string) error {
 	gitignorePath := filepath.Join(projectPath, ".gitignore")
 
-	// Check if file exists
-	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
+	// Check if file exists and get permissions
+	info, err := os.Stat(gitignorePath)
+	if os.IsNotExist(err) {
 		return nil // Nothing to remove
+	}
+	if err != nil {
+		return fmt.Errorf("stat .gitignore: %w", err)
+	}
+
+	// Check if file is read-only
+	fileMode := info.Mode().Perm()
+	if fileMode&0200 == 0 {
+		return fmt.Errorf(".gitignore is read-only (mode %o)", fileMode)
 	}
 
 	file, err := os.Open(gitignorePath)
@@ -105,14 +123,14 @@ func RemoveFromGitignore(projectPath, pattern string) error {
 		lines = lines[:len(lines)-1]
 	}
 
-	// Atomic write
+	// Atomic write (preserve original permissions)
 	tempPath := gitignorePath + ".tmp"
 	content := strings.Join(lines, "\n")
 	if len(lines) > 0 {
 		content += "\n"
 	}
 
-	if err := os.WriteFile(tempPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tempPath, []byte(content), fileMode); err != nil {
 		return fmt.Errorf("writing temp .gitignore: %w", err)
 	}
 	if err := os.Rename(tempPath, gitignorePath); err != nil {

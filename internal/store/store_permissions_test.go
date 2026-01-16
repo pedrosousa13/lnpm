@@ -236,7 +236,13 @@ func TestStore_ReadOnlyDestination(t *testing.T) {
 
 	// Pre-create destination as read-only
 	destPath := store.PackagePath("test-pkg", "readonly-hash")
-	if err := os.MkdirAll(destPath, 0555); err != nil {
+	// Create parent directory first with normal permissions
+	parentDir := filepath.Dir(destPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		t.Fatalf("Failed to create parent dir: %v", err)
+	}
+	// Create final directory as read-only
+	if err := os.Mkdir(destPath, 0555); err != nil {
 		t.Fatalf("Failed to create dest dir: %v", err)
 	}
 	defer os.Chmod(destPath, 0755) // Cleanup

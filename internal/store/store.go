@@ -13,6 +13,14 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
+// shortHash returns the first 8 characters of a hash for display
+func shortHash(hash string) string {
+	if len(hash) > 8 {
+		return hash[:8]
+	}
+	return hash
+}
+
 // Store manages the package store at ~/.lnpm/store
 type Store struct {
 	basePath string
@@ -62,7 +70,7 @@ func (s *Store) Exists(name, hash string) bool {
 // Store copies or hard links files to the store
 func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir string) (string, error) {
 	destPath := s.PackagePath(name, hash)
-	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, hash[:8], len(files), destPath)
+	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), destPath)
 
 	// Remove existing if present (for updates)
 	if err := os.RemoveAll(destPath); err != nil {

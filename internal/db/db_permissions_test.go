@@ -16,6 +16,7 @@ func TestOpen_DBPermissions(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Open database (creates it)
 	db, err := GetDB()
@@ -46,6 +47,7 @@ func TestOpen_ReadOnlyDirectory(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Make directory read-only
 	if err := os.Chmod(tmpDir, 0555); err != nil {
@@ -68,6 +70,7 @@ func TestOpen_ExistingReadOnlyDB(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Create and close database
 	db, err := GetDB()
@@ -140,8 +143,10 @@ func TestOpen_DBDirectoryPermissions(t *testing.T) {
 
 // TestConcurrentAccess_WithPermissions tests concurrent database access
 func TestConcurrentAccess_WithPermissions(t *testing.T) {
+	ResetForTesting() // Reset before starting
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Open database
 	db, err := GetDB()
@@ -198,6 +203,7 @@ func TestOpen_CorruptedDBPermissions(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Create db directory and corrupt database file
 	dbDir := filepath.Join(tmpDir, "db")
@@ -227,6 +233,7 @@ func TestGetDB_Singleton(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Get database instance
 	db1, err := GetDB()
@@ -262,6 +269,7 @@ func TestGetDB_Singleton(t *testing.T) {
 func TestOpen_TimeoutWithLockedDB(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Open first database instance
 	db1, err := GetDB()
@@ -292,6 +300,7 @@ func TestWriteOperations_PreservePermissions(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	db, err := GetDB()
 	if err != nil {
@@ -351,6 +360,7 @@ func TestOpen_RecoverFromPermissionIssues(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
+	defer ResetForTesting()
 
 	// Create database
 	db, err := GetDB()
@@ -358,6 +368,7 @@ func TestOpen_RecoverFromPermissionIssues(t *testing.T) {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	db.Close()
+	ResetForTesting() // Reset singleton to allow reopening
 
 	// Make database unreadable
 	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
@@ -375,6 +386,7 @@ func TestOpen_RecoverFromPermissionIssues(t *testing.T) {
 	if err := os.Chmod(dbPath, 0600); err != nil {
 		t.Fatalf("Failed to restore permissions: %v", err)
 	}
+	ResetForTesting() // Reset singleton to allow reopening after fixing permissions
 
 	// Should work now
 	db2, err := GetDB()
