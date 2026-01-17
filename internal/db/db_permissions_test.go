@@ -53,7 +53,9 @@ func TestOpen_ReadOnlyDirectory(t *testing.T) {
 	if err := os.Chmod(tmpDir, 0555); err != nil {
 		t.Fatalf("Failed to chmod: %v", err)
 	}
-	defer os.Chmod(tmpDir, 0755)
+	defer func() {
+		_ = os.Chmod(tmpDir, 0755)
+	}()
 
 	// Try to open database - should fail
 	_, err := GetDB()
@@ -84,7 +86,9 @@ func TestOpen_ExistingReadOnlyDB(t *testing.T) {
 	if err := os.Chmod(dbPath, 0444); err != nil {
 		t.Fatalf("Failed to chmod database: %v", err)
 	}
-	defer os.Chmod(dbPath, 0644)
+	defer func() {
+		_ = os.Chmod(dbPath, 0644)
+	}()
 
 	// Try to open read-only database - should fail on write
 	db2, err := GetDB()
@@ -216,7 +220,9 @@ func TestOpen_CorruptedDBPermissions(t *testing.T) {
 	if err := os.WriteFile(dbPath, []byte("not a valid bolt db"), 0444); err != nil {
 		t.Fatalf("Failed to create corrupt db: %v", err)
 	}
-	defer os.Chmod(dbPath, 0644)
+	defer func() {
+		_ = os.Chmod(dbPath, 0644)
+	}()
 
 	// Try to open - should fail
 	_, err := GetDB()
