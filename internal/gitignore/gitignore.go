@@ -62,7 +62,7 @@ func EnsureInGitignore(projectPath, pattern string) (bool, error) {
 		return false, fmt.Errorf("writing temp .gitignore: %w", err)
 	}
 	if err := os.Rename(tempPath, gitignorePath); err != nil {
-		os.Remove(tempPath) // Clean up temp file
+		_ = os.Remove(tempPath) // Clean up temp file
 		return false, fmt.Errorf("updating .gitignore: %w", err)
 	}
 
@@ -92,7 +92,9 @@ func RemoveFromGitignore(projectPath, pattern string) error {
 	if err != nil {
 		return fmt.Errorf("opening .gitignore: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	var lines []string
 	scanner := bufio.NewScanner(file)
@@ -134,7 +136,7 @@ func RemoveFromGitignore(projectPath, pattern string) error {
 		return fmt.Errorf("writing temp .gitignore: %w", err)
 	}
 	if err := os.Rename(tempPath, gitignorePath); err != nil {
-		os.Remove(tempPath)
+		_ = os.Remove(tempPath)
 		return fmt.Errorf("updating .gitignore: %w", err)
 	}
 
@@ -152,7 +154,9 @@ func IsInGitignore(projectPath, pattern string) (bool, error) {
 		}
 		return false, fmt.Errorf("opening .gitignore: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

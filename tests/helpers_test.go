@@ -443,7 +443,9 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() {
+		_ = srcFile.Close()
+	}()
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
@@ -454,7 +456,9 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer func() {
+		_ = dstFile.Close()
+	}()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err

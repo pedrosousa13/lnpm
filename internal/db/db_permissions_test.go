@@ -23,7 +23,9 @@ func TestOpen_DBPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	// Check database file permissions
 	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
@@ -79,7 +81,7 @@ func TestOpen_ExistingReadOnlyDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	// Make database read-only
 	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
@@ -97,7 +99,9 @@ func TestOpen_ExistingReadOnlyDB(t *testing.T) {
 		t.Logf("Failed to open read-only DB: %v", err)
 		return
 	}
-	defer db2.Close()
+	defer func() {
+		_ = db2.Close()
+	}()
 
 	// Try to write - should fail
 	pkg := &Package{
@@ -129,7 +133,9 @@ func TestOpen_DBDirectoryPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	// Check db directory permissions
 	dbDir := filepath.Join(tmpDir, "db")
@@ -157,7 +163,9 @@ func TestConcurrentAccess_WithPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	// Concurrent writes
 	done := make(chan error, 10)
@@ -282,7 +290,9 @@ func TestOpen_TimeoutWithLockedDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open first database: %v", err)
 	}
-	defer db1.Close()
+	defer func() {
+		_ = db1.Close()
+	}()
 
 	// Try to open second instance - should timeout due to lock
 	// (bolt only allows one writer at a time)
@@ -291,7 +301,9 @@ func TestOpen_TimeoutWithLockedDB(t *testing.T) {
 		t.Logf("Second open timed out as expected: %v", err)
 		return
 	}
-	defer db2.Close()
+	defer func() {
+		_ = db2.Close()
+	}()
 
 	// If we got here, concurrent access is somehow allowed
 	// This is fine on some platforms/configurations
@@ -312,7 +324,9 @@ func TestWriteOperations_PreservePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	// Insert some data
 	pkg := &Package{
@@ -373,7 +387,7 @@ func TestOpen_RecoverFromPermissionIssues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	db.Close()
+	_ = db.Close()
 	ResetForTesting() // Reset singleton to allow reopening
 
 	// Make database unreadable
@@ -399,7 +413,9 @@ func TestOpen_RecoverFromPermissionIssues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open after fixing permissions: %v", err)
 	}
-	defer db2.Close()
+	defer func() {
+		_ = db2.Close()
+	}()
 }
 
 // TestOpen_StorePathPermissions tests store path directory permissions
@@ -416,7 +432,9 @@ func TestOpen_StorePathPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		_ = db.Close()
+	}()
 
 	// Check LNPM_STORE directory permissions
 	info, err := os.Stat(tmpDir)

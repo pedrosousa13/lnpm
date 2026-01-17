@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(gh run list:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(go test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)",
+      "Bash(golangci-lint run:*)"
     ]
   }
 }

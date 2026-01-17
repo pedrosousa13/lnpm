@@ -22,7 +22,9 @@ func TestLink_ReadOnlyDestination(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0555); err != nil {
 		t.Fatalf("Failed to create project dir: %v", err)
 	}
-	defer os.Chmod(projectDir, 0755) // Cleanup
+	defer func() {
+		_ = os.Chmod(projectDir, 0755) // Cleanup
+	}()
 
 	// Create store
 	storeDir := filepath.Join(tmpDir, "store", "test-pkg")
