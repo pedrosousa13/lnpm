@@ -24,7 +24,9 @@ func TestNew_ReadOnlyDirectory(t *testing.T) {
 	if err := os.Chmod(tmpDir, 0555); err != nil {
 		t.Fatalf("Failed to chmod: %v", err)
 	}
-	defer os.Chmod(tmpDir, 0755)
+	defer func() {
+		_ = os.Chmod(tmpDir, 0755)
+	}()
 
 	// Try to create store - should fail
 	_, err := New()
@@ -245,7 +247,9 @@ func TestStore_ReadOnlyDestination(t *testing.T) {
 	if err := os.Mkdir(destPath, 0555); err != nil {
 		t.Fatalf("Failed to create dest dir: %v", err)
 	}
-	defer os.Chmod(destPath, 0755) // Cleanup
+	defer func() {
+		_ = os.Chmod(destPath, 0755) // Cleanup
+	}()
 
 	// Store should handle read-only destination (RemoveAll should fail or succeed)
 	_, err = store.Store("test-pkg", "readonly-hash", files, sourceDir)
@@ -359,7 +363,9 @@ func TestExists_WithVariousPermissions(t *testing.T) {
 	if err := os.Chmod(pkgPath, 0555); err != nil {
 		t.Fatalf("Failed to chmod: %v", err)
 	}
-	defer os.Chmod(pkgPath, 0755)
+	defer func() {
+		_ = os.Chmod(pkgPath, 0755)
+	}()
 
 	// Should still exist
 	if !store.Exists("perm-test", "hash123") {
