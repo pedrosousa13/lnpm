@@ -11,7 +11,6 @@ import (
 
 // TestPushBasic tests basic push functionality
 func TestPushBasic(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -60,7 +59,6 @@ func TestPushBasic(t *testing.T) {
 
 // TestPushNoChanges tests push when no changes exist
 func TestPushNoChanges(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -82,7 +80,6 @@ func TestPushNoChanges(t *testing.T) {
 
 // TestPushForceFlag tests push with --force flag
 func TestPushForceFlag(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -116,7 +113,6 @@ func TestPushForceFlag(t *testing.T) {
 
 // TestPushMultipleProjects tests pushing to multiple linked projects
 func TestPushMultipleProjects(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -173,7 +169,6 @@ func TestPushMultipleProjects(t *testing.T) {
 
 // TestPushUnpublishedPackage tests pushing a package that hasn't been published yet
 func TestPushUnpublishedPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package but don't publish
@@ -195,7 +190,6 @@ func TestPushUnpublishedPackage(t *testing.T) {
 
 // TestPushVersionUpdate tests pushing with version change
 func TestPushVersionUpdate(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish v1.0.0
@@ -248,7 +242,6 @@ func TestPushVersionUpdate(t *testing.T) {
 
 // TestPushNoLinkedProjects tests pushing when no projects are linked
 func TestPushNoLinkedProjects(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -273,7 +266,6 @@ func TestPushNoLinkedProjects(t *testing.T) {
 
 // TestPushConcurrentSafe tests that concurrent pushes don't cause race conditions
 func TestPushConcurrentSafe(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -314,7 +306,6 @@ func TestPushConcurrentSafe(t *testing.T) {
 
 // TestPushWithAddedFiles tests pushing when new files are added
 func TestPushWithAddedFiles(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish initial version
@@ -363,7 +354,6 @@ func TestPushWithAddedFiles(t *testing.T) {
 
 // TestPushAfterDelay tests that push detects changes after a time delay
 func TestPushAfterDelay(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package

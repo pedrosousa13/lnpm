@@ -204,7 +204,6 @@ func TestDatabaseConcurrentReadsWrites(t *testing.T) {
 
 // TestDatabasePackageUpdatePreservesLinks tests that updating a package preserves links
 func TestDatabasePackageUpdatePreservesLinks(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert a package
@@ -268,7 +267,6 @@ func TestDatabasePackageUpdatePreservesLinks(t *testing.T) {
 
 // TestDatabaseProjectUpdatePreservesLinks tests that updating a project preserves links
 func TestDatabaseProjectUpdatePreservesLinks(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert a package
@@ -329,7 +327,6 @@ func TestDatabaseProjectUpdatePreservesLinks(t *testing.T) {
 
 // TestDatabaseLinkDeletionDoesntAffectOthers tests that deleting a link doesn't affect other links
 func TestDatabaseLinkDeletionDoesntAffectOthers(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert a package
@@ -405,7 +402,6 @@ func TestDatabaseLinkDeletionDoesntAffectOthers(t *testing.T) {
 
 // TestDatabasePackageByNameLookup tests package lookup by name
 func TestDatabasePackageByNameLookup(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert multiple packages
@@ -451,7 +447,6 @@ func TestDatabasePackageByNameLookup(t *testing.T) {
 
 // TestDatabasePackageByHashLookup tests package lookup by hash
 func TestDatabasePackageByHashLookup(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert package with specific hash
@@ -483,7 +478,6 @@ func TestDatabasePackageByHashLookup(t *testing.T) {
 
 // TestDatabaseProjectByPathLookup tests project lookup by path
 func TestDatabaseProjectByPathLookup(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert multiple projects
@@ -516,7 +510,6 @@ func TestDatabaseProjectByPathLookup(t *testing.T) {
 
 // TestDatabaseFilesForPackage tests storing and retrieving file entries
 func TestDatabaseFilesForPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert a package
@@ -571,7 +564,6 @@ func TestDatabaseFilesForPackage(t *testing.T) {
 
 // TestDatabaseGetProjectsForPackage tests getting all projects linked to a package
 func TestDatabaseGetProjectsForPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Insert a package

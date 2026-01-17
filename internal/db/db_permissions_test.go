@@ -28,7 +28,7 @@ func TestOpen_DBPermissions(t *testing.T) {
 	}()
 
 	// Check database file permissions
-	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
+	dbPath := filepath.Join(tmpDir, "lnpm.db")
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to stat database file: %v", err)
@@ -84,7 +84,7 @@ func TestOpen_ExistingReadOnlyDB(t *testing.T) {
 	_ = db.Close()
 
 	// Make database read-only
-	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
+	dbPath := filepath.Join(tmpDir, "lnpm.db")
 	if err := os.Chmod(dbPath, 0444); err != nil {
 		t.Fatalf("Failed to chmod database: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestOpen_DBDirectoryPermissions(t *testing.T) {
 	}()
 
 	// Check db directory permissions
-	dbDir := filepath.Join(tmpDir, "db")
+	dbDir := tmpDir
 	info, err := os.Stat(dbDir)
 	if err != nil {
 		t.Fatalf("Failed to stat db directory: %v", err)
@@ -193,7 +193,7 @@ func TestConcurrentAccess_WithPermissions(t *testing.T) {
 
 	// Verify database still has correct permissions
 	if runtime.GOOS != "windows" {
-		dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
+		dbPath := filepath.Join(tmpDir, "lnpm.db")
 		info, err := os.Stat(dbPath)
 		if err != nil {
 			t.Fatalf("Failed to stat database: %v", err)
@@ -218,7 +218,7 @@ func TestOpen_CorruptedDBPermissions(t *testing.T) {
 	defer ResetForTesting()
 
 	// Create db directory and corrupt database file
-	dbDir := filepath.Join(tmpDir, "db")
+	dbDir := tmpDir
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		t.Fatalf("Failed to create db dir: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestGetDB_Singleton(t *testing.T) {
 	}
 
 	// Check permissions still correct
-	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
+	dbPath := filepath.Join(tmpDir, "lnpm.db")
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to stat database: %v", err)
@@ -359,7 +359,7 @@ func TestWriteOperations_PreservePermissions(t *testing.T) {
 	}
 
 	// Verify database permissions still correct
-	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
+	dbPath := filepath.Join(tmpDir, "lnpm.db")
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to stat database: %v", err)
@@ -391,7 +391,7 @@ func TestOpen_RecoverFromPermissionIssues(t *testing.T) {
 	ResetForTesting() // Reset singleton to allow reopening
 
 	// Make database unreadable
-	dbPath := filepath.Join(tmpDir, "db", "lnpm.db")
+	dbPath := filepath.Join(tmpDir, "lnpm.db")
 	if err := os.Chmod(dbPath, 0000); err != nil {
 		t.Fatalf("Failed to chmod database: %v", err)
 	}

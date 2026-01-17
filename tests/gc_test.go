@@ -9,7 +9,6 @@ import (
 
 // TestGCOrphanedPackages tests garbage collection of orphaned packages
 func TestGCOrphanedPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -51,7 +50,6 @@ func TestGCOrphanedPackages(t *testing.T) {
 
 // TestGCDryRun tests garbage collection in dry-run mode
 func TestGCDryRun(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -79,7 +77,6 @@ func TestGCDryRun(t *testing.T) {
 
 // TestGCWithAge tests GC with age filter
 func TestGCWithAge(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish two packages
@@ -116,7 +113,6 @@ func TestGCWithAge(t *testing.T) {
 
 // TestGCOrphanedLinks tests cleaning up orphaned links
 func TestGCOrphanedLinks(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -158,7 +154,6 @@ func TestGCOrphanedLinks(t *testing.T) {
 
 // TestGCLinkedPackages tests that GC doesn't remove linked packages
 func TestGCLinkedPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -196,7 +191,6 @@ func TestGCLinkedPackages(t *testing.T) {
 
 // TestGCMultipleOrphanedPackages tests GC with multiple orphaned packages
 func TestGCMultipleOrphanedPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish multiple packages
@@ -231,7 +225,6 @@ func TestGCMultipleOrphanedPackages(t *testing.T) {
 
 // TestGCMixedPackages tests GC with both linked and orphaned packages
 func TestGCMixedPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create orphaned package
@@ -277,7 +270,6 @@ func TestGCMixedPackages(t *testing.T) {
 
 // TestGCNoPackages tests GC when no packages exist
 func TestGCNoPackages(t *testing.T) {
-	t.Parallel()
 	_ = setupTest(t)
 
 	// Run GC with empty database
@@ -288,7 +280,6 @@ func TestGCNoPackages(t *testing.T) {
 
 // TestGCStorePathCleanup tests that store paths are cleaned up
 func TestGCStorePathCleanup(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -329,7 +320,6 @@ func TestGCStorePathCleanup(t *testing.T) {
 
 // TestGCPartiallyOrphanedLinks tests GC with some valid and some orphaned links
 func TestGCPartiallyOrphanedLinks(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -380,7 +370,6 @@ func TestGCPartiallyOrphanedLinks(t *testing.T) {
 
 // TestGCInvalidDuration tests GC with invalid duration string
 func TestGCInvalidDuration(t *testing.T) {
-	t.Parallel()
 	_ = setupTest(t)
 
 	// Run GC with invalid duration
@@ -392,7 +381,6 @@ func TestGCInvalidDuration(t *testing.T) {
 
 // TestGCDurationFormats tests GC with various duration formats
 func TestGCDurationFormats(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create orphaned package

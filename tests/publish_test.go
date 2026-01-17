@@ -10,7 +10,6 @@ import (
 
 // TestPublishDuplicateHash tests publishing same content twice
 func TestPublishDuplicateHash(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish first time
@@ -35,7 +34,6 @@ func TestPublishDuplicateHash(t *testing.T) {
 
 // TestPublishWithPush tests publish with --push flag
 func TestPublishWithPush(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a package
@@ -118,7 +116,6 @@ func TestPublishConcurrentSamePackage(t *testing.T) {
 
 // TestPublishNoPackageJSON tests publishing without package.json
 func TestPublishNoPackageJSON(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create directory without package.json
@@ -139,7 +136,6 @@ func TestPublishNoPackageJSON(t *testing.T) {
 
 // TestPublishEmptyPackage tests publishing package with no files
 func TestPublishEmptyPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package with only package.json
@@ -159,7 +155,6 @@ func TestPublishEmptyPackage(t *testing.T) {
 
 // TestPublishLargePackage tests publishing package with many files
 func TestPublishLargePackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package with many files
@@ -196,7 +191,6 @@ func TestPublishLargePackage(t *testing.T) {
 
 // TestPublishNestedDirectories tests publishing with deeply nested directories
 func TestPublishNestedDirectories(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create deeply nested structure
@@ -229,7 +223,6 @@ func TestPublishNestedDirectories(t *testing.T) {
 
 // TestPublishScopedPackage tests publishing scoped package
 func TestPublishScopedPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create scoped package
@@ -251,7 +244,6 @@ func TestPublishScopedPackage(t *testing.T) {
 
 // TestPublishVersionUpdate tests publishing new version of same package
 func TestPublishVersionUpdate(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Publish v1.0.0
@@ -293,7 +285,6 @@ func TestPublishVersionUpdate(t *testing.T) {
 
 // TestPublishSpecialCharacters tests publishing with special characters in filenames
 func TestPublishSpecialCharacters(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package with special characters (within limits)
@@ -330,7 +321,6 @@ func TestPublishSpecialCharacters(t *testing.T) {
 
 // TestPublishSymlinks tests publishing package containing symlinks
 func TestPublishSymlinks(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package
@@ -362,7 +352,6 @@ func TestPublishReadOnlyFiles(t *testing.T) {
 		t.Skip("Skipping read-only test in CI")
 	}
 
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package with read-only file
@@ -390,7 +379,6 @@ func TestPublishReadOnlyFiles(t *testing.T) {
 
 // TestPublishPreservesFileMetadata tests that file metadata is preserved
 func TestPublishPreservesFileMetadata(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create package with executable file

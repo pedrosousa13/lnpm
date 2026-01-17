@@ -31,3 +31,5 @@ coverage.html
 # Local lnpm data (for testing)
 .lnpm/
 lnpm.lock
+
+.claude/

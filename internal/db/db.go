@@ -102,13 +102,12 @@ func initDB() (*DB, error) {
 	}
 	debug.Logf("db: store path %s", storePath)
 
-	// Ensure db directory exists
-	dbDir := filepath.Join(storePath, "db")
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create db directory: %w", err)
+	// Ensure store directory exists
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
-	dbPath := filepath.Join(dbDir, "lnpm.db")
+	dbPath := filepath.Join(storePath, "lnpm.db")
 	debug.Logf("db: opening %s", dbPath)
 
 	// Open bbolt database

@@ -10,7 +10,6 @@ import (
 
 // TestE2EPublishAddRemove tests complete publish → add → remove workflow
 func TestE2EPublishAddRemove(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// 1. Publish a package
@@ -57,7 +56,6 @@ func TestE2EPublishAddRemove(t *testing.T) {
 
 // TestE2EMultiplePackagesMultipleProjects tests linking multiple packages to multiple projects
 func TestE2EMultiplePackagesMultipleProjects(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Publish multiple packages
@@ -118,7 +116,6 @@ func TestE2EMultiplePackagesMultipleProjects(t *testing.T) {
 
 // TestE2ERetreatWorkflow tests full retreat workflow
 func TestE2ERetreatWorkflow(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Publish packages
@@ -171,7 +168,6 @@ func TestE2ERetreatWorkflow(t *testing.T) {
 
 // TestE2EWorkspacePublish tests publishing from a workspace
 func TestE2EWorkspacePublish(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Copy npm workspace fixture
@@ -192,7 +188,6 @@ func TestE2EWorkspacePublish(t *testing.T) {
 
 // TestE2EAddToWorkspacePackage tests adding a package to a workspace sub-package
 func TestE2EAddToWorkspacePackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Publish a standalone package
@@ -224,7 +219,6 @@ func TestE2EAddToWorkspacePackage(t *testing.T) {
 
 // TestE2EScopedPackageWorkflow tests complete workflow with scoped packages
 func TestE2EScopedPackageWorkflow(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Publish scoped package
@@ -265,7 +259,6 @@ func TestE2EScopedPackageWorkflow(t *testing.T) {
 
 // TestE2EMixedDependencies tests workflow with both regular and dev dependencies
 func TestE2EMixedDependencies(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Publish packages

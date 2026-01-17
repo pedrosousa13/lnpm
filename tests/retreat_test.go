@@ -10,7 +10,6 @@ import (
 
 // TestRetreatBasic tests basic retreat functionality
 func TestRetreatBasic(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -53,7 +52,6 @@ func TestRetreatBasic(t *testing.T) {
 
 // TestRetreatNoForceFlag tests that retreat requires --force flag
 func TestRetreatNoForceFlag(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -90,7 +88,6 @@ func TestRetreatNoForceFlag(t *testing.T) {
 
 // TestRetreatNoLinks tests retreating when no links exist
 func TestRetreatNoLinks(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create a project without any links
@@ -111,7 +108,6 @@ func TestRetreatNoLinks(t *testing.T) {
 
 // TestRetreatRestoresOriginalVersion tests that original dependency version is restored
 func TestRetreatRestoresOriginalVersion(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create project with original dependency
@@ -163,7 +159,6 @@ func TestRetreatRestoresOriginalVersion(t *testing.T) {
 
 // TestRetreatMultiplePackages tests retreating with multiple linked packages
 func TestRetreatMultiplePackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish multiple packages
@@ -215,7 +210,6 @@ func TestRetreatMultiplePackages(t *testing.T) {
 
 // TestRetreatPreservesOtherDependencies tests that retreat doesn't remove non-lnpm dependencies
 func TestRetreatPreservesOtherDependencies(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create project with mixed dependencies
@@ -269,7 +263,6 @@ func TestRetreatPreservesOtherDependencies(t *testing.T) {
 
 // TestRetreatPartiallyLinked tests retreat with some packages linked, some not
 func TestRetreatPartiallyLinked(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish two packages
@@ -319,7 +312,6 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 
 // TestRetreatCleansGitignore tests that .gitignore is cleaned up
 func TestRetreatCleansGitignore(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -361,7 +353,6 @@ func TestRetreatCleansGitignore(t *testing.T) {
 
 // TestRetreatWithDevDependency tests retreat with dev dependencies
 func TestRetreatWithDevDependency(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -398,7 +389,6 @@ func TestRetreatWithDevDependency(t *testing.T) {
 
 // TestRetreatWithScopedPackages tests retreat with scoped packages
 func TestRetreatWithScopedPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a scoped package

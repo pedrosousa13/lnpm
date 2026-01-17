@@ -11,7 +11,6 @@ import (
 
 // TestAddBasicPackage tests adding a basic unscoped package
 func TestAddBasicPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -47,7 +46,6 @@ func TestAddBasicPackage(t *testing.T) {
 
 // TestAddScopedPackage tests adding a scoped package (@org/name)
 func TestAddScopedPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a scoped package
@@ -79,7 +77,6 @@ func TestAddScopedPackage(t *testing.T) {
 
 // TestAddDevDependency tests adding a package as dev dependency
 func TestAddDevDependency(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -109,7 +106,6 @@ func TestAddDevDependency(t *testing.T) {
 
 // TestAddPureFlag tests adding with --pure flag (no package.json update)
 func TestAddPureFlag(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -144,7 +140,6 @@ func TestAddPureFlag(t *testing.T) {
 
 // TestAddPackageNotFound tests adding a package that doesn't exist
 func TestAddPackageNotFound(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create a project
@@ -162,7 +157,6 @@ func TestAddPackageNotFound(t *testing.T) {
 
 // TestAddNoPackageJSON tests adding when no package.json exists
 func TestAddNoPackageJSON(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create empty directory
@@ -183,7 +177,6 @@ func TestAddNoPackageJSON(t *testing.T) {
 
 // TestAddAlreadyAdded tests adding a package that's already added (idempotent)
 func TestAddAlreadyAdded(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -218,7 +211,6 @@ func TestAddAlreadyAdded(t *testing.T) {
 
 // TestAddUpdatesExisting tests updating an existing dependency
 func TestAddUpdatesExisting(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish version 1.0.0
@@ -373,7 +365,6 @@ func TestAddConcurrentDifferentProjects(t *testing.T) {
 
 // TestAddWithNPMWorkspace tests adding to npm workspace project
 func TestAddWithNPMWorkspace(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -406,7 +397,6 @@ func TestAddWithNPMWorkspace(t *testing.T) {
 
 // TestAddLockfileContents tests that lockfile contains correct information
 func TestAddLockfileContents(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package

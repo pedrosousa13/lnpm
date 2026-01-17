@@ -35,20 +35,15 @@ func setupTest(t *testing.T) *TestEnvironment {
 	// Create temp store directory
 	storeDir := t.TempDir()
 
-	// Set LNPM_STORE env var for isolated store
-	originalStore := os.Getenv("LNPM_STORE")
-	if err := os.Setenv("LNPM_STORE", storeDir); err != nil {
-		t.Fatalf("Failed to set LNPM_STORE: %v", err)
-	}
+	// Set LNPM_STORE env var for isolated store (t.Setenv is parallel-safe)
+	t.Setenv("LNPM_STORE", storeDir)
 
-	// Cleanup: restore env and directory
+	// Reset database singleton for test isolation
+	db.ResetForTesting()
+
+	// Cleanup: restore directory
 	t.Cleanup(func() {
 		_ = os.Chdir(originalDir)
-		if originalStore != "" {
-			_ = os.Setenv("LNPM_STORE", originalStore)
-		} else {
-			_ = os.Unsetenv("LNPM_STORE")
-		}
 	})
 
 	// Get database instance (will use LNPM_STORE)

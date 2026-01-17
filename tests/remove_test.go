@@ -11,7 +11,6 @@ import (
 
 // TestRemoveSinglePackage tests removing a single package
 func TestRemoveSinglePackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -55,7 +54,6 @@ func TestRemoveSinglePackage(t *testing.T) {
 
 // TestRemoveAllPackages tests removing all packages with --all flag
 func TestRemoveAllPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish multiple packages
@@ -102,7 +100,6 @@ func TestRemoveAllPackages(t *testing.T) {
 
 // TestRemoveRestoresOriginalVersion tests that original version is restored
 func TestRemoveRestoresOriginalVersion(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create project with original dependency
@@ -154,7 +151,6 @@ func TestRemoveRestoresOriginalVersion(t *testing.T) {
 
 // TestRemovePackageNotLinked tests removing a package that isn't linked
 func TestRemovePackageNotLinked(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create a project without any links
@@ -172,7 +168,6 @@ func TestRemovePackageNotLinked(t *testing.T) {
 
 // TestRemoveNoOriginalVersion tests removing when no original version recorded
 func TestRemoveNoOriginalVersion(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -210,7 +205,6 @@ func TestRemoveNoOriginalVersion(t *testing.T) {
 
 // TestRemoveMultipleKeepOne tests removing one package while keeping others
 func TestRemoveMultipleKeepOne(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish multiple packages
@@ -268,7 +262,6 @@ func TestRemoveMultipleKeepOne(t *testing.T) {
 
 // TestRemoveScopedPackage tests removing a scoped package
 func TestRemoveScopedPackage(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a scoped package
@@ -308,7 +301,6 @@ func TestRemoveScopedPackage(t *testing.T) {
 
 // TestRemoveAllNoPackages tests --all flag when no packages are linked
 func TestRemoveAllNoPackages(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create a project without any links
@@ -328,7 +320,6 @@ func TestRemoveAllNoPackages(t *testing.T) {
 
 // TestRemoveDevDependency tests removing a dev dependency
 func TestRemoveDevDependency(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a test package
@@ -364,7 +355,6 @@ func TestRemoveDevDependency(t *testing.T) {
 
 // TestRemoveLockfileDeleted tests that lockfile is deleted when empty
 func TestRemoveLockfileDeleted(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish a single package
@@ -402,7 +392,6 @@ func TestRemoveLockfileDeleted(t *testing.T) {
 
 // TestRemoveLockfileUpdated tests that lockfile is updated when not empty
 func TestRemoveLockfileUpdated(t *testing.T) {
-	t.Parallel()
 	env := setupTest(t)
 
 	// Create and publish two packages
