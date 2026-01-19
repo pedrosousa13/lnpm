@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -173,6 +174,22 @@ func ResetForTesting() {
 	}
 	instance = nil
 	once = sync.Once{}
+}
+
+// normalizePath normalizes a path to handle symlink issues consistently
+// On macOS, /var is a symlink to /private/var, so we normalize both cases
+func normalizePath(path string) string {
+	// Try to resolve symlinks if path exists
+	if realPath, err := filepath.EvalSymlinks(path); err == nil {
+		return realPath
+	}
+
+	// For non-existent paths on macOS, manually handle /var -> /private/var
+	if !strings.HasPrefix(path, "/private/") && strings.HasPrefix(path, "/var/") {
+		return "/private" + path
+	}
+
+	return filepath.Clean(path)
 }
 
 // Helper functions for ID encoding
@@ -369,6 +386,9 @@ func (db *DB) InsertProject(proj *Project) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	// Normalize path to avoid symlink issues (e.g., /var vs /private/var on macOS)
+	proj.Path = normalizePath(proj.Path)
+
 	return db.db.Update(func(tx *bolt.Tx) error {
 		projects := tx.Bucket(bucketProjects)
 		byPath := tx.Bucket(bucketProjectsByPath)
@@ -415,10 +435,33 @@ func (db *DB) InsertProject(proj *Project) error {
 	})
 }
 
+// GetAllProjects returns all projects in the database
+func (db *DB) GetAllProjects() ([]*Project, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var projects []*Project
+	err := db.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketProjects)
+		return b.ForEach(func(k, v []byte) error {
+			var proj Project
+			if err := json.Unmarshal(v, &proj); err != nil {
+				return err
+			}
+			projects = append(projects, &proj)
+			return nil
+		})
+	})
+	return projects, err
+}
+
 // GetProjectByPath returns a project by its path
 func (db *DB) GetProjectByPath(path string) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
+
+	// Normalize path to avoid symlink issues (e.g., /var vs /private/var on macOS)
+	path = normalizePath(path)
 
 	var proj *Project
 	err := db.db.View(func(tx *bolt.Tx) error {

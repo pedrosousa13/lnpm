@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -160,7 +161,7 @@ func TestPublishLargePackage(t *testing.T) {
 	// Create package with many files
 	files := make(map[string]string)
 	for i := 0; i < 100; i++ {
-		files["file-"+string(rune('a'+i%26))+".js"] = "module.exports = " + string(rune('0'+i%10)) + ";"
+		files[fmt.Sprintf("file-%d.js", i)] = fmt.Sprintf("module.exports = %d;", i)
 	}
 	pkgDir := env.CreateTestPackage("large-pkg", "1.0.0", files)
 	if err := os.Chdir(pkgDir); err != nil {
