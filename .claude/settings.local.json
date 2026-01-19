@@ -9,7 +9,11 @@
       "Bash(git push)",
       "Bash(golangci-lint run:*)",
       "Bash(grep:*)",
-      "Bash(go clean:*)"
+      "Bash(go clean:*)",
+      "Bash(LNPM_DEBUG=1 go test:*)",
+      "Bash(git reset:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr checks:*)"
     ]
   }
 }
