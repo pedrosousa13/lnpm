@@ -2,12 +2,14 @@ package tests
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -474,4 +476,106 @@ func cleanLnpmDirs(root string) error {
 		}
 		return nil
 	})
+}
+
+// CreateTestPackageWithScripts creates a test package with custom scripts
+func (te *TestEnvironment) CreateTestPackageWithScripts(name, version string, files, scripts map[string]string) string {
+	te.t.Helper()
+
+	pkgDir := filepath.Join(te.TempDir, "packages", name)
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		te.t.Fatalf("Failed to create package dir: %v", err)
+	}
+
+	// Create package.json with scripts
+	pkgJSON := map[string]interface{}{
+		"name":    name,
+		"version": version,
+	}
+	if len(scripts) > 0 {
+		pkgJSON["scripts"] = scripts
+	}
+
+	data, _ := json.MarshalIndent(pkgJSON, "", "  ")
+	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"), data, 0644); err != nil {
+		te.t.Fatalf("Failed to write package.json: %v", err)
+	}
+
+	// Create additional files
+	for path, content := range files {
+		fullPath := filepath.Join(pkgDir, path)
+		dir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			te.t.Fatalf("Failed to create dir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			te.t.Fatalf("Failed to write file %s: %v", path, err)
+		}
+	}
+
+	return pkgDir
+}
+
+// AssertScriptMissing verifies script stripped from package.json at given path
+func (te *TestEnvironment) AssertScriptMissing(storePath, packageName, scriptName string) {
+	te.t.Helper()
+
+	pkgJSONPath := filepath.Join(storePath, "package.json")
+	data, err := os.ReadFile(pkgJSONPath)
+	if err != nil {
+		te.t.Fatalf("Failed to read package.json at %s: %v", pkgJSONPath, err)
+	}
+
+	var pkgJSON map[string]interface{}
+	if err := json.Unmarshal(data, &pkgJSON); err != nil {
+		te.t.Fatalf("Failed to parse package.json: %v", err)
+	}
+
+	scripts, ok := pkgJSON["scripts"].(map[string]interface{})
+	if !ok {
+		// No scripts field means all scripts are missing - OK
+		return
+	}
+
+	if _, exists := scripts[scriptName]; exists {
+		te.t.Errorf("Expected script '%s' to be missing from %s, but it exists", scriptName, pkgJSONPath)
+	}
+}
+
+// AssertScriptExists verifies script present in package.json at given path
+func (te *TestEnvironment) AssertScriptExists(storePath, packageName, scriptName string) {
+	te.t.Helper()
+
+	pkgJSONPath := filepath.Join(storePath, "package.json")
+	data, err := os.ReadFile(pkgJSONPath)
+	if err != nil {
+		te.t.Fatalf("Failed to read package.json at %s: %v", pkgJSONPath, err)
+	}
+
+	var pkgJSON map[string]interface{}
+	if err := json.Unmarshal(data, &pkgJSON); err != nil {
+		te.t.Fatalf("Failed to parse package.json: %v", err)
+	}
+
+	scripts, ok := pkgJSON["scripts"].(map[string]interface{})
+	if !ok {
+		te.t.Errorf("Expected scripts field in package.json at %s", pkgJSONPath)
+		return
+	}
+
+	if _, exists := scripts[scriptName]; !exists {
+		te.t.Errorf("Expected script '%s' to exist in %s, but it doesn't", scriptName, pkgJSONPath)
+	}
+}
+
+// WaitForWatchSync waits for a sync event on the channel with timeout
+func (te *TestEnvironment) WaitForWatchSync(syncCh chan []string, timeout time.Duration) ([]string, error) {
+	te.t.Helper()
+
+	select {
+	case files := <-syncCh:
+		return files, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("timeout waiting for watch sync after %v", timeout)
+	}
 }

@@ -386,6 +386,33 @@ lnpm automatically detects the best method and falls back gracefully with helpfu
 | Cross-filesystem | Parallel copy (4-8x faster) | Sequential copy |
 | Visibility | `lnpm status` | Limited |
 
+## Benchmarks
+
+### lnpm vs yalc (100 files)
+
+| Operation | lnpm | yalc | Speedup |
+|-----------|------|------|---------|
+| `publish` | **75ms** | 164ms | 2.2x |
+| `add` | **71ms** | 251ms | 3.5x |
+| `push` | **90ms** | 385ms | 4.3x |
+
+### Detailed benchmarks (Apple M1 Pro, APFS)
+
+| Operation | Files | Time | Memory |
+|-----------|-------|------|--------|
+| `publish` | 100 | **17ms** | 3.5 MB |
+| `add` | 100 | **48ms** | 340 KB |
+| `push` (1 project) | 100 | **146ms** | 3.8 MB |
+| `push` (5 projects) | 100 | **183ms** | 4.5 MB |
+| `publish` | 500 | **41ms** | 17 MB |
+
+Run benchmarks yourself:
+```bash
+make bench          # Go benchmarks
+make bench-mem      # With memory stats
+make bench-compare  # Compare vs yalc (if installed)
+```
+
 ## Platform Support
 
 - **Linux** — amd64, arm64

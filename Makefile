@@ -37,6 +37,18 @@ test-coverage:
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
+# Run benchmarks
+bench:
+	go test -bench=. -benchtime=3s ./tests/
+
+# Run benchmarks with memory allocation stats
+bench-mem:
+	go test -bench=. -benchtime=3s -benchmem ./tests/
+
+# Compare lnpm vs competitors (yalc, relative-deps)
+bench-compare:
+	./scripts/benchmark-compare.sh
+
 # Run linter
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
@@ -90,6 +102,9 @@ help:
 	@echo "  deps          - Download and tidy dependencies"
 	@echo "  test          - Run tests"
 	@echo "  test-coverage - Run tests with coverage report"
+	@echo "  bench         - Run Go benchmarks"
+	@echo "  bench-mem     - Run benchmarks with memory stats"
+	@echo "  bench-compare - Compare lnpm vs yalc/relative-deps"
 	@echo "  lint          - Run linter"
 	@echo "  fmt           - Format code"
 	@echo "  install       - Install to GOPATH/bin"
