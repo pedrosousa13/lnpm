@@ -32,4 +32,6 @@ coverage.html
 .lnpm/
 lnpm.lock
 
+# Local Claude AI data
 .claude/
+.planning/
