@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.2](https://github.com/pedrosousa13/lnpm/compare/v1.8.1...v1.8.2) (2026-01-19)
+
+
+### Bug Fixes
+
+* align add and push with yalc ([#28](https://github.com/pedrosousa13/lnpm/issues/28)) ([1abccde](https://github.com/pedrosousa13/lnpm/commit/1abccde8f8ead26a13de6711cd91bdd5aeecc779))
+
 ## [Unreleased]
 
 ### Changed
