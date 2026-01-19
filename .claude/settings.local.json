@@ -25,7 +25,14 @@
       "Bash(cat:*)",
       "Bash(python3:*)",
       "Bash(readlink:*)",
-      "Bash(go run:*)"
+      "Bash(go run:*)",
+      "Bash(wc:*)",
+      "Bash(chmod:*)",
+      "Bash(./scripts/benchmark-compare.sh:*)",
+      "Bash(bash:*)",
+      "Bash(make test:*)",
+      "Bash(make lint:*)",
+      "Bash(gh pr view:*)"
     ]
   }
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -146,7 +147,7 @@ func TestAddIgnoresLnpmReferenceAsOriginal(t *testing.T) {
 	})
 }
 
-// TestRetreatIgnoresCorruptedOriginalVersion uses corrupted-lockfile fixture
+// TestRetreatIgnoresCorruptedOriginalVersion tests retreat ignores file:.lnpm/ as original
 func TestRetreatIgnoresCorruptedOriginalVersion(t *testing.T) {
 	env := setupTest(t)
 
@@ -161,8 +162,36 @@ func TestRetreatIgnoresCorruptedOriginalVersion(t *testing.T) {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
-	// Copy corrupted-lockfile fixture
-	projectDir := env.CopyFixture("corrupted-lockfile")
+	// Create project with corrupted lockfile (originalVersion is file:.lnpm/...)
+	projectDir := env.CreateTestPackage("corrupted-project", "1.0.0", nil)
+
+	// Write package.json with file: reference
+	pkgJSON := `{
+  "name": "corrupted-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "my-pkg": "file:.lnpm/my-pkg"
+  }
+}`
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatalf("Failed to write package.json: %v", err)
+	}
+
+	// Create corrupted lockfile with file:.lnpm/ as originalVersion
+	lock := &lockfile.LockFile{
+		Version:  1,
+		Packages: make(map[string]lockfile.Package),
+	}
+	lock.Add("my-pkg", lockfile.Package{
+		Version:         "1.0.0",
+		Hash:            "abc123",
+		Source:          "/some/path",
+		Linked:          time.Now(),
+		OriginalVersion: "file:.lnpm/my-pkg", // Corrupted - should be ignored
+	})
+	if err := lock.Save(projectDir); err != nil {
+		t.Fatalf("Failed to save lockfile: %v", err)
+	}
 
 	// Create .lnpm directory so retreat thinks package is linked
 	lnpmDir := filepath.Join(projectDir, ".lnpm", "my-pkg")
