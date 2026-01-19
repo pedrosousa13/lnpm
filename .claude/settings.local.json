@@ -13,7 +13,8 @@
       "Bash(LNPM_DEBUG=1 go test:*)",
       "Bash(git reset:*)",
       "Bash(git push:*)",
-      "Bash(gh pr checks:*)"
+      "Bash(gh pr checks:*)",
+      "Bash(gh run watch:*)"
     ]
   }
 }
