@@ -10,6 +10,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -74,6 +75,16 @@ func RunAdd(packageSpec string, dev bool, pure bool) error {
 	linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
 	if err != nil {
 		return fmt.Errorf("failed to link package: %w", err)
+	}
+
+	// Update .gitignore if enabled
+	cfg := config.Get()
+	if cfg.ShouldManageGitignore() {
+		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
+			fmt.Printf("  ⚠ Could not update .gitignore: %v\n", err)
+		} else if added {
+			fmt.Println("  ✓ Added .lnpm/ to .gitignore")
+		}
 	}
 
 	// Detect package manager

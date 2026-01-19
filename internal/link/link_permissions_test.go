@@ -1,0 +1,425 @@
+package link
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/pedrosousa13/lnpm/internal/pack"
+)
+
+// TestLink_ReadOnlyDestination tests linking to read-only destination
+func TestLink_ReadOnlyDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - read-only behavior differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+
+	// Create read-only project directory
+	if err := os.MkdirAll(projectDir, 0555); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(projectDir, 0755) // Cleanup
+	}()
+
+	// Create store
+	storeDir := filepath.Join(tmpDir, "store", "test-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	// Create test file in store
+	testFile := filepath.Join(storeDir, "index.js")
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "index.js", Size: 4, Mode: 0644, Hash: "test123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Try to link - should fail
+	linker := New(projectDir)
+	_, err := linker.Link("test-pkg", storeDir, fileInfos)
+	if err == nil {
+		t.Error("Expected error linking to read-only destination")
+	}
+}
+
+// TestLink_PreservesExecutablePermissions tests that executable permissions are preserved
+func TestLink_PreservesExecutablePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - permission handling differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create store with executable file
+	storeDir := filepath.Join(tmpDir, "store", "exec-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	// Create executable file
+	execFile := filepath.Join(storeDir, "bin", "script")
+	if err := os.MkdirAll(filepath.Dir(execFile), 0755); err != nil {
+		t.Fatalf("Failed to create bin dir: %v", err)
+	}
+	if err := os.WriteFile(execFile, []byte("#!/bin/sh\necho test"), 0755); err != nil {
+		t.Fatalf("Failed to create exec file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "bin/script", Size: 20, Mode: 0755, Hash: "exec123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Link
+	linker := New(projectDir)
+	_, err := linker.Link("exec-pkg", storeDir, fileInfos)
+	if err != nil {
+		t.Fatalf("Failed to link: %v", err)
+	}
+
+	// Verify executable permission preserved in linked file
+	linkedFile := filepath.Join(projectDir, ".lnpm", "exec-pkg", "bin", "script")
+	info, err := os.Stat(linkedFile)
+	if err != nil {
+		t.Fatalf("Failed to stat linked file: %v", err)
+	}
+
+	mode := info.Mode() & 0777
+	if mode&0111 == 0 {
+		t.Errorf("Executable permission not preserved, got %o", mode)
+	}
+}
+
+// TestLink_DirectoryPermissions tests that directories are created with correct permissions
+func TestLink_DirectoryPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - permission handling differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create store
+	storeDir := filepath.Join(tmpDir, "store", "test-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	// Create nested file
+	nestedFile := filepath.Join(storeDir, "lib", "utils", "helper.js")
+	if err := os.MkdirAll(filepath.Dir(nestedFile), 0755); err != nil {
+		t.Fatalf("Failed to create nested dir: %v", err)
+	}
+	if err := os.WriteFile(nestedFile, []byte("helper"), 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "lib/utils/helper.js", Size: 6, Mode: 0644, Hash: "helper123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Link
+	linker := New(projectDir)
+	_, err := linker.Link("test-pkg", storeDir, fileInfos)
+	if err != nil {
+		t.Fatalf("Failed to link: %v", err)
+	}
+
+	// Check .lnpm directory permissions
+	lnpmDir := filepath.Join(projectDir, ".lnpm")
+	info, err := os.Stat(lnpmDir)
+	if err != nil {
+		t.Fatalf("Failed to stat .lnpm dir: %v", err)
+	}
+
+	mode := info.Mode() & 0777
+	expectedMode := os.FileMode(0755)
+	if mode != expectedMode {
+		t.Errorf("Expected .lnpm mode %o, got %o", expectedMode, mode)
+	}
+
+	// Check nested directory permissions
+	nestedDir := filepath.Join(projectDir, ".lnpm", "test-pkg", "lib", "utils")
+	info, err = os.Stat(nestedDir)
+	if err != nil {
+		t.Fatalf("Failed to stat nested dir: %v", err)
+	}
+
+	mode = info.Mode() & 0777
+	if mode != expectedMode {
+		t.Errorf("Expected nested dir mode %o, got %o", expectedMode, mode)
+	}
+}
+
+// TestLink_NodeModulesPermissions tests node_modules symlink creation permissions
+func TestLink_NodeModulesPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - symlink handling differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create store
+	storeDir := filepath.Join(tmpDir, "store", "test-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	testFile := filepath.Join(storeDir, "index.js")
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "index.js", Size: 4, Mode: 0644, Hash: "test123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Link
+	linker := New(projectDir)
+	_, err := linker.Link("test-pkg", storeDir, fileInfos)
+	if err != nil {
+		t.Fatalf("Failed to link: %v", err)
+	}
+
+	// Check node_modules directory permissions
+	nodeModulesDir := filepath.Join(projectDir, "node_modules")
+	info, err := os.Stat(nodeModulesDir)
+	if err != nil {
+		t.Fatalf("Failed to stat node_modules: %v", err)
+	}
+
+	mode := info.Mode() & 0777
+	expectedMode := os.FileMode(0755)
+	if mode != expectedMode {
+		t.Errorf("Expected node_modules mode %o, got %o", expectedMode, mode)
+	}
+
+	// Check symlink exists
+	symlinkPath := filepath.Join(nodeModulesDir, "test-pkg")
+	if _, err := os.Lstat(symlinkPath); err != nil {
+		t.Errorf("Symlink doesn't exist: %v", err)
+	}
+}
+
+// TestLink_ScopedPackageDirectoryPermissions tests scoped package directory creation
+func TestLink_ScopedPackageDirectoryPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - permission handling differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create store
+	storeDir := filepath.Join(tmpDir, "store", "@org", "scoped-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	testFile := filepath.Join(storeDir, "index.js")
+	if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "index.js", Size: 4, Mode: 0644, Hash: "test123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Link scoped package
+	linker := New(projectDir)
+	_, err := linker.Link("@org/scoped-pkg", storeDir, fileInfos)
+	if err != nil {
+		t.Fatalf("Failed to link: %v", err)
+	}
+
+	// Check @org directory permissions in node_modules
+	orgDir := filepath.Join(projectDir, "node_modules", "@org")
+	info, err := os.Stat(orgDir)
+	if err != nil {
+		t.Fatalf("Failed to stat @org dir: %v", err)
+	}
+
+	mode := info.Mode() & 0777
+	expectedMode := os.FileMode(0755)
+	if mode != expectedMode {
+		t.Errorf("Expected @org dir mode %o, got %o", expectedMode, mode)
+	}
+}
+
+// TestLink_ExistingReadOnlyFile tests linking when destination has read-only files
+func TestLink_ExistingReadOnlyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - read-only behavior differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create .lnpm with existing read-only file
+	lnpmDir := filepath.Join(projectDir, ".lnpm", "test-pkg")
+	if err := os.MkdirAll(lnpmDir, 0755); err != nil {
+		t.Fatalf("Failed to create lnpm dir: %v", err)
+	}
+	existingFile := filepath.Join(lnpmDir, "index.js")
+	if err := os.WriteFile(existingFile, []byte("old"), 0444); err != nil {
+		t.Fatalf("Failed to create existing file: %v", err)
+	}
+
+	// Create store
+	storeDir := filepath.Join(tmpDir, "store", "test-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	newFile := filepath.Join(storeDir, "index.js")
+	if err := os.WriteFile(newFile, []byte("new"), 0644); err != nil {
+		t.Fatalf("Failed to create new file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "index.js", Size: 3, Mode: 0644, Hash: "new123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Link - should handle read-only existing file
+	linker := New(projectDir)
+	_, err := linker.Link("test-pkg", storeDir, fileInfos)
+	// May fail or succeed depending on OS - we just verify it doesn't panic
+	t.Logf("Link with existing read-only file returned: %v", err)
+}
+
+// TestUnlink_ReadOnlyFiles tests unlinking read-only files
+func TestUnlink_ReadOnlyFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - read-only behavior differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create linked package with read-only files
+	lnpmDir := filepath.Join(projectDir, ".lnpm", "test-pkg")
+	if err := os.MkdirAll(lnpmDir, 0755); err != nil {
+		t.Fatalf("Failed to create lnpm dir: %v", err)
+	}
+
+	readOnlyFile := filepath.Join(lnpmDir, "readonly.js")
+	if err := os.WriteFile(readOnlyFile, []byte("readonly"), 0444); err != nil {
+		t.Fatalf("Failed to create readonly file: %v", err)
+	}
+
+	// Create symlink
+	nodeModulesDir := filepath.Join(projectDir, "node_modules")
+	if err := os.MkdirAll(nodeModulesDir, 0755); err != nil {
+		t.Fatalf("Failed to create node_modules: %v", err)
+	}
+	symlinkPath := filepath.Join(nodeModulesDir, "test-pkg")
+	if err := os.Symlink("../.lnpm/test-pkg", symlinkPath); err != nil {
+		t.Fatalf("Failed to create symlink: %v", err)
+	}
+
+	// Unlink
+	linker := New(projectDir)
+	err := linker.Unlink("test-pkg")
+	// Should handle read-only files
+	t.Logf("Unlink with read-only files returned: %v", err)
+}
+
+// TestLink_PreservesVariousPermissions tests preserving different file permissions
+func TestLink_PreservesVariousPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - permission handling differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create store with files of various permissions
+	storeDir := filepath.Join(tmpDir, "store", "perm-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+
+	testCases := []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"file-644.js", 0644},
+		{"file-755.sh", 0755},
+		{"file-600.key", 0600},
+		{"file-640.conf", 0640},
+	}
+
+	var files []pack.FileEntryData
+	for _, tc := range testCases {
+		filePath := filepath.Join(storeDir, tc.name)
+		if err := os.WriteFile(filePath, []byte("content"), tc.mode); err != nil {
+			t.Fatalf("Failed to create %s: %v", tc.name, err)
+		}
+		files = append(files, pack.FileEntryData{
+			RelPath: tc.name,
+			Size:    7,
+			Mode:    tc.mode,
+			Hash:    "hash-" + tc.name,
+		})
+	}
+
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Link
+	linker := New(projectDir)
+	_, err := linker.Link("perm-pkg", storeDir, fileInfos)
+	if err != nil {
+		t.Fatalf("Failed to link: %v", err)
+	}
+
+	// Verify each file's permissions
+	for _, tc := range testCases {
+		linkedFile := filepath.Join(projectDir, ".lnpm", "perm-pkg", tc.name)
+		info, err := os.Stat(linkedFile)
+		if err != nil {
+			t.Errorf("Failed to stat %s: %v", tc.name, err)
+			continue
+		}
+
+		actualMode := info.Mode() & 0777
+		if actualMode != tc.mode {
+			t.Errorf("File %s: expected mode %o, got %o", tc.name, tc.mode, actualMode)
+		}
+	}
+}

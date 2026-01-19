@@ -8,6 +8,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -104,6 +105,16 @@ func RunRetreat(force bool) error {
 		fmt.Printf("  ⚠ Failed to remove .lnpm/: %v\n", err)
 	} else {
 		fmt.Println("  ✓ Removed .lnpm/")
+	}
+
+	// Clean up .gitignore if enabled
+	cfg := config.Get()
+	if cfg.ShouldManageGitignore() {
+		if err := gitignore.RemoveFromGitignore(cwd, ".lnpm/"); err != nil {
+			fmt.Printf("  ⚠ Could not clean .gitignore: %v\n", err)
+		} else {
+			fmt.Println("  ✓ Cleaned .gitignore")
+		}
 	}
 
 	// Remove lnpm.lock
