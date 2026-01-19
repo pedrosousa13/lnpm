@@ -460,7 +460,7 @@ func stripLifecycleScripts(destPath string) error {
 
 	// Atomic rename (overwrites existing)
 	if err := os.Rename(tmpPath, pkgJSONPath); err != nil {
-		os.Remove(tmpPath) // Clean up on failure
+		_ = os.Remove(tmpPath) // Clean up on failure (error ignored)
 		return fmt.Errorf("failed to rename package.json: %w", err)
 	}
 

@@ -46,13 +46,17 @@ func TestSymlinkSurvivesNpmInstall(t *testing.T) {
 	pkgJSONPath := filepath.Join(projectDir, "package.json")
 	data, _ := os.ReadFile(pkgJSONPath)
 	var pkgJSON map[string]interface{}
-	json.Unmarshal(data, &pkgJSON)
+	if err := json.Unmarshal(data, &pkgJSON); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
 
 	deps := pkgJSON["dependencies"].(map[string]interface{})
 	deps["is-odd"] = "^3.0.1" // Small package for fast install
 
 	newData, _ := json.MarshalIndent(pkgJSON, "", "  ")
-	os.WriteFile(pkgJSONPath, newData, 0644)
+	if err := os.WriteFile(pkgJSONPath, newData, 0644); err != nil {
+		t.Fatalf("Failed to write: %v", err)
+	}
 
 	// Run npm install
 	cmd := exec.Command("npm", "install", "--prefer-offline")
@@ -289,7 +293,7 @@ func TestNodeModulesCreatedIfMissing(t *testing.T) {
 	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
 
 	// Explicitly remove node_modules if it exists
-	os.RemoveAll(filepath.Join(projectDir, "node_modules"))
+	_ = os.RemoveAll(filepath.Join(projectDir, "node_modules"))
 
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
