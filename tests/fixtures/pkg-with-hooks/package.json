@@ -1,0 +1,12 @@
+{
+  "name": "pkg-with-hooks",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "prepare": "echo 'running prepare'",
+    "prepublish": "echo 'running prepublish'",
+    "build": "echo 'running build'",
+    "test": "echo 'running test'",
+    "postinstall": "echo 'running postinstall'"
+  }
+}

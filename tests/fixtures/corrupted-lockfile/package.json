@@ -1,0 +1,7 @@
+{
+  "name": "corrupted-lockfile-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "my-pkg": "file:.lnpm/my-pkg"
+  }
+}
