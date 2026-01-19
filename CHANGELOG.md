@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.8.0](https://github.com/pedrosousa13/lnpm/compare/v1.7.7...v1.8.0) (2026-01-19)
+
+
+### Features
+
+* add manage_gitignore config option ([cb6f51f](https://github.com/pedrosousa13/lnpm/commit/cb6f51f7e546c2fec84785019cee3ed7ea5263bb))
+
+
+### Bug Fixes
+
+* **ci:** skip concurrent package.json write test ([79360bb](https://github.com/pedrosousa13/lnpm/commit/79360bb422135b56626e30129015bb20db11343d))
+* **ci:** skip flaky concurrent test in CI ([8b11c09](https://github.com/pedrosousa13/lnpm/commit/8b11c09d98577cd5dbd97cdecefb37d0c17f6178))
+* remove unused fmt import ([2122a51](https://github.com/pedrosousa13/lnpm/commit/2122a515cb1abaf5735212ca0382a08c765b844b))
+* revert db path and remove t.Parallel() ([0e33339](https://github.com/pedrosousa13/lnpm/commit/0e333397a6ed31463b59d1a8edaa0a9978da7911))
+* skip flaky symlink test in CI ([dec5411](https://github.com/pedrosousa13/lnpm/commit/dec5411353cc05de4aba534071d460e9d693cb2b))
+* test failures and permission handling ([9c4030b](https://github.com/pedrosousa13/lnpm/commit/9c4030b61cbe3b93d72ec1d6235e7ff623511c87))
+* **tests:** path normalization & test fixes ([f239a04](https://github.com/pedrosousa13/lnpm/commit/f239a049d0914fd7fb6af5aefd49a71035e9b11b))
+* wrap all unchecked error returns ([a8b3431](https://github.com/pedrosousa13/lnpm/commit/a8b3431a7b300cd74edcc7bdb7cdb487ebec558c))
+* wrap defer os.Chmod in anonymous functions ([ffb08da](https://github.com/pedrosousa13/lnpm/commit/ffb08daab46e181f0a911ee791377083d36daacf))
+* wrap defer os.Chmod in store tests ([ca75562](https://github.com/pedrosousa13/lnpm/commit/ca7556231e711c640c9cc8202e8cb964c1c9ac52))
+
 ## [1.7.7](https://github.com/pedrosousa13/lnpm/compare/v1.7.6...v1.7.7) (2026-01-15)
 
 
