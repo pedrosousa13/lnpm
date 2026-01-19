@@ -12,6 +12,12 @@
 - **npm ERESOLVE peer dependency errors** - Use `--legacy-peer-deps` when `--install` flag is used
 - **Retreat restoring wrong version** - No longer saves `file:.lnpm/` as original version; properly removes package from package.json when no original version exists
 - **Re-add losing original version** - Preserve existing original version from lnpm.lock when re-adding a package
+## [1.8.1](https://github.com/pedrosousa13/lnpm/compare/v1.8.0...v1.8.1) (2026-01-19)
+
+
+### Performance Improvements
+
+* **push:** parallelize link, push, publish ops ([#26](https://github.com/pedrosousa13/lnpm/issues/26)) ([f8a9936](https://github.com/pedrosousa13/lnpm/commit/f8a9936e2235e819c0043be9fb415245370363be))
 
 ## [1.8.0](https://github.com/pedrosousa13/lnpm/compare/v1.7.7...v1.8.0) (2026-01-19)
 
