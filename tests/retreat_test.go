@@ -19,7 +19,7 @@ func TestRetreatBasic(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -29,7 +29,7 @@ func TestRetreatBasic(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("retreat-pkg", false, false); err != nil {
+	if err := cli.RunAdd("retreat-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -39,7 +39,7 @@ func TestRetreatBasic(t *testing.T) {
 	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), true)
 
 	// Run retreat with force flag
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestRetreatNoForceFlag(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -71,12 +71,12 @@ func TestRetreatNoForceFlag(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("force-pkg", false, false); err != nil {
+	if err := cli.RunAdd("force-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
 	// Run retreat without force flag (should not fail, but should do nothing)
-	if err := cli.RunRetreat(false); err != nil {
+	if err := cli.RunRetreat(false, false); err != nil {
 		t.Fatalf("Retreat without force failed: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestRetreatNoLinks(t *testing.T) {
 	}
 
 	// Run retreat (should be noop)
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Retreat with no links failed: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestRetreatRestoresOriginalVersion(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestRetreatRestoresOriginalVersion(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("retreat-pkg", false, false); err != nil {
+	if err := cli.RunAdd("retreat-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestRetreatRestoresOriginalVersion(t *testing.T) {
 	env.AssertPackageJSON(projectDir, "retreat-pkg", "file:.lnpm/retreat-pkg")
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestRetreatMultiplePackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false); err != nil {
+		if err := cli.RunPublish(false, "", false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -182,7 +182,7 @@ func TestRetreatMultiplePackages(t *testing.T) {
 	}
 
 	for _, name := range packages {
-		if err := cli.RunAdd(name, false, false); err != nil {
+		if err := cli.RunAdd(name, false, false, false); err != nil {
 			t.Fatalf("Failed to add %s: %v", name, err)
 		}
 	}
@@ -193,7 +193,7 @@ func TestRetreatMultiplePackages(t *testing.T) {
 	}
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestRetreatPreservesOtherDependencies(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -244,12 +244,12 @@ func TestRetreatPreservesOtherDependencies(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("retreat-pkg", false, false); err != nil {
+	if err := cli.RunAdd("retreat-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 	if err := os.Chdir(pkg1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-linked: %v", err)
 	}
 
@@ -282,7 +282,7 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 	if err := os.Chdir(pkg2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-notlinked: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("pkg-linked", false, false); err != nil {
+	if err := cli.RunAdd("pkg-linked", false, false, false); err != nil {
 		t.Fatalf("Failed to add pkg-linked: %v", err)
 	}
 
@@ -301,7 +301,7 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 	env.AssertSymlinkMissing(projectDir, "pkg-notlinked")
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -321,7 +321,7 @@ func TestRetreatCleansGitignore(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestRetreatCleansGitignore(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("git-pkg", false, false); err != nil {
+	if err := cli.RunAdd("git-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestRetreatCleansGitignore(t *testing.T) {
 	env.AssertGitignore(projectDir, ".lnpm/", true)
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -362,7 +362,7 @@ func TestRetreatWithDevDependency(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -372,12 +372,12 @@ func TestRetreatWithDevDependency(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("dev-retreat-pkg", true, false); err != nil {
+	if err := cli.RunAdd("dev-retreat-pkg", true, false, false); err != nil {
 		t.Fatalf("Failed to add dev package: %v", err)
 	}
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func TestRetreatWithScopedPackages(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -408,7 +408,7 @@ func TestRetreatWithScopedPackages(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("@org/scoped-retreat", false, false); err != nil {
+	if err := cli.RunAdd("@org/scoped-retreat", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -416,7 +416,7 @@ func TestRetreatWithScopedPackages(t *testing.T) {
 	env.AssertSymlinkExists(projectDir, "@org/scoped-retreat")
 
 	// Run retreat
-	if err := cli.RunRetreat(true); err != nil {
+	if err := cli.RunRetreat(true, false); err != nil {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 

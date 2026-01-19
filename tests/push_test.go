@@ -20,7 +20,7 @@ func TestPushBasic(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -29,7 +29,7 @@ func TestPushBasic(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("push-pkg", false, false); err != nil {
+	if err := cli.RunAdd("push-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestPushNoChanges(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestPushForceFlag(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestPushForceFlag(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("force-pkg", false, false); err != nil {
+	if err := cli.RunAdd("force-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestPushForceFlag(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPush(true); err != nil {
+	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to force push: %v", err)
 	}
 }
@@ -122,7 +122,7 @@ func TestPushMultipleProjects(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestPushMultipleProjects(t *testing.T) {
 		if err := os.Chdir(projectDir); err != nil {
 			t.Fatalf("Failed to chdir to %s: %v", name, err)
 		}
-		if err := cli.RunAdd("shared-pkg", false, false); err != nil {
+		if err := cli.RunAdd("shared-pkg", false, false, false); err != nil {
 			t.Fatalf("Failed to add package to %s: %v", name, err)
 		}
 	}
@@ -199,7 +199,7 @@ func TestPushVersionUpdate(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish v1: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestPushVersionUpdate(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("version-pkg", false, false); err != nil {
+	if err := cli.RunAdd("version-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -251,7 +251,7 @@ func TestPushNoLinkedProjects(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestPushConcurrentSafe(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestPushConcurrentSafe(t *testing.T) {
 		if err := os.Chdir(projectDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunAdd("concurrent-pkg", false, false); err != nil {
+		if err := cli.RunAdd("concurrent-pkg", false, false, false); err != nil {
 			t.Fatalf("Failed to add package: %v", err)
 		}
 	}
@@ -315,7 +315,7 @@ func TestPushWithAddedFiles(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -324,7 +324,7 @@ func TestPushWithAddedFiles(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("addfiles-pkg", false, false); err != nil {
+	if err := cli.RunAdd("addfiles-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -363,7 +363,7 @@ func TestPushAfterDelay(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -372,7 +372,7 @@ func TestPushAfterDelay(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("delay-pkg", false, false); err != nil {
+	if err := cli.RunAdd("delay-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 

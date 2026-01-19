@@ -1,4 +1,4 @@
-.PHONY: build test clean install lint fmt deps
+.PHONY: build test clean install install-local lint fmt deps
 
 # Build variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -57,6 +57,13 @@ fmt:
 install: build
 	go install $(LDFLAGS) ./cmd/lnpm
 
+# Install to ~/.local/bin for local testing
+install-local: build
+	@mkdir -p ~/.local/bin
+	cp $(BINARY) ~/.local/bin/$(BINARY)
+	@echo "Installed to ~/.local/bin/lnpm"
+	@echo "Make sure ~/.local/bin is in your PATH"
+
 # Clean build artifacts
 clean:
 	rm -f $(BINARY)
@@ -86,6 +93,7 @@ help:
 	@echo "  lint          - Run linter"
 	@echo "  fmt           - Format code"
 	@echo "  install       - Install to GOPATH/bin"
+	@echo "  install-local - Install to ~/.local/bin for testing"
 	@echo "  clean         - Remove build artifacts"
 	@echo "  run ARGS=...  - Build and run with arguments"
 	@echo "  watch         - Watch for changes and rebuild"

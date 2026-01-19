@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -245,6 +246,12 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		fmt.Printf("  💡 Tip: Move your store to the same filesystem for instant linking\n")
 	}
 
+	// Strip lifecycle scripts from package.json to prevent npm from running them
+	// when installed as file: dependency (matches yalc behavior)
+	if err := stripLifecycleScripts(destPath); err != nil {
+		return "", fmt.Errorf("failed to strip lifecycle scripts: %w", err)
+	}
+
 	return destPath, nil
 }
 
@@ -381,4 +388,81 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// stripLifecycleScripts removes prepare/prepublish scripts from package.json
+// This prevents npm from running these scripts when the package is installed as a file: dependency
+// Matches yalc behavior: https://github.com/wclr/yalc
+func stripLifecycleScripts(destPath string) error {
+	pkgJSONPath := filepath.Join(destPath, "package.json")
+
+	// Read package.json
+	data, err := os.ReadFile(pkgJSONPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No package.json (shouldn't happen but be defensive)
+			return nil
+		}
+		return fmt.Errorf("failed to read package.json: %w", err)
+	}
+
+	// Handle empty file (race condition with concurrent publish)
+	if len(data) == 0 {
+		debug.Log("store: package.json is empty, skipping script stripping")
+		return nil
+	}
+
+	var pkgJSON map[string]interface{}
+	if err := json.Unmarshal(data, &pkgJSON); err != nil {
+		// Could be a race condition with concurrent writes, skip gracefully
+		debug.Logf("store: failed to parse package.json, skipping script stripping: %v", err)
+		return nil
+	}
+
+	// Check if scripts field exists
+	scripts, ok := pkgJSON["scripts"].(map[string]interface{})
+	if !ok || scripts == nil {
+		// No scripts, nothing to strip
+		return nil
+	}
+
+	// Track if we made changes
+	modified := false
+
+	// Remove lifecycle scripts that cause issues with file: dependencies
+	// - prepare/prepublish: run during npm install of file: deps, can fail (e.g., husky)
+	// Matches yalc behavior: https://github.com/wclr/yalc/blob/master/src/copy.ts
+	scriptsToRemove := []string{"prepare", "prepublish"}
+	for _, script := range scriptsToRemove {
+		if _, exists := scripts[script]; exists {
+			delete(scripts, script)
+			modified = true
+			debug.Logf("store: stripped %s script from package.json", script)
+		}
+	}
+
+	if !modified {
+		return nil
+	}
+
+	// Write modified package.json atomically using temp file + rename
+	output, err := json.MarshalIndent(pkgJSON, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal package.json: %w", err)
+	}
+	output = append(output, '\n')
+
+	// Write to temp file first
+	tmpPath := pkgJSONPath + ".tmp"
+	if err := os.WriteFile(tmpPath, output, 0644); err != nil {
+		return fmt.Errorf("failed to write temp package.json: %w", err)
+	}
+
+	// Atomic rename (overwrites existing)
+	if err := os.Rename(tmpPath, pkgJSONPath); err != nil {
+		os.Remove(tmpPath) // Clean up on failure
+		return fmt.Errorf("failed to rename package.json: %w", err)
+	}
+
+	return nil
 }

@@ -30,11 +30,13 @@ type Config struct {
 	Hooks HooksConfig `yaml:"hooks,omitempty"`
 }
 
-// HooksConfig contains hook commands
+// HooksConfig contains hook commands and settings
 type HooksConfig struct {
-	PrePublish  string `yaml:"pre_publish,omitempty"`
-	PostPublish string `yaml:"post_publish,omitempty"`
-	PostAdd     string `yaml:"post_add,omitempty"`
+	PrePublish   string `yaml:"pre_publish,omitempty"`
+	PostPublish  string `yaml:"post_publish,omitempty"`
+	PostAdd      string `yaml:"post_add,omitempty"`
+	SkipPrepare  bool   `yaml:"skip_prepare,omitempty"`   // Skip prepare/prepublishOnly/prepack scripts
+	SkipPostAdd  bool   `yaml:"skip_post_add,omitempty"`  // Skip post-add hook (npm install)
 }
 
 var (
@@ -192,6 +194,8 @@ func DetectPackageManager(projectPath string) PackageManager {
 }
 
 // GetInstallCommand returns the install command for a package manager
+// For npm, uses --legacy-peer-deps to work around npm bug with file: dependencies
+// showing as @undefined during peer dep resolution (npm/cli#2199)
 func GetInstallCommand(pm PackageManager) string {
 	switch pm {
 	case Bun:
@@ -201,6 +205,6 @@ func GetInstallCommand(pm PackageManager) string {
 	case Yarn:
 		return "yarn install"
 	default:
-		return "npm install"
+		return "npm install --legacy-peer-deps"
 	}
 }

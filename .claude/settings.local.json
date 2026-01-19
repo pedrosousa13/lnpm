@@ -14,7 +14,18 @@
       "Bash(git reset:*)",
       "Bash(git push:*)",
       "Bash(gh pr checks:*)",
-      "Bash(gh run watch:*)"
+      "Bash(gh run watch:*)",
+      "Bash(ls:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(find:*)",
+      "Bash(go build:*)",
+      "Bash(./lnpm:*)",
+      "Bash(cat:*)",
+      "Bash(python3:*)",
+      "Bash(readlink:*)",
+      "Bash(go run:*)"
     ]
   }
 }

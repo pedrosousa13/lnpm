@@ -126,6 +126,7 @@ lnpm watch --exec "nx build my-lib"
 ```bash
 # Remove all lnpm links and restore original dependencies
 lnpm retreat --force
+npm install  # Restore original packages
 npm publish
 ```
 
@@ -187,8 +188,15 @@ default_ignore:
   - .git
   - "*.log"
 
-# Hooks
+# Build scripts and hooks
 hooks:
+  # Skip prepare scripts (prepare, prepublishOnly, prepack)
+  skip_prepare: false      # Default: false (run scripts)
+
+  # Skip post-add hook (npm install after add)
+  skip_post_add: false     # Default: false (run npm install)
+
+  # Custom hooks (optional)
   pre_publish: npm run build
   post_add: npm install
 ```
@@ -201,6 +209,94 @@ lnpm config store_path          # Get value
 lnpm config store_path /data    # Set value
 lnpm config --path              # Show config file path
 ```
+
+## Build Workflows & Hooks
+
+lnpm automatically runs build scripts and dependency installation to ensure packages work correctly when linked.
+
+### Prepare Scripts
+
+Before publishing or pushing, lnpm runs these scripts from your `package.json` (in order of precedence):
+
+1. `prepare` — General build script
+2. `prepublishOnly` — Runs only on publish
+3. `prepack` — Runs before packing files
+
+**Example package.json:**
+```json
+{
+  "name": "my-library",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build"
+  }
+}
+```
+
+**Commands:**
+```bash
+lnpm publish              # Runs prepare, then publishes
+lnpm push                 # Runs prepare, then pushes
+lnpm publish --skip-hooks # Skip prepare scripts
+```
+
+### Post-Add Hook
+
+After adding a package, lnpm automatically runs `npm install` (or your package manager) to resolve peer dependencies and install linked package dependencies.
+
+```bash
+lnpm add my-package       # Adds package, then runs npm install
+lnpm add --skip-hooks     # Skip post-add npm install
+```
+
+### Package Validation
+
+lnpm validates packages before publishing:
+- Checks `package.json` has `name` and `version`
+- Verifies `main` entry point exists (if declared)
+
+```bash
+lnpm publish                  # With validation
+lnpm publish --skip-validation # Skip validation (for broken packages)
+```
+
+### TypeScript Workflow Example
+
+```bash
+# In your TypeScript library
+cd my-library
+# package.json has "prepare": "tsc"
+
+lnpm publish    # Automatically builds TypeScript → dist/
+
+# In your app
+cd my-app
+lnpm add my-library   # Links and runs npm install
+
+# Make changes to library
+cd my-library
+# Edit src/index.ts
+lnpm push       # Rebuilds and updates all linked projects
+```
+
+### Troubleshooting
+
+**Husky/git hooks fail during npm install:**
+- lnpm strips `prepare` and `prepublish` scripts from stored packages (like yalc)
+- If you see husky errors, re-publish the package: `lnpm publish`
+
+**Duplicate React or other peer dependency issues:**
+- Don't use `--install` flag; run `npm install` manually with your preferred flags
+- Or configure npm: `npm config set legacy-peer-deps true`
+
+**npm ERESOLVE peer dependency errors:**
+- npm has a bug where `file:` dependencies show as `@undefined` ([npm/cli#2199](https://github.com/npm/cli/issues/2199))
+- When using `--install`, lnpm uses `--legacy-peer-deps` automatically
+- Or run `npm install --legacy-peer-deps` manually
+
+**Retreat restores wrong version:**
+- Fixed in latest version - lnpm now properly tracks original versions
+- If stuck, manually edit package.json and delete lnpm.lock
 
 ## Debugging
 
@@ -219,11 +315,13 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 
 ## How It Works
 
-1. **Publish** — Uses `npm pack` rules to determine files, then links or copies to `~/.lnpm/store/{name}/{hash}/`
-2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`
+1. **Publish** — Uses `npm pack` rules to determine files, strips lifecycle scripts (`prepare`/`prepublish`), then links or copies to `~/.lnpm/store/{name}/{hash}/`
+2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`, updates package.json to `file:.lnpm/{package}`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
 4. **Push/Watch** — Updates store and re-links changed files
 5. **Auto .gitignore** — Optionally manages `.lnpm/` in `.gitignore` (enabled by default)
+
+**Note:** Unlike some tools, lnpm does NOT run `npm install` automatically (matches yalc). Use `--install` flag or run manually if needed.
 
 ```
 Source Package          Store                    Project

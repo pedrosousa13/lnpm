@@ -20,7 +20,7 @@ func TestRemoveSinglePackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -30,7 +30,7 @@ func TestRemoveSinglePackage(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("remove-pkg", false, false); err != nil {
+	if err := cli.RunAdd("remove-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -65,7 +65,7 @@ func TestRemoveAllPackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false); err != nil {
+		if err := cli.RunPublish(false, "", false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -77,7 +77,7 @@ func TestRemoveAllPackages(t *testing.T) {
 	}
 
 	for _, name := range packages {
-		if err := cli.RunAdd(name, false, false); err != nil {
+		if err := cli.RunAdd(name, false, false, false); err != nil {
 			t.Fatalf("Failed to add %s: %v", name, err)
 		}
 	}
@@ -125,7 +125,7 @@ func TestRemoveRestoresOriginalVersion(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestRemoveRestoresOriginalVersion(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("remove-pkg", false, false); err != nil {
+	if err := cli.RunAdd("remove-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestRemoveNoOriginalVersion(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestRemoveNoOriginalVersion(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("pure-pkg", false, true); err != nil {
+	if err := cli.RunAdd("pure-pkg", false, true, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestRemoveMultipleKeepOne(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false); err != nil {
+		if err := cli.RunPublish(false, "", false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -228,7 +228,7 @@ func TestRemoveMultipleKeepOne(t *testing.T) {
 	}
 
 	for _, name := range packages {
-		if err := cli.RunAdd(name, false, false); err != nil {
+		if err := cli.RunAdd(name, false, false, false); err != nil {
 			t.Fatalf("Failed to add %s: %v", name, err)
 		}
 	}
@@ -271,7 +271,7 @@ func TestRemoveScopedPackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -281,7 +281,7 @@ func TestRemoveScopedPackage(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("@org/scoped-remove", false, false); err != nil {
+	if err := cli.RunAdd("@org/scoped-remove", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestRemoveDevDependency(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestRemoveDevDependency(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("dev-remove-pkg", true, false); err != nil {
+	if err := cli.RunAdd("dev-remove-pkg", true, false, false); err != nil {
 		t.Fatalf("Failed to add dev package: %v", err)
 	}
 
@@ -364,7 +364,7 @@ func TestRemoveLockfileDeleted(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -374,7 +374,7 @@ func TestRemoveLockfileDeleted(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("only-pkg", false, false); err != nil {
+	if err := cli.RunAdd("only-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -401,7 +401,7 @@ func TestRemoveLockfileUpdated(t *testing.T) {
 	if err := os.Chdir(pkg1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-1: %v", err)
 	}
 
@@ -411,7 +411,7 @@ func TestRemoveLockfileUpdated(t *testing.T) {
 	if err := os.Chdir(pkg2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-2: %v", err)
 	}
 
@@ -421,10 +421,10 @@ func TestRemoveLockfileUpdated(t *testing.T) {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 
-	if err := cli.RunAdd("pkg-1", false, false); err != nil {
+	if err := cli.RunAdd("pkg-1", false, false, false); err != nil {
 		t.Fatalf("Failed to add pkg-1: %v", err)
 	}
-	if err := cli.RunAdd("pkg-2", false, false); err != nil {
+	if err := cli.RunAdd("pkg-2", false, false, false); err != nil {
 		t.Fatalf("Failed to add pkg-2: %v", err)
 	}
 

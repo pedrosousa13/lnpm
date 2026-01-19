@@ -23,8 +23,8 @@ func TestPublishAllTurborepo(t *testing.T) {
 	// Clean up any existing database
 	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
-	// Test publish --all
-	err := cli.RunPublish(false, "", true)
+	// Test publish --all (skip validation since test fixtures don't have built files)
+	err := cli.RunPublish(false, "", true, false, true)
 	if err != nil {
 		t.Fatalf("Failed to publish all packages: %v", err)
 	}
@@ -67,8 +67,8 @@ func TestPublishAllPNPM(t *testing.T) {
 	// Clean up any existing database
 	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
-	// Test publish --all
-	err := cli.RunPublish(false, "", true)
+	// Test publish --all (skip validation since test fixtures don't have built files)
+	err := cli.RunPublish(false, "", true, false, true)
 	if err != nil {
 		t.Fatalf("Failed to publish all packages: %v", err)
 	}
@@ -104,8 +104,8 @@ func TestPublishAllNPM(t *testing.T) {
 	// Clean up any existing database
 	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
-	// Test publish --all
-	err := cli.RunPublish(false, "", true)
+	// Test publish --all (skip validation since test fixtures don't have built files)
+	err := cli.RunPublish(false, "", true, false, true)
 	if err != nil {
 		t.Fatalf("Failed to publish all packages: %v", err)
 	}
@@ -141,8 +141,8 @@ func TestPublishAllYarn(t *testing.T) {
 	// Clean up any existing database
 	_ = os.RemoveAll(filepath.Join(os.Getenv("HOME"), ".lnpm"))
 
-	// Test publish --all
-	err := cli.RunPublish(false, "", true)
+	// Test publish --all (skip validation since test fixtures don't have built files)
+	err := cli.RunPublish(false, "", true, false, true)
 	if err != nil {
 		t.Fatalf("Failed to publish all packages: %v", err)
 	}
@@ -175,8 +175,8 @@ func TestPublishAllNx(t *testing.T) {
 	_ = os.RemoveAll(".lnpm")
 	_ = os.RemoveAll(filepath.Join("libs", "feature-auth", ".lnpm"))
 
-	// Test publish --all
-	err := cli.RunPublish(false, "", true)
+	// Test publish --all (skip validation since test fixtures don't have built files)
+	err := cli.RunPublish(false, "", true, false, true)
 	if err != nil {
 		t.Fatalf("Failed to publish all packages: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 		t.Fatalf("Failed to change to package-a directory: %v", err)
 	}
 
-	err = cli.RunPublish(true, "", false)
+	err = cli.RunPublish(true, "", false, false, false)
 	if err != nil {
 		t.Fatalf("Failed to publish package-a: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 		t.Fatalf("Failed to change to sub-package directory: %v", err)
 	}
 
-	err = cli.RunPublish(true, "", false)
+	err = cli.RunPublish(true, "", false, false, false)
 	if err != nil {
 		t.Fatalf("Failed to publish feature-auth package: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 	}
 
 	// Add the published package to the sub-package
-	err = cli.RunAdd("@npm-test/package-a", false, false)
+	err = cli.RunAdd("@npm-test/package-a", false, false, false)
 	if err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
