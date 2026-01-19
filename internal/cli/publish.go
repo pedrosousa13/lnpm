@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
@@ -49,19 +51,76 @@ func publishAll(cwd string, push bool, tag string) error {
 
 	fmt.Printf("Publishing %d packages from %s workspace...\n\n", len(packages), ws.Type)
 
+	// Publish packages in parallel with worker pool
+	numWorkers := min(runtime.NumCPU(), len(packages))
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	type publishResult struct {
+		pkg *workspace.Package
+		err error
+	}
+
+	pkgChan := make(chan *workspace.Package, len(packages))
+	resultChan := make(chan publishResult, len(packages))
+	var wg sync.WaitGroup
+	var outputMu sync.Mutex // Synchronize output per package
+
+	// Start worker goroutines
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for pkg := range pkgChan {
+				// Synchronize output for clean formatting
+				outputMu.Lock()
+				fmt.Printf("─── %s@%s ───\n", pkg.Name, pkg.Version)
+				outputMu.Unlock()
+
+				err := publishSingle(pkg.Path, push, tag)
+
+				outputMu.Lock()
+				if err != nil {
+					fmt.Printf("✗ Failed: %v\n\n", err)
+				} else {
+					fmt.Println()
+				}
+				outputMu.Unlock()
+
+				resultChan <- publishResult{pkg: pkg, err: err}
+			}
+		}()
+	}
+
+	// Queue all packages
+	for i := range packages {
+		pkgChan <- &packages[i]
+	}
+	close(pkgChan)
+
+	// Wait for all workers to complete
+	wg.Wait()
+	close(resultChan)
+
+	// Count successes
 	successCount := 0
-	for _, pkg := range packages {
-		fmt.Printf("─── %s@%s ───\n", pkg.Name, pkg.Version)
-		if err := publishSingle(pkg.Path, push, tag); err != nil {
-			fmt.Printf("✗ Failed: %v\n\n", err)
-		} else {
+	for res := range resultChan {
+		if res.err == nil {
 			successCount++
-			fmt.Println()
 		}
 	}
 
 	fmt.Printf("Published %d/%d packages\n", successCount, len(packages))
 	return nil
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // publishSingle publishes a single package
@@ -178,11 +237,35 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 
 	fmt.Printf("\nPushing to %d linked projects...\n", len(projects))
 
+	// Push to all projects in parallel
+	type result struct {
+		path string
+		err  error
+	}
+	results := make(chan result, len(projects))
+	var wg sync.WaitGroup
+
 	for _, proj := range projects {
-		if err := pushToProject(proj, pkg, s); err != nil {
-			fmt.Printf("  ✗ %s: %v\n", proj.Path, err)
+		wg.Add(1)
+		go func(p *db.Project) {
+			defer wg.Done()
+			err := pushToProject(p, pkg, s)
+			results <- result{path: p.Path, err: err}
+		}(proj)
+	}
+
+	// Wait for all pushes to complete
+	wg.Wait()
+	close(results)
+
+	// Print results
+	successCount := 0
+	for res := range results {
+		if res.err != nil {
+			fmt.Printf("  ✗ %s: %v\n", res.path, res.err)
 		} else {
-			fmt.Printf("  ✓ %s\n", proj.Path)
+			fmt.Printf("  ✓ %s\n", res.path)
+			successCount++
 		}
 	}
 

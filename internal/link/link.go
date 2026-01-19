@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
@@ -48,57 +50,154 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 		return "", fmt.Errorf("failed to create .lnpm directory: %w", err)
 	}
 
-	// Track what methods we actually used
-	reflinkCount := 0
-	hardLinkCount := 0
-	copyCount := 0
+	// Track what methods we actually used (atomic for parallel access)
+	var reflinkCount, hardLinkCount, copyCount int32
 	actualType := linkType
-	warnedAboutFallback := false
+	var warnedAboutFallback int32
+	var filesToCopyMu sync.Mutex
+	var filesToCopy []struct {
+		src string
+		dst string
+		rel string
+	}
 
-	// Create hard links, reflinks, or copies
-	for _, f := range files {
-		srcPath := filepath.Join(storePath, f.RelPath)
-		dstPath := filepath.Join(lnpmPath, f.RelPath)
+	// Parallel pass: try fast methods (reflink/hardlink)
+	numWorkers := min(runtime.NumCPU(), 8)
+	if len(files) < numWorkers {
+		numWorkers = len(files)
+	}
 
-		// Create parent directory
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-			return "", fmt.Errorf("failed to create directory for %s: %w", f.RelPath, err)
-		}
+	var wg sync.WaitGroup
+	fileChan := make(chan *pack.FileInfo, len(files))
+	errChan := make(chan error, 1)
 
-		linked := false
+	// Start workers for parallel linking
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for f := range fileChan {
+				srcPath := filepath.Join(storePath, f.RelPath)
+				dstPath := filepath.Join(lnpmPath, f.RelPath)
 
-		// Try in priority order: reflink -> hardlink -> copy
-		// 1. Try reflink (CoW clone) - works even across directories on same FS
-		if reflinkFile(srcPath, dstPath) == nil {
-			linked = true
-			reflinkCount++
-			if actualType == Copy {
-				actualType = HardLink // Upgraded to linking
-			}
-		}
-
-		// 2. Try hard link if configured and reflink didn't work
-		if !linked && linkType == HardLink {
-			if err := os.Link(srcPath, dstPath); err == nil {
-				linked = true
-				hardLinkCount++
-			} else {
-				// Hard link failed, fall back to copy
-				if !warnedAboutFallback {
-					fmt.Printf("  ⚠ Hard linking failed, falling back to copying files\n")
-					debug.Logf("link: hard link failed: %v", err)
-					warnedAboutFallback = true
+				// Create parent directory
+				if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+					select {
+					case errChan <- fmt.Errorf("failed to create directory for %s: %w", f.RelPath, err):
+					default:
+					}
+					return
 				}
-				actualType = Copy
+
+				linked := false
+
+				// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
+				if reflinkFile(srcPath, dstPath) == nil {
+					linked = true
+					atomic.AddInt32(&reflinkCount, 1)
+				}
+
+				// 2. Try hard link if configured and reflink didn't work
+				if !linked && linkType == HardLink {
+					if err := os.Link(srcPath, dstPath); err == nil {
+						linked = true
+						atomic.AddInt32(&hardLinkCount, 1)
+					} else {
+						// Hard link failed, fall back to copy
+						if atomic.CompareAndSwapInt32(&warnedAboutFallback, 0, 1) {
+							fmt.Printf("  ⚠ Hard linking failed, falling back to copying files\n")
+							debug.Logf("link: hard link failed: %v", err)
+						}
+					}
+				}
+
+				// 3. Queue for parallel copy if linking didn't work
+				if !linked {
+					filesToCopyMu.Lock()
+					filesToCopy = append(filesToCopy, struct {
+						src string
+						dst string
+						rel string
+					}{srcPath, dstPath, f.RelPath})
+					filesToCopyMu.Unlock()
+				}
 			}
+		}()
+	}
+
+	// Queue all files
+	for _, f := range files {
+		fileChan <- f
+	}
+	close(fileChan)
+
+	// Wait for linking phase to complete
+	wg.Wait()
+
+	// Check for errors
+	select {
+	case err := <-errChan:
+		return "", err
+	default:
+	}
+
+	// Update actualType if we upgraded from copy
+	if (reflinkCount > 0 || hardLinkCount > 0) && actualType == Copy {
+		actualType = HardLink
+	}
+	if warnedAboutFallback > 0 {
+		actualType = Copy
+	}
+
+	// Parallel copy for files that couldn't be linked
+	if len(filesToCopy) > 0 {
+		debug.Logf("link: copying %d files in parallel", len(filesToCopy))
+
+		numCopyWorkers := min(runtime.NumCPU(), 8)
+		if len(filesToCopy) < numCopyWorkers {
+			numCopyWorkers = len(filesToCopy)
 		}
 
-		// 3. Fall back to copy if nothing else worked
-		if !linked {
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return "", fmt.Errorf("failed to copy %s: %w", f.RelPath, err)
-			}
-			copyCount++
+		var wg2 sync.WaitGroup
+		copyChan := make(chan struct {
+			src string
+			dst string
+			rel string
+		}, len(filesToCopy))
+		errChan2 := make(chan error, 1)
+
+		// Start copy workers
+		for w := 0; w < numCopyWorkers; w++ {
+			wg2.Add(1)
+			go func() {
+				defer wg2.Done()
+				for item := range copyChan {
+					if err := copyFile(item.src, item.dst); err != nil {
+						select {
+						case errChan2 <- fmt.Errorf("failed to copy %s: %w", item.rel, err):
+						default:
+						}
+						return
+					}
+					atomic.AddInt32(&copyCount, 1)
+				}
+			}()
+		}
+
+		// Queue copy files
+		for _, item := range filesToCopy {
+			copyChan <- item
+		}
+		close(copyChan)
+
+		// Wait for copy completion
+		wg2.Wait()
+
+		// Check for copy errors
+		select {
+		case err := <-errChan2:
+			return "", err
+		default:
 		}
 	}
 
@@ -249,6 +348,14 @@ func (l *Linker) ListLinked() ([]string, error) {
 		}
 	}
 	return packages, nil
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // copyFile copies a file
