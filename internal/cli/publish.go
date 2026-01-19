@@ -8,14 +8,16 @@ import (
 	"sync"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/validation"
 	"github.com/pedrosousa13/lnpm/internal/workspace"
 )
 
 // RunPublish executes the publish command
-func RunPublish(push bool, tag string, all bool) error {
+func RunPublish(push bool, tag string, all bool, skipHooks bool, skipValidation bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
@@ -23,14 +25,14 @@ func RunPublish(push bool, tag string, all bool) error {
 
 	// Handle --all for monorepo publishing
 	if all {
-		return publishAll(cwd, push, tag)
+		return publishAll(cwd, push, tag, skipHooks, skipValidation)
 	}
 
-	return publishSingle(cwd, push, tag)
+	return publishSingle(cwd, push, tag, skipHooks, skipValidation)
 }
 
 // publishAll publishes all packages in a monorepo workspace
-func publishAll(cwd string, push bool, tag string) error {
+func publishAll(cwd string, push bool, tag string, skipHooks bool, skipValidation bool) error {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {
 		return fmt.Errorf("failed to detect workspace: %w", err)
@@ -78,7 +80,7 @@ func publishAll(cwd string, push bool, tag string) error {
 				fmt.Printf("─── %s@%s ───\n", pkg.Name, pkg.Version)
 				outputMu.Unlock()
 
-				err := publishSingle(pkg.Path, push, tag)
+				err := publishSingle(pkg.Path, push, tag, skipHooks, skipValidation)
 
 				outputMu.Lock()
 				if err != nil {
@@ -124,7 +126,19 @@ func min(a, b int) int {
 }
 
 // publishSingle publishes a single package
-func publishSingle(pkgPath string, push bool, tag string) error {
+func publishSingle(pkgPath string, push bool, tag string, skipHooks bool, skipValidation bool) error {
+	// Validate package before proceeding
+	if !skipValidation {
+		if err := validation.ValidatePackage(pkgPath); err != nil {
+			return fmt.Errorf("validation failed: %w", err)
+		}
+	}
+
+	// Run prepare scripts before packing
+	if err := hooks.RunPrepare(pkgPath, skipHooks); err != nil {
+		return fmt.Errorf("prepare hook failed: %w", err)
+	}
+
 	// Pack the package
 	pkgJSON, files, err := pack.Pack(pkgPath)
 	if err != nil {

@@ -18,7 +18,7 @@ func TestGCOrphanedPackages(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -27,7 +27,7 @@ func TestGCOrphanedPackages(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("gc-pkg", false, false); err != nil {
+	if err := cli.RunAdd("gc-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -59,7 +59,7 @@ func TestGCDryRun(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestGCWithAge(t *testing.T) {
 	if err := os.Chdir(pkg1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish old-pkg: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestGCWithAge(t *testing.T) {
 	if err := os.Chdir(pkg2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish new-pkg: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestGCOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestGCOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("link-pkg", false, false); err != nil {
+	if err := cli.RunAdd("link-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestGCLinkedPackages(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestGCLinkedPackages(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("linked-pkg", false, false); err != nil {
+	if err := cli.RunAdd("linked-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestGCMultipleOrphanedPackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir to %s: %v", name, err)
 		}
-		if err := cli.RunPublish(false, "", false); err != nil {
+		if err := cli.RunPublish(false, "", false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -234,7 +234,7 @@ func TestGCMixedPackages(t *testing.T) {
 	if err := os.Chdir(orphanDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish orphan: %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestGCMixedPackages(t *testing.T) {
 	if err := os.Chdir(linkedDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish linked: %v", err)
 	}
 
@@ -254,7 +254,7 @@ func TestGCMixedPackages(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("linked-pkg", false, false); err != nil {
+	if err := cli.RunAdd("linked-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add linked package: %v", err)
 	}
 
@@ -290,7 +290,7 @@ func TestGCStorePathCleanup(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestGCPartiallyOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -338,7 +338,7 @@ func TestGCPartiallyOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(project1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("partial-pkg", false, false); err != nil {
+	if err := cli.RunAdd("partial-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add to project-1: %v", err)
 	}
 
@@ -346,7 +346,7 @@ func TestGCPartiallyOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(project2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("partial-pkg", false, false); err != nil {
+	if err := cli.RunAdd("partial-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add to project-2: %v", err)
 	}
 
@@ -390,7 +390,7 @@ func TestGCDurationFormats(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false); err != nil {
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 

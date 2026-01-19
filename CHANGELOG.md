@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Don't run npm install by default** - Matches yalc behavior. Use `--install` flag to run npm install after adding/retreating. This prevents symlink overwrites and duplicate React issues.
+
+### Fixed
+
+- **Husky/git hooks failing** - Strip `prepare` and `prepublish` scripts from stored package.json (matches yalc behavior)
+- **npm ERESOLVE peer dependency errors** - Use `--legacy-peer-deps` when `--install` flag is used
+- **Retreat restoring wrong version** - No longer saves `file:.lnpm/` as original version; properly removes package from package.json when no original version exists
+- **Re-add losing original version** - Preserve existing original version from lnpm.lock when re-adding a package
 ## [1.8.1](https://github.com/pedrosousa13/lnpm/compare/v1.8.0...v1.8.1) (2026-01-19)
 
 

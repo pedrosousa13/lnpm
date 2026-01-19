@@ -11,13 +11,14 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
+	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // RunAdd executes the add command
-func RunAdd(packageSpec string, dev bool, pure bool) error {
+func RunAdd(packageSpec string, dev bool, pure bool, runInstall bool) error {
 	// Parse package spec (name[@version])
 	name, version := parsePackageSpec(packageSpec)
 
@@ -90,6 +91,18 @@ func RunAdd(packageSpec string, dev bool, pure bool) error {
 	// Detect package manager
 	pm := config.DetectPackageManager(cwd)
 
+	// Load lock file first to check for existing original version
+	lock, err := lockfile.Load(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to load lock file: %w", err)
+	}
+
+	// Check if we already have an original version saved from a previous add
+	var existingOriginalVersion string
+	if existing, ok := lock.Get(pkg.Name); ok && existing.OriginalVersion != "" {
+		existingOriginalVersion = existing.OriginalVersion
+	}
+
 	// Update package.json (unless --pure)
 	var originalVersion string
 	if !pure {
@@ -99,10 +112,9 @@ func RunAdd(packageSpec string, dev bool, pure bool) error {
 		}
 	}
 
-	// Update lock file
-	lock, err := lockfile.Load(cwd)
-	if err != nil {
-		return fmt.Errorf("failed to load lock file: %w", err)
+	// Use existing original version if we didn't find one (re-add scenario)
+	if originalVersion == "" && existingOriginalVersion != "" {
+		originalVersion = existingOriginalVersion
 	}
 
 	lock.Add(pkg.Name, lockfile.Package{
@@ -147,6 +159,16 @@ func RunAdd(packageSpec string, dev bool, pure bool) error {
 	fmt.Printf("  Package manager: %s\n", pm)
 	if !pure {
 		fmt.Printf("  Updated: package.json\n")
+	}
+
+	// Run npm install if --install flag was passed
+	// By default, don't run (matches yalc behavior)
+	if runInstall && !pure {
+		if err := hooks.RunPostAdd(cwd, true); err != nil {
+			fmt.Printf("  ⚠ npm install failed: %v\n", err)
+		}
+	} else if !pure {
+		fmt.Println("\n  💡 Run 'npm install' if you need to resolve peer dependencies")
 	}
 
 	return nil
@@ -197,9 +219,11 @@ func updatePackageJSON(path string, packageName string, dev bool) (originalVersi
 		pkgJSON[depsField] = deps
 	}
 
-	// Save original version if it exists
+	// Save original version if it exists (but ignore lnpm references from previous add)
 	if v, ok := deps[packageName].(string); ok {
-		originalVersion = v
+		if !isLnpmReference(v) {
+			originalVersion = v
+		}
 	}
 
 	// Also check the other deps field for original version
@@ -209,7 +233,9 @@ func updatePackageJSON(path string, packageName string, dev bool) (originalVersi
 	}
 	if otherDeps, ok := pkgJSON[otherField].(map[string]interface{}); ok {
 		if v, ok := otherDeps[packageName].(string); ok && originalVersion == "" {
-			originalVersion = v
+			if !isLnpmReference(v) {
+				originalVersion = v
+			}
 		}
 	}
 
@@ -230,6 +256,11 @@ func updatePackageJSON(path string, packageName string, dev bool) (originalVersi
 	}
 
 	return originalVersion, nil
+}
+
+// isLnpmReference checks if a version string is an lnpm reference (file:.lnpm/ or link:.lnpm/)
+func isLnpmReference(version string) bool {
+	return strings.HasPrefix(version, "file:.lnpm/") || strings.HasPrefix(version, "link:.lnpm/")
 }
 
 // getProjectName extracts project name from package.json or directory name

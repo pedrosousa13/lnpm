@@ -28,7 +28,9 @@ Examples:
 		push, _ := cmd.Flags().GetBool("push")
 		tag, _ := cmd.Flags().GetString("tag")
 		all, _ := cmd.Flags().GetBool("all")
-		return RunPublish(push, tag, all)
+		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
+		skipValidation, _ := cmd.Flags().GetBool("skip-validation")
+		return RunPublish(push, tag, all, skipHooks, skipValidation)
 	},
 }
 
@@ -46,16 +48,18 @@ This command:
   5. Updates lnpm.lock
 
 Examples:
-  lnpm add my-package         # Add latest version
-  lnpm add my-package@1.0.0   # Add specific version
-  lnpm add my-package --dev   # Add as devDependency
-  lnpm add my-package --pure  # Don't modify package.json`,
+  lnpm add my-package            # Add latest version
+  lnpm add my-package@1.0.0      # Add specific version
+  lnpm add my-package --dev      # Add as devDependency
+  lnpm add my-package --install  # Add and run npm install
+  lnpm add my-package --pure     # Don't modify package.json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pkg := args[0]
 		dev, _ := cmd.Flags().GetBool("dev")
 		pure, _ := cmd.Flags().GetBool("pure")
-		return RunAdd(pkg, dev, pure)
+		install, _ := cmd.Flags().GetBool("install")
+		return RunAdd(pkg, dev, pure, install)
 	},
 }
 
@@ -95,17 +99,17 @@ var pushCmd = &cobra.Command{
 	Long: `Push updates from the current package to all linked projects.
 
 This command:
-  1. Calculates new content hash
-  2. Compares with stored hash
-  3. Updates store with changed files
-  4. Re-creates hard links in all linked projects
+  1. Runs prepare scripts
+  2. Packs files
+  3. Updates store
+  4. Re-links to all linked projects
 
 Examples:
-  lnpm push          # Push if changed
-  lnpm push --force  # Force re-link all files`,
+  lnpm push              # Push to all linked projects
+  lnpm push --skip-hooks # Skip prepare scripts`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		force, _ := cmd.Flags().GetBool("force")
-		return RunPush(force)
+		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
+		return RunPush(skipHooks)
 	},
 }
 
@@ -226,7 +230,8 @@ Examples:
   lnpm retreat --force  # Actually remove everything`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
-		return RunRetreat(force)
+		install, _ := cmd.Flags().GetBool("install")
+		return RunRetreat(force, install)
 	},
 }
 
@@ -238,19 +243,23 @@ func init() {
 	publishCmd.Flags().Bool("push", false, "Push to all linked projects after publish")
 	publishCmd.Flags().String("tag", "", "Tag for this publish")
 	publishCmd.Flags().Bool("all", false, "Publish all packages in monorepo")
+	publishCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts (prepare, prepublishOnly, prepack)")
+	publishCmd.Flags().Bool("skip-validation", false, "Skip package validation before publish")
 
 	// retreat flags
 	retreatCmd.Flags().Bool("force", false, "Actually remove everything (required)")
+	retreatCmd.Flags().Bool("install", false, "Run npm install after retreat (default: no)")
 
 	// add flags
 	addCmd.Flags().Bool("dev", false, "Add as devDependency")
 	addCmd.Flags().Bool("pure", false, "Don't modify package.json")
+	addCmd.Flags().Bool("install", false, "Run npm install after adding (default: no)")
 
 	// remove flags
 	removeCmd.Flags().Bool("all", false, "Remove all linked packages")
 
 	// push flags
-	pushCmd.Flags().Bool("force", false, "Force re-link all files")
+	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
 
 	// watch flags
 	watchCmd.Flags().String("exec", "", "Command to run before each push")

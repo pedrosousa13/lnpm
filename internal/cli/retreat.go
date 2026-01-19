@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -13,7 +14,7 @@ import (
 )
 
 // RunRetreat removes all lnpm changes from the current project
-func RunRetreat(force bool) error {
+func RunRetreat(force bool, runInstall bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
@@ -42,8 +43,13 @@ func RunRetreat(force bool) error {
 			fmt.Printf("  - Remove %d linked package(s)\n", len(linkedPkgs))
 			for _, name := range linkedPkgs {
 				pkg, _ := lock.Get(name)
-				if pkg.OriginalVersion != "" {
-					fmt.Printf("    %s: file:.lnpm/%s → %s\n", name, name, pkg.OriginalVersion)
+				originalVersion := pkg.OriginalVersion
+				// Ignore file:.lnpm/ as original version (bug from older versions)
+				if strings.HasPrefix(originalVersion, "file:.lnpm/") {
+					originalVersion = ""
+				}
+				if originalVersion != "" {
+					fmt.Printf("    %s: file:.lnpm/%s → %s\n", name, name, originalVersion)
 				} else {
 					fmt.Printf("    %s: will be removed from package.json\n", name)
 				}
@@ -78,15 +84,23 @@ func RunRetreat(force bool) error {
 		_ = os.Remove(nodeModulesLink)
 
 		// Restore original package.json dependency
-		if pkg.OriginalVersion != "" {
-			if err := restorePackageJSON(cwd, name, pkg.OriginalVersion); err != nil {
+		// Ignore file:.lnpm/ as original version (bug from older versions)
+		originalVersion := pkg.OriginalVersion
+		if strings.HasPrefix(originalVersion, "file:.lnpm/") {
+			originalVersion = ""
+		}
+
+		if originalVersion != "" {
+			if err := restorePackageJSON(cwd, name, originalVersion); err != nil {
 				fmt.Printf("    ⚠ Failed to restore package.json: %v\n", err)
 			} else {
-				fmt.Printf("    ✓ Restored %s to %s\n", name, pkg.OriginalVersion)
+				fmt.Printf("    ✓ Restored %s to %s\n", name, originalVersion)
 			}
 		} else {
 			if err := removeFromPackageJSON(cwd, name); err != nil {
 				fmt.Printf("    ⚠ Failed to update package.json: %v\n", err)
+			} else {
+				fmt.Printf("    ✓ Removed %s from package.json\n", name)
 			}
 		}
 
@@ -125,21 +139,27 @@ func RunRetreat(force bool) error {
 		fmt.Println("  ✓ Removed lnpm.lock")
 	}
 
-	// Run package manager install to restore packages
-	pm := config.DetectPackageManager(cwd)
-	installCmd := config.GetInstallCommand(pm)
-	fmt.Printf("Running %s...\n", installCmd)
+	// Run package manager install if requested
+	if runInstall {
+		pm := config.DetectPackageManager(cwd)
+		installCmd := config.GetInstallCommand(pm)
+		fmt.Printf("Running %s...\n", installCmd)
 
-	cmd := exec.Command("sh", "-c", installCmd)
-	cmd.Dir = cwd
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("⚠ Install failed: %v\n", err)
+		cmd := exec.Command("sh", "-c", installCmd)
+		cmd.Dir = cwd
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("⚠ Install failed: %v\n", err)
+		}
 	}
 
 	fmt.Println()
 	fmt.Println("✓ Retreat complete!")
+
+	if !runInstall {
+		fmt.Println("\n💡 Run 'npm install' to restore original packages")
+	}
 
 	return nil
 }
