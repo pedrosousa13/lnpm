@@ -149,7 +149,9 @@ func TestAddPreservesDevDependencyLocation(t *testing.T) {
 	// Verify it stayed in devDependencies (not moved to dependencies)
 	data, _ = os.ReadFile(pkgJSONPath)
 	var result map[string]interface{}
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("Failed to unmarshal package.json: %v", err)
+	}
 
 	deps := result["dependencies"]
 	devDeps := result["devDependencies"].(map[string]interface{})
