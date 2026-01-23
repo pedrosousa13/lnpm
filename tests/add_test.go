@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,6 +103,67 @@ func TestAddDevDependency(t *testing.T) {
 
 	// Verify it was added as dev dependency
 	env.AssertPackageJSON(projectDir, "dev-pkg", "file:.lnpm/dev-pkg")
+}
+
+// TestAddPreservesDevDependencyLocation tests that adding without --dev preserves devDependencies location
+func TestAddPreservesDevDependencyLocation(t *testing.T) {
+	env := setupTest(t)
+
+	// Create and publish a test package
+	pkgDir := env.CreateTestPackage("preserve-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'preserve';",
+	})
+	if err := os.Chdir(pkgDir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		t.Fatalf("Failed to publish: %v", err)
+	}
+
+	// Create project with package already in devDependencies
+	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
+
+	// Manually set up package.json with devDependencies
+	pkgJSONPath := filepath.Join(projectDir, "package.json")
+	pkgJSON := map[string]interface{}{
+		"name":    "test-project",
+		"version": "1.0.0",
+		"devDependencies": map[string]interface{}{
+			"preserve-pkg": "^1.0.0",
+		},
+	}
+	data, _ := json.MarshalIndent(pkgJSON, "", "  ")
+	if err := os.WriteFile(pkgJSONPath, data, 0644); err != nil {
+		t.Fatalf("Failed to write package.json: %v", err)
+	}
+
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+
+	// Add WITHOUT --dev flag - should preserve devDependencies location
+	if err := cli.RunAdd("preserve-pkg", false, false, false); err != nil {
+		t.Fatalf("Failed to add package: %v", err)
+	}
+
+	// Verify it stayed in devDependencies (not moved to dependencies)
+	data, _ = os.ReadFile(pkgJSONPath)
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("Failed to unmarshal package.json: %v", err)
+	}
+
+	deps := result["dependencies"]
+	devDeps := result["devDependencies"].(map[string]interface{})
+
+	if deps != nil {
+		if depsMap, ok := deps.(map[string]interface{}); ok && depsMap["preserve-pkg"] != nil {
+			t.Error("Package should NOT be in dependencies")
+		}
+	}
+	if devDeps["preserve-pkg"] != "file:.lnpm/preserve-pkg" {
+		t.Errorf("Expected preserve-pkg in devDependencies with lnpm reference, got %v", devDeps["preserve-pkg"])
+	}
 }
 
 // TestAddPureFlag tests adding with --pure flag (no package.json update)

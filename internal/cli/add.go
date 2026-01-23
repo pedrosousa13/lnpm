@@ -206,9 +206,19 @@ func updatePackageJSON(path string, packageName string, dev bool) (originalVersi
 		return "", err
 	}
 
-	// Determine which dependencies field to use
+	// Check where package currently exists
+	depsMap, _ := pkgJSON["dependencies"].(map[string]interface{})
+	devDepsMap, _ := pkgJSON["devDependencies"].(map[string]interface{})
+
+	inDeps := depsMap != nil && depsMap[packageName] != nil
+	inDevDeps := devDepsMap != nil && devDepsMap[packageName] != nil
+
+	// Determine which field to use:
+	// - If --dev flag: use devDependencies
+	// - Else if package exists in devDependencies: use devDependencies (preserve location)
+	// - Else: use dependencies (default)
 	depsField := "dependencies"
-	if dev {
+	if dev || (!inDeps && inDevDeps) {
 		depsField = "devDependencies"
 	}
 
@@ -219,23 +229,25 @@ func updatePackageJSON(path string, packageName string, dev bool) (originalVersi
 		pkgJSON[depsField] = deps
 	}
 
-	// Save original version if it exists (but ignore lnpm references from previous add)
+	// Save original version from target field (ignore lnpm references)
 	if v, ok := deps[packageName].(string); ok {
 		if !isLnpmReference(v) {
 			originalVersion = v
 		}
 	}
 
-	// Also check the other deps field for original version
+	// Also check other field for original version
 	otherField := "devDependencies"
-	if dev {
+	if depsField == "devDependencies" {
 		otherField = "dependencies"
 	}
 	if otherDeps, ok := pkgJSON[otherField].(map[string]interface{}); ok {
-		if v, ok := otherDeps[packageName].(string); ok && originalVersion == "" {
-			if !isLnpmReference(v) {
+		if v, ok := otherDeps[packageName].(string); ok {
+			if originalVersion == "" && !isLnpmReference(v) {
 				originalVersion = v
 			}
+			// Remove from other field to avoid duplicate entries
+			delete(otherDeps, packageName)
 		}
 	}
 
