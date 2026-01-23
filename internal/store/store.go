@@ -73,10 +73,14 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	destPath := s.PackagePath(name, hash)
 	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), destPath)
 
-	// Remove existing if present (for updates)
-	if err := os.RemoveAll(destPath); err != nil {
-		return "", fmt.Errorf("failed to clean existing store path: %w", err)
+	// Same hash = same content, skip if already exists (race-safe)
+	if s.Exists(name, hash) {
+		debug.Logf("store: package already exists at %s, skipping", destPath)
+		return destPath, nil
 	}
+
+	// Remove existing if present (for updates) - ignore errors from concurrent access
+	_ = os.RemoveAll(destPath)
 
 	// Create destination directory
 	if err := os.MkdirAll(destPath, 0755); err != nil {
