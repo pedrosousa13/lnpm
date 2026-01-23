@@ -238,7 +238,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 	})
 
 	if fileCount >= 1000 {
-		fmt.Printf("\r                              \r") // Clear progress line
+		fmt.Printf("\r                                        \r") // Clear progress line
 	}
 	if cache != nil && cacheHits > 0 {
 		debug.Logf("pack: cache hits %d/%d files (%.0f%%)", cacheHits, fileCount, float64(cacheHits)/float64(fileCount)*100)

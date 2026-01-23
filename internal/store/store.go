@@ -236,7 +236,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	}
 
 	if total >= 1000 {
-		fmt.Printf("\r                              \r") // Clear progress line
+		fmt.Printf("\r                                        \r") // Clear progress line
 	}
 
 	if reflinkCount > 0 || hardLinkCount > 0 {
