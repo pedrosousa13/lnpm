@@ -69,7 +69,7 @@ lnpm watch
 | Command | Description |
 |---------|-------------|
 | `lnpm publish` | Publish package to local store |
-| `lnpm add <pkg>` | Add package from store to project |
+| `lnpm add <pkg...>` | Add package(s) from store to project |
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm push` | Push changes to all linked projects |
 | `lnpm watch` | Auto-sync on file changes |
@@ -89,8 +89,9 @@ lnpm watch
 # Publish a package
 lnpm publish
 
-# Add to a project
+# Add to a project (supports multiple packages)
 lnpm add my-package
+lnpm add pkg-a pkg-b pkg-c
 
 # Push updates after making changes
 lnpm push

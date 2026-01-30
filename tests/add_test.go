@@ -397,6 +397,77 @@ func TestAddWithNPMWorkspace(t *testing.T) {
 	env.AssertPackageJSON(packageADir, "workspace-pkg", "file:.lnpm/workspace-pkg")
 }
 
+// TestAddMultiplePackages tests adding multiple packages in one command
+func TestAddMultiplePackages(t *testing.T) {
+	env := setupTest(t)
+
+	// Create and publish multiple packages
+	packages := []string{"multi-pkg-a", "multi-pkg-b", "multi-pkg-c"}
+	for _, name := range packages {
+		pkgDir := env.CreateTestPackage(name, "1.0.0", map[string]string{
+			"index.js": "module.exports = '" + name + "';",
+		})
+		if err := os.Chdir(pkgDir); err != nil {
+			t.Fatalf("Failed to chdir: %v", err)
+		}
+		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+			t.Fatalf("Failed to publish %s: %v", name, err)
+		}
+	}
+
+	// Create a project
+	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+
+	// Add all packages at once
+	if err := cli.RunAddMultiple(packages, false, false, false); err != nil {
+		t.Fatalf("Failed to add multiple packages: %v", err)
+	}
+
+	// Verify all packages were added
+	for _, name := range packages {
+		env.AssertSymlinkExists(projectDir, name)
+		env.AssertPackageJSON(projectDir, name, "file:.lnpm/"+name)
+		env.AssertDatabaseLink(name, projectDir)
+	}
+}
+
+// TestAddMultipleWithPartialFailure tests adding multiple packages where some fail
+func TestAddMultipleWithPartialFailure(t *testing.T) {
+	env := setupTest(t)
+
+	// Create and publish only one package
+	pkgDir := env.CreateTestPackage("exists-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'exists';",
+	})
+	if err := os.Chdir(pkgDir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		t.Fatalf("Failed to publish: %v", err)
+	}
+
+	// Create a project
+	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+
+	// Add mix of existing and non-existing packages
+	err := cli.RunAddMultiple([]string{"exists-pkg", "nonexistent-pkg"}, false, false, false)
+
+	// Should not return error (partial success)
+	if err != nil {
+		t.Fatalf("Expected partial success, got error: %v", err)
+	}
+
+	// Verify the existing package was added
+	env.AssertSymlinkExists(projectDir, "exists-pkg")
+	env.AssertPackageJSON(projectDir, "exists-pkg", "file:.lnpm/exists-pkg")
+}
+
 // TestAddLockfileContents tests that lockfile contains correct information
 func TestAddLockfileContents(t *testing.T) {
 	env := setupTest(t)
