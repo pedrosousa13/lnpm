@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
@@ -17,8 +18,224 @@ import (
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
-// RunAdd executes the add command
+// RunAdd adds a single package (for backward compatibility)
 func RunAdd(packageSpec string, dev bool, pure bool, runInstall bool) error {
+	return runAddSingle(packageSpec, dev, pure, runInstall)
+}
+
+// addResult holds the result of parallel package resolution and linking
+type addResult struct {
+	spec         string
+	pkg          *db.Package
+	linkType     link.LinkType
+	origVersion  string
+	err          error
+}
+
+// RunAddMultiple adds multiple packages with parallel linking
+func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool) error {
+	if len(packageSpecs) == 1 {
+		return runAddSingle(packageSpecs[0], dev, pure, runInstall)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	pkgJSONPath := filepath.Join(cwd, "package.json")
+	if _, err := os.Stat(pkgJSONPath); err != nil {
+		return fmt.Errorf("no package.json found in current directory")
+	}
+
+	database, err := db.GetDB()
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+
+	s, err := store.New()
+	if err != nil {
+		return fmt.Errorf("failed to access store: %w", err)
+	}
+
+	linker := link.New(cwd)
+
+	// Phase 1: Resolve and link packages in parallel
+	var wg sync.WaitGroup
+	results := make(chan addResult, len(packageSpecs))
+
+	for _, spec := range packageSpecs {
+		wg.Add(1)
+		go func(pkgSpec string) {
+			defer wg.Done()
+			result := addResult{spec: pkgSpec}
+
+			name, version := parsePackageSpec(pkgSpec)
+
+			var pkg *db.Package
+			var lookupErr error
+			if version != "" {
+				pkg, lookupErr = database.GetPackageByHash(name, version)
+			} else {
+				pkg, lookupErr = database.GetPackageByName(name)
+			}
+
+			if lookupErr != nil {
+				result.err = fmt.Errorf("failed to look up package: %w", lookupErr)
+				results <- result
+				return
+			}
+			if pkg == nil {
+				result.err = fmt.Errorf("package %s not found in store", name)
+				results <- result
+				return
+			}
+
+			result.pkg = pkg
+
+			files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+			if err != nil {
+				result.err = fmt.Errorf("failed to get package files: %w", err)
+				results <- result
+				return
+			}
+
+			linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
+			if err != nil {
+				result.err = fmt.Errorf("failed to link package: %w", err)
+				results <- result
+				return
+			}
+
+			result.linkType = linkType
+			results <- result
+		}(spec)
+	}
+
+	wg.Wait()
+	close(results)
+
+	// Collect results
+	var successful []addResult
+	var errors []error
+	for r := range results {
+		if r.err != nil {
+			errors = append(errors, fmt.Errorf("%s: %w", r.spec, r.err))
+		} else {
+			successful = append(successful, r)
+		}
+	}
+
+	if len(successful) == 0 {
+		fmt.Println("\n⚠ All packages failed to add:")
+		for _, err := range errors {
+			fmt.Printf("  • %v\n", err)
+		}
+		return fmt.Errorf("all packages failed to add")
+	}
+
+	// Phase 2: Sequential file updates (gitignore, package.json, lockfile, database)
+	cfg := config.Get()
+	if cfg.ShouldManageGitignore() {
+		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
+			fmt.Printf("  ⚠ Could not update .gitignore: %v\n", err)
+		} else if added {
+			fmt.Println("  ✓ Added .lnpm/ to .gitignore")
+		}
+	}
+
+	pm := config.DetectPackageManager(cwd)
+
+	lock, err := lockfile.Load(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to load lock file: %w", err)
+	}
+
+	// Update package.json for all successful packages
+	if !pure {
+		for i := range successful {
+			origVersion, err := updatePackageJSON(pkgJSONPath, successful[i].pkg.Name, dev)
+			if err != nil {
+				fmt.Printf("  ⚠ Failed to update package.json for %s: %v\n", successful[i].pkg.Name, err)
+				continue
+			}
+			successful[i].origVersion = origVersion
+		}
+	}
+
+	// Update lockfile and database for all successful packages
+	proj := &db.Project{
+		Path:           cwd,
+		Name:           getProjectName(cwd),
+		PackageManager: string(pm),
+	}
+	if err := database.InsertProject(proj); err != nil {
+		return fmt.Errorf("failed to register project: %w", err)
+	}
+
+	existingProj, err := database.GetProjectByPath(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to get project: %w", err)
+	}
+
+	for _, r := range successful {
+		// Check for existing original version in lockfile
+		existingOrigVersion := ""
+		if existing, ok := lock.Get(r.pkg.Name); ok && existing.OriginalVersion != "" {
+			existingOrigVersion = existing.OriginalVersion
+		}
+
+		origVersion := r.origVersion
+		if origVersion == "" && existingOrigVersion != "" {
+			origVersion = existingOrigVersion
+		}
+
+		lock.Add(r.pkg.Name, lockfile.Package{
+			Version:         r.pkg.Version,
+			Hash:            r.pkg.ContentHash,
+			Source:          r.pkg.SourcePath,
+			Linked:          time.Now(),
+			OriginalVersion: origVersion,
+		})
+
+		dbLink := &db.Link{
+			PackageID: r.pkg.ID,
+			ProjectID: existingProj.ID,
+			LinkType:  string(r.linkType),
+		}
+		if err := database.InsertLink(dbLink); err != nil {
+			fmt.Printf("  ⚠ Failed to record link for %s: %v\n", r.pkg.Name, err)
+		}
+
+		fmt.Printf("✓ Added %s@%s (%s)\n", r.pkg.Name, r.pkg.Version, r.linkType)
+	}
+
+	if err := lock.Save(cwd); err != nil {
+		return fmt.Errorf("failed to save lock file: %w", err)
+	}
+
+	if len(errors) > 0 {
+		fmt.Println("\n⚠ Some packages failed:")
+		for _, err := range errors {
+			fmt.Printf("  • %v\n", err)
+		}
+	}
+
+	// Run npm install once at the end if requested
+	if runInstall && !pure && len(successful) > 0 {
+		fmt.Println("\nRunning npm install...")
+		if err := hooks.RunPostAdd(cwd, true); err != nil {
+			fmt.Printf("  ⚠ npm install failed: %v\n", err)
+		}
+	} else if !pure && len(successful) > 0 {
+		fmt.Println("\n  💡 Run 'npm install' if you need to resolve peer dependencies")
+	}
+
+	return nil
+}
+
+// runAddSingle adds a single package (internal implementation)
+func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) error {
 	// Parse package spec (name[@version])
 	name, version := parsePackageSpec(packageSpec)
 

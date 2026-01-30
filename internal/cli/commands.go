@@ -36,12 +36,12 @@ Examples:
 
 // addCmd adds a package from the store to the current project
 var addCmd = &cobra.Command{
-	Use:   "add <package>",
-	Short: "Add a package from store to current project",
-	Long: `Add a package from the local store to the current project.
+	Use:   "add <package> [packages...]",
+	Short: "Add packages from store to current project",
+	Long: `Add packages from the local store to the current project.
 
 This command:
-  1. Finds the package in the store
+  1. Finds the packages in the store
   2. Creates hard links in .lnpm/{package}/
   3. Creates a symlink in node_modules/{package}
   4. Updates package.json with file: dependency
@@ -49,17 +49,17 @@ This command:
 
 Examples:
   lnpm add my-package            # Add latest version
+  lnpm add pkg1 pkg2 pkg3        # Add multiple packages
   lnpm add my-package@1.0.0      # Add specific version
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
   lnpm add my-package --pure     # Don't modify package.json`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		pkg := args[0]
 		dev, _ := cmd.Flags().GetBool("dev")
 		pure, _ := cmd.Flags().GetBool("pure")
 		install, _ := cmd.Flags().GetBool("install")
-		return RunAdd(pkg, dev, pure, install)
+		return RunAddMultiple(args, dev, pure, install)
 	},
 }
 
