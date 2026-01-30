@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/pedrosousa13/lnpm/compare/v1.8.2...v1.9.0) (2026-01-30)
+
+
+### Features
+
+* **add:** support multiple packages in single command ([#32](https://github.com/pedrosousa13/lnpm/issues/32)) ([8d52feb](https://github.com/pedrosousa13/lnpm/commit/8d52febe19fd02ce09112b066f0e6f2b86a4a88d))
+
 ## [1.8.2](https://github.com/pedrosousa13/lnpm/compare/v1.8.1...v1.8.2) (2026-01-19)
 
 
