@@ -5,7 +5,6 @@ go 1.22
 require (
 	github.com/bmatcuk/doublestar/v4 v4.6.1
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/fsnotify/fsnotify v1.7.0
 	github.com/panjf2000/ants/v2 v2.11.4
 	github.com/spf13/cobra v1.8.1
 	go.etcd.io/bbolt v1.3.8

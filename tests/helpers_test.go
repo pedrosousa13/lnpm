@@ -2,14 +2,12 @@ package tests
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -568,14 +566,3 @@ func (te *TestEnvironment) AssertScriptExists(storePath, packageName, scriptName
 	}
 }
 
-// WaitForWatchSync waits for a sync event on the channel with timeout
-func (te *TestEnvironment) WaitForWatchSync(syncCh chan []string, timeout time.Duration) ([]string, error) {
-	te.t.Helper()
-
-	select {
-	case files := <-syncCh:
-		return files, nil
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("timeout waiting for watch sync after %v", timeout)
-	}
-}

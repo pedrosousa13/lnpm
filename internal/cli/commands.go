@@ -113,39 +113,13 @@ Examples:
 	},
 }
 
-// watchCmd watches for changes and auto-pushes
-var watchCmd = &cobra.Command{
-	Use:   "watch",
-	Short: "Watch for changes and auto-push",
-	Long: `Watch the current package for changes and automatically push updates.
-
-This command:
-  1. Starts a file watcher on the package directory
-  2. On file changes, copies changed files to store
-  3. Updates hard links in all linked projects
-  4. Continues until Ctrl+C
-
-Examples:
-  lnpm watch                        # Basic watch
-  lnpm watch --exec "npm run build" # Run build before push
-  lnpm watch --ignore "*.test.ts"   # Ignore test files`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		execCmd, _ := cmd.Flags().GetString("exec")
-		ignore, _ := cmd.Flags().GetStringSlice("ignore")
-		debounce, _ := cmd.Flags().GetInt("debounce")
-
-		return RunWatch(execCmd, ignore, debounce)
-	},
-}
-
 // statusCmd shows the current state of lnpm
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show current state of all links and watches",
+	Short: "Show current state of all links",
 	Long: `Show the current state of lnpm including:
   - Published packages in the store
   - Active links between packages and projects
-  - Running watch processes
 
 This provides full visibility into what lnpm is managing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -204,8 +178,7 @@ This command checks:
   - Store directory exists and is writable
   - Database integrity
   - Orphaned links and packages
-  - Cross-filesystem issues
-  - Stale watch records`,
+  - Cross-filesystem issues`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunDoctor()
 	},
@@ -260,11 +233,6 @@ func init() {
 
 	// push flags
 	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
-
-	// watch flags
-	watchCmd.Flags().String("exec", "", "Command to run before each push")
-	watchCmd.Flags().StringSlice("ignore", nil, "Patterns to ignore")
-	watchCmd.Flags().Int("debounce", 100, "Debounce time in milliseconds")
 
 	// list flags
 	listCmd.Flags().Bool("store", false, "List packages in store")
