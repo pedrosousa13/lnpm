@@ -17,12 +17,6 @@ type Config struct {
 	// LinkMode is the default link mode: "hardlink" or "copy"
 	LinkMode string `yaml:"link_mode,omitempty"`
 
-	// DefaultIgnore is a list of patterns to always ignore in watch mode
-	DefaultIgnore []string `yaml:"default_ignore,omitempty"`
-
-	// DebounceMs is the default debounce time for watch mode
-	DebounceMs int `yaml:"debounce_ms,omitempty"`
-
 	// ManageGitignore controls automatic .gitignore management (default: true)
 	ManageGitignore *bool `yaml:"manage_gitignore,omitempty"`
 
@@ -56,13 +50,7 @@ func LoadConfig() (*Config, error) {
 // loadConfigFile reads the config file from disk
 func loadConfigFile() (*Config, error) {
 	cfg := &Config{
-		LinkMode:   "hardlink",
-		DebounceMs: 100,
-		DefaultIgnore: []string{
-			"node_modules",
-			".git",
-			"*.log",
-		},
+		LinkMode: "hardlink",
 	}
 
 	// Find config file
@@ -120,8 +108,7 @@ func Get() *Config {
 	cfg, _ := LoadConfig()
 	if cfg == nil {
 		return &Config{
-			LinkMode:   "hardlink",
-			DebounceMs: 100,
+			LinkMode: "hardlink",
 		}
 	}
 	return cfg

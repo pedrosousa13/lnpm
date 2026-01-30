@@ -28,14 +28,12 @@ var rootCmd = &cobra.Command{
 It provides a better alternative to yalc with:
   - Hard links for instant, reliable syncing
   - SQLite-backed state tracking
-  - Watch mode for automatic updates
   - Full visibility into linked packages
 
 Quick start:
   lnpm publish     # Publish current package to local store
   lnpm add <pkg>   # Add a package to current project
-  lnpm push        # Push updates to all linked projects
-  lnpm watch       # Watch and auto-sync changes`,
+  lnpm push        # Push updates to all linked projects`,
 	Version: version,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		debugFlag, _ := cmd.Flags().GetBool("debug")
@@ -71,7 +69,6 @@ func init() {
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(pushCmd)
-	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(gcCmd)

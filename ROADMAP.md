@@ -9,7 +9,6 @@ github.com/spf13/viper       // Configuration
 modernc.org/sqlite           // Pure Go SQLite (no CGO)
 
 // File operations
-github.com/fsnotify/fsnotify // File watching
 github.com/bmatcuk/doublestar // Glob patterns
 
 // UX
@@ -149,69 +148,30 @@ gopkg.in/yaml.v3                    // YAML lock file
 
 ---
 
-## Phase 3: Watch Mode
-
-**Goal:** Auto-sync on file changes.
-
-### 3.1 File Watcher Setup
-- [ ] Initialize fsnotify watcher
-- [ ] Watch package source directory
-- [ ] Respect ignore patterns from config
-- [ ] Handle recursive directory watching
-
-### 3.2 Debouncing
-- [ ] Implement debounce timer (default 100ms)
-- [ ] Accumulate changes during debounce window
-- [ ] Process batch after timer expires
-
-### 3.3 `lnpm watch` Command
-- [ ] Start watcher on current package
-- [ ] On change: copy changed files to store
-- [ ] Update hard links in all linked projects
-- [ ] Print change notifications
-- [ ] Handle Ctrl+C gracefully
-- [ ] Record watch in database (for status)
-
-### 3.4 Watch Options
-- [ ] `--ignore` - additional patterns to ignore
-- [ ] `--exec` - run command before sync (e.g., `npm run build`)
-- [ ] `--debounce` - custom debounce time
-
-### 3.5 Watch Process Management
-- [ ] Store PID in database
-- [ ] Clean up stale watch records on startup
-- [ ] Allow `lnpm watch --stop` to kill watcher
-
-**Deliverable:** Changes auto-sync to linked projects.
-
----
-
-## Phase 4: Status & Visibility
+## Phase 3: Status & Visibility
 
 **Goal:** Full visibility into lnpm state.
 
-### 4.1 `lnpm status` Command
+### 3.1 `lnpm status` Command
 - [ ] Query all published packages
 - [ ] Query all active links
-- [ ] Query all active watches
 - [ ] Format as tables with lipgloss
 - [ ] Show relative times ("2 minutes ago")
 
-### 4.2 `lnpm list` Command
+### 3.2 `lnpm list` Command
 - [ ] `lnpm list` - packages in current project
 - [ ] `lnpm list --store` - all packages in store
 - [ ] `lnpm list <pkg> --projects` - projects using package
 
-### 4.3 `lnpm doctor` Command
+### 3.3 `lnpm doctor` Command
 - [ ] Check store directory exists
 - [ ] Validate database integrity
 - [ ] Find orphaned links (project deleted)
 - [ ] Find orphaned packages (no links)
 - [ ] Detect cross-filesystem issues
-- [ ] Check for stale watch records
 - [ ] Suggest fixes for each issue
 
-### 4.4 `lnpm gc` Command
+### 3.4 `lnpm gc` Command
 - [ ] `--dry-run` - show what would be removed
 - [ ] Remove packages with no links
 - [ ] `--older-than` - remove old packages
@@ -221,34 +181,34 @@ gopkg.in/yaml.v3                    // YAML lock file
 
 ---
 
-## Phase 5: DX Polish
+## Phase 4: DX Polish
 
 **Goal:** Delightful developer experience.
 
-### 5.1 Rich Output
+### 4.1 Rich Output
 - [ ] Colored success/error messages
 - [ ] Spinners for long operations
 - [ ] Progress bars for multi-file copies
 - [ ] Emoji indicators (optional, detect terminal support)
 
-### 5.2 Error Messages
+### 4.2 Error Messages
 - [ ] Actionable error messages with suggestions
 - [ ] "Did you mean?" for typos
 - [ ] Link to docs for common issues
 
-### 5.3 Shell Completions
+### 4.3 Shell Completions
 - [ ] Bash completions
 - [ ] Zsh completions
 - [ ] Fish completions
 - [ ] Auto-install completions
 
-### 5.4 Configuration
+### 4.4 Configuration
 - [ ] Global config (`~/.lnpm/config.toml`)
 - [ ] Project config (`.lnpmrc`)
 - [ ] Environment variable overrides
 - [ ] `lnpm config` command to view/edit
 
-### 5.5 Hooks
+### 4.5 Hooks
 - [ ] `prePublish` - run before publish
 - [ ] `postPublish` - run after publish
 - [ ] `postAdd` - run after add (e.g., `npm install`)
@@ -258,29 +218,29 @@ gopkg.in/yaml.v3                    // YAML lock file
 
 ---
 
-## Phase 6: Advanced Features
+## Phase 5: Advanced Features
 
 **Goal:** Power user features and monorepo support.
 
-### 6.1 Monorepo Support
+### 5.1 Monorepo Support
 - [ ] Detect workspace root (pnpm-workspace.yaml, etc.)
 - [ ] `lnpm publish --all` - publish all workspace packages
 - [ ] Resolve `workspace:*` protocol
 - [ ] Handle inter-package dependencies
 
-### 6.2 Tags
+### 5.2 Tags
 - [ ] `lnpm publish --tag beta`
 - [ ] `lnpm add pkg@beta`
 - [ ] Store tags in database
 - [ ] `lnpm tag` command to manage tags
 
-### 6.3 History
+### 5.3 History
 - [ ] Keep multiple versions in store
 - [ ] `lnpm list pkg --versions`
 - [ ] `lnpm add pkg@abc123` (by hash)
 - [ ] `lnpm rollback pkg` - revert to previous version
 
-### 6.4 Retreat Command
+### 5.4 Retreat Command
 - [ ] `lnpm retreat` - remove all lnpm changes
 - [ ] Restore original package.json
 - [ ] Clean .lnpm directory
@@ -290,29 +250,29 @@ gopkg.in/yaml.v3                    // YAML lock file
 
 ---
 
-## Phase 7: Distribution
+## Phase 6: Distribution
 
 **Goal:** Easy installation everywhere.
 
-### 7.1 Build Pipeline
+### 6.1 Build Pipeline
 - [ ] GitHub Actions workflow
 - [ ] Build for linux/amd64, linux/arm64
 - [ ] Build for darwin/amd64, darwin/arm64
 - [ ] Build for windows/amd64
 
-### 7.2 Release Automation
+### 6.2 Release Automation
 - [ ] goreleaser configuration
 - [ ] Semantic versioning
 - [ ] Changelog generation
 - [ ] GitHub releases with binaries
 
-### 7.3 Package Managers
+### 6.3 Package Managers
 - [ ] Homebrew formula (macOS/Linux)
 - [ ] Scoop manifest (Windows)
 - [ ] AUR package (Arch Linux)
 - [ ] npm wrapper (`npx lnpm`)
 
-### 7.4 Installation Script
+### 6.4 Installation Script
 - [ ] `curl -fsSL https://lnpm.dev/install.sh | sh`
 - [ ] Detect OS and architecture
 - [ ] Download and install binary
@@ -330,9 +290,7 @@ gopkg.in/yaml.v3                    // YAML lock file
 | `publish` (100 files) | < 500ms |
 | `add` (hard link) | < 100ms |
 | `push` (1 changed file) | < 50ms |
-| Watch latency | < 200ms end-to-end |
 | Binary size | < 15MB |
-| Memory usage | < 50MB during watch |
 
 ---
 
@@ -347,7 +305,6 @@ gopkg.in/yaml.v3                    // YAML lock file
 ### Integration Tests
 - Full publish → add → push cycle
 - Cross-project linking
-- Watch mode file detection
 - Package manager detection
 
 ### E2E Tests
@@ -363,8 +320,7 @@ gopkg.in/yaml.v3                    // YAML lock file
 |-------|------------|
 | Phase 1: Core | High |
 | Phase 2: Push | Medium |
-| Phase 3: Watch | Medium |
-| Phase 4: Status | Low |
-| Phase 5: DX | Medium |
-| Phase 6: Advanced | High |
-| Phase 7: Distribution | Medium |
+| Phase 3: Status | Low |
+| Phase 4: DX | Medium |
+| Phase 5: Advanced | High |
+| Phase 6: Distribution | Medium |

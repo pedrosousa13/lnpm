@@ -82,7 +82,7 @@ go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lnpm:publish": "lnpm publish --all",
-    "lnpm:watch": "lnpm watch --exec 'turbo run build --filter'"
+    "lnpm:push": "lnpm push"
   },
   "devDependencies": {
     "turbo": "latest"
@@ -111,17 +111,16 @@ cd ~/projects/external-app
 lnpm add @my/ui
 lnpm add @my/components
 
-# Back in monorepo - watch and rebuild on changes
-cd ~/projects/my-monorepo
-lnpm watch --exec "turbo run build --filter=@my/ui"
+# Back in monorepo - build and push changes
+cd ~/projects/my-monorepo/packages/ui
+turbo run build --filter=@my/ui
+lnpm push
 ```
 
 **What happens:**
-1. Changes detected in `packages/ui/`
-2. lnpm triggers: `turbo run build --filter=@my/ui`
-3. Turborepo builds only affected packages (using cache when possible)
-4. lnpm pushes built files to linked external projects
-5. External app hot-reloads with changes
+1. Turborepo builds only affected packages (using cache when possible)
+2. lnpm pushes built files to linked external projects
+3. External app receives the updated package
 
 ### Workflow: Linking Between Workspaces
 
@@ -135,9 +134,9 @@ npm run lnpm:publish
 cd apps/web
 lnpm add @my/ui
 
-# Watch and push changes
-cd ../..  # back to root
-lnpm watch --exec "turbo run build --filter=@my/ui"
+# Build and push changes
+turbo run build --filter=@my/ui
+lnpm push
 ```
 
 ### Integration with turbo.json
@@ -198,7 +197,7 @@ go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest
 {
   "scripts": {
     "lnpm:publish": "lnpm publish --all",
-    "lnpm:watch": "lnpm watch --exec 'nx build'"
+    "lnpm:push": "lnpm push"
   }
 }
 ```
@@ -222,17 +221,17 @@ cd ~/projects/external-app
 lnpm add @my-org/feature-auth
 lnpm add @my-org/ui
 
-# Back in Nx workspace - watch specific library
+# Back in Nx workspace - build and push
 cd ~/projects/my-nx-workspace
-lnpm watch --exec "nx build feature-auth"
+nx build feature-auth
+cd libs/feature-auth
+lnpm push
 ```
 
 **Nx + lnpm workflow:**
-1. Changes in `libs/feature-auth/`
-2. lnpm triggers: `nx build feature-auth`
-3. Nx builds affected libs (with computation caching)
-4. lnpm pushes to external project
-5. External app receives changes
+1. Nx builds affected libs (with computation caching)
+2. lnpm pushes to external project
+3. External app receives changes
 
 ### Nx Project Configuration
 
@@ -333,9 +332,10 @@ lnpm publish --all
 cd ~/external-app
 lnpm add @my/package
 
-# Watch and push from monorepo
+# Build and push from monorepo
 cd ~/my-monorepo
-lnpm watch --exec "pnpm --filter @my/package build"
+pnpm --filter @my/package build
+lnpm push
 ```
 
 ---
@@ -376,9 +376,10 @@ lnpm publish --all
 cd ~/external-app
 lnpm add @my/package
 
-# Watch from monorepo
+# Build and push from monorepo
 cd ~/my-monorepo
-lnpm watch --exec "npm run build -w @my/package"
+npm run build -w @my/package
+lnpm push
 ```
 
 ---
@@ -418,9 +419,10 @@ lnpm publish --all
 cd ~/external-app
 lnpm add @my/package
 
-# Watch from monorepo
+# Build and push from monorepo
 cd ~/my-monorepo
-lnpm watch --exec "yarn workspace @my/package build"
+yarn workspace @my/package build
+lnpm push
 ```
 
 ---
@@ -455,12 +457,12 @@ Let your task runner handle builds, use lnpm for distribution:
 
 **Turborepo:**
 ```bash
-lnpm watch --exec "turbo run build --filter"
+turbo run build --filter=@my/ui && lnpm push
 ```
 
 **Nx:**
 ```bash
-lnpm watch --exec "nx build"
+nx build my-lib && lnpm push
 ```
 
 ### 4. Link External Projects, Not Internal
@@ -495,15 +497,26 @@ git add packages/ui/src/button.tsx
 lnpm push
 ```
 
-### 6. Use Watch Mode for Active Development
+### 6. Use Build Tool's Watch Mode
+
+For active development, use your build tool's watch mode combined with `lnpm push`:
 
 ```bash
-# Watch with build command
-lnpm watch --exec "turbo run build --filter=@my/ui"
+# Terminal 1: Watch and build with turbo/nx
+turbo run build --filter=@my/ui --watch
 
-# Or watch without build if using dev server
-cd packages/ui
-lnpm watch
+# Terminal 2: Push when ready
+lnpm push
+```
+
+Or integrate into your build scripts:
+
+```json
+{
+  "scripts": {
+    "build:dev": "tsc --watch --onSuccess \"lnpm push\""
+  }
+}
 ```
 
 ---
@@ -540,19 +553,6 @@ git add .
 
 # Or force push
 lnpm push --force
-```
-
-### Issue: Builds not triggered in watch mode
-
-Check your build command is correct:
-
-```bash
-# Test build command manually first
-turbo run build --filter=@my/ui
-nx build my-lib
-
-# Then use in watch
-lnpm watch --exec "turbo run build --filter=@my/ui"
 ```
 
 ### Issue: Slow push times
@@ -602,20 +602,6 @@ lnpm publish
 lnpm push
 ```
 
-### Multi-Package Watch
-
-Watch multiple packages simultaneously:
-
-```bash
-# Terminal 1
-cd packages/ui
-lnpm watch --exec "turbo run build --filter=@my/ui"
-
-# Terminal 2
-cd packages/components
-lnpm watch --exec "turbo run build --filter=@my/components"
-```
-
 ### CI/CD Integration
 
 In CI, restore original dependencies before publishing to npm:
@@ -641,13 +627,13 @@ LNPM_DEBUG=1 lnpm push
 
 ## Summary
 
-| Tool | Install Location | Publish Command | Watch Command |
-|------|------------------|-----------------|---------------|
-| **Turborepo** | System (global) | `lnpm publish --all` | `lnpm watch --exec "turbo run build --filter"` |
-| **Nx** | System (global) | `lnpm publish --all` | `lnpm watch --exec "nx build <lib>"` |
-| **PNPM** | System (global) | `lnpm publish --all` | `lnpm watch --exec "pnpm --filter <pkg> build"` |
-| **NPM** | System (global) | `lnpm publish --all` | `lnpm watch --exec "npm run build -w <pkg>"` |
-| **Yarn** | System (global) | `lnpm publish --all` | `lnpm watch --exec "yarn workspace <pkg> build"` |
+| Tool | Install Location | Publish Command | Push Command |
+|------|------------------|-----------------|--------------|
+| **Turborepo** | System (global) | `lnpm publish --all` | `lnpm push` |
+| **Nx** | System (global) | `lnpm publish --all` | `lnpm push` |
+| **PNPM** | System (global) | `lnpm publish --all` | `lnpm push` |
+| **NPM** | System (global) | `lnpm publish --all` | `lnpm push` |
+| **Yarn** | System (global) | `lnpm publish --all` | `lnpm push` |
 
 **Key Takeaway:** lnpm complements your monorepo tool—it doesn't replace it. Use your tool for internal dependencies and orchestration, use lnpm to rapidly iterate with external projects.
 

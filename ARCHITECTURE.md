@@ -19,16 +19,16 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           lnpm CLI (Go)                             │
-│         Commands: publish | add | remove | push | watch | status    │
+│         Commands: publish | add | remove | push | status    │
 └──────────────────────────────────┬──────────────────────────────────┘
                                    │
-        ┌──────────────────────────┼──────────────────────────────────┐
-        │                          │                                  │
-        ▼                          ▼                                  ▼
-┌───────────────┐         ┌───────────────┐                 ┌─────────────────┐
-│  File Watcher │         │ Package Store │                 │  Link Manager   │
-│  (fsnotify)   │         │ ~/.lnpm/store │                 │  (hard links)   │
-└───────────────┘         └───────┬───────┘                 └─────────────────┘
+                    ┌──────────────┴──────────────┐
+                    │                             │
+                    ▼                             ▼
+           ┌───────────────┐            ┌─────────────────┐
+           │ Package Store │            │  Link Manager   │
+           │ ~/.lnpm/store │            │  (hard links)   │
+           └───────┬───────┘            └─────────────────┘
                                   │
                                   ▼
                           ┌───────────────┐
@@ -309,33 +309,9 @@ lnpm push --force
    - Create new hard links
    - Preserve `node_modules` symlink
 
-### `lnpm watch`
-
-Watch for changes and auto-push.
-
-```bash
-# Start watching current package
-lnpm watch
-
-# Watch with custom ignore patterns
-lnpm watch --ignore "**/*.test.ts"
-
-# Watch and run command before push
-lnpm watch --exec "npm run build"
-```
-
-**Process:**
-1. Start fsnotify watcher on package directory
-2. On file change:
-   - Debounce (default 100ms)
-   - If `--exec`, run command and wait
-   - Copy changed files to store
-   - Update hard links in all projects
-3. Register watch in SQLite (for `lnpm status`)
-
 ### `lnpm status`
 
-Show current state of all links and watches.
+Show current state of all links.
 
 ```bash
 lnpm status
@@ -356,13 +332,6 @@ lnpm status
 # │ my-package   │ ~/code/my-app           │ hardlink │
 # │ my-package   │ ~/code/other-app        │ hardlink │
 # └──────────────┴─────────────────────────┴──────────┘
-#
-# 👀 Active Watches
-# ┌──────────────┬─────────────────────────┬─────────────────────┐
-# │ Package      │ Source                  │ Started             │
-# ├──────────────┼─────────────────────────┼─────────────────────┤
-# │ my-package   │ ~/code/my-package       │ 5 minutes ago       │
-# └──────────────┴─────────────────────────┴─────────────────────┘
 ```
 
 ### `lnpm list`
@@ -426,16 +395,6 @@ store_path = "~/.lnpm"
 
 # Default link type: "hardlink" | "copy"
 link_type = "hardlink"
-
-# Watch debounce in milliseconds
-watch_debounce = 100
-
-# Files to always ignore
-ignore = [
-    "node_modules",
-    ".git",
-    "*.log"
-]
 ```
 
 ### Project Config (`.lnpmrc` or `lnpm` field in `package.json`)

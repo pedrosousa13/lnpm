@@ -10,7 +10,6 @@
 
 - **Blazing fast** — Reflink/CoW + hard links for instant operations on large packages
 - **Smart linking** — Automatically uses the fastest method: reflink → hardlink → parallel copy
-- **Watch mode** — Auto-sync changes to all linked projects
 - **Monorepo support** — Publish all workspace packages at once
 - **Cross-platform** — Works on Linux, macOS, and Windows
 - **All package managers** — npm, yarn, pnpm, and bun
@@ -52,9 +51,6 @@ lnpm add my-library
 # Make changes to my-library, then push updates
 cd ~/code/my-library
 lnpm push
-
-# Or use watch mode for auto-sync
-lnpm watch
 ```
 
 ## Documentation
@@ -72,7 +68,6 @@ lnpm watch
 | `lnpm add <pkg>` | Add package from store to project |
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm push` | Push changes to all linked projects |
-| `lnpm watch` | Auto-sync on file changes |
 | `lnpm status` | Show current project's links |
 | `lnpm list` | List packages in store |
 | `lnpm doctor` | Diagnose issues |
@@ -94,9 +89,6 @@ lnpm add my-package
 
 # Push updates after making changes
 lnpm push
-
-# Or watch for auto-sync
-lnpm watch --exec "npm run build"
 ```
 
 ### Monorepo Support
@@ -110,9 +102,8 @@ lnpm integrates seamlessly with Turborepo, Nx, and all workspace managers:
 # Publish all workspace packages
 lnpm publish --all
 
-# Watch and rebuild with your task runner
-lnpm watch --exec "turbo run build --filter=@my/ui"
-lnpm watch --exec "nx build my-lib"
+# Push updates to all linked projects
+lnpm push
 ```
 
 **📖 See [MONOREPO.md](MONOREPO.md) for complete guides on:**
@@ -175,18 +166,9 @@ store_path: /path/to/store
 # Default: hardlink
 link_mode: hardlink
 
-# Watch debounce in milliseconds (default: 100)
-debounce_ms: 100
-
 # Auto-manage .gitignore (add/remove .lnpm/ entry)
 # Default: true
 manage_gitignore: true
-
-# Patterns to always ignore
-default_ignore:
-  - node_modules
-  - .git
-  - "*.log"
 
 # Build scripts and hooks
 hooks:
@@ -379,7 +361,6 @@ lnpm automatically detects the best method and falls back gracefully with helpfu
 |---------|------|------|
 | Link method | Reflink → Hard link → Parallel copy | Sequential copy only |
 | Large packages (10k+ files) | Instant (~5ms) on APFS/Btrfs | Slow (~5s+) |
-| Watch mode | Built-in | Requires chokidar |
 | State tracking | bbolt database | Hash files |
 | Monorepo | Native support | Manual |
 | Speed | ~10ms startup | ~100ms startup |

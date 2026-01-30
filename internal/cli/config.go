@@ -92,12 +92,6 @@ func getConfigKey(cfg *config.Config, key string) error {
 		}
 	case "link_mode":
 		fmt.Println(cfg.LinkMode)
-	case "debounce_ms":
-		fmt.Println(cfg.DebounceMs)
-	case "default_ignore":
-		for _, pattern := range cfg.DefaultIgnore {
-			fmt.Println(pattern)
-		}
 	case "hooks.pre_publish":
 		fmt.Println(cfg.Hooks.PrePublish)
 	case "hooks.post_publish":
@@ -120,12 +114,6 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 			return fmt.Errorf("link_mode must be 'hardlink' or 'copy'")
 		}
 		cfg.LinkMode = value
-	case "debounce_ms":
-		var ms int
-		if _, err := fmt.Sscanf(value, "%d", &ms); err != nil {
-			return fmt.Errorf("debounce_ms must be a number")
-		}
-		cfg.DebounceMs = ms
 	case "hooks.pre_publish":
 		cfg.Hooks.PrePublish = value
 	case "hooks.post_publish":
