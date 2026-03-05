@@ -418,16 +418,56 @@ make bench-compare  # Compare vs yalc (if installed)
 
 ## Contributing
 
-Contributions are welcome! Please read our contributing guidelines first.
+Contributions are welcome!
+
+### Prerequisites
+
+- Go 1.22+
+- Node.js (for integration tests that invoke npm)
+
+### Setup & Testing
+
+**Linux / macOS:**
 
 ```bash
-# Clone and build
 git clone https://github.com/pedrosousa13/lnpm.git
 cd lnpm
 make deps
 make build
-make test
+make test              # all tests
+make test-coverage     # with coverage report
+make lint              # golangci-lint (falls back to go vet)
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/pedrosousa13/lnpm.git
+cd lnpm
+go mod download
+go build ./cmd/lnpm
+go test -v ./...
+go vet ./...
+```
+
+### Cross-compile check
+
+Verify your changes compile for all platforms:
+
+```bash
+GOOS=linux go build ./...
+GOOS=darwin go build ./...
+GOOS=windows go build ./...
+```
+
+### Running specific test suites
+
+```bash
+go test -v -race ./internal/...   # unit tests
+go test -v -race ./tests/...      # integration tests
+```
+
+> **Windows note:** Some symlink tests are skipped on Windows since lnpm uses NTFS junctions (absolute paths) instead of relative symlinks. This is expected.
 
 ## License
 
