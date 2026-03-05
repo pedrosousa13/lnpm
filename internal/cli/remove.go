@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -111,7 +111,7 @@ func RunRemove(packageName string, all bool) error {
 	installCmd := config.GetInstallCommand(pm)
 	fmt.Printf("Running %s...\n", installCmd)
 
-	cmd := exec.Command("sh", "-c", installCmd)
+	cmd := shellcmd.Command(installCmd)
 	cmd.Dir = cwd
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

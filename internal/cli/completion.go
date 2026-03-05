@@ -50,6 +50,10 @@ Manual installation:
 }
 
 func installCompletion() error {
+	if runtime.GOOS == "windows" {
+		return installPowerShellCompletion()
+	}
+
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		return fmt.Errorf("unable to detect shell from $SHELL environment variable")
@@ -186,6 +190,37 @@ func installFishCompletion() error {
 
 	fmt.Printf("✓ Installed fish completion to %s\n\n", compFile)
 	fmt.Println("Completions will be available in new fish sessions.")
+
+	return nil
+}
+
+func installPowerShellCompletion() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	// Standard PowerShell completions directory
+	compDir := filepath.Join(home, "Documents", "PowerShell", "Completions")
+	if err := os.MkdirAll(compDir, 0755); err != nil {
+		return fmt.Errorf("failed to create completion directory: %w", err)
+	}
+
+	compFile := filepath.Join(compDir, "lnpm.ps1")
+	file, err := os.Create(compFile)
+	if err != nil {
+		return fmt.Errorf("failed to create completion file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	if err := rootCmd.GenPowerShellCompletionWithDesc(file); err != nil {
+		return fmt.Errorf("failed to generate completion: %w", err)
+	}
+
+	fmt.Printf("Installed PowerShell completion to %s\n\n", compFile)
+	fmt.Println("Add this to your PowerShell profile ($PROFILE):")
+	fmt.Printf("\n  . %s\n\n", compFile)
+	fmt.Println("Then restart PowerShell.")
 
 	return nil
 }

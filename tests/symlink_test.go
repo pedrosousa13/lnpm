@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -232,7 +233,12 @@ func TestSymlinkAfterPush(t *testing.T) {
 }
 
 // TestSymlinkIsRelative tests that symlink uses relative path
+// On Windows, junctions use absolute paths so this test is skipped.
 func TestSymlinkIsRelative(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("junctions use absolute paths on Windows")
+	}
+
 	env := setupTest(t)
 
 	// Create and publish package

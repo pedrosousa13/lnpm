@@ -265,7 +265,7 @@ func (l *Linker) createNodeModulesSymlink(packageName string) error {
 	}
 	relTarget := filepath.Join(upLevels, ".lnpm", packageName)
 
-	if err := os.Symlink(relTarget, linkPath); err != nil {
+	if err := createDirSymlink(relTarget, linkPath); err != nil {
 		return fmt.Errorf("failed to create node_modules symlink: %w", err)
 	}
 
