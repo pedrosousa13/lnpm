@@ -88,36 +88,10 @@ func RemoveFromGitignore(projectPath, pattern string) error {
 		return fmt.Errorf(".gitignore is read-only (mode %o)", fileMode)
 	}
 
-	file, err := os.Open(gitignorePath)
+	// Read and parse lines (close file before rename to avoid Windows lock)
+	lines, err := readGitignoreLines(gitignorePath, pattern)
 	if err != nil {
-		return fmt.Errorf("opening .gitignore: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	skipNext := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Skip marker line and next line if it matches pattern
-		if line == lnpmMarker {
-			skipNext = true
-			continue
-		}
-		if skipNext && line == pattern {
-			skipNext = false
-			continue
-		}
-		skipNext = false
-		lines = append(lines, line)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("reading .gitignore: %w", err)
+		return err
 	}
 
 	// Remove trailing empty lines added by lnpm
@@ -141,6 +115,42 @@ func RemoveFromGitignore(projectPath, pattern string) error {
 	}
 
 	return nil
+}
+
+// readGitignoreLines reads .gitignore, stripping the lnpm marker and pattern.
+// The file is closed before returning so callers can safely rename over it on Windows.
+func readGitignoreLines(path, pattern string) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening .gitignore: %w", err)
+	}
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	skipNext := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if line == lnpmMarker {
+			skipNext = true
+			continue
+		}
+		if skipNext && line == pattern {
+			skipNext = false
+			continue
+		}
+		skipNext = false
+		lines = append(lines, line)
+	}
+
+	scanErr := scanner.Err()
+	_ = file.Close()
+
+	if scanErr != nil {
+		return nil, fmt.Errorf("reading .gitignore: %w", scanErr)
+	}
+	return lines, nil
 }
 
 // IsInGitignore checks if pattern exists in .gitignore

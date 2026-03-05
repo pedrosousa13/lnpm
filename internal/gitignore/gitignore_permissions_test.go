@@ -62,6 +62,9 @@ func TestEnsureInGitignore_ReadOnlyDirectory(t *testing.T) {
 
 // TestEnsureInGitignore_TempFilePermissions tests that temp file has correct permissions
 func TestEnsureInGitignore_TempFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - permission handling differs")
+	}
 	tmpDir := t.TempDir()
 
 	// Add pattern
