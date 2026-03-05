@@ -115,7 +115,12 @@ func TestSymlinkTargetCorrect(t *testing.T) {
 	}
 
 	// Resolve and verify target points to .lnpm
-	resolved := filepath.Join(filepath.Dir(symlinkPath), target)
+	var resolved string
+	if filepath.IsAbs(target) {
+		resolved = target
+	} else {
+		resolved = filepath.Join(filepath.Dir(symlinkPath), target)
+	}
 	if !filepath.IsAbs(resolved) {
 		resolved, _ = filepath.Abs(resolved)
 	}
