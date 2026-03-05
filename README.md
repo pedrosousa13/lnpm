@@ -23,6 +23,16 @@
 curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.sh | sh
 ```
 
+### Quick Install (Windows)
+
+```powershell
+irm https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\lnpm`. Override with `$env:LNPM_INSTALL_DIR`.
+
+> **Note:** On Windows, lnpm uses NTFS junction points for linking — no Developer Mode or admin privileges required.
+
 ### Go
 
 ```bash
