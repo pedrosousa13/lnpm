@@ -2,6 +2,7 @@ package tests
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -483,7 +484,7 @@ func TestDatabaseProjectByPathLookup(t *testing.T) {
 	// Insert multiple projects
 	for i := 0; i < 10; i++ {
 		proj := &db.Project{
-			Path:           fmt.Sprintf("/path/to/project-%d", i),
+			Path:           filepath.FromSlash(fmt.Sprintf("/path/to/project-%d", i)),
 			Name:           fmt.Sprintf("project-%d", i),
 			PackageManager: "npm",
 		}
@@ -494,7 +495,7 @@ func TestDatabaseProjectByPathLookup(t *testing.T) {
 
 	// Lookup specific projects
 	for i := 0; i < 10; i++ {
-		path := fmt.Sprintf("/path/to/project-%d", i)
+		path := filepath.FromSlash(fmt.Sprintf("/path/to/project-%d", i))
 		proj, err := env.Database.GetProjectByPath(path)
 		if err != nil {
 			t.Errorf("Failed to lookup %s: %v", path, err)
