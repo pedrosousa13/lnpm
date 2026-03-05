@@ -41,8 +41,9 @@ func setupTest(t *testing.T) *TestEnvironment {
 	// Reset database singleton for test isolation
 	db.ResetForTesting()
 
-	// Cleanup: restore directory
+	// Cleanup: close DB and restore directory
 	t.Cleanup(func() {
+		db.ResetForTesting()
 		_ = os.Chdir(originalDir)
 	})
 

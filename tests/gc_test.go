@@ -2,6 +2,7 @@ package tests
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -131,10 +132,21 @@ func TestGCOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
+	// Resolve to real path (Windows short names differ from os.Getwd long names)
+	resolvedProjectDir, _ := filepath.EvalSymlinks(projectDir)
+	if resolvedProjectDir != "" {
+		projectDir = resolvedProjectDir
+	}
 	if err := cli.RunAdd("link-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
+	// Move out of projectDir before deleting (Windows can't remove cwd)
+	if err := os.Chdir(env.TempDir); err != nil {
+		t.Fatalf("Failed to chdir: %v", err)
+	}
+	// Remove junction/symlink first (Windows blocks RemoveAll on dirs with junctions)
+	_ = os.Remove(filepath.Join(projectDir, "node_modules", "link-pkg"))
 	// Delete the project directory (simulating removed project)
 	if err := os.RemoveAll(projectDir); err != nil {
 		t.Fatalf("Failed to remove project dir: %v", err)

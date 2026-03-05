@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -380,6 +381,9 @@ func TestPublishReadOnlyFiles(t *testing.T) {
 
 // TestPublishPreservesFileMetadata tests that file metadata is preserved
 func TestPublishPreservesFileMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - executable permission bits not supported")
+	}
 	env := setupTest(t)
 
 	// Create package with executable file

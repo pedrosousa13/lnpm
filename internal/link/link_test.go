@@ -3,6 +3,7 @@ package link
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/pack"
@@ -80,9 +81,17 @@ func TestLinkAndUnlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read symlink: %v", err)
 	}
-	expectedTarget := filepath.Join("..", ".lnpm", "my-package")
-	if target != expectedTarget {
-		t.Errorf("symlink target = %q, want %q", target, expectedTarget)
+	if runtime.GOOS == "windows" {
+		// Junctions use absolute paths on Windows
+		expectedAbs := filepath.Join(projectPath, ".lnpm", "my-package")
+		if target != expectedAbs {
+			t.Errorf("symlink target = %q, want %q", target, expectedAbs)
+		}
+	} else {
+		expectedTarget := filepath.Join("..", ".lnpm", "my-package")
+		if target != expectedTarget {
+			t.Errorf("symlink target = %q, want %q", target, expectedTarget)
+		}
 	}
 
 	// Test IsLinked
@@ -172,9 +181,16 @@ func TestLinkScopedPackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read symlink: %v", err)
 	}
-	expectedTarget := filepath.Join("..", "..", ".lnpm", "@org", "my-package")
-	if target != expectedTarget {
-		t.Errorf("symlink target = %q, want %q", target, expectedTarget)
+	if runtime.GOOS == "windows" {
+		expectedAbs := filepath.Join(projectPath, ".lnpm", "@org", "my-package")
+		if target != expectedAbs {
+			t.Errorf("symlink target = %q, want %q", target, expectedAbs)
+		}
+	} else {
+		expectedTarget := filepath.Join("..", "..", ".lnpm", "@org", "my-package")
+		if target != expectedTarget {
+			t.Errorf("symlink target = %q, want %q", target, expectedTarget)
+		}
 	}
 }
 

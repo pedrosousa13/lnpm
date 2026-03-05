@@ -9,6 +9,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 )
 
 // RunPrepare runs prepare scripts before publishing
@@ -126,7 +127,7 @@ func runNpmScript(dir string, scriptName string) error {
 
 // runScript executes a shell command in the specified directory
 func runScript(dir string, cmdStr string) error {
-	cmd := exec.Command("sh", "-c", cmdStr)
+	cmd := shellcmd.Command(cmdStr)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
