@@ -132,6 +132,11 @@ func TestGCOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
+	// Resolve to real path (Windows short names differ from os.Getwd long names)
+	resolvedProjectDir, _ := filepath.EvalSymlinks(projectDir)
+	if resolvedProjectDir != "" {
+		projectDir = resolvedProjectDir
+	}
 	if err := cli.RunAdd("link-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
