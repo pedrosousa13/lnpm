@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/pedrosousa13/lnpm/compare/v1.9.0...v1.10.0) (2026-03-05)
+
+
+### Features
+
+* windows support ([#36](https://github.com/pedrosousa13/lnpm/issues/36)) ([c80f364](https://github.com/pedrosousa13/lnpm/commit/c80f3641f762d58c294c52d4f8c04f7d37b8bab5))
+
 ## [1.9.0](https://github.com/pedrosousa13/lnpm/compare/v1.8.2...v1.9.0) (2026-01-30)
 
 
