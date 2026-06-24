@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"syscall"
-	"unsafe"
 )
 
 // FICLONE ioctl for copy-on-write cloning on Btrfs, XFS, OCFS2
@@ -34,15 +33,16 @@ func tryReflink(src, dst string) bool {
 	}
 	defer dstFile.Close()
 
-	// Try FICLONE ioctl
+	// Try FICLONE ioctl. The third ioctl arg is the SOURCE fd passed BY VALUE
+	// (ioctl(dest_fd, FICLONE, src_fd)) — not a pointer to it.
 	srcFd := srcFile.Fd()
 	dstFd := dstFile.Fd()
 
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
-		uintptr(dstFd),
+		dstFd,
 		uintptr(FICLONE),
-		uintptr(unsafe.Pointer(&srcFd)),
+		srcFd,
 	)
 
 	if errno == 0 {
