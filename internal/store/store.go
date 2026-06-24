@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -134,7 +135,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 				linked := false
 
 				// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
-				if reflinkFile(f.Path, destFile) == nil {
+				if fsutil.Reflink(f.Path, destFile) == nil {
 					linked = true
 					atomic.AddInt32(&reflinkCount, 1)
 				}
@@ -354,8 +355,8 @@ func (s *Store) canUseHardLink(sourceDir string) bool {
 		return false
 	}
 
-	storeDev := getDeviceID(storeInfo)
-	sourceDev := getDeviceID(sourceInfo)
+	storeDev := fsutil.DeviceID(storeInfo)
+	sourceDev := fsutil.DeviceID(sourceInfo)
 
 	if storeDev != 0 && sourceDev != 0 {
 		return storeDev == sourceDev

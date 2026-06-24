@@ -1,15 +1,15 @@
 //go:build !darwin && !linux
 
-package link
+package fsutil
 
 import "fmt"
 
-// tryReflink is not supported on this platform
+// tryReflink is not supported on this platform.
 func tryReflink(src, dst string) bool {
 	return false
 }
 
-// reflinkFile is not supported on this platform
-func reflinkFile(src, dst string) error {
+// Reflink is not supported on this platform.
+func Reflink(src, dst string) error {
 	return fmt.Errorf("reflink not supported on this platform")
 }

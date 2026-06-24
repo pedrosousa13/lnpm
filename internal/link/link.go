@@ -11,6 +11,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -92,7 +93,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 				linked := false
 
 				// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
-				if reflinkFile(srcPath, dstPath) == nil {
+				if fsutil.Reflink(srcPath, dstPath) == nil {
 					linked = true
 					atomic.AddInt32(&reflinkCount, 1)
 				}
@@ -308,8 +309,8 @@ func (l *Linker) determineLinkType(storePath string) LinkType {
 	}
 
 	// Check if on same filesystem (Unix-specific using device ID)
-	storeDev := getDeviceID(storeInfo)
-	projectDev := getDeviceID(projectInfo)
+	storeDev := fsutil.DeviceID(storeInfo)
+	projectDev := fsutil.DeviceID(projectInfo)
 
 	if storeDev != 0 && projectDev != 0 {
 		if storeDev == projectDev {

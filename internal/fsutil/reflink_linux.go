@@ -1,6 +1,6 @@
 //go:build linux
 
-package store
+package fsutil
 
 import (
 	"fmt"
@@ -12,8 +12,8 @@ import (
 // FICLONE ioctl for copy-on-write cloning on Btrfs, XFS, OCFS2
 const FICLONE = 0x40049409
 
-// tryReflink attempts to create a copy-on-write clone using FICLONE ioctl
-// Returns true if successful, false if not supported
+// tryReflink attempts to create a copy-on-write clone using the FICLONE ioctl.
+// Returns true if successful, false if not supported.
 func tryReflink(src, dst string) bool {
 	srcFile, err := os.Open(src)
 	if err != nil {
@@ -58,8 +58,9 @@ func tryReflink(src, dst string) bool {
 	return false
 }
 
-// reflinkFile attempts to create a reflink copy
-func reflinkFile(src, dst string) error {
+// Reflink creates a copy-on-write clone of src at dst, returning an error if
+// reflinks are not supported (the caller should then fall back to copy).
+func Reflink(src, dst string) error {
 	if tryReflink(src, dst) {
 		return nil
 	}

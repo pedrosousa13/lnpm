@@ -1,6 +1,6 @@
 //go:build darwin
 
-package link
+package fsutil
 
 import (
 	"fmt"
@@ -13,8 +13,8 @@ import (
 // SYS_CLONEFILE syscall number for macOS
 const SYS_CLONEFILE = 462
 
-// tryReflink attempts to create a copy-on-write clone on APFS
-// Returns true if successful, false if not supported
+// tryReflink attempts to create a copy-on-write clone on APFS.
+// Returns true if successful, false if not supported.
 func tryReflink(src, dst string) bool {
 	// clonefile syscall on macOS
 	// https://www.manpagez.com/man/2/clonefile/
@@ -47,11 +47,11 @@ func tryReflink(src, dst string) bool {
 	return true
 }
 
-// reflinkFile attempts to create a reflink copy, falling back to regular copy
-func reflinkFile(src, dst string) error {
+// Reflink creates a copy-on-write clone of src at dst, returning an error if
+// reflinks are not supported (the caller should then fall back to copy).
+func Reflink(src, dst string) error {
 	if tryReflink(src, dst) {
 		return nil
 	}
-	// Reflink not supported, caller should fall back to regular copy
 	return fmt.Errorf("reflink not supported")
 }
