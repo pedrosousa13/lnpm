@@ -179,6 +179,14 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 			return nil
 		}
 
+		// Skip symlinks. Following them would dereference into the store and
+		// could pull in files outside the package (e.g. a link to ~/.ssh).
+		// npm likewise does not follow symlinks out of the package.
+		if info.Mode()&os.ModeSymlink != 0 {
+			debug.Logf("pack: skipping symlink %s", relPath)
+			return nil
+		}
+
 		// Normalize path separators for pattern matching
 		relPath = filepath.ToSlash(relPath)
 

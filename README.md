@@ -332,6 +332,8 @@ lnpm uses **npm's standard packing rules** (via `npm pack --dry-run`) to determi
 - Honors `.npmignore` or falls back to `.gitignore`
 - Follows npm's default exclusions (`.git`, `node_modules`, etc.)
 - **Additional safety**: Explicit `.git` filtering prevents any VCS files from being linked
+- **Symlinks are skipped, never followed** — a symlink inside a package can't pull files from outside it (e.g. `~/.ssh`) into the store
+- Package names with path separators or `..` are rejected to prevent path traversal
 - Automatic fallback to custom filtering if npm is unavailable
 
 This approach prevents issues with git hooks (like Husky) running in linked packages and ensures lnpm behaves identically to npm publish.
