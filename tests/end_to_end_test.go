@@ -14,7 +14,7 @@ func TestE2EPublishAddRemove(t *testing.T) {
 
 	// 1. Publish a package
 	pkgDir := env.CreateTestPackage("e2e-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'e2e';",
+		"index.js":     "module.exports = 'e2e';",
 		"lib/utils.js": "module.exports.util = function() { return 'util'; };",
 	})
 	if err := os.Chdir(pkgDir); err != nil {
@@ -223,7 +223,7 @@ func TestE2EScopedPackageWorkflow(t *testing.T) {
 
 	// Publish scoped package
 	pkgDir := env.CreateTestPackage("@myorg/scoped-e2e", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'scoped';",
+		"index.js":      "module.exports = 'scoped';",
 		"lib/helper.js": "exports.help = () => 'help';",
 	})
 	if err := os.Chdir(pkgDir); err != nil {

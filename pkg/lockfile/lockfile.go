@@ -25,8 +25,8 @@ type Package struct {
 }
 
 const (
-	lockFileName    = "lnpm.lock"
-	currentVersion  = 1
+	lockFileName   = "lnpm.lock"
+	currentVersion = 1
 )
 
 // Load reads a lock file from a project directory

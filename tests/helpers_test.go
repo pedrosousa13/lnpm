@@ -581,4 +581,3 @@ func (te *TestEnvironment) AssertScriptExists(storePath, packageName, scriptName
 		te.t.Errorf("Expected script '%s' to exist in %s, but it doesn't", scriptName, pkgJSONPath)
 	}
 }
-

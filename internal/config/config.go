@@ -27,11 +27,11 @@ type Config struct {
 
 // HooksConfig contains hook commands and settings
 type HooksConfig struct {
-	PrePublish   string `yaml:"pre_publish,omitempty"`
-	PostPublish  string `yaml:"post_publish,omitempty"`
-	PostAdd      string `yaml:"post_add,omitempty"`
-	SkipPrepare  bool   `yaml:"skip_prepare,omitempty"`   // Skip prepare/prepublishOnly/prepack scripts
-	SkipPostAdd  bool   `yaml:"skip_post_add,omitempty"`  // Skip post-add hook (npm install)
+	PrePublish  string `yaml:"pre_publish,omitempty"`
+	PostPublish string `yaml:"post_publish,omitempty"`
+	PostAdd     string `yaml:"post_add,omitempty"`
+	SkipPrepare bool   `yaml:"skip_prepare,omitempty"`  // Skip prepare/prepublishOnly/prepack scripts
+	SkipPostAdd bool   `yaml:"skip_post_add,omitempty"` // Skip post-add hook (npm install)
 }
 
 var (

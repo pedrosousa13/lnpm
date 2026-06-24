@@ -96,11 +96,11 @@ func TestIsExcluded(t *testing.T) {
 		{"src/main.ts", []string{"*.log"}, false},
 		{".env", []string{".env"}, true},
 		{".env.local", []string{".env.*"}, true},
-		{"src/.env.test", []string{".env.*"}, true},             // Pattern without / matches anywhere
-		{"src/.env.test", []string{"./.env.*"}, false},          // Pattern with / only matches at root
-		{"deep/nested/file.log", []string{"*.log"}, true},       // Matches anywhere in tree
-		{"src/config.json", []string{"src/*.json"}, true},       // Pattern with / matches specific path
-		{"other/config.json", []string{"src/*.json"}, false},    // Doesn't match other paths
+		{"src/.env.test", []string{".env.*"}, true},          // Pattern without / matches anywhere
+		{"src/.env.test", []string{"./.env.*"}, false},       // Pattern with / only matches at root
+		{"deep/nested/file.log", []string{"*.log"}, true},    // Matches anywhere in tree
+		{"src/config.json", []string{"src/*.json"}, true},    // Pattern with / matches specific path
+		{"other/config.json", []string{"src/*.json"}, false}, // Doesn't match other paths
 	}
 
 	for _, tt := range tests {

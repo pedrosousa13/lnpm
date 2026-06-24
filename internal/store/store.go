@@ -203,7 +203,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		// Reuse worker pool for parallel copying
 		numCopyWorkers := min(runtime.NumCPU(), 8)
 		if len(filesToCopy) < numCopyWorkers {
-				numCopyWorkers = len(filesToCopy)
+			numCopyWorkers = len(filesToCopy)
 		}
 
 		var wg2 sync.WaitGroup

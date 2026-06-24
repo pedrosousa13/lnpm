@@ -31,8 +31,8 @@ type githubRelease struct {
 
 // Result holds the update check result
 type Result struct {
-	CurrentVersion string
-	LatestVersion  string
+	CurrentVersion  string
+	LatestVersion   string
 	UpdateAvailable bool
 }
 

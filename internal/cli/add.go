@@ -25,11 +25,11 @@ func RunAdd(packageSpec string, dev bool, pure bool, runInstall bool) error {
 
 // addResult holds the result of parallel package resolution and linking
 type addResult struct {
-	spec         string
-	pkg          *db.Package
-	linkType     link.LinkType
-	origVersion  string
-	err          error
+	spec        string
+	pkg         *db.Package
+	linkType    link.LinkType
+	origVersion string
+	err         error
 }
 
 // RunAddMultiple adds multiple packages with parallel linking

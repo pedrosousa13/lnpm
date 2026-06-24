@@ -86,6 +86,7 @@ func TestGCDryRun(t *testing.T) {
 // observable boundary behaviors that need no back-dating:
 //   - a very large threshold must PROTECT a freshly published orphan, and
 //   - a zero threshold ("0d") must NOT protect it (filter is bypassed),
+//
 // so a regression that inverts the age comparison would be caught.
 func TestGCWithAge(t *testing.T) {
 	env := setupTest(t)
@@ -313,7 +314,7 @@ func TestGCStorePathCleanup(t *testing.T) {
 
 	// Create and publish a package
 	pkgDir := env.CreateTestPackage("store-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
+		"index.js":     "module.exports = 'test';",
 		"lib/utils.js": "exports.util = () => 'util';",
 	})
 	if err := os.Chdir(pkgDir); err != nil {
