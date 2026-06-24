@@ -38,6 +38,12 @@ func New(projectPath string) *Linker {
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (LinkType, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 
+	// Guard against path traversal: packageName is joined into .lnpm/<name>
+	// (which we RemoveAll) and node_modules/<name>.
+	if err := pack.ValidatePackageName(packageName); err != nil {
+		return "", err
+	}
+
 	// Determine link type based on config and filesystem
 	linkType := l.determineLinkType(storePath)
 	debug.Logf("link: using %s mode", linkType)
@@ -216,6 +222,10 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 
 // Unlink removes a linked package from the project
 func (l *Linker) Unlink(packageName string) error {
+	if err := pack.ValidatePackageName(packageName); err != nil {
+		return err
+	}
+
 	// Remove .lnpm/{package}
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
 	if err := os.RemoveAll(lnpmPath); err != nil {

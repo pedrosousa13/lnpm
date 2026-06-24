@@ -138,6 +138,9 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	if pkg.Name == "" {
 		return nil, fmt.Errorf("package.json must have a name field")
 	}
+	if err := ValidatePackageName(pkg.Name); err != nil {
+		return nil, err
+	}
 	if pkg.Version == "" {
 		return nil, fmt.Errorf("package.json must have a version field")
 	}

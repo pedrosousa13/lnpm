@@ -3,9 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // RunGC executes the garbage collection command
@@ -34,6 +37,13 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to list packages: %w", err)
 	}
+
+	// Store root used to bound destructive RemoveAll calls.
+	s, err := store.New()
+	if err != nil {
+		return fmt.Errorf("failed to access store: %w", err)
+	}
+	storeRoot := s.Root()
 
 	// Find packages to remove
 	var packagesToRemove []*db.Package
@@ -112,9 +122,14 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 
 		if !dryRun {
 			for _, pkg := range packagesToRemove {
-				// Remove from store
+				// Remove from store, but only if the recorded path is actually
+				// inside the store root (guards against a poisoned DB entry).
 				if pkg.StorePath != "" {
-					_ = os.RemoveAll(pkg.StorePath)
+					if isWithinStore(storeRoot, pkg.StorePath) {
+						_ = os.RemoveAll(pkg.StorePath)
+					} else {
+						fmt.Printf("  ⚠ Skipping %s: store path %q is outside the store root\n", pkg.Name, pkg.StorePath)
+					}
 				}
 				// Remove from database
 				_ = database.DeletePackage(pkg.ID)
@@ -174,6 +189,18 @@ func parseDuration(s string) (time.Duration, error) {
 		// Fall back to standard Go duration parsing
 		return time.ParseDuration(s)
 	}
+}
+
+// isWithinStore reports whether p is the store root or nested inside it.
+func isWithinStore(root, p string) bool {
+	rootAbs, err1 := filepath.Abs(root)
+	pAbs, err2 := filepath.Abs(p)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	pAbs = filepath.Clean(pAbs)
+	return pAbs == rootAbs || strings.HasPrefix(pAbs, rootAbs+string(filepath.Separator))
 }
 
 // formatSize is defined in publish.go

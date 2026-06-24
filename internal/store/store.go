@@ -57,6 +57,11 @@ func getStorePath() (string, error) {
 	return filepath.Join(homeDir, ".lnpm"), nil
 }
 
+// Root returns the store's base directory (…/store).
+func (s *Store) Root() string {
+	return s.basePath
+}
+
 // PackagePath returns the path to a package in the store
 func (s *Store) PackagePath(name, hash string) string {
 	return filepath.Join(s.basePath, name, hash)
@@ -71,6 +76,11 @@ func (s *Store) Exists(name, hash string) bool {
 
 // Store copies or hard links files to the store
 func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir string) (string, error) {
+	// Guard against path traversal: name is joined into the store path.
+	if err := pack.ValidatePackageName(name); err != nil {
+		return "", err
+	}
+
 	destPath := s.PackagePath(name, hash)
 	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), destPath)
 
