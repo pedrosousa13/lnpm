@@ -1,8 +1,5 @@
 {
-  "dependencies": {
-    "@npm-test/package-a": "file:.lnpm/@npm-test/package-a"
-  },
-  "main": "src/index.js",
   "name": "@nx-test/feature-auth",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "main": "src/index.js"
 }

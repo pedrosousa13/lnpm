@@ -35,3 +35,6 @@ lnpm.lock
 # Local Claude AI data
 .claude/
 .planning/
+
+# Node
+node_modules/

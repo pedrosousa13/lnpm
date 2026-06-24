@@ -410,11 +410,26 @@ func getStringValue(m map[string]interface{}, key string) string {
 	return ""
 }
 
-// copyDir recursively copies a directory
+// copyDir recursively copies a directory, skipping generated artifacts
+// (node_modules, .lnpm, lnpm.lock) so fixtures copy cleanly regardless of any
+// leftover state from prior runs.
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// Skip generated directories/files that must not be copied.
+		if info.IsDir() && (info.Name() == "node_modules" || info.Name() == ".lnpm") {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() && info.Name() == "lnpm.lock" {
+			return nil
+		}
+		// Skip symlinks (a fixture's source tree should contain none; any
+		// present are leftover links from a previous run).
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 
 		// Calculate relative path
