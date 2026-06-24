@@ -218,7 +218,7 @@ func TestAddMultiplePackages(t *testing.T) {
 	}
 
 	projectDir := env.newProject("test-project")
-	if err := cli.RunAddMultiple(packages, false, false, false); err != nil {
+	if err := cli.RunAddMultiple(packages, false, false, false, false); err != nil {
 		t.Fatalf("Failed to add multiple packages: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestAddMultipleWithPartialFailure(t *testing.T) {
 	env.simplePkg("exists-pkg")
 	projectDir := env.newProject("test-project")
 
-	err := cli.RunAddMultiple([]string{"exists-pkg", "nonexistent-pkg"}, false, false, false)
+	err := cli.RunAddMultiple([]string{"exists-pkg", "nonexistent-pkg"}, false, false, false, false)
 	if err == nil {
 		t.Fatal("Expected an error when one of the packages fails to add")
 	}

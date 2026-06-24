@@ -80,6 +80,7 @@ lnpm push
 | `lnpm push` | Push changes to all linked projects |
 | `lnpm status` | Show current project's links |
 | `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
+| `lnpm check` | Fail if package.json still has lnpm references (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
 | `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`) |
 | `lnpm retreat` | Remove all lnpm changes |
@@ -98,6 +99,7 @@ lnpm publish
 # Add to a project (supports multiple packages)
 lnpm add my-package
 lnpm add pkg-a pkg-b pkg-c
+lnpm add my-package --link   # Use link: protocol instead of file:
 
 # Push updates after making changes
 lnpm push
@@ -130,8 +132,16 @@ lnpm push
 # Remove all lnpm links and restore original dependencies
 lnpm retreat --force
 npm install  # Restore original packages
+
+# Guard: fails (non-zero) if any lnpm reference is still in package.json
+lnpm check
+
 npm publish
 ```
+
+`lnpm check` scans `package.json` for leftover `file:.lnpm/` or `link:.lnpm/`
+references and exits non-zero if any remain — drop it in a `prepublishOnly`
+script or CI step to avoid accidentally publishing local links to npm.
 
 ### Shell Completions
 

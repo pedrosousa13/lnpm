@@ -20,7 +20,7 @@ import (
 
 // RunAdd adds a single package (for backward compatibility)
 func RunAdd(packageSpec string, dev bool, pure bool, runInstall bool) error {
-	return runAddSingle(packageSpec, dev, pure, runInstall)
+	return runAddSingle(packageSpec, dev, pure, runInstall, false)
 }
 
 // addResult holds the result of parallel package resolution and linking
@@ -33,9 +33,9 @@ type addResult struct {
 }
 
 // RunAddMultiple adds multiple packages with parallel linking
-func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool) error {
+func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool, useLink bool) error {
 	if len(packageSpecs) == 1 {
-		return runAddSingle(packageSpecs[0], dev, pure, runInstall)
+		return runAddSingle(packageSpecs[0], dev, pure, runInstall, useLink)
 	}
 
 	cwd, err := os.Getwd()
@@ -154,7 +154,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 	// Update package.json for all successful packages
 	if !pure {
 		for i := range successful {
-			origVersion, err := updatePackageJSON(pkgJSONPath, successful[i].pkg.Name, dev)
+			origVersion, err := updatePackageJSON(pkgJSONPath, successful[i].pkg.Name, dev, useLink)
 			if err != nil {
 				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
 				continue
@@ -240,7 +240,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 }
 
 // runAddSingle adds a single package (internal implementation)
-func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) error {
+func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useLink bool) error {
 	// Parse package spec (name[@version])
 	name, version := parsePackageSpec(packageSpec)
 
@@ -324,7 +324,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) erro
 	// Update package.json (unless --pure)
 	var originalVersion string
 	if !pure {
-		originalVersion, err = updatePackageJSON(pkgJSONPath, pkg.Name, dev)
+		originalVersion, err = updatePackageJSON(pkgJSONPath, pkg.Name, dev, useLink)
 		if err != nil {
 			return fmt.Errorf("failed to update package.json: %w", err)
 		}
@@ -411,8 +411,10 @@ func parsePackageSpec(spec string) (name, version string) {
 	return spec, ""
 }
 
-// updatePackageJSON updates package.json with the lnpm dependency
-func updatePackageJSON(path string, packageName string, dev bool) (originalVersion string, err error) {
+// updatePackageJSON updates package.json with the lnpm dependency. When link is
+// true the dependency uses the "link:" protocol (symlink-style resolution,
+// which helps pnpm/yarn dedupe peer deps) instead of the default "file:".
+func updatePackageJSON(path string, packageName string, dev bool, useLink bool) (originalVersion string, err error) {
 	// Read existing package.json
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -469,8 +471,12 @@ func updatePackageJSON(path string, packageName string, dev bool) (originalVersi
 		}
 	}
 
-	// Set the lnpm file: reference
-	deps[packageName] = fmt.Sprintf("file:.lnpm/%s", packageName)
+	// Set the lnpm reference (file: by default, link: when requested)
+	protocol := "file"
+	if useLink {
+		protocol = "link"
+	}
+	deps[packageName] = fmt.Sprintf("%s:.lnpm/%s", protocol, packageName)
 
 	// Write back
 	output, err := json.MarshalIndent(pkgJSON, "", "  ")

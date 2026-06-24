@@ -51,13 +51,15 @@ Examples:
   lnpm add my-package@1.0.0      # Add specific version
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
-  lnpm add my-package --pure     # Don't modify package.json`,
+  lnpm add my-package --pure     # Don't modify package.json
+  lnpm add my-package --link     # Use link: protocol instead of file:`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dev, _ := cmd.Flags().GetBool("dev")
 		pure, _ := cmd.Flags().GetBool("pure")
 		install, _ := cmd.Flags().GetBool("install")
-		return RunAddMultiple(args, dev, pure, install)
+		link, _ := cmd.Flags().GetBool("link")
+		return RunAddMultiple(args, dev, pure, install, link)
 	},
 }
 
@@ -206,9 +208,29 @@ Examples:
 	},
 }
 
+// checkCmd scans package.json for leftover lnpm references
+var checkCmd = &cobra.Command{
+	Use:   "check",
+	Short: "Check package.json for leftover lnpm references",
+	Long: `Scan the current project's package.json for lnpm references
+(file:.lnpm/ or link:.lnpm/) left behind by 'lnpm add'.
+
+Exits non-zero if any are found, so it can be used as a pre-publish guard
+in scripts or CI before running 'npm publish'.
+
+Examples:
+  lnpm check   # Fails if any lnpm reference remains in package.json`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return RunCheck()
+	},
+}
+
 func init() {
 	// Register retreat command
 	rootCmd.AddCommand(retreatCmd)
+
+	// Register check command
+	rootCmd.AddCommand(checkCmd)
 
 	// publish flags
 	publishCmd.Flags().Bool("push", false, "Push to all linked projects after publish")
@@ -224,6 +246,7 @@ func init() {
 	addCmd.Flags().Bool("dev", false, "Add as devDependency")
 	addCmd.Flags().Bool("pure", false, "Don't modify package.json")
 	addCmd.Flags().Bool("install", false, "Run npm install after adding (default: no)")
+	addCmd.Flags().Bool("link", false, "Use link: protocol in package.json instead of file:")
 
 	// remove flags
 	removeCmd.Flags().Bool("all", false, "Remove all linked packages")
