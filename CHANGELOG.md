@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.11.0](https://github.com/pedrosousa13/lnpm/compare/v1.10.0...v1.11.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** NO_COLOR/tty-aware output, rune-safe truncate, consistent confirmations, wire pre/post_publish hooks ([#53](https://github.com/pedrosousa13/lnpm/issues/53), [#51](https://github.com/pedrosousa13/lnpm/issues/51)) ([9cd95a2](https://github.com/pedrosousa13/lnpm/commit/9cd95a2b892ba18f4b6d714dcf963c8399449281))
+
+
+### Bug Fixes
+
+* DeletePackage cleans up links + add GetProjectByID ([#44](https://github.com/pedrosousa13/lnpm/issues/44)) ([7d84361](https://github.com/pedrosousa13/lnpm/commit/7d84361da7b1b2d797d0f6f50f2d04a27b708b9e))
+* honor store_path config option ([#51](https://github.com/pedrosousa13/lnpm/issues/51) partial) ([8a2b83d](https://github.com/pedrosousa13/lnpm/commit/8a2b83da7c95fc4eff22d477526193df9938c3c3))
+* make content hash correct and deterministic ([#45](https://github.com/pedrosousa13/lnpm/issues/45), [#46](https://github.com/pedrosousa13/lnpm/issues/46)) ([0c9450d](https://github.com/pedrosousa13/lnpm/commit/0c9450d9fe404d939c52c1dc31fc69b611cd50d0))
+* make store writes atomic via temp dir + rename ([#47](https://github.com/pedrosousa13/lnpm/issues/47)) ([8324b9c](https://github.com/pedrosousa13/lnpm/commit/8324b9cff0c16113a00d8ebd6aa8395c6cea2fa9))
+* non-zero exit on partial failure; silence usage on error ([#48](https://github.com/pedrosousa13/lnpm/issues/48)) ([faa800f](https://github.com/pedrosousa13/lnpm/commit/faa800f7db2ea949cbdc8ab328f4cdb3c311d24d))
+* reflink dead on Linux — pass FICLONE source fd by value ([#38](https://github.com/pedrosousa13/lnpm/issues/38)) ([4d08c1a](https://github.com/pedrosousa13/lnpm/commit/4d08c1afeb97c4ee35f931da4376149341a7917c))
+* resolve add pkg@version by version; remove dead --tag ([#39](https://github.com/pedrosousa13/lnpm/issues/39)) ([a29a0ad](https://github.com/pedrosousa13/lnpm/commit/a29a0ad97dcef2c96aee71a6b56a4caa1a763b2b))
+* skip symlinks during packing to prevent file exfiltration ([#42](https://github.com/pedrosousa13/lnpm/issues/42)) ([1451c9b](https://github.com/pedrosousa13/lnpm/commit/1451c9b853d4bd4241bd9c07d97a0ebddc117ab3))
+* validate package names to prevent path traversal ([#40](https://github.com/pedrosousa13/lnpm/issues/40)) ([7547650](https://github.com/pedrosousa13/lnpm/commit/7547650a54bc1421575a3ad58426d14b36f5f32d))
+* verify SHA-256 checksum on self-update + add HTTP timeout ([#41](https://github.com/pedrosousa13/lnpm/issues/41)) ([5a57a87](https://github.com/pedrosousa13/lnpm/commit/5a57a877b965abb6328109c523b2a8516e551cfe))
+
 ## [1.10.0](https://github.com/pedrosousa13/lnpm/compare/v1.9.0...v1.10.0) (2026-03-05)
 
 
