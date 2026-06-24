@@ -24,13 +24,13 @@ func RunStatus() error {
 	}
 
 	// Print packages section
-	fmt.Println("📦 Published Packages")
+	fmt.Println(header("📦", "Published Packages"))
 	if len(packages) == 0 {
 		fmt.Println("  (none)")
 	} else {
 		// Print header
 		fmt.Printf("  %-25s %-12s %-10s %-20s\n", "NAME", "VERSION", "HASH", "PUBLISHED")
-		fmt.Printf("  %s\n", strings.Repeat("-", 70))
+		fmt.Printf("  %s\n", hrule(70))
 
 		for _, pkg := range packages {
 			fmt.Printf("  %-25s %-12s %-10s %-20s\n",
@@ -68,12 +68,12 @@ func RunStatus() error {
 	}
 
 	// Print links section
-	fmt.Println("🔗 Active Links")
+	fmt.Println(header("🔗", "Active Links"))
 	if len(projectMap) == 0 {
 		fmt.Println("  (none)")
 	} else {
 		fmt.Printf("  %-40s %-8s %-30s\n", "PROJECT", "PM", "PACKAGES")
-		fmt.Printf("  %s\n", strings.Repeat("-", 80))
+		fmt.Printf("  %s\n", hrule(80))
 
 		for _, proj := range projectMap {
 			fmt.Printf("  %-40s %-8s %-30s\n",
@@ -93,7 +93,7 @@ func RunStatus() error {
 
 	lock, err := lockfile.Load(cwd)
 	if err == nil && len(lock.List()) > 0 {
-		fmt.Println("📍 Current Project")
+		fmt.Println(header("📍", "Current Project"))
 		fmt.Printf("  %s\n", cwd)
 		fmt.Printf("  Linked packages:\n")
 		for _, name := range lock.List() {
@@ -187,12 +187,17 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 	return nil
 }
 
-// truncate truncates a string to max length
-func truncate(s string, max int) string {
-	if len(s) <= max {
+// truncate truncates a string to maxLen runes, appending "..." when shortened.
+// It operates on runes so multibyte UTF-8 characters are never split.
+func truncate(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
 		return s
 	}
-	return s[:max-3] + "..."
+	if maxLen <= 3 {
+		return string(r[:maxLen])
+	}
+	return string(r[:maxLen-3]) + "..."
 }
 
 // formatTimeAgo formats a time as "X ago"

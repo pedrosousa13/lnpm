@@ -229,9 +229,6 @@ lnpm publish
 
 # Publish and push to all linked projects
 lnpm publish --push
-
-# Publish with custom tag
-lnpm publish --tag beta
 ```
 
 **Process:**
@@ -239,7 +236,7 @@ lnpm publish --tag beta
 2. Determine files to include (respects `.npmignore`, `files` field)
 3. Calculate content hash of all files
 4. Copy files to `~/.lnpm/store/{name}/{hash}/`
-5. Record in SQLite database
+5. Record in bbolt database
 6. If `--push`, update all linked projects
 
 ### `lnpm add <package>`
@@ -250,9 +247,8 @@ Add a package from the store to current project.
 # Add latest published version
 lnpm add my-package
 
-# Add specific version/tag
+# Add a specific version (must match the latest published version)
 lnpm add my-package@1.0.0
-lnpm add my-package@beta
 
 # Add without modifying package.json
 lnpm add my-package --pure
@@ -268,7 +264,7 @@ lnpm add my-package --dev
 4. Create symlink `node_modules/{package}` → `.lnpm/{package}`
 5. Update `package.json` with `file:.lnpm/{package}`
 6. Update `lnpm.lock`
-7. Register link in SQLite
+7. Register link in bbolt
 
 ### `lnpm remove <package>`
 
@@ -286,7 +282,7 @@ lnpm remove --all
 2. Remove `node_modules/{package}` symlink
 3. Restore original `package.json` dependency (if any)
 4. Update `lnpm.lock`
-5. Remove link from SQLite
+5. Remove link from bbolt
 
 ### `lnpm push`
 
@@ -296,13 +292,13 @@ Push updates to all linked projects.
 # Push current package to all consumers
 lnpm push
 
-# Push with force (re-link all files)
-lnpm push --force
+# Push, skipping prepare scripts
+lnpm push --skip-hooks
 ```
 
 **Process:**
-1. Calculate new content hash
-2. If unchanged and not `--force`, skip
+1. Run prepare scripts (unless `--skip-hooks`)
+2. Calculate new content hash
 3. Update store with new version
 4. For each linked project:
    - Remove old hard links
@@ -387,27 +383,14 @@ lnpm doctor
 
 ## Configuration
 
-### Global Config (`~/.lnpm/config.toml`)
+### Global Config (`~/.lnpm/config.yaml`)
 
-```toml
+```yaml
 # Store location (default: ~/.lnpm)
-store_path = "~/.lnpm"
+store_path: ~/.lnpm
 
-# Default link type: "hardlink" | "copy"
-link_type = "hardlink"
-```
-
-### Project Config (`.lnpmrc` or `lnpm` field in `package.json`)
-
-```json
-{
-  "lnpm": {
-    "publishDir": "dist",
-    "ignore": ["**/*.test.ts"],
-    "prePublish": "npm run build",
-    "postAdd": "npm install"
-  }
-}
+# Default link mode: "hardlink" | "copy"
+link_mode: hardlink
 ```
 
 ---
@@ -422,6 +405,7 @@ packages:
     hash: abc123def456
     source: ~/code/my-package
     linked: 2024-01-15T10:30:00Z
+    originalVersion: ^1.0.0   # original specifier, restored on retreat/remove
   other-pkg:
     version: 2.1.0
     hash: 789xyz000111

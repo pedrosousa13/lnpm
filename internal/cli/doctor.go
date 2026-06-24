@@ -75,7 +75,7 @@ func RunDoctor() error {
 		for _, pkg := range packages {
 			links, _ := database.GetLinksForPackage(pkg.ID)
 			for _, link := range links {
-				proj, _ := database.GetProjectByPath(getProjectPathByID(database, link.ProjectID))
+				proj, _ := database.GetProjectByID(link.ProjectID)
 				if proj == nil {
 					orphanedLinks++
 					continue
@@ -138,24 +138,4 @@ func getStorePath() string {
 
 	homeDir, _ := os.UserHomeDir()
 	return filepath.Join(homeDir, ".lnpm")
-}
-
-// getProjectPathByID looks up a project path by ID
-func getProjectPathByID(database *db.DB, projectID int64) string {
-	// This is a bit inefficient but works for doctor checks
-	packages, _ := database.ListPackages()
-	for _, pkg := range packages {
-		links, _ := database.GetLinksForPackage(pkg.ID)
-		for _, link := range links {
-			if link.ProjectID == projectID {
-				projects, _ := database.GetProjectsForPackage(pkg.ID)
-				for _, proj := range projects {
-					if proj.ID == projectID {
-						return proj.Path
-					}
-				}
-			}
-		}
-	}
-	return ""
 }

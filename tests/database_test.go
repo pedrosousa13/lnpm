@@ -614,3 +614,44 @@ func TestDatabaseGetProjectsForPackage(t *testing.T) {
 		t.Errorf("Expected %d projects, got %d", projectCount, len(projects))
 	}
 }
+
+// TestDeletePackageRemovesLinks verifies DeletePackage also removes link rows
+// and scrubs the link indexes, leaving no dangling references (#44).
+func TestDeletePackageRemovesLinks(t *testing.T) {
+	env := setupTest(t)
+	d := env.Database
+
+	if err := d.InsertPackage(&db.Package{Name: "dp-pkg", Version: "1.0.0", ContentHash: "h1", StorePath: "/s/dp"}); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+	if err := d.InsertProject(&db.Project{Path: "/proj/dp-a", Name: "dp-a"}); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	pkg, _ := d.GetPackageByName("dp-pkg")
+	proj, _ := d.GetProjectByPath("/proj/dp-a")
+	if pkg == nil || proj == nil {
+		t.Fatal("setup: package or project not found after insert")
+	}
+	if err := d.InsertLink(&db.Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+
+	// Sanity: link is present before delete.
+	if links, _ := d.GetLinksForProject(proj.ID); len(links) != 1 {
+		t.Fatalf("setup: expected 1 link, got %d", len(links))
+	}
+
+	if err := d.DeletePackage(pkg.ID); err != nil {
+		t.Fatalf("delete package: %v", err)
+	}
+
+	if links, _ := d.GetLinksForProject(proj.ID); len(links) != 0 {
+		t.Errorf("expected 0 links for project after DeletePackage, got %d (dangling link rows)", len(links))
+	}
+	if links, _ := d.GetLinksForPackage(pkg.ID); len(links) != 0 {
+		t.Errorf("expected 0 links for package after DeletePackage, got %d", len(links))
+	}
+	if projs, _ := d.GetProjectsForPackage(pkg.ID); len(projs) != 0 {
+		t.Errorf("expected 0 projects for package after DeletePackage, got %d", len(projs))
+	}
+}

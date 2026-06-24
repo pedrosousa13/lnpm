@@ -3,9 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // RunGC executes the garbage collection command
@@ -35,6 +38,13 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 		return fmt.Errorf("failed to list packages: %w", err)
 	}
 
+	// Store root used to bound destructive RemoveAll calls.
+	s, err := store.New()
+	if err != nil {
+		return fmt.Errorf("failed to access store: %w", err)
+	}
+	storeRoot := s.Root()
+
 	// Find packages to remove
 	var packagesToRemove []*db.Package
 	var linksToRemove []linkToRemove
@@ -44,7 +54,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 
 		// Check for orphaned links
 		for _, link := range links {
-			proj, _ := database.GetProjectByPath(getProjectPathByID(database, link.ProjectID))
+			proj, _ := database.GetProjectByID(link.ProjectID)
 			if proj == nil {
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID: pkg.ID,
@@ -96,7 +106,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 			for _, l := range linksToRemove {
 				_ = database.DeleteLink(l.packageID, l.projectID)
 			}
-			fmt.Printf("✓ Removed %d orphaned link(s)\n", len(linksToRemove))
+			fmt.Printf("%s Removed %d orphaned link(s)\n", iconOK(), len(linksToRemove))
 		}
 	}
 
@@ -111,20 +121,29 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 		fmt.Println()
 
 		if !dryRun {
+			if !confirm("Permanently delete these package(s) from the store?") {
+				fmt.Println("Aborted.")
+				return nil
+			}
 			for _, pkg := range packagesToRemove {
-				// Remove from store
+				// Remove from store, but only if the recorded path is actually
+				// inside the store root (guards against a poisoned DB entry).
 				if pkg.StorePath != "" {
-					_ = os.RemoveAll(pkg.StorePath)
+					if isWithinStore(storeRoot, pkg.StorePath) {
+						_ = os.RemoveAll(pkg.StorePath)
+					} else {
+						fmt.Printf("  ⚠ Skipping %s: store path %q is outside the store root\n", pkg.Name, pkg.StorePath)
+					}
 				}
 				// Remove from database
 				_ = database.DeletePackage(pkg.ID)
 			}
-			fmt.Printf("✓ Removed %d package(s), freed %s\n", len(packagesToRemove), formatSize(totalSize))
+			fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), len(packagesToRemove), formatSize(totalSize))
 		}
 	}
 
 	if len(packagesToRemove) == 0 && len(linksToRemove) == 0 {
-		fmt.Println("✓ Nothing to clean up")
+		fmt.Printf("%s Nothing to clean up\n", iconOK())
 	}
 
 	return nil
@@ -174,6 +193,18 @@ func parseDuration(s string) (time.Duration, error) {
 		// Fall back to standard Go duration parsing
 		return time.ParseDuration(s)
 	}
+}
+
+// isWithinStore reports whether p is the store root or nested inside it.
+func isWithinStore(root, p string) bool {
+	rootAbs, err1 := filepath.Abs(root)
+	pAbs, err2 := filepath.Abs(p)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	pAbs = filepath.Clean(pAbs)
+	return pAbs == rootAbs || strings.HasPrefix(pAbs, rootAbs+string(filepath.Separator))
 }
 
 // formatSize is defined in publish.go

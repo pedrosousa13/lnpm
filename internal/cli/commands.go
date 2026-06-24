@@ -22,15 +22,13 @@ This command:
 Examples:
   lnpm publish           # Publish current package
   lnpm publish --push    # Publish and update all linked projects
-  lnpm publish --tag beta   # Publish with a tag
   lnpm publish --all     # Publish all packages in monorepo`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
-		tag, _ := cmd.Flags().GetString("tag")
 		all, _ := cmd.Flags().GetBool("all")
 		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
 		skipValidation, _ := cmd.Flags().GetBool("skip-validation")
-		return RunPublish(push, tag, all, skipHooks, skipValidation)
+		return RunPublish(push, all, skipHooks, skipValidation)
 	},
 }
 
@@ -214,7 +212,6 @@ func init() {
 
 	// publish flags
 	publishCmd.Flags().Bool("push", false, "Push to all linked projects after publish")
-	publishCmd.Flags().String("tag", "", "Tag for this publish")
 	publishCmd.Flags().Bool("all", false, "Publish all packages in monorepo")
 	publishCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts (prepare, prepublishOnly, prepack)")
 	publishCmd.Flags().Bool("skip-validation", false, "Skip package validation before publish")

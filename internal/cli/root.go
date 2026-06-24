@@ -27,7 +27,7 @@ var rootCmd = &cobra.Command{
 
 It provides a better alternative to yalc with:
   - Hard links for instant, reliable syncing
-  - SQLite-backed state tracking
+  - bbolt-backed state tracking
   - Full visibility into linked packages
 
 Quick start:
@@ -35,6 +35,9 @@ Quick start:
   lnpm add <pkg>   # Add a package to current project
   lnpm push        # Push updates to all linked projects`,
 	Version: version,
+	// Don't dump the full usage/help text after a runtime error; the error
+	// message alone is what the user needs.
+	SilenceUsage: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		debugFlag, _ := cmd.Flags().GetBool("debug")
 		debug.Init(debugFlag)

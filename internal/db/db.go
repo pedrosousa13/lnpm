@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	bolt "go.etcd.io/bbolt"
 )
@@ -149,16 +150,7 @@ func initDB() (*DB, error) {
 
 // getStorePath returns the lnpm store path
 func getStorePath() (string, error) {
-	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
-		return storePath, nil
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	return filepath.Join(homeDir, ".lnpm"), nil
+	return config.GetStorePath()
 }
 
 // Close closes the database
@@ -363,6 +355,9 @@ func (db *DB) DeletePackage(id int64) error {
 		packages := tx.Bucket(bucketPackages)
 		byName := tx.Bucket(bucketPackagesByName)
 		files := tx.Bucket(bucketFiles)
+		links := tx.Bucket(bucketLinks)
+		byPackage := tx.Bucket(bucketLinksByPackage)
+		byProject := tx.Bucket(bucketLinksByProject)
 
 		// Get package name for index cleanup
 		data := packages.Get(itob(id))
@@ -373,10 +368,73 @@ func (db *DB) DeletePackage(id int64) error {
 			}
 		}
 
+		// Clean up any links referencing this package so we don't leave
+		// orphaned link rows or dangling index entries.
+		pkgKey := itob(id)
+		if linkData := byPackage.Get(pkgKey); linkData != nil {
+			var linkIDs []int64
+			_ = json.Unmarshal(linkData, &linkIDs)
+			for _, linkID := range linkIDs {
+				// Determine the project this link belonged to, then scrub the
+				// link ID from that project's index.
+				if ld := links.Get(itob(linkID)); ld != nil {
+					var l Link
+					if json.Unmarshal(ld, &l) == nil {
+						removeIDFromIndex(byProject, itob(l.ProjectID), linkID)
+					}
+				}
+				_ = links.Delete(itob(linkID))
+			}
+			_ = byPackage.Delete(pkgKey)
+		}
+
 		_ = packages.Delete(itob(id))
 		_ = files.Delete(itob(id))
 		return nil
 	})
+}
+
+// removeIDFromIndex removes id from the []int64 stored at key in bucket b,
+// deleting the key entirely when the slice becomes empty.
+func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
+	data := b.Get(key)
+	if data == nil {
+		return
+	}
+	var ids []int64
+	if json.Unmarshal(data, &ids) != nil {
+		return
+	}
+	newIDs := make([]int64, 0, len(ids))
+	for _, existing := range ids {
+		if existing != id {
+			newIDs = append(newIDs, existing)
+		}
+	}
+	if len(newIDs) > 0 {
+		newData, _ := json.Marshal(newIDs)
+		_ = b.Put(key, newData)
+	} else {
+		_ = b.Delete(key)
+	}
+}
+
+// GetProjectByID returns a project by its ID, or nil if not found.
+func (db *DB) GetProjectByID(id int64) (*Project, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var proj *Project
+	err := db.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketProjects).Get(itob(id))
+		if data == nil {
+			return nil
+		}
+		proj = &Project{}
+		return json.Unmarshal(data, proj)
+	})
+
+	return proj, err
 }
 
 // --- Project operations ---
@@ -433,26 +491,6 @@ func (db *DB) InsertProject(proj *Project) error {
 
 		return byPath.Put([]byte(proj.Path), itob(id))
 	})
-}
-
-// GetAllProjects returns all projects in the database
-func (db *DB) GetAllProjects() ([]*Project, error) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	var projects []*Project
-	err := db.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketProjects)
-		return b.ForEach(func(k, v []byte) error {
-			var proj Project
-			if err := json.Unmarshal(v, &proj); err != nil {
-				return err
-			}
-			projects = append(projects, &proj)
-			return nil
-		})
-	})
-	return projects, err
 }
 
 // GetProjectByPath returns a project by its path
@@ -815,13 +853,4 @@ func (db *DB) GetFilesForPackage(packageID int64) ([]*FileEntry, error) {
 	})
 
 	return files, err
-}
-
-// GetFilesForPackageByName returns files using package name lookup
-func (db *DB) GetFilesForPackageByName(name string) ([]*FileEntry, error) {
-	pkg, err := db.GetPackageByName(name)
-	if err != nil || pkg == nil {
-		return nil, err
-	}
-	return db.GetFilesForPackage(pkg.ID)
 }

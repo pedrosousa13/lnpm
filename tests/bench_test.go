@@ -79,7 +79,7 @@ func BenchmarkLnpmPublish(b *testing.B) {
 		// Reset database between iterations
 		db.ResetForTesting()
 
-		if err := cli.RunPublish(false, "", false, true, true); err != nil {
+		if err := cli.RunPublish(false, false, true, true); err != nil {
 			b.Fatalf("Publish failed: %v", err)
 		}
 	}
@@ -96,7 +96,7 @@ func BenchmarkLnpmAdd(b *testing.B) {
 	if err := os.Chdir(pkgDir); err != nil {
 		b.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, true, true); err != nil {
+	if err := cli.RunPublish(false, false, true, true); err != nil {
 		b.Fatalf("Publish failed: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func BenchmarkLnpmPush(b *testing.B) {
 	if err := os.Chdir(pkgDir); err != nil {
 		b.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, true, true); err != nil {
+	if err := cli.RunPublish(false, false, true, true); err != nil {
 		b.Fatalf("Publish failed: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func BenchmarkLnpmPublishLarge(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		db.ResetForTesting()
-		if err := cli.RunPublish(false, "", false, true, true); err != nil {
+		if err := cli.RunPublish(false, false, true, true); err != nil {
 			b.Fatalf("Publish failed: %v", err)
 		}
 	}
@@ -299,7 +299,7 @@ func BenchmarkLnpmPublishSmall(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		db.ResetForTesting()
-		if err := cli.RunPublish(false, "", false, true, true); err != nil {
+		if err := cli.RunPublish(false, false, true, true); err != nil {
 			b.Fatalf("Publish failed: %v", err)
 		}
 	}
@@ -316,7 +316,7 @@ func BenchmarkLnpmPushMultipleProjects(b *testing.B) {
 	if err := os.Chdir(pkgDir); err != nil {
 		b.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, true, true); err != nil {
+	if err := cli.RunPublish(false, false, true, true); err != nil {
 		b.Fatalf("Publish failed: %v", err)
 	}
 

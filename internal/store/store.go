@@ -10,7 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -44,16 +46,12 @@ func New() (*Store, error) {
 
 // getStorePath returns the lnpm store root path
 func getStorePath() (string, error) {
-	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
-		return storePath, nil
-	}
+	return config.GetStorePath()
+}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	return filepath.Join(homeDir, ".lnpm"), nil
+// Root returns the store's base directory (…/store).
+func (s *Store) Root() string {
+	return s.basePath
 }
 
 // PackagePath returns the path to a package in the store
@@ -70,22 +68,38 @@ func (s *Store) Exists(name, hash string) bool {
 
 // Store copies or hard links files to the store
 func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir string) (string, error) {
-	destPath := s.PackagePath(name, hash)
-	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), destPath)
+	// Guard against path traversal: name is joined into the store path.
+	if err := pack.ValidatePackageName(name); err != nil {
+		return "", err
+	}
+
+	finalPath := s.PackagePath(name, hash)
+	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), finalPath)
 
 	// Same hash = same content, skip if already exists (race-safe)
 	if s.Exists(name, hash) {
-		debug.Logf("store: package already exists at %s, skipping", destPath)
-		return destPath, nil
+		debug.Logf("store: package already exists at %s, skipping", finalPath)
+		return finalPath, nil
 	}
 
-	// Remove existing if present (for updates) - ignore errors from concurrent access
-	_ = os.RemoveAll(destPath)
-
-	// Create destination directory
-	if err := os.MkdirAll(destPath, 0755); err != nil {
+	// Write into a temp dir first, then atomically rename into place. This way
+	// an interrupted store never leaves a partial package that Exists() (a
+	// directory-existence check) would later treat as complete.
+	parent := filepath.Dir(finalPath)
+	if err := os.MkdirAll(parent, 0755); err != nil {
 		return "", fmt.Errorf("failed to create store directory: %w", err)
 	}
+	destPath, err := os.MkdirTemp(parent, "."+hash+".tmp-")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp store directory: %w", err)
+	}
+	// Remove the temp dir unless it is successfully committed via rename.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(destPath)
+		}
+	}()
 
 	// Determine if we can use hard links (same filesystem)
 	useHardLink := s.canUseHardLink(sourceDir)
@@ -99,7 +113,6 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	// Process files in parallel: try reflink/hardlink first, collect failures for copy
 	total := len(files)
 	var reflinkCount, hardLinkCount, copyCount int32
-	warnedAboutCopy := false
 	var filesToCopyMu sync.Mutex
 	var filesToCopy []*pack.FileInfo
 
@@ -134,7 +147,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 				linked := false
 
 				// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
-				if reflinkFile(f.Path, destFile) == nil {
+				if fsutil.Reflink(f.Path, destFile) == nil {
 					linked = true
 					atomic.AddInt32(&reflinkCount, 1)
 				}
@@ -179,7 +192,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	}
 
 	// Show warning if needed
-	if len(filesToCopy) > 0 && !warnedAboutCopy && sameFS {
+	if len(filesToCopy) > 0 && sameFS {
 		fmt.Printf("  ⚠ Linking not supported, copying files instead\n")
 	}
 
@@ -190,7 +203,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		// Reuse worker pool for parallel copying
 		numCopyWorkers := min(runtime.NumCPU(), 8)
 		if len(filesToCopy) < numCopyWorkers {
-				numCopyWorkers = len(filesToCopy)
+			numCopyWorkers = len(filesToCopy)
 		}
 
 		var wg2 sync.WaitGroup
@@ -256,52 +269,18 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		return "", fmt.Errorf("failed to strip lifecycle scripts: %w", err)
 	}
 
-	return destPath, nil
-}
-
-// Remove removes a package from the store
-func (s *Store) Remove(name, hash string) error {
-	path := s.PackagePath(name, hash)
-	return os.RemoveAll(path)
-}
-
-// List returns all packages in the store
-func (s *Store) List() ([]string, error) {
-	entries, err := os.ReadDir(s.basePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	// Atomically move the completed package into place.
+	_ = os.RemoveAll(finalPath)
+	if err := os.Rename(destPath, finalPath); err != nil {
+		// A concurrent publish of the same hash may have already created it.
+		if s.Exists(name, hash) {
+			return finalPath, nil // temp dir cleaned up by deferred guard
 		}
-		return nil, err
+		return "", fmt.Errorf("failed to finalize store package: %w", err)
 	}
+	committed = true
 
-	var packages []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			packages = append(packages, entry.Name())
-		}
-	}
-	return packages, nil
-}
-
-// ListVersions returns all versions (hashes) of a package
-func (s *Store) ListVersions(name string) ([]string, error) {
-	packagePath := filepath.Join(s.basePath, name)
-	entries, err := os.ReadDir(packagePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var versions []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			versions = append(versions, entry.Name())
-		}
-	}
-	return versions, nil
+	return finalPath, nil
 }
 
 // GetFiles returns all files in a stored package
@@ -354,8 +333,8 @@ func (s *Store) canUseHardLink(sourceDir string) bool {
 		return false
 	}
 
-	storeDev := getDeviceID(storeInfo)
-	sourceDev := getDeviceID(sourceInfo)
+	storeDev := fsutil.DeviceID(storeInfo)
+	sourceDev := fsutil.DeviceID(sourceInfo)
 
 	if storeDev != 0 && sourceDev != 0 {
 		return storeDev == sourceDev
@@ -384,14 +363,6 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 
 	return dstFile.Sync()
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // stripLifecycleScripts removes prepare/prepublish scripts from package.json

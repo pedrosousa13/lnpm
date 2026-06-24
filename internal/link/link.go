@@ -11,6 +11,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -36,6 +37,12 @@ func New(projectPath string) *Linker {
 // It creates hard links in .lnpm/{package}/ and a symlink in node_modules/{package}
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (LinkType, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
+
+	// Guard against path traversal: packageName is joined into .lnpm/<name>
+	// (which we RemoveAll) and node_modules/<name>.
+	if err := pack.ValidatePackageName(packageName); err != nil {
+		return "", err
+	}
 
 	// Determine link type based on config and filesystem
 	linkType := l.determineLinkType(storePath)
@@ -92,7 +99,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 				linked := false
 
 				// 1. Try reflink (CoW clone) - instant on APFS/Btrfs/XFS
-				if reflinkFile(srcPath, dstPath) == nil {
+				if fsutil.Reflink(srcPath, dstPath) == nil {
 					linked = true
 					atomic.AddInt32(&reflinkCount, 1)
 				}
@@ -215,6 +222,10 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 
 // Unlink removes a linked package from the project
 func (l *Linker) Unlink(packageName string) error {
+	if err := pack.ValidatePackageName(packageName); err != nil {
+		return err
+	}
+
 	// Remove .lnpm/{package}
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
 	if err := os.RemoveAll(lnpmPath); err != nil {
@@ -308,8 +319,8 @@ func (l *Linker) determineLinkType(storePath string) LinkType {
 	}
 
 	// Check if on same filesystem (Unix-specific using device ID)
-	storeDev := getDeviceID(storeInfo)
-	projectDev := getDeviceID(projectInfo)
+	storeDev := fsutil.DeviceID(storeInfo)
+	projectDev := fsutil.DeviceID(projectInfo)
 
 	if storeDev != 0 && projectDev != 0 {
 		if storeDev == projectDev {
@@ -348,14 +359,6 @@ func (l *Linker) ListLinked() ([]string, error) {
 		}
 	}
 	return packages, nil
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // copyFile copies a file

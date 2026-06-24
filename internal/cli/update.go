@@ -3,7 +3,10 @@ package cli
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,11 +15,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/update"
 	"github.com/spf13/cobra"
 )
+
+// updateHTTPClient is used for downloading release assets, with a timeout so a
+// hung connection can't block the updater indefinitely.
+var updateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 
 // updateCmd updates lnpm to the latest version
 var updateCmd = &cobra.Command{
@@ -174,8 +182,8 @@ func installLatestViaBinary(version string) error {
 	debug.Logf("update: downloading from %s", url)
 	fmt.Printf("  Downloading from %s\n", url)
 
-	// Download the new binary
-	newBin, err := downloadBinary(url, filename)
+	// Download and verify the new binary
+	newBin, err := downloadBinary(version, url, filename)
 	if err != nil {
 		return err
 	}
@@ -226,39 +234,29 @@ func buildDownloadURL(version string) (string, string) {
 	return filename, url
 }
 
-// downloadBinary downloads and extracts the binary
-func downloadBinary(url, filename string) (string, error) {
+// downloadBinary downloads the release archive, verifies its SHA-256 against
+// the release checksums.txt, then extracts and returns the binary path.
+func downloadBinary(version, url, filename string) (string, error) {
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "lnpm-update-")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
-	// Download file
-	resp, err := http.Get(url)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("download failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("download failed: status %d", resp.StatusCode)
-	}
-
+	// Download archive
 	filePath := filepath.Join(tmpDir, filename)
-	file, err := os.Create(filePath)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("failed to create file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	if err := downloadToFile(url, filePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("download failed: %w", err)
 	}
+
+	// Verify checksum BEFORE extracting or installing — a tampered or
+	// corrupted asset must never reach the running binary.
+	if err := verifyChecksum(version, filename, filePath); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("checksum verification failed: %w", err)
+	}
+	fmt.Println("  ✓ Checksum verified")
 
 	// Extract binary
 	var binaryPath string
@@ -274,6 +272,91 @@ func downloadBinary(url, filename string) (string, error) {
 	}
 
 	return binaryPath, nil
+}
+
+// downloadToFile downloads url into dst using the timeout-bounded client.
+func downloadToFile(url, dst string) error {
+	resp, err := updateHTTPClient.Get(url)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	file, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// buildChecksumsURL returns the checksums.txt URL for a release version.
+func buildChecksumsURL(version string) string {
+	version = strings.TrimPrefix(version, "v")
+	return fmt.Sprintf("https://github.com/pedrosousa13/lnpm/releases/download/v%s/checksums.txt", version)
+}
+
+// verifyChecksum computes the SHA-256 of filePath and compares it to the entry
+// for filename in the release checksums.txt.
+func verifyChecksum(version, filename, filePath string) error {
+	sum, err := sha256File(filePath)
+	if err != nil {
+		return err
+	}
+
+	resp, err := updateHTTPClient.Get(buildChecksumsURL(version))
+	if err != nil {
+		return fmt.Errorf("failed to fetch checksums: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch checksums: status %d", resp.StatusCode)
+	}
+
+	want, ok := findChecksum(resp.Body, filename)
+	if !ok {
+		return fmt.Errorf("no checksum listed for %s", filename)
+	}
+	if !strings.EqualFold(want, sum) {
+		return fmt.Errorf("sha256 mismatch for %s (got %s, want %s)", filename, sum, want)
+	}
+	return nil
+}
+
+// sha256File returns the hex-encoded SHA-256 of a file.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// findChecksum parses goreleaser-style "<hex>  <filename>" lines and returns
+// the checksum for the given filename (matched by base name).
+func findChecksum(r io.Reader, filename string) (string, bool) {
+	target := filepath.Base(filename)
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 2 && filepath.Base(fields[1]) == target {
+			return fields[0], true
+		}
+	}
+	return "", false
 }
 
 // extractTarGz extracts a tar.gz file and returns the binary path

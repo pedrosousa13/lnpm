@@ -3,10 +3,10 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sync"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
@@ -17,7 +17,7 @@ import (
 )
 
 // RunPublish executes the publish command
-func RunPublish(push bool, tag string, all bool, skipHooks bool, skipValidation bool) error {
+func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
@@ -25,14 +25,14 @@ func RunPublish(push bool, tag string, all bool, skipHooks bool, skipValidation 
 
 	// Handle --all for monorepo publishing
 	if all {
-		return publishAll(cwd, push, tag, skipHooks, skipValidation)
+		return publishAll(cwd, push, skipHooks, skipValidation)
 	}
 
-	return publishSingle(cwd, push, tag, skipHooks, skipValidation)
+	return publishSingle(cwd, push, skipHooks, skipValidation)
 }
 
 // publishAll publishes all packages in a monorepo workspace
-func publishAll(cwd string, push bool, tag string, skipHooks bool, skipValidation bool) error {
+func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool) error {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {
 		return fmt.Errorf("failed to detect workspace: %w", err)
@@ -77,14 +77,15 @@ func publishAll(cwd string, push bool, tag string, skipHooks bool, skipValidatio
 			for pkg := range pkgChan {
 				// Synchronize output for clean formatting
 				outputMu.Lock()
-				fmt.Printf("─── %s@%s ───\n", pkg.Name, pkg.Version)
+				sep := hrule(3)
+				fmt.Printf("%s %s@%s %s\n", sep, pkg.Name, pkg.Version, sep)
 				outputMu.Unlock()
 
-				err := publishSingle(pkg.Path, push, tag, skipHooks, skipValidation)
+				err := publishSingle(pkg.Path, push, skipHooks, skipValidation)
 
 				outputMu.Lock()
 				if err != nil {
-					fmt.Printf("✗ Failed: %v\n\n", err)
+					fmt.Printf("%s Failed: %v\n\n", iconFail(), err)
 				} else {
 					fmt.Println()
 				}
@@ -114,23 +115,26 @@ func publishAll(cwd string, push bool, tag string, skipHooks bool, skipValidatio
 	}
 
 	fmt.Printf("Published %d/%d packages\n", successCount, len(packages))
+	if successCount < len(packages) {
+		return fmt.Errorf("%d of %d package(s) failed to publish", len(packages)-successCount, len(packages))
+	}
 	return nil
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // publishSingle publishes a single package
-func publishSingle(pkgPath string, push bool, tag string, skipHooks bool, skipValidation bool) error {
+func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation bool) error {
 	// Validate package before proceeding
 	if !skipValidation {
 		if err := validation.ValidatePackage(pkgPath); err != nil {
 			return fmt.Errorf("validation failed: %w", err)
+		}
+	}
+
+	// Run custom pre_publish hook before packing
+	cfg := config.Get()
+	if !skipHooks {
+		if err := hooks.RunCustom(pkgPath, cfg.Hooks.PrePublish, "pre_publish"); err != nil {
+			return fmt.Errorf("pre_publish hook failed: %w", err)
 		}
 	}
 
@@ -158,13 +162,24 @@ func publishSingle(pkgPath string, push bool, tag string, skipHooks bool, skipVa
 	}
 
 	if existing != nil && !push {
-		fmt.Printf("⚠ Package %s@%s already published with same content (hash: %s)\n",
-			pkgJSON.Name, pkgJSON.Version, shortHash(contentHash))
+		fmt.Printf("%s Package %s@%s already published with same content (hash: %s)\n",
+			iconWarn(), pkgJSON.Name, pkgJSON.Version, shortHash(contentHash))
 		fmt.Println("Use --push to update linked projects anyway")
 		return nil
 	}
 
-	return finishPublish(pkgPath, pkgJSON, files, database, push)
+	if err := finishPublish(pkgPath, pkgJSON, files, database, push); err != nil {
+		return err
+	}
+
+	// Run custom post_publish hook after a successful publish
+	if !skipHooks {
+		if err := hooks.RunCustom(pkgPath, cfg.Hooks.PostPublish, "post_publish"); err != nil {
+			return fmt.Errorf("post_publish hook failed: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // finishPublish completes publishing with pre-packed data (used by push too)
@@ -221,7 +236,7 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 		return fmt.Errorf("failed to record files: %w", err)
 	}
 
-	fmt.Printf("✓ Published %s@%s\n", pkgJSON.Name, pkgJSON.Version)
+	fmt.Printf("%s Published %s@%s\n", iconOK(), pkgJSON.Name, pkgJSON.Version)
 	fmt.Printf("  Hash: %s\n", shortHash(contentHash))
 	fmt.Printf("  Files: %d\n", len(files))
 	fmt.Printf("  Size: %s\n", formatSize(totalSize))
@@ -276,9 +291,9 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 	successCount := 0
 	for res := range results {
 		if res.err != nil {
-			fmt.Printf("  ✗ %s: %v\n", res.path, res.err)
+			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
 		} else {
-			fmt.Printf("  ✓ %s\n", res.path)
+			fmt.Printf("  %s %s\n", iconOK(), res.path)
 			successCount++
 		}
 	}
@@ -326,24 +341,4 @@ func formatSize(size int64) string {
 	default:
 		return fmt.Sprintf("%d B", size)
 	}
-}
-
-// GetPackageName returns the name of the package in the current directory
-func GetPackageName() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	pkgPath := filepath.Join(cwd, "package.json")
-	if _, err := os.Stat(pkgPath); err != nil {
-		return "", fmt.Errorf("no package.json found in current directory")
-	}
-
-	pkgJSON, _, err := pack.Pack(cwd)
-	if err != nil {
-		return "", err
-	}
-
-	return pkgJSON.Name, nil
 }

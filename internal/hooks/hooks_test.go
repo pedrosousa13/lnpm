@@ -3,44 +3,58 @@ package hooks
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
 
 func TestRunPrepare(t *testing.T) {
+	// RunPrepare shells out to `npm run <script>` for any matched script.
+	// Without npm on PATH the script tests fail rather than exercise the hook,
+	// so skip them when npm is unavailable (e.g. CI without Node).
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm not found in PATH; skipping prepare-hook tests")
+	}
+
+	// sentinelFor returns a script that writes a sentinel file named after the
+	// hook, so the test can prove which script actually ran.
+	sentinelFor := func(name string) string {
+		return "echo ran > " + name + ".sentinel"
+	}
+
 	tests := []struct {
-		name       string
-		scripts    map[string]string
-		skipHooks  bool
-		wantRun    string // which script should run (empty if none)
-		wantError  bool
+		name      string
+		scripts   map[string]string
+		skipHooks bool
+		wantRun   string // which script should run (empty if none)
+		wantError bool
 	}{
 		{
 			name: "runs prepare script",
 			scripts: map[string]string{
-				"prepare": "echo 'prepare'",
+				"prepare": sentinelFor("prepare"),
 			},
 			wantRun: "prepare",
 		},
 		{
-			name: "runs prepublishOnly over prepare",
+			name: "runs prepare over prepublishOnly",
 			scripts: map[string]string{
-				"prepare":        "echo 'prepare'",
-				"prepublishOnly": "echo 'prepublishOnly'",
+				"prepare":        sentinelFor("prepare"),
+				"prepublishOnly": sentinelFor("prepublishOnly"),
 			},
 			wantRun: "prepare", // prepare runs first in precedence
 		},
 		{
 			name: "runs prepack if no prepare",
 			scripts: map[string]string{
-				"prepack": "echo 'prepack'",
+				"prepack": sentinelFor("prepack"),
 			},
 			wantRun: "prepack",
 		},
 		{
 			name: "skips when skipHooks=true",
 			scripts: map[string]string{
-				"prepare": "echo 'prepare'",
+				"prepare": sentinelFor("prepare"),
 			},
 			skipHooks: true,
 			wantRun:   "",
@@ -87,9 +101,21 @@ func TestRunPrepare(t *testing.T) {
 				if err == nil {
 					t.Errorf("expected error but got nil")
 				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			// Verify the expected script ran (and only that one) via sentinel files.
+			ranScript := func(name string) bool {
+				_, statErr := os.Stat(filepath.Join(tmpDir, name+".sentinel"))
+				return statErr == nil
+			}
+			for _, name := range []string{"prepare", "prepublishOnly", "prepack"} {
+				want := name == tt.wantRun
+				if got := ranScript(name); got != want {
+					t.Errorf("script %q ran=%v, want %v", name, got, want)
 				}
 			}
 		})

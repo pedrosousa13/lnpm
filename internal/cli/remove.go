@@ -41,6 +41,10 @@ func RunRemove(packageName string, all bool) error {
 			fmt.Println("No linked packages to remove")
 			return nil
 		}
+		if !confirm(fmt.Sprintf("Remove all %d linked package(s) from this project?", len(packagesToRemove))) {
+			fmt.Println("Aborted.")
+			return nil
+		}
 	} else {
 		if !lock.Has(packageName) {
 			return fmt.Errorf("package %s is not linked in this project", packageName)
@@ -57,6 +61,7 @@ func RunRemove(packageName string, all bool) error {
 	linker := link.New(cwd)
 
 	// Remove each package
+	failed := 0
 	for _, name := range packagesToRemove {
 		fmt.Printf("Removing %s...\n", name)
 
@@ -65,19 +70,20 @@ func RunRemove(packageName string, all bool) error {
 
 		// Unlink the package
 		if err := linker.Unlink(name); err != nil {
-			fmt.Printf("  ✗ Failed to unlink: %v\n", err)
+			fmt.Printf("  %s Failed to unlink: %v\n", iconFail(), err)
+			failed++
 			continue
 		}
 
 		// Restore original package.json dependency
 		if lockEntry.OriginalVersion != "" {
 			if err := restorePackageJSON(cwd, name, lockEntry.OriginalVersion); err != nil {
-				fmt.Printf("  ⚠ Failed to restore package.json: %v\n", err)
+				fmt.Printf("  %s Failed to restore package.json: %v\n", iconWarn(), err)
 			}
 		} else {
 			// Remove the dependency entirely
 			if err := removeFromPackageJSON(cwd, name); err != nil {
-				fmt.Printf("  ⚠ Failed to update package.json: %v\n", err)
+				fmt.Printf("  %s Failed to update package.json: %v\n", iconWarn(), err)
 			}
 		}
 
@@ -92,7 +98,7 @@ func RunRemove(packageName string, all bool) error {
 			}
 		}
 
-		fmt.Printf("  ✓ Removed %s\n", name)
+		fmt.Printf("  %s Removed %s\n", iconOK(), name)
 	}
 
 	// Save updated lock file
@@ -116,7 +122,11 @@ func RunRemove(packageName string, all bool) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("⚠ Install failed: %v\n", err)
+		fmt.Printf("%s Install failed: %v\n", iconWarn(), err)
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d of %d package(s) failed to remove", failed, len(packagesToRemove))
 	}
 
 	return nil

@@ -64,7 +64,7 @@ func TestStore_ReadOnlySource(t *testing.T) {
 	files := []*pack.FileInfo{
 		{
 			RelPath:     "readonly.js",
-			Path:    testFile,
+			Path:        testFile,
 			Size:        12,
 			Mode:        0444,
 			ContentHash: "abc123",
@@ -113,7 +113,7 @@ func TestStore_PreservesExecutablePermissions(t *testing.T) {
 	files := []*pack.FileInfo{
 		{
 			RelPath:     "script.sh",
-			Path:    execFile,
+			Path:        execFile,
 			Size:        20,
 			Mode:        0755,
 			ContentHash: "exec123",
@@ -166,7 +166,7 @@ func TestStore_DestinationDirCreation(t *testing.T) {
 	files := []*pack.FileInfo{
 		{
 			RelPath:     "nested/deep/file.js",
-			Path:    testFile,
+			Path:        testFile,
 			Size:        4,
 			Mode:        0644,
 			ContentHash: "test123",
@@ -229,7 +229,7 @@ func TestStore_ReadOnlyDestination(t *testing.T) {
 	files := []*pack.FileInfo{
 		{
 			RelPath:     "test.js",
-			Path:    testFile,
+			Path:        testFile,
 			Size:        4,
 			Mode:        0644,
 			ContentHash: "test123",
@@ -251,11 +251,16 @@ func TestStore_ReadOnlyDestination(t *testing.T) {
 		_ = os.Chmod(destPath, 0755) // Cleanup
 	}()
 
-	// Store should handle read-only destination (RemoveAll should fail or succeed)
-	_, err = store.Store("test-pkg", "readonly-hash", files, sourceDir)
-	// This may or may not fail depending on OS behavior
-	// We just verify it doesn't panic
-	t.Logf("Store with read-only destination returned: %v", err)
+	// The destination already exists (same name+hash), so Store treats the
+	// package as already stored (content is hash-addressed) and returns the
+	// existing path without error, without touching the read-only directory.
+	gotPath, err := store.Store("test-pkg", "readonly-hash", files, sourceDir)
+	if err != nil {
+		t.Fatalf("Store should no-op on existing destination, got error: %v", err)
+	}
+	if gotPath != destPath {
+		t.Errorf("Expected Store to return existing path %q, got %q", destPath, gotPath)
+	}
 }
 
 // TestGetStorePath_Permissions tests store path creation permissions
@@ -314,7 +319,7 @@ func TestStore_ConcurrentWithPermissions(t *testing.T) {
 	files := []*pack.FileInfo{
 		{
 			RelPath:     "test.js",
-			Path:    testFile,
+			Path:        testFile,
 			Size:        4,
 			Mode:        0644,
 			ContentHash: "test123",
@@ -423,7 +428,7 @@ func TestStore_SymlinkHandling(t *testing.T) {
 	files := []*pack.FileInfo{
 		{
 			RelPath:     "link.js",
-			Path:    symlinkFile,
+			Path:        symlinkFile,
 			Size:        int64(len("real content")),
 			Mode:        info.Mode().Perm(),
 			ContentHash: "link123",

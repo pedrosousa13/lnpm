@@ -217,19 +217,3 @@ func (w *Workspace) ListPackages() ([]Package, error) {
 
 	return packages, nil
 }
-
-// IsInWorkspace checks if a path is inside this workspace
-func (w *Workspace) IsInWorkspace(path string) bool {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-
-	for _, pkgPath := range w.Packages {
-		if absPath == pkgPath || strings.HasPrefix(absPath, pkgPath+string(filepath.Separator)) {
-			return true
-		}
-	}
-
-	return false
-}

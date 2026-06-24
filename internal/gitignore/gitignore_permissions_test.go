@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -228,8 +229,14 @@ func TestIsInGitignore_ReadOnlyFile(t *testing.T) {
 	}
 }
 
-// TestEnsureInGitignore_PartialWrite tests handling of partial write failures
-func TestEnsureInGitignore_PartialWrite(t *testing.T) {
+// TestEnsureInGitignore_AppendsAtomically verifies that adding a pattern to an
+// existing .gitignore preserves the original content, appends the lnpm marker and
+// pattern, and leaves no temp file behind (atomic temp+rename write).
+//
+// (Previously titled "PartialWrite" but it never simulated a partial write and
+// made no assertion — only a t.Logf. EnsureInGitignore writes via temp+rename,
+// so there is no observable partial-write state to assert against from a test.)
+func TestEnsureInGitignore_AppendsAtomically(t *testing.T) {
 	tmpDir := t.TempDir()
 	gitignorePath := filepath.Join(tmpDir, ".gitignore")
 
@@ -239,33 +246,34 @@ func TestEnsureInGitignore_PartialWrite(t *testing.T) {
 		t.Fatalf("Failed to create .gitignore: %v", err)
 	}
 
-	// Read original inode (if supported)
-	originalInfo, err := os.Stat(gitignorePath)
-	if err != nil {
-		t.Fatalf("Failed to stat original: %v", err)
-	}
-
 	// Add pattern
-	_, err = EnsureInGitignore(tmpDir, ".lnpm/")
+	added, err := EnsureInGitignore(tmpDir, ".lnpm/")
 	if err != nil {
 		t.Fatalf("EnsureInGitignore failed: %v", err)
 	}
-
-	// Verify file was replaced (atomic rename)
-	newInfo, err := os.Stat(gitignorePath)
-	if err != nil {
-		t.Fatalf("Failed to stat new file: %v", err)
+	if !added {
+		t.Error("Expected pattern to be added to existing .gitignore")
 	}
 
-	// On most systems, atomic rename means different inode
-	// (This is a best-effort check and may not work on all filesystems)
-	if runtime.GOOS != "windows" {
-		originalSys := originalInfo.Sys()
-		newSys := newInfo.Sys()
-		if originalSys != nil && newSys != nil {
-			// Note: This check is informational; atomic rename behavior varies by OS
-			t.Logf("Original and new file system info: %v vs %v", originalSys, newSys)
-		}
+	// Verify the final content: original preserved + marker + pattern appended.
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("Failed to read .gitignore: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "node_modules/") {
+		t.Errorf("Expected original content preserved, got %q", content)
+	}
+	if !strings.Contains(content, lnpmMarker) {
+		t.Errorf("Expected lnpm marker %q in content, got %q", lnpmMarker, content)
+	}
+	if !strings.Contains(content, ".lnpm/") {
+		t.Errorf("Expected pattern .lnpm/ in content, got %q", content)
+	}
+
+	// Atomic write must not leave the temp file behind.
+	if _, err := os.Stat(gitignorePath + ".tmp"); !os.IsNotExist(err) {
+		t.Error("Temp file was not cleaned up after successful atomic write")
 	}
 }
 
@@ -303,24 +311,31 @@ func TestRemoveFromGitignore_PreservesPermissions(t *testing.T) {
 	}
 }
 
-// TestEnsureInGitignore_NoSpaceOnDevice tests handling of disk full scenario
-func TestEnsureInGitignore_NoSpaceOnDevice(t *testing.T) {
-	// This test is difficult to simulate reliably across platforms
-	// We test that errors are properly propagated
+// TestEnsureInGitignore_WriteErrorPropagated verifies that a filesystem write
+// error is surfaced rather than swallowed. A genuine disk-full (ENOSPC) is not
+// reliably reproducible across platforms, so we trigger a write failure that is
+// portable: point the "project" at a path whose .gitignore parent is a regular
+// file, so creating the temp file fails. EnsureInGitignore must return an error
+// (and must not report the pattern as added).
+//
+// (Previously titled "NoSpaceOnDevice" but it only performed a normal,
+// successful write and never exercised any error path.)
+func TestEnsureInGitignore_WriteErrorPropagated(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .gitignore
-	gitignorePath := filepath.Join(tmpDir, ".gitignore")
-	if err := os.WriteFile(gitignorePath, []byte("test\n"), 0644); err != nil {
-		t.Fatalf("Failed to create .gitignore: %v", err)
+	// Create a regular file, then treat it as if it were the project directory.
+	// filepath.Join(notADir, ".gitignore") cannot be created because the parent
+	// is a file, so the temp-file write inside EnsureInGitignore must fail.
+	notADir := filepath.Join(tmpDir, "iam-a-file")
+	if err := os.WriteFile(notADir, []byte("x"), 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
 	}
 
-	// Normal add should work
-	added, err := EnsureInGitignore(tmpDir, ".lnpm/")
-	if err != nil {
-		t.Fatalf("EnsureInGitignore failed: %v", err)
+	added, err := EnsureInGitignore(notADir, ".lnpm/")
+	if err == nil {
+		t.Error("Expected error when .gitignore parent is not a directory, got nil")
 	}
-	if !added {
-		t.Error("Expected pattern to be added")
+	if added {
+		t.Error("Expected added=false when write fails")
 	}
 }

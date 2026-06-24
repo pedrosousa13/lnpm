@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pedrosousa13/lnpm/internal/cli"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -410,11 +411,26 @@ func getStringValue(m map[string]interface{}, key string) string {
 	return ""
 }
 
-// copyDir recursively copies a directory
+// copyDir recursively copies a directory, skipping generated artifacts
+// (node_modules, .lnpm, lnpm.lock) so fixtures copy cleanly regardless of any
+// leftover state from prior runs.
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// Skip generated directories/files that must not be copied.
+		if info.IsDir() && (info.Name() == "node_modules" || info.Name() == ".lnpm") {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() && info.Name() == "lnpm.lock" {
+			return nil
+		}
+		// Skip symlinks (a fixture's source tree should contain none; any
+		// present are leftover links from a previous run).
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 
 		// Calculate relative path
@@ -567,3 +583,118 @@ func (te *TestEnvironment) AssertScriptExists(storePath, packageName, scriptName
 	}
 }
 
+// --- Shared CLI workflow helpers ---------------------------------------------
+//
+// The integration tests overwhelmingly follow the same shape: create a package,
+// chdir into it, publish; create a project, chdir into it, add. These helpers
+// collapse that boilerplate into single calls and centralize the os.Chdir +
+// error-checking so individual tests assert behavior, not plumbing.
+
+// chdir changes into dir, failing the test on error.
+func (te *TestEnvironment) chdir(dir string) {
+	te.t.Helper()
+	if err := os.Chdir(dir); err != nil {
+		te.t.Fatalf("Failed to chdir to %s: %v", dir, err)
+	}
+}
+
+// publishPkg creates a package with the given files, publishes it, and returns
+// its source directory. The cwd is left inside the package directory.
+func (te *TestEnvironment) publishPkg(name, version string, files map[string]string) string {
+	te.t.Helper()
+	pkgDir := te.CreateTestPackage(name, version, files)
+	te.chdir(pkgDir)
+	if err := cli.RunPublish(false, false, false, false); err != nil {
+		te.t.Fatalf("Failed to publish %s: %v", name, err)
+	}
+	return pkgDir
+}
+
+// simplePkg publishes a package with a single index.js whose content is derived
+// from the name. Convenient for the many tests that only need "some package to
+// link" without caring about its contents.
+func (te *TestEnvironment) simplePkg(name string) string {
+	te.t.Helper()
+	return te.publishPkg(name, "1.0.0", map[string]string{
+		"index.js": "module.exports = '" + name + "';",
+	})
+}
+
+// newProject creates an empty project (package.json only) and chdirs into it.
+func (te *TestEnvironment) newProject(name string) string {
+	te.t.Helper()
+	projectDir := te.CreateTestPackage(name, "1.0.0", nil)
+	te.chdir(projectDir)
+	return projectDir
+}
+
+// addPkg chdirs into projectDir and adds spec, failing on error.
+func (te *TestEnvironment) addPkg(projectDir, spec string, dev, pure bool) {
+	te.t.Helper()
+	te.chdir(projectDir)
+	if err := cli.RunAdd(spec, dev, pure, false); err != nil {
+		te.t.Fatalf("Failed to add %s: %v", spec, err)
+	}
+}
+
+// publishAndAdd publishes pkgName (single index.js) and adds it to a fresh
+// "test-project", returning (pkgDir, projectDir). The cwd is left inside the
+// project. This is the single most common setup across the suite.
+func (te *TestEnvironment) publishAndAdd(pkgName string) (pkgDir, projectDir string) {
+	te.t.Helper()
+	pkgDir = te.simplePkg(pkgName)
+	projectDir = te.newProject("test-project")
+	te.addPkg(projectDir, pkgName, false, false)
+	return pkgDir, projectDir
+}
+
+// linkedFileContent reads .lnpm/<pkg>/<rel> in projectDir, failing on error.
+func (te *TestEnvironment) linkedFileContent(projectDir, pkg, rel string) string {
+	te.t.Helper()
+	data, err := os.ReadFile(filepath.Join(projectDir, ".lnpm", pkg, rel))
+	if err != nil {
+		te.t.Fatalf("Failed to read linked file %s for %s: %v", rel, pkg, err)
+	}
+	return string(data)
+}
+
+// AssertLinkedFileContent checks that .lnpm/<pkg>/<rel> equals want.
+func (te *TestEnvironment) AssertLinkedFileContent(projectDir, pkg, rel, want string) {
+	te.t.Helper()
+	if got := te.linkedFileContent(projectDir, pkg, rel); got != want {
+		te.t.Errorf("linked %s/%s: expected %q, got %q", pkg, rel, want, got)
+	}
+}
+
+// writeFile writes content to path (relative to cwd or absolute), failing on error.
+func (te *TestEnvironment) writeFile(path, content string) {
+	te.t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		te.t.Fatalf("Failed to write %s: %v", path, err)
+	}
+}
+
+// writePackageJSON writes a package.json into projectDir from the given map.
+func (te *TestEnvironment) writePackageJSON(projectDir string, content map[string]interface{}) {
+	te.t.Helper()
+	data, err := json.MarshalIndent(content, "", "  ")
+	if err != nil {
+		te.t.Fatalf("Failed to marshal package.json: %v", err)
+	}
+	te.writeFile(filepath.Join(projectDir, "package.json"), string(data))
+}
+
+// storedPackageJSON loads and parses the package.json at the given store/.lnpm
+// path, failing on error.
+func (te *TestEnvironment) storedPackageJSON(dir string) map[string]interface{} {
+	te.t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		te.t.Fatalf("Failed to read package.json at %s: %v", dir, err)
+	}
+	var pkgJSON map[string]interface{}
+	if err := json.Unmarshal(data, &pkgJSON); err != nil {
+		te.t.Fatalf("Failed to parse package.json at %s: %v", dir, err)
+	}
+	return pkgJSON
+}
