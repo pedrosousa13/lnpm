@@ -27,7 +27,7 @@ func TestSymlinkSurvivesNpmInstall(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestSymlinkTargetCorrect(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestSymlinkWithScopedPackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestSymlinkAfterPush(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -253,7 +253,7 @@ func TestSymlinkIsRelative(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -296,7 +296,7 @@ func TestNodeModulesCreatedIfMissing(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 

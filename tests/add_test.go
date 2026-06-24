@@ -21,7 +21,7 @@ func TestAddBasicPackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestAddScopedPackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestAddDevDependency(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestAddPreservesDevDependencyLocation(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestAddPureFlag(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -248,7 +248,7 @@ func TestAddAlreadyAdded(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -282,7 +282,7 @@ func TestAddUpdatesExisting(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish v1: %v", err)
 	}
 
@@ -308,7 +308,7 @@ func TestAddUpdatesExisting(t *testing.T) {
 		[]byte("module.exports = 'v2';"), 0644); err != nil {
 		t.Fatalf("Failed to update index.js: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish v2: %v", err)
 	}
 
@@ -340,7 +340,7 @@ func TestAddConcurrentSameProject(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -390,7 +390,7 @@ func TestAddConcurrentDifferentProjects(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -438,7 +438,7 @@ func TestAddWithNPMWorkspace(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -472,7 +472,7 @@ func TestAddMultiplePackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -507,7 +507,7 @@ func TestAddMultipleWithPartialFailure(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -541,7 +541,7 @@ func TestAddLockfileContents(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -578,4 +578,37 @@ func TestAddLockfileContents(t *testing.T) {
 			t.Error("Expected source to be set")
 		}
 	})
+}
+
+// TestAddByVersion verifies that name@version resolves against the stored
+// (latest) version: a matching version succeeds, a non-matching one fails
+// with a clear error rather than silently matching a content hash (#39).
+func TestAddByVersion(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.CreateTestPackage("ver-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+	})
+	if err := os.Chdir(pkgDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := cli.RunPublish(false, false, false, false); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	projectDir := env.CreateTestPackage("ver-project", "1.0.0", nil)
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Matching version resolves.
+	if err := cli.RunAdd("ver-pkg@1.0.0", false, false, false); err != nil {
+		t.Fatalf("add ver-pkg@1.0.0 should succeed, got: %v", err)
+	}
+	env.AssertPackageJSON(projectDir, "ver-pkg", "file:.lnpm/ver-pkg")
+
+	// Non-matching version fails clearly.
+	if err := cli.RunAdd("ver-pkg@9.9.9", false, false, false); err == nil {
+		t.Fatal("add ver-pkg@9.9.9 should fail (only 1.0.0 is published)")
+	}
 }

@@ -19,7 +19,7 @@ func TestRetreatBasic(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestRetreatNoForceFlag(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestRetreatRestoresOriginalVersion(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestRetreatMultiplePackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -236,7 +236,7 @@ func TestRetreatPreservesOtherDependencies(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 	if err := os.Chdir(pkg1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-linked: %v", err)
 	}
 
@@ -282,7 +282,7 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 	if err := os.Chdir(pkg2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-notlinked: %v", err)
 	}
 
@@ -321,7 +321,7 @@ func TestRetreatCleansGitignore(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -362,7 +362,7 @@ func TestRetreatWithDevDependency(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func TestRetreatWithScopedPackages(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 

@@ -20,7 +20,7 @@ func publishAllFixture(t *testing.T, env *TestEnvironment, fixture string) {
 	}
 
 	// skip validation since test fixtures don't have built files
-	if err := cli.RunPublish(false, "", true, false, true); err != nil {
+	if err := cli.RunPublish(false, true, false, true); err != nil {
 		t.Fatalf("Failed to publish all packages: %v", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 	if err := os.Chdir(pkgADir); err != nil {
 		t.Fatalf("Failed to change to package-a directory: %v", err)
 	}
-	if err := cli.RunPublish(true, "", false, false, false); err != nil {
+	if err := cli.RunPublish(true, false, false, false); err != nil {
 		t.Fatalf("Failed to publish package-a: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestNxAddInternalDependency(t *testing.T) {
 	if err := os.Chdir(featureAuthDir); err != nil {
 		t.Fatalf("Failed to change to feature-auth directory: %v", err)
 	}
-	if err := cli.RunPublish(true, "", false, false, false); err != nil {
+	if err := cli.RunPublish(true, false, false, false); err != nil {
 		t.Fatalf("Failed to publish feature-auth package: %v", err)
 	}
 

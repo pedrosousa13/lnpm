@@ -17,7 +17,7 @@ import (
 )
 
 // RunPublish executes the publish command
-func RunPublish(push bool, tag string, all bool, skipHooks bool, skipValidation bool) error {
+func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
@@ -25,14 +25,14 @@ func RunPublish(push bool, tag string, all bool, skipHooks bool, skipValidation 
 
 	// Handle --all for monorepo publishing
 	if all {
-		return publishAll(cwd, push, tag, skipHooks, skipValidation)
+		return publishAll(cwd, push, skipHooks, skipValidation)
 	}
 
-	return publishSingle(cwd, push, tag, skipHooks, skipValidation)
+	return publishSingle(cwd, push, skipHooks, skipValidation)
 }
 
 // publishAll publishes all packages in a monorepo workspace
-func publishAll(cwd string, push bool, tag string, skipHooks bool, skipValidation bool) error {
+func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool) error {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {
 		return fmt.Errorf("failed to detect workspace: %w", err)
@@ -80,7 +80,7 @@ func publishAll(cwd string, push bool, tag string, skipHooks bool, skipValidatio
 				fmt.Printf("─── %s@%s ───\n", pkg.Name, pkg.Version)
 				outputMu.Unlock()
 
-				err := publishSingle(pkg.Path, push, tag, skipHooks, skipValidation)
+				err := publishSingle(pkg.Path, push, skipHooks, skipValidation)
 
 				outputMu.Lock()
 				if err != nil {
@@ -126,7 +126,7 @@ func min(a, b int) int {
 }
 
 // publishSingle publishes a single package
-func publishSingle(pkgPath string, push bool, tag string, skipHooks bool, skipValidation bool) error {
+func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation bool) error {
 	// Validate package before proceeding
 	if !skipValidation {
 		if err := validation.ValidatePackage(pkgPath); err != nil {

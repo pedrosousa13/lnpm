@@ -257,21 +257,17 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) erro
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Find package in store
-	var pkg *db.Package
-	if version != "" {
-		// Look for specific version by hash prefix
-		pkg, err = database.GetPackageByHash(name, version)
-	} else {
-		// Get latest version
-		pkg, err = database.GetPackageByName(name)
-	}
-
+	// Find package in store. The store keeps the latest published version per
+	// package (latest-wins), so a requested version must match what's stored.
+	pkg, err := database.GetPackageByName(name)
 	if err != nil {
 		return fmt.Errorf("failed to look up package: %w", err)
 	}
 	if pkg == nil {
 		return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
+	}
+	if version != "" && pkg.Version != version {
+		return fmt.Errorf("version %s of %s not found in store (latest published is %s). Re-publish %s to update.", version, name, pkg.Version, name)
 	}
 
 	fmt.Printf("Adding %s@%s...\n", pkg.Name, pkg.Version)

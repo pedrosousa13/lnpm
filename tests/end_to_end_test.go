@@ -20,7 +20,7 @@ func TestE2EPublishAddRemove(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir to package: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish package: %v", err)
 	}
 
@@ -67,7 +67,7 @@ func TestE2EMultiplePackagesMultipleProjects(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir to %s: %v", name, err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestE2ERetreatWorkflow(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir to %s: %v", name, err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -177,7 +177,7 @@ func TestE2EWorkspacePublish(t *testing.T) {
 	}
 
 	// Publish all workspace packages
-	if err := cli.RunPublish(false, "", true, false, false); err != nil {
+	if err := cli.RunPublish(false, true, false, false); err != nil {
 		t.Fatalf("Failed to publish workspace: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestE2EAddToWorkspacePackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir to package: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish package: %v", err)
 	}
 
@@ -229,7 +229,7 @@ func TestE2EScopedPackageWorkflow(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir to package: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish package: %v", err)
 	}
 
@@ -268,7 +268,7 @@ func TestE2EMixedDependencies(t *testing.T) {
 	if err := os.Chdir(prodPkgDir); err != nil {
 		t.Fatalf("Failed to chdir to prod package: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish prod package: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestE2EMixedDependencies(t *testing.T) {
 	if err := os.Chdir(devPkgDir); err != nil {
 		t.Fatalf("Failed to chdir to dev package: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish dev package: %v", err)
 	}
 

@@ -229,9 +229,6 @@ lnpm publish
 
 # Publish and push to all linked projects
 lnpm publish --push
-
-# Publish with custom tag
-lnpm publish --tag beta
 ```
 
 **Process:**
@@ -250,9 +247,8 @@ Add a package from the store to current project.
 # Add latest published version
 lnpm add my-package
 
-# Add specific version/tag
+# Add a specific version (must match the latest published version)
 lnpm add my-package@1.0.0
-lnpm add my-package@beta
 
 # Add without modifying package.json
 lnpm add my-package --pure

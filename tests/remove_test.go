@@ -20,7 +20,7 @@ func TestRemoveSinglePackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -65,7 +65,7 @@ func TestRemoveAllPackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -125,7 +125,7 @@ func TestRemoveRestoresOriginalVersion(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestRemoveNoOriginalVersion(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestRemoveMultipleKeepOne(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -271,7 +271,7 @@ func TestRemoveScopedPackage(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestRemoveDevDependency(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -364,7 +364,7 @@ func TestRemoveLockfileDeleted(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -401,7 +401,7 @@ func TestRemoveLockfileUpdated(t *testing.T) {
 	if err := os.Chdir(pkg1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-1: %v", err)
 	}
 
@@ -411,7 +411,7 @@ func TestRemoveLockfileUpdated(t *testing.T) {
 	if err := os.Chdir(pkg2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish pkg-2: %v", err)
 	}
 

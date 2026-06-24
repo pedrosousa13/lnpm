@@ -19,7 +19,7 @@ func TestGCOrphanedPackages(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestGCDryRun(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestGCWithAge(t *testing.T) {
 	if err := os.Chdir(pkg1Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish old-pkg: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestGCWithAge(t *testing.T) {
 	if err := os.Chdir(pkg2Dir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish new-pkg: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestGCOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestGCLinkedPackages(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestGCMultipleOrphanedPackages(t *testing.T) {
 		if err := os.Chdir(pkgDir); err != nil {
 			t.Fatalf("Failed to chdir to %s: %v", name, err)
 		}
-		if err := cli.RunPublish(false, "", false, false, false); err != nil {
+		if err := cli.RunPublish(false, false, false, false); err != nil {
 			t.Fatalf("Failed to publish %s: %v", name, err)
 		}
 	}
@@ -246,7 +246,7 @@ func TestGCMixedPackages(t *testing.T) {
 	if err := os.Chdir(orphanDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish orphan: %v", err)
 	}
 
@@ -257,7 +257,7 @@ func TestGCMixedPackages(t *testing.T) {
 	if err := os.Chdir(linkedDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish linked: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestGCStorePathCleanup(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -341,7 +341,7 @@ func TestGCPartiallyOrphanedLinks(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -402,7 +402,7 @@ func TestGCDurationFormats(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 

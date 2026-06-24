@@ -30,7 +30,7 @@ func TestPublishRejectsTraversalName(t *testing.T) {
 	}
 
 	// push=false, all=false, skipHooks=false, skipValidation=true
-	if err := cli.RunPublish(false, "", false, false, true); err == nil {
+	if err := cli.RunPublish(false, false, false, true); err == nil {
 		t.Fatal("expected publish to reject a traversal package name, got nil error")
 	}
 

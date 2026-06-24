@@ -21,12 +21,12 @@ func TestPublishDuplicateHash(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish first time: %v", err)
 	}
 
 	// Publish again with same content (should skip)
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish duplicate: %v", err)
 	}
 
@@ -45,7 +45,7 @@ func TestPublishWithPush(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -65,7 +65,7 @@ func TestPublishWithPush(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'v2';"), 0644); err != nil {
 		t.Fatalf("Failed to modify file: %v", err)
 	}
-	if err := cli.RunPublish(true, "", false, false, false); err != nil {
+	if err := cli.RunPublish(true, false, false, false); err != nil {
 		t.Fatalf("Failed to publish with push: %v", err)
 	}
 
@@ -96,19 +96,19 @@ func TestPublishConcurrentSamePackage(t *testing.T) {
 			if err := os.Chdir(pkgDir); err != nil {
 				return err
 			}
-			return cli.RunPublish(false, "", false, false, false)
+			return cli.RunPublish(false, false, false, false)
 		},
 		func() error {
 			if err := os.Chdir(pkgDir); err != nil {
 				return err
 			}
-			return cli.RunPublish(false, "", false, false, false)
+			return cli.RunPublish(false, false, false, false)
 		},
 		func() error {
 			if err := os.Chdir(pkgDir); err != nil {
 				return err
 			}
-			return cli.RunPublish(false, "", false, false, false)
+			return cli.RunPublish(false, false, false, false)
 		},
 	)
 
@@ -130,7 +130,7 @@ func TestPublishNoPackageJSON(t *testing.T) {
 	}
 
 	// Try to publish
-	err := cli.RunPublish(false, "", false, false, false)
+	err := cli.RunPublish(false, false, false, false)
 	if err == nil {
 		t.Fatal("Expected error publishing without package.json")
 	}
@@ -147,7 +147,7 @@ func TestPublishEmptyPackage(t *testing.T) {
 	}
 
 	// Publish should work (package.json counts as a file)
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish empty package: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestPublishLargePackage(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish large package: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestPublishNestedDirectories(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish nested package: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestPublishScopedPackage(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish scoped package: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func TestPublishVersionUpdate(t *testing.T) {
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish v1: %v", err)
 	}
 
@@ -269,7 +269,7 @@ func TestPublishVersionUpdate(t *testing.T) {
 	}
 
 	// Publish v2
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish v2: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func TestPublishSpecialCharacters(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -341,7 +341,7 @@ func TestPublishSymlinks(t *testing.T) {
 	}
 
 	// Publish - should handle symlinks
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish with symlinks: %v", err)
 	}
 
@@ -372,7 +372,7 @@ func TestPublishReadOnlyFiles(t *testing.T) {
 	}
 
 	// Publish - should handle read-only files
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish with readonly files: %v", err)
 	}
 
@@ -402,7 +402,7 @@ func TestPublishPreservesFileMetadata(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 

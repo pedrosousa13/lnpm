@@ -20,7 +20,7 @@ func TestStripLifecycleScriptsRemovesPrepare(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, true, false); err != nil {
+	if err := cli.RunPublish(false, false, true, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -67,7 +67,7 @@ func TestStripLifecycleScriptsPreservesOthers(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, true, false); err != nil {
+	if err := cli.RunPublish(false, false, true, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestPublishRunsPrepareBeforeStripping(t *testing.T) {
 	}
 
 	// Publish (skipHooks=false to run prepare)
-	if err := cli.RunPublish(false, "", false, false, false); err != nil {
+	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestPublishWithHuskyPrepare(t *testing.T) {
 	}
 
 	// Publish with skipHooks=true (simulates what user would do)
-	if err := cli.RunPublish(false, "", false, true, false); err != nil {
+	if err := cli.RunPublish(false, false, true, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
@@ -188,7 +188,7 @@ func TestAddedPackageHasNoLifecycleScripts(t *testing.T) {
 	}
 
 	// Publish
-	if err := cli.RunPublish(false, "", false, true, false); err != nil {
+	if err := cli.RunPublish(false, false, true, false); err != nil {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
