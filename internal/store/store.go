@@ -81,22 +81,33 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		return "", err
 	}
 
-	destPath := s.PackagePath(name, hash)
-	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), destPath)
+	finalPath := s.PackagePath(name, hash)
+	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), finalPath)
 
 	// Same hash = same content, skip if already exists (race-safe)
 	if s.Exists(name, hash) {
-		debug.Logf("store: package already exists at %s, skipping", destPath)
-		return destPath, nil
+		debug.Logf("store: package already exists at %s, skipping", finalPath)
+		return finalPath, nil
 	}
 
-	// Remove existing if present (for updates) - ignore errors from concurrent access
-	_ = os.RemoveAll(destPath)
-
-	// Create destination directory
-	if err := os.MkdirAll(destPath, 0755); err != nil {
+	// Write into a temp dir first, then atomically rename into place. This way
+	// an interrupted store never leaves a partial package that Exists() (a
+	// directory-existence check) would later treat as complete.
+	parent := filepath.Dir(finalPath)
+	if err := os.MkdirAll(parent, 0755); err != nil {
 		return "", fmt.Errorf("failed to create store directory: %w", err)
 	}
+	destPath, err := os.MkdirTemp(parent, "."+hash+".tmp-")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp store directory: %w", err)
+	}
+	// Remove the temp dir unless it is successfully committed via rename.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(destPath)
+		}
+	}()
 
 	// Determine if we can use hard links (same filesystem)
 	useHardLink := s.canUseHardLink(sourceDir)
@@ -267,7 +278,18 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		return "", fmt.Errorf("failed to strip lifecycle scripts: %w", err)
 	}
 
-	return destPath, nil
+	// Atomically move the completed package into place.
+	_ = os.RemoveAll(finalPath)
+	if err := os.Rename(destPath, finalPath); err != nil {
+		// A concurrent publish of the same hash may have already created it.
+		if s.Exists(name, hash) {
+			return finalPath, nil // temp dir cleaned up by deferred guard
+		}
+		return "", fmt.Errorf("failed to finalize store package: %w", err)
+	}
+	committed = true
+
+	return finalPath, nil
 }
 
 // Remove removes a package from the store
