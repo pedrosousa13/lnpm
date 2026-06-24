@@ -114,15 +114,10 @@ func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool) erro
 	}
 
 	fmt.Printf("Published %d/%d packages\n", successCount, len(packages))
-	return nil
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
+	if successCount < len(packages) {
+		return fmt.Errorf("%d of %d package(s) failed to publish", len(packages)-successCount, len(packages))
 	}
-	return b
+	return nil
 }
 
 // publishSingle publishes a single package

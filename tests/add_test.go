@@ -520,12 +520,13 @@ func TestAddMultipleWithPartialFailure(t *testing.T) {
 	// Add mix of existing and non-existing packages
 	err := cli.RunAddMultiple([]string{"exists-pkg", "nonexistent-pkg"}, false, false, false)
 
-	// Should not return error (partial success)
-	if err != nil {
-		t.Fatalf("Expected partial success, got error: %v", err)
+	// Partial failure must surface as a non-zero error (scriptability), while
+	// still applying the packages that did succeed.
+	if err == nil {
+		t.Fatal("Expected an error when one of the packages fails to add")
 	}
 
-	// Verify the existing package was added
+	// Verify the existing package was still added.
 	env.AssertSymlinkExists(projectDir, "exists-pkg")
 	env.AssertPackageJSON(projectDir, "exists-pkg", "file:.lnpm/exists-pkg")
 }

@@ -57,6 +57,7 @@ func RunRemove(packageName string, all bool) error {
 	linker := link.New(cwd)
 
 	// Remove each package
+	failed := 0
 	for _, name := range packagesToRemove {
 		fmt.Printf("Removing %s...\n", name)
 
@@ -66,6 +67,7 @@ func RunRemove(packageName string, all bool) error {
 		// Unlink the package
 		if err := linker.Unlink(name); err != nil {
 			fmt.Printf("  ✗ Failed to unlink: %v\n", err)
+			failed++
 			continue
 		}
 
@@ -117,6 +119,10 @@ func RunRemove(packageName string, all bool) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fmt.Printf("⚠ Install failed: %v\n", err)
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d of %d package(s) failed to remove", failed, len(packagesToRemove))
 	}
 
 	return nil

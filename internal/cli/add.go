@@ -231,6 +231,11 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 		fmt.Println("\n  💡 Run 'npm install' if you need to resolve peer dependencies")
 	}
 
+	// Exit non-zero if any package failed, so scripts can detect it.
+	if len(errors) > 0 {
+		return fmt.Errorf("%d of %d package(s) failed to add", len(errors), len(packageSpecs))
+	}
+
 	return nil
 }
 
