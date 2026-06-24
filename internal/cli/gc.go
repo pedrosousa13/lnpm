@@ -54,7 +54,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 
 		// Check for orphaned links
 		for _, link := range links {
-			proj, _ := database.GetProjectByPath(getProjectPathByID(database, link.ProjectID))
+			proj, _ := database.GetProjectByID(link.ProjectID)
 			if proj == nil {
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID: pkg.ID,

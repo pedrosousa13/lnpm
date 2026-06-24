@@ -363,6 +363,9 @@ func (db *DB) DeletePackage(id int64) error {
 		packages := tx.Bucket(bucketPackages)
 		byName := tx.Bucket(bucketPackagesByName)
 		files := tx.Bucket(bucketFiles)
+		links := tx.Bucket(bucketLinks)
+		byPackage := tx.Bucket(bucketLinksByPackage)
+		byProject := tx.Bucket(bucketLinksByProject)
 
 		// Get package name for index cleanup
 		data := packages.Get(itob(id))
@@ -373,10 +376,73 @@ func (db *DB) DeletePackage(id int64) error {
 			}
 		}
 
+		// Clean up any links referencing this package so we don't leave
+		// orphaned link rows or dangling index entries.
+		pkgKey := itob(id)
+		if linkData := byPackage.Get(pkgKey); linkData != nil {
+			var linkIDs []int64
+			_ = json.Unmarshal(linkData, &linkIDs)
+			for _, linkID := range linkIDs {
+				// Determine the project this link belonged to, then scrub the
+				// link ID from that project's index.
+				if ld := links.Get(itob(linkID)); ld != nil {
+					var l Link
+					if json.Unmarshal(ld, &l) == nil {
+						removeIDFromIndex(byProject, itob(l.ProjectID), linkID)
+					}
+				}
+				_ = links.Delete(itob(linkID))
+			}
+			_ = byPackage.Delete(pkgKey)
+		}
+
 		_ = packages.Delete(itob(id))
 		_ = files.Delete(itob(id))
 		return nil
 	})
+}
+
+// removeIDFromIndex removes id from the []int64 stored at key in bucket b,
+// deleting the key entirely when the slice becomes empty.
+func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
+	data := b.Get(key)
+	if data == nil {
+		return
+	}
+	var ids []int64
+	if json.Unmarshal(data, &ids) != nil {
+		return
+	}
+	newIDs := make([]int64, 0, len(ids))
+	for _, existing := range ids {
+		if existing != id {
+			newIDs = append(newIDs, existing)
+		}
+	}
+	if len(newIDs) > 0 {
+		newData, _ := json.Marshal(newIDs)
+		_ = b.Put(key, newData)
+	} else {
+		_ = b.Delete(key)
+	}
+}
+
+// GetProjectByID returns a project by its ID, or nil if not found.
+func (db *DB) GetProjectByID(id int64) (*Project, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var proj *Project
+	err := db.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketProjects).Get(itob(id))
+		if data == nil {
+			return nil
+		}
+		proj = &Project{}
+		return json.Unmarshal(data, proj)
+	})
+
+	return proj, err
 }
 
 // --- Project operations ---
