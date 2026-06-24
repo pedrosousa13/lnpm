@@ -32,12 +32,11 @@ my-nx-workspace/
   "private": true,
   "scripts": {
     "lnpm:pub": "lnpm publish --all",
-    "lnpm:watch": "lnpm watch --exec 'nx build'"
+    "lnpm:push": "lnpm push"
   },
   "devDependencies": {
     "nx": "latest",
-    "@nx/js": "latest",
-    
+    "@nx/js": "latest"
   }
 }
 ```
@@ -127,25 +126,26 @@ lnpm add @my-org/ui
 
 ### Development workflow
 
-**Option 1: Watch mode (recommended)**
+**Option 1: Nx watch + push (recommended)**
+
+Use Nx's own watch to rebuild on change, then push when ready:
 
 ```bash
 cd ~/projects/my-nx-workspace
 
-# Watch specific library
-lnpm watch --exec "nx build feature-auth"
+# Terminal 1: rebuild the library on change
+nx watch --projects=feature-auth -- nx build feature-auth
 
-# Or use the custom target
-lnpm watch --exec "nx run feature-auth:lnpm-push"
+# Terminal 2: push built output to linked projects
+cd libs/feature-auth
+lnpm push
 ```
 
 What happens:
 1. You edit `libs/feature-auth/src/auth.service.ts`
-2. lnpm detects the change
-3. Runs: `nx build feature-auth`
-4. Nx builds with computation caching
-5. lnpm pushes to external app
-6. App hot-reloads with changes
+2. Nx's watch rebuilds `feature-auth` with computation caching
+3. You run `lnpm push`, which links the built output to the external app
+4. The app picks up the change
 
 **Option 2: Manual push**
 
@@ -205,16 +205,14 @@ Or create a script:
 }
 ```
 
-### Watch multiple libraries
+### Iterate on multiple libraries
 
 ```bash
-# Terminal 1
-cd libs/feature-auth
-lnpm watch --exec "nx build feature-auth"
+# Rebuild several libs (optionally with nx watch), then push each
+nx run-many --target=build --projects=feature-auth,ui
 
-# Terminal 2
-cd libs/ui
-lnpm watch --exec "nx build ui"
+cd libs/feature-auth && lnpm push
+cd libs/ui && lnpm push
 ```
 
 ### Use Nx affected
@@ -250,9 +248,11 @@ lnpm publish
 cd ~/projects/host-app
 lnpm add remote-app
 
-# Watch and rebuild remote
+# Rebuild remote, then push
 cd ~/projects/my-nx-workspace
-lnpm watch --exec "nx build remote-app"
+nx build remote-app
+cd apps/remote-app
+lnpm push
 ```
 
 The host will load the updated remote module on each change.
@@ -346,14 +346,12 @@ npm run lnpm:pub
 # Link to external project
 cd ~/my-app && lnpm add @my-org/feature-auth
 
-# Watch mode (from workspace root)
-lnpm watch --exec "nx build feature-auth"
-
-# Or from lib directory
+# Build then push (from lib directory)
+nx build feature-auth
 cd libs/feature-auth
-lnpm watch --exec "nx build feature-auth"
+lnpm push
 
-# Use custom Nx target
+# Use custom Nx target (builds + pushes)
 nx run feature-auth:lnpm-push
 
 # Build affected only

@@ -84,6 +84,7 @@ lnpm push
 | `lnpm gc` | Garbage collect unused packages |
 | `lnpm retreat` | Remove all lnpm changes |
 | `lnpm config` | View/edit configuration |
+| `lnpm update` | Update lnpm to the latest version |
 | `lnpm completion` | Generate shell completions |
 
 ## Usage Examples
@@ -183,14 +184,12 @@ manage_gitignore: true
 
 # Build scripts and hooks
 hooks:
-  # Skip prepare scripts (prepare, prepublishOnly, prepack)
+  # Skip prepare scripts (prepare, prepublishOnly, prepack) on publish/push
   skip_prepare: false      # Default: false (run scripts)
-
-  # Skip post-add hook (npm install after add)
-  skip_post_add: false     # Default: false (run npm install)
 
   # Custom hooks (optional)
   pre_publish: npm run build
+  # Runs only when `lnpm add --install` is used; add does NOT install by default
   post_add: npm install
 ```
 
@@ -205,7 +204,7 @@ lnpm config --path              # Show config file path
 
 ## Build Workflows & Hooks
 
-lnpm automatically runs build scripts and dependency installation to ensure packages work correctly when linked.
+lnpm automatically runs your package's build (prepare) scripts before publishing so linked output is up to date. Dependency installation after `add` is opt-in via `--install` (see below).
 
 ### Prepare Scripts
 
@@ -233,13 +232,13 @@ lnpm push                 # Runs prepare, then pushes
 lnpm publish --skip-hooks # Skip prepare scripts
 ```
 
-### Post-Add Hook
+### Post-Add Install (opt-in)
 
-After adding a package, lnpm automatically runs `npm install` (or your package manager) to resolve peer dependencies and install linked package dependencies.
+By default, `lnpm add` does NOT run `npm install` (matching yalc). Pass `--install` to have lnpm run your package manager after adding, to resolve peer dependencies and install the linked package's dependencies.
 
 ```bash
-lnpm add my-package       # Adds package, then runs npm install
-lnpm add --skip-hooks     # Skip post-add npm install
+lnpm add my-package             # Adds package, no install (default)
+lnpm add my-package --install   # Adds package, then runs npm install
 ```
 
 ### Package Validation
@@ -311,7 +310,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 1. **Publish** — Uses `npm pack` rules to determine files, strips lifecycle scripts (`prepare`/`prepublish`), then links or copies to `~/.lnpm/store/{name}/{hash}/`
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`, updates package.json to `file:.lnpm/{package}`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
-4. **Push/Watch** — Updates store and re-links changed files
+4. **Push** — Updates store and re-links changed files
 5. **Auto .gitignore** — Optionally manages `.lnpm/` in `.gitignore` (enabled by default)
 
 **Note:** Unlike some tools, lnpm does NOT run `npm install` automatically (matches yalc). Use `--install` flag or run manually if needed.
@@ -399,6 +398,8 @@ lnpm automatically detects the best method and falls back gracefully with helpfu
 | `push` (1 project) | 100 | **146ms** | 3.8 MB |
 | `push` (5 projects) | 100 | **183ms** | 4.5 MB |
 | `publish` | 500 | **41ms** | 17 MB |
+
+> **Note:** These figures are illustrative — measured once on the machine above. The `vs yalc` and memory numbers are not reproduced by the committed `scripts/benchmark-compare.sh` (which measures wall-clock only). Run the benchmarks yourself for numbers on your hardware.
 
 Run benchmarks yourself:
 ```bash
@@ -491,4 +492,3 @@ MIT License — see [LICENSE](LICENSE) for details.
 - Inspired by [yalc](https://github.com/wclr/yalc)
 - Built with [Cobra](https://github.com/spf13/cobra) for CLI
 - Uses [bbolt](https://github.com/etcd-io/bbolt) for state storage
-- File watching via [fsnotify](https://github.com/fsnotify/fsnotify)

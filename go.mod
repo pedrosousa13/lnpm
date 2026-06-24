@@ -17,10 +17,3 @@ require (
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.4.0 // indirect
 )
-
-// Dependencies to add when network is available:
-// github.com/fatih/color v1.17.0             // Terminal colors
-// github.com/charmbracelet/lipgloss v0.13.0  // Rich terminal UI
-// github.com/fsnotify/fsnotify v1.7.0        // File watching
-// github.com/spf13/viper v1.19.0             // Configuration
-// modernc.org/sqlite v1.33.1                 // SQLite (pure Go) - swap db/db.go for SQLite version

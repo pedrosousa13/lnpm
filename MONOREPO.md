@@ -545,14 +545,14 @@ Ensure your workspace configuration is correct:
 
 ### Issue: Changes not detected
 
-Use git staging or force push:
+Stage your changes so lnpm picks them up:
 
 ```bash
-# Stage changes
+# Stage changes (no commit needed)
 git add .
 
-# Or force push
-lnpm push --force
+# Push detects staged changes
+lnpm push
 ```
 
 ### Issue: Slow push times

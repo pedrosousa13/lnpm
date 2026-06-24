@@ -34,11 +34,10 @@ my-turborepo/
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lnpm:pub": "lnpm publish --all",
-    "lnpm:dev": "lnpm watch --exec 'turbo run build --filter'"
+    "lnpm:push": "lnpm push"
   },
   "devDependencies": {
-    "turbo": "latest",
-    
+    "turbo": "latest"
   }
 }
 ```
@@ -102,26 +101,27 @@ lnpm add @my/ui
 
 ### Development workflow
 
-**Option 1: Watch mode (recommended)**
+**Option 1: Build-tool watch + push (recommended)**
+
+Run Turborepo's own watch mode to rebuild on change, then push when you're ready:
 
 ```bash
 cd ~/projects/my-turborepo
 
-# Watch and auto-rebuild on changes
-npm run lnpm:dev -- @my/ui
-# or directly:
-lnpm watch --exec "turbo run build --filter=@my/ui"
+# Terminal 1: watch and rebuild on changes
+turbo run build --filter=@my/ui --watch
+
+# Terminal 2: push built output to linked projects
+lnpm push
 ```
 
 What happens:
 1. You edit `packages/ui/src/button.tsx`
-2. lnpm detects the change
-3. Runs: `turbo run build --filter=@my/ui`
-4. Turborepo builds (using cache if possible)
-5. lnpm pushes to `~/projects/my-app/node_modules/@my/ui`
-6. Your app hot-reloads
+2. Turborepo's watch rebuilds `@my/ui` (using cache if possible)
+3. You run `lnpm push`, which links the built output to `~/projects/my-app/node_modules/@my/ui`
+4. Your app picks up the change
 
-**Option 2: Manual push**
+**Option 2: Manual build + push**
 
 ```bash
 # Make changes
@@ -159,19 +159,19 @@ turbo run build --filter=@my/ui
 turbo run build --filter=@my/ui...
 ```
 
-**2. Combine watch with Turborepo dev mode:**
+**2. Combine Turborepo watch with push:**
 
 ```bash
-# Terminal 1: Run Turborepo dev servers
-npm run dev
+# Terminal 1: rebuild on change
+turbo run build --filter=@my/ui --watch
 
-# Terminal 2: Watch and push builds
-lnpm watch --exec "turbo run build --filter=@my/ui"
+# Terminal 2: push built output when ready
+lnpm push
 ```
 
 **3. Multiple packages:**
 
-Publish all at once, watch individually:
+Publish all at once, push as you iterate:
 
 ```bash
 # Publish everything
@@ -183,9 +183,10 @@ lnpm add @my/ui
 lnpm add @my/components
 lnpm add @my/utils
 
-# Watch specific package
+# Rebuild a specific package, then push
 cd ~/projects/my-turborepo
-lnpm watch --exec "turbo run build --filter=@my/ui"
+turbo run build --filter=@my/ui
+lnpm push
 ```
 
 ## Troubleshooting
@@ -204,18 +205,16 @@ Test the build command first:
 turbo run build --filter=@my/ui
 ```
 
-Then use it in watch:
+Then run it (optionally in watch) before pushing:
 ```bash
-lnpm watch --exec "turbo run build --filter=@my/ui"
+turbo run build --filter=@my/ui --watch
 ```
 
 **Issue: Changes not pushed**
 
-Use git staging or force:
+Stage your changes so lnpm picks them up:
 ```bash
 git add .
 lnpm push
-# or
-lnpm push --force
 ```
 

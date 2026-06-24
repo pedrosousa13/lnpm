@@ -8,12 +8,13 @@
 
 ## Security Considerations
 
-### Command Execution
+### Lifecycle Scripts
 
-The `--exec` flag in `lnpm watch` allows executing arbitrary shell commands. This is intentional and similar to npm scripts. Users should:
+lnpm runs `package.json` lifecycle scripts (`prepare`, `prepublishOnly`, `prepack`) during `publish` and `push`, similar to npm. Users should:
 
-- Only use `--exec` with trusted commands
-- Be aware that commands run with the same permissions as the user
+- Only `publish`/`push` packages whose scripts they trust
+- Be aware that scripts run with the same permissions as the user
+- Use `--skip-hooks` to skip these scripts when needed
 
 ### File System Access
 
@@ -59,5 +60,5 @@ We will respond within 48 hours and work with you to understand and address the 
 
 1. **Review before publish**: Run `lnpm retreat` before publishing to npm
 2. **Trusted sources only**: Only `lnpm add` packages you've published yourself
-3. **Watch mode**: Be cautious with `--exec` commands in shared environments
+3. **Lifecycle scripts**: Be cautious publishing packages with untrusted lifecycle scripts; use `--skip-hooks` if needed
 4. **Permissions**: Keep `~/.lnpm/` permissions restricted

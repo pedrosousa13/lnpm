@@ -6,8 +6,12 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/cli"
 )
 
-// Version is set at build time via ldflags
-var Version = "dev"
+// Version, Commit, and Date are set at build time via ldflags (see .goreleaser.yaml)
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
 
 func main() {
 	cli.SetVersion(Version)
