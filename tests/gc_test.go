@@ -8,71 +8,54 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/cli"
 )
 
-// TestGCOrphanedPackages tests garbage collection of orphaned packages
-func TestGCOrphanedPackages(t *testing.T) {
-	env := setupTest(t)
+// TestGCRemovesOrphans table-drives garbage collection of orphaned (unlinked)
+// packages: a package that is published-then-removed, a never-linked package,
+// and several never-linked packages all become orphans that a plain GC run must
+// delete.
+func TestGCRemovesOrphans(t *testing.T) {
+	t.Run("after add then remove", func(t *testing.T) {
+		env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("gc-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
+		env.publishAndAdd("gc-pkg")
+		if err := cli.RunRemove("gc-pkg", false); err != nil {
+			t.Fatalf("Failed to remove package: %v", err)
+		}
+		env.AssertPackageInDatabase("gc-pkg", true) // orphaned, not yet collected
+
+		if err := cli.RunGC(false, "", false); err != nil {
+			t.Fatalf("Failed to run GC: %v", err)
+		}
+		env.AssertPackageInDatabase("gc-pkg", false)
 	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
 
-	// Create project and add package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("gc-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
+	t.Run("multiple never-linked packages", func(t *testing.T) {
+		env := setupTest(t)
 
-	// Remove the package
-	if err := cli.RunRemove("gc-pkg", false); err != nil {
-		t.Fatalf("Failed to remove package: %v", err)
-	}
+		packages := []string{"orphan-a", "orphan-b", "orphan-c"}
+		for _, name := range packages {
+			env.simplePkg(name)
+			env.AssertPackageInDatabase(name, true)
+		}
 
-	// Package is now orphaned
-	env.AssertPackageInDatabase("gc-pkg", true)
-
-	// Run GC
-	if err := cli.RunGC(false, "", false); err != nil {
-		t.Fatalf("Failed to run GC: %v", err)
-	}
-
-	// Package should be removed
-	env.AssertPackageInDatabase("gc-pkg", false)
+		if err := cli.RunGC(false, "", false); err != nil {
+			t.Fatalf("Failed to run GC: %v", err)
+		}
+		for _, name := range packages {
+			env.AssertPackageInDatabase(name, false)
+		}
+	})
 }
 
-// TestGCDryRun tests garbage collection in dry-run mode
+// TestGCDryRun tests that dry-run mode reports but does not delete.
 func TestGCDryRun(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("dryrun-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Package is orphaned (no projects linked)
+	env.simplePkg("dryrun-pkg")
 	env.AssertPackageInDatabase("dryrun-pkg", true)
 
-	// Run GC in dry-run mode
 	if err := cli.RunGC(true, "", false); err != nil {
 		t.Fatalf("Failed to run GC dry-run: %v", err)
 	}
-
-	// Package should still exist
 	env.AssertPackageInDatabase("dryrun-pkg", true)
 }
 
@@ -92,25 +75,8 @@ func TestGCWithAge(t *testing.T) {
 	env := setupTest(t)
 
 	// Create and publish two fresh, orphaned packages.
-	pkg1Dir := env.CreateTestPackage("old-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'old';",
-	})
-	if err := os.Chdir(pkg1Dir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish old-pkg: %v", err)
-	}
-
-	pkg2Dir := env.CreateTestPackage("new-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'new';",
-	})
-	if err := os.Chdir(pkg2Dir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish new-pkg: %v", err)
-	}
+	env.simplePkg("old-pkg")
+	env.simplePkg("new-pkg")
 
 	// A large threshold must PROTECT freshly published orphans: nothing older
 	// than ~100 years exists, so neither package may be removed.
@@ -130,303 +96,133 @@ func TestGCWithAge(t *testing.T) {
 	env.AssertPackageInDatabase("new-pkg", false)
 }
 
-// TestGCOrphanedLinks tests cleaning up orphaned links
+// TestGCOrphanedLinks tests that --fix-links cleans up a link whose project
+// directory has been deleted, while a package that still has a valid link
+// elsewhere is preserved.
 func TestGCOrphanedLinks(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("link-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	env.simplePkg("link-pkg")
 
-	// Create project and add package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
+	projectDir := env.newProject("test-project")
 	// Resolve to real path (Windows short names differ from os.Getwd long names)
-	resolvedProjectDir, _ := filepath.EvalSymlinks(projectDir)
-	if resolvedProjectDir != "" {
-		projectDir = resolvedProjectDir
+	if resolved, _ := filepath.EvalSymlinks(projectDir); resolved != "" {
+		projectDir = resolved
 	}
-	if err := cli.RunAdd("link-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
+	env.addPkg(projectDir, "link-pkg", false, false)
 
-	// Move out of projectDir before deleting (Windows can't remove cwd)
-	if err := os.Chdir(env.TempDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	// Remove junction/symlink first (Windows blocks RemoveAll on dirs with junctions)
+	// Move out of projectDir before deleting (Windows can't remove cwd).
+	env.chdir(env.TempDir)
+	// Remove junction/symlink first (Windows blocks RemoveAll on dirs with junctions).
 	_ = os.Remove(filepath.Join(projectDir, "node_modules", "link-pkg"))
-	// Delete the project directory (simulating removed project)
 	if err := os.RemoveAll(projectDir); err != nil {
 		t.Fatalf("Failed to remove project dir: %v", err)
 	}
+	env.AssertDatabaseLink("link-pkg", projectDir) // still recorded, now orphaned
 
-	// Link should be orphaned
-	env.AssertDatabaseLink("link-pkg", projectDir)
+	if err := cli.RunGC(false, "", true); err != nil {
+		t.Fatalf("Failed to run GC: %v", err)
+	}
+	env.AssertDatabaseNoLink("link-pkg", projectDir)
+}
 
-	// Run GC with fixLinks
+// TestGCPartiallyOrphanedLinks tests that --fix-links removes only the link to a
+// deleted project, keeping the package and its remaining valid link.
+func TestGCPartiallyOrphanedLinks(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("partial-pkg")
+
+	project1Dir := env.newProject("project-1")
+	env.addPkg(project1Dir, "partial-pkg", false, false)
+	project2Dir := env.newProject("project-2")
+	env.addPkg(project2Dir, "partial-pkg", false, false)
+
+	if err := os.RemoveAll(project1Dir); err != nil {
+		t.Fatalf("Failed to remove project-1: %v", err)
+	}
+
 	if err := cli.RunGC(false, "", true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 
-	// Orphaned link should be cleaned
-	env.AssertDatabaseNoLink("link-pkg", projectDir)
+	env.AssertPackageInDatabase("partial-pkg", true)
+	env.AssertDatabaseNoLink("partial-pkg", project1Dir)
+	env.AssertDatabaseLink("partial-pkg", project2Dir)
 }
 
-// TestGCLinkedPackages tests that GC doesn't remove linked packages
-func TestGCLinkedPackages(t *testing.T) {
+// TestGCKeepsLinkedAndCollectsOrphans tests that GC removes orphaned packages
+// while leaving linked packages (and their links) intact.
+func TestGCKeepsLinkedAndCollectsOrphans(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("linked-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create project and add package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("linked-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Package has valid link
+	// Orphaned package (never linked).
+	env.simplePkg("orphan-pkg")
+	// Linked package.
+	env.simplePkg("linked-pkg")
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "linked-pkg", false, false)
 	env.AssertDatabaseLink("linked-pkg", projectDir)
 
-	// Run GC
 	if err := cli.RunGC(false, "", false); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 
-	// Package should still exist
-	env.AssertPackageInDatabase("linked-pkg", true)
-	env.AssertDatabaseLink("linked-pkg", projectDir)
-}
-
-// TestGCMultipleOrphanedPackages tests GC with multiple orphaned packages
-func TestGCMultipleOrphanedPackages(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish multiple packages
-	packages := []string{"orphan-a", "orphan-b", "orphan-c"}
-	for _, name := range packages {
-		pkgDir := env.CreateTestPackage(name, "1.0.0", map[string]string{
-			"index.js": "module.exports = '" + name + "';",
-		})
-		if err := os.Chdir(pkgDir); err != nil {
-			t.Fatalf("Failed to chdir to %s: %v", name, err)
-		}
-		if err := cli.RunPublish(false, false, false, false); err != nil {
-			t.Fatalf("Failed to publish %s: %v", name, err)
-		}
-	}
-
-	// All packages are orphaned
-	for _, name := range packages {
-		env.AssertPackageInDatabase(name, true)
-	}
-
-	// Run GC
-	if err := cli.RunGC(false, "", false); err != nil {
-		t.Fatalf("Failed to run GC: %v", err)
-	}
-
-	// All packages should be removed
-	for _, name := range packages {
-		env.AssertPackageInDatabase(name, false)
-	}
-}
-
-// TestGCMixedPackages tests GC with both linked and orphaned packages
-func TestGCMixedPackages(t *testing.T) {
-	env := setupTest(t)
-
-	// Create orphaned package
-	orphanDir := env.CreateTestPackage("orphan-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'orphan';",
-	})
-	if err := os.Chdir(orphanDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish orphan: %v", err)
-	}
-
-	// Create linked package
-	linkedDir := env.CreateTestPackage("linked-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'linked';",
-	})
-	if err := os.Chdir(linkedDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish linked: %v", err)
-	}
-
-	// Link one package to a project
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("linked-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add linked package: %v", err)
-	}
-
-	// Run GC
-	if err := cli.RunGC(false, "", false); err != nil {
-		t.Fatalf("Failed to run GC: %v", err)
-	}
-
-	// Orphaned should be removed, linked should remain
 	env.AssertPackageInDatabase("orphan-pkg", false)
 	env.AssertPackageInDatabase("linked-pkg", true)
+	env.AssertDatabaseLink("linked-pkg", projectDir)
 }
 
-// TestGCNoPackages tests GC when no packages exist
+// TestGCNoPackages tests GC against an empty database is a safe no-op.
 func TestGCNoPackages(t *testing.T) {
 	_ = setupTest(t)
 
-	// Run GC with empty database
 	if err := cli.RunGC(false, "", false); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 }
 
-// TestGCStorePathCleanup tests that store paths are cleaned up
+// TestGCStorePathCleanup tests that an orphan's store directory is deleted by GC.
 func TestGCStorePathCleanup(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("store-pkg", "1.0.0", map[string]string{
+	env.publishPkg("store-pkg", "1.0.0", map[string]string{
 		"index.js":     "module.exports = 'test';",
 		"lib/utils.js": "exports.util = () => 'util';",
 	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
 
-	// Get package info to find store path
 	pkg, err := env.Database.GetPackageByName("store-pkg")
 	if err != nil || pkg == nil {
 		t.Fatalf("Failed to get package: %v", err)
 	}
 	storePath := pkg.StorePath
-
-	// Verify store path exists
 	if _, err := os.Stat(storePath); err != nil {
 		t.Fatalf("Store path doesn't exist: %v", err)
 	}
 
-	// Package is orphaned
-	// Run GC
 	if err := cli.RunGC(false, "", false); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
-
-	// Store path should be cleaned up
 	if _, err := os.Stat(storePath); !os.IsNotExist(err) {
 		t.Errorf("Store path still exists after GC")
 	}
 }
 
-// TestGCPartiallyOrphanedLinks tests GC with some valid and some orphaned links
-func TestGCPartiallyOrphanedLinks(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("partial-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create two projects and link to both
-	project1Dir := env.CreateTestPackage("project-1", "1.0.0", nil)
-	if err := os.Chdir(project1Dir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("partial-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add to project-1: %v", err)
-	}
-
-	project2Dir := env.CreateTestPackage("project-2", "1.0.0", nil)
-	if err := os.Chdir(project2Dir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("partial-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add to project-2: %v", err)
-	}
-
-	// Delete project-1 directory
-	if err := os.RemoveAll(project1Dir); err != nil {
-		t.Fatalf("Failed to remove project-1: %v", err)
-	}
-
-	// Run GC with fixLinks
-	if err := cli.RunGC(false, "", true); err != nil {
-		t.Fatalf("Failed to run GC: %v", err)
-	}
-
-	// Package should still exist (project-2 still linked)
-	env.AssertPackageInDatabase("partial-pkg", true)
-	// Project-1 link should be removed
-	env.AssertDatabaseNoLink("partial-pkg", project1Dir)
-	// Project-2 link should remain
-	env.AssertDatabaseLink("partial-pkg", project2Dir)
-}
-
-// TestGCInvalidDuration tests GC with invalid duration string
+// TestGCInvalidDuration tests that an invalid --older-than value errors.
 func TestGCInvalidDuration(t *testing.T) {
 	_ = setupTest(t)
 
-	// Run GC with invalid duration
-	err := cli.RunGC(false, "invalid", false)
-	if err == nil {
+	if err := cli.RunGC(false, "invalid", false); err == nil {
 		t.Fatal("Expected error with invalid duration, got nil")
 	}
 }
 
-// TestGCDurationFormats tests GC with various duration formats
+// TestGCDurationFormats tests that several valid duration formats are accepted.
 func TestGCDurationFormats(t *testing.T) {
 	env := setupTest(t)
 
-	// Create orphaned package
-	pkgDir := env.CreateTestPackage("duration-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Test various duration formats
-	durations := []string{"24h", "7d", "1w"}
-	for _, dur := range durations {
+	env.simplePkg("duration-pkg")
+	for _, dur := range []string{"24h", "7d", "1w"} {
 		if err := cli.RunGC(true, dur, false); err != nil {
 			t.Errorf("GC failed with duration %s: %v", dur, err)
 		}

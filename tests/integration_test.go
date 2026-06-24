@@ -37,40 +37,30 @@ func assertPublished(t *testing.T, env *TestEnvironment, names ...string) {
 	}
 }
 
-// TestPublishAllTurborepo tests publishing all packages in a Turborepo workspace
-func TestPublishAllTurborepo(t *testing.T) {
-	env := setupTest(t)
-	publishAllFixture(t, env, "turborepo")
-	// lnpm publishes all workspace packages, including the web app
-	assertPublished(t, env, "@turborepo-test/ui", "@turborepo-test/utils", "turborepo-web-app")
-}
+// TestPublishAllWorkspaces tests `publish --all` across every supported
+// workspace layout. Each row is a distinct workspace type whose fixture must
+// yield the expected published package names in the isolated store.
+func TestPublishAllWorkspaces(t *testing.T) {
+	cases := []struct {
+		name     string
+		fixture  string
+		expected []string
+	}{
+		// lnpm publishes all workspace packages, including the web app.
+		{"turborepo", "turborepo", []string{"@turborepo-test/ui", "@turborepo-test/utils", "turborepo-web-app"}},
+		{"pnpm", "pnpm-workspace", []string{"@pnpm-test/lib-a", "@pnpm-test/lib-b"}},
+		{"npm", "npm-workspace", []string{"@npm-test/package-a", "@npm-test/package-b"}},
+		{"yarn", "yarn-workspace", []string{"@yarn-test/library"}},
+		{"nx", "nx", []string{"@nx-test/feature-auth"}},
+	}
 
-// TestPublishAllPNPM tests publishing all packages in a PNPM workspace
-func TestPublishAllPNPM(t *testing.T) {
-	env := setupTest(t)
-	publishAllFixture(t, env, "pnpm-workspace")
-	assertPublished(t, env, "@pnpm-test/lib-a", "@pnpm-test/lib-b")
-}
-
-// TestPublishAllNPM tests publishing all packages in an NPM workspace
-func TestPublishAllNPM(t *testing.T) {
-	env := setupTest(t)
-	publishAllFixture(t, env, "npm-workspace")
-	assertPublished(t, env, "@npm-test/package-a", "@npm-test/package-b")
-}
-
-// TestPublishAllYarn tests publishing all packages in a Yarn workspace
-func TestPublishAllYarn(t *testing.T) {
-	env := setupTest(t)
-	publishAllFixture(t, env, "yarn-workspace")
-	assertPublished(t, env, "@yarn-test/library")
-}
-
-// TestPublishAllNx tests publishing all packages in an Nx workspace
-func TestPublishAllNx(t *testing.T) {
-	env := setupTest(t)
-	publishAllFixture(t, env, "nx")
-	assertPublished(t, env, "@nx-test/feature-auth")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
+			publishAllFixture(t, env, tc.fixture)
+			assertPublished(t, env, tc.expected...)
+		})
+	}
 }
 
 // TestNxAddInternalDependency tests that adding a package to an internal Nx package

@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,485 +9,219 @@ import (
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
-// TestAddBasicPackage tests adding a basic unscoped package
-func TestAddBasicPackage(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("test-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create a project and add the package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
+// TestAddVariants table-drives the core "publish then add" behaviors across the
+// scoped/unscoped and prod/dev permutations. Each row asserts the full set of
+// side effects that are common to a successful add.
+func TestAddVariants(t *testing.T) {
+	cases := []struct {
+		name    string
+		pkgName string
+		dev     bool
+	}{
+		{"unscoped prod dependency", "test-pkg", false},
+		{"scoped prod dependency", "@test-org/scoped-pkg", false},
+		{"unscoped dev dependency", "dev-pkg", true},
 	}
 
-	if err := cli.RunAdd("test-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
 
-	// Verify all expected changes
-	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), true)
-	env.AssertFilesLinked(projectDir, "test-pkg")
-	env.AssertSymlinkExists(projectDir, "test-pkg")
-	env.AssertPackageJSON(projectDir, "test-pkg", "file:.lnpm/test-pkg")
-	env.AssertLockfileExists(projectDir, true)
-	env.AssertGitignore(projectDir, ".lnpm/", true)
-	env.AssertDatabaseLink("test-pkg", projectDir)
+			env.simplePkg(tc.pkgName)
+			projectDir := env.newProject("test-project")
+			env.addPkg(projectDir, tc.pkgName, tc.dev, false)
+
+			// Common side effects of a successful add.
+			env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), true)
+			env.AssertFilesLinked(projectDir, tc.pkgName)
+			env.AssertSymlinkExists(projectDir, tc.pkgName)
+			env.AssertPackageJSON(projectDir, tc.pkgName, "file:.lnpm/"+tc.pkgName)
+			env.AssertLockfileExists(projectDir, true)
+			env.AssertGitignore(projectDir, ".lnpm/", true)
+			env.AssertDatabaseLink(tc.pkgName, projectDir)
+
+			// Scoped packages create an intermediate scope directory.
+			if filepath.Dir(tc.pkgName) != "." {
+				scope := filepath.Dir(tc.pkgName)
+				env.AssertDirectoryExists(filepath.Join(projectDir, "node_modules", scope), true)
+			}
+		})
+	}
 }
 
-// TestAddScopedPackage tests adding a scoped package (@org/name)
-func TestAddScopedPackage(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish a scoped package
-	pkgDir := env.CreateTestPackage("@test-org/scoped-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'scoped';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create a project and add the scoped package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	if err := cli.RunAdd("@test-org/scoped-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Verify scoped package structure
-	env.AssertSymlinkExists(projectDir, "@test-org/scoped-pkg")
-	env.AssertPackageJSON(projectDir, "@test-org/scoped-pkg", "file:.lnpm/@test-org/scoped-pkg")
-	env.AssertDirectoryExists(filepath.Join(projectDir, "node_modules", "@test-org"), true)
-}
-
-// TestAddDevDependency tests adding a package as dev dependency
-func TestAddDevDependency(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("dev-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'dev';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create a project and add as dev dependency
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	if err := cli.RunAdd("dev-pkg", true, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Verify it was added as dev dependency
-	env.AssertPackageJSON(projectDir, "dev-pkg", "file:.lnpm/dev-pkg")
-}
-
-// TestAddPreservesDevDependencyLocation tests that adding without --dev preserves devDependencies location
+// TestAddPreservesDevDependencyLocation tests that adding without --dev preserves
+// a package's existing devDependencies location rather than moving it to deps.
 func TestAddPreservesDevDependencyLocation(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("preserve-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'preserve';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	env.simplePkg("preserve-pkg")
 
-	// Create project with package already in devDependencies
+	// Project where preserve-pkg already lives in devDependencies.
 	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-
-	// Manually set up package.json with devDependencies
-	pkgJSONPath := filepath.Join(projectDir, "package.json")
-	pkgJSON := map[string]interface{}{
+	env.writePackageJSON(projectDir, map[string]interface{}{
 		"name":    "test-project",
 		"version": "1.0.0",
 		"devDependencies": map[string]interface{}{
 			"preserve-pkg": "^1.0.0",
 		},
-	}
-	data, _ := json.MarshalIndent(pkgJSON, "", "  ")
-	if err := os.WriteFile(pkgJSONPath, data, 0644); err != nil {
-		t.Fatalf("Failed to write package.json: %v", err)
-	}
+	})
 
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
+	// Add WITHOUT --dev: should stay in devDependencies.
+	env.addPkg(projectDir, "preserve-pkg", false, false)
 
-	// Add WITHOUT --dev flag - should preserve devDependencies location
-	if err := cli.RunAdd("preserve-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
+	result := env.storedPackageJSON(projectDir)
+	if deps, ok := result["dependencies"].(map[string]interface{}); ok && deps["preserve-pkg"] != nil {
+		t.Error("Package should NOT be in dependencies")
 	}
-
-	// Verify it stayed in devDependencies (not moved to dependencies)
-	data, _ = os.ReadFile(pkgJSONPath)
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("Failed to unmarshal package.json: %v", err)
-	}
-
-	deps := result["dependencies"]
 	devDeps := result["devDependencies"].(map[string]interface{})
-
-	if deps != nil {
-		if depsMap, ok := deps.(map[string]interface{}); ok && depsMap["preserve-pkg"] != nil {
-			t.Error("Package should NOT be in dependencies")
-		}
-	}
 	if devDeps["preserve-pkg"] != "file:.lnpm/preserve-pkg" {
 		t.Errorf("Expected preserve-pkg in devDependencies with lnpm reference, got %v", devDeps["preserve-pkg"])
 	}
 }
 
-// TestAddPureFlag tests adding with --pure flag (no package.json update)
+// TestAddPureFlag tests adding with --pure flag (no package.json update, but all
+// other linking still happens).
 func TestAddPureFlag(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("pure-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'pure';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	env.simplePkg("pure-pkg")
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "pure-pkg", false, true)
 
-	// Create a project and add with --pure flag
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	if err := cli.RunAdd("pure-pkg", false, true, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Verify package.json was NOT updated
 	env.AssertPackageJSONMissing(projectDir, "pure-pkg")
-
-	// But other changes should still happen
 	env.AssertFilesLinked(projectDir, "pure-pkg")
 	env.AssertSymlinkExists(projectDir, "pure-pkg")
 	env.AssertLockfileExists(projectDir, true)
 }
 
-// TestAddPackageNotFound tests adding a package that doesn't exist
-func TestAddPackageNotFound(t *testing.T) {
-	env := setupTest(t)
-
-	// Create a project
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	// Try to add non-existent package
-	err := cli.RunAdd("nonexistent-package", false, false, false)
-	if err == nil {
-		t.Fatal("Expected error when adding non-existent package, got nil")
-	}
-}
-
-// TestAddNoPackageJSON tests adding when no package.json exists
-func TestAddNoPackageJSON(t *testing.T) {
-	env := setupTest(t)
-
-	// Create empty directory
-	projectDir := filepath.Join(env.TempDir, "no-package-json")
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
-		t.Fatalf("Failed to create dir: %v", err)
-	}
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	// Try to add package
-	err := cli.RunAdd("some-pkg", false, false, false)
-	if err == nil {
-		t.Fatal("Expected error when no package.json exists, got nil")
-	}
-}
-
-// TestAddAlreadyAdded tests adding a package that's already added (idempotent)
-func TestAddAlreadyAdded(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("test-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
+// TestAddErrors covers the failure paths that must return a non-nil error.
+func TestAddErrors(t *testing.T) {
+	t.Run("package not found", func(t *testing.T) {
+		env := setupTest(t)
+		env.newProject("test-project")
+		if err := cli.RunAdd("nonexistent-package", false, false, false); err == nil {
+			t.Fatal("Expected error when adding non-existent package, got nil")
+		}
 	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
 
-	// Create a project and add the package twice
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
+	t.Run("no package.json", func(t *testing.T) {
+		env := setupTest(t)
+		projectDir := filepath.Join(env.TempDir, "no-package-json")
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("Failed to create dir: %v", err)
+		}
+		env.chdir(projectDir)
+		if err := cli.RunAdd("some-pkg", false, false, false); err == nil {
+			t.Fatal("Expected error when no package.json exists, got nil")
+		}
+	})
+}
 
-	if err := cli.RunAdd("test-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package first time: %v", err)
-	}
+// TestAddIdempotent tests adding a package twice leaves it correctly linked.
+func TestAddIdempotent(t *testing.T) {
+	env := setupTest(t)
 
-	if err := cli.RunAdd("test-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package second time (should be idempotent): %v", err)
-	}
+	_, projectDir := env.publishAndAdd("test-pkg")
+	// Second add should be a no-op (idempotent), not an error.
+	env.addPkg(projectDir, "test-pkg", false, false)
 
-	// Verify package is still linked correctly
 	env.AssertSymlinkExists(projectDir, "test-pkg")
 	env.AssertDatabaseLink("test-pkg", projectDir)
 }
 
-// TestAddUpdatesExisting tests updating an existing dependency
+// TestAddUpdatesExisting tests that re-adding after publishing a new version
+// relinks the updated package.
 func TestAddUpdatesExisting(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish version 1.0.0
-	pkgDir := env.CreateTestPackage("test-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'v1';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish v1: %v", err)
-	}
+	pkgDir, projectDir := env.publishAndAdd("test-pkg")
 
-	// Add to project
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("test-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add v1: %v", err)
-	}
-
-	// Publish version 2.0.0 with different content
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	// Modify package.json and file
-	if err := os.WriteFile(filepath.Join(pkgDir, "package.json"),
-		[]byte(`{"name":"test-pkg","version":"2.0.0"}`), 0644); err != nil {
-		t.Fatalf("Failed to update package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"),
-		[]byte("module.exports = 'v2';"), 0644); err != nil {
-		t.Fatalf("Failed to update index.js: %v", err)
-	}
+	// Publish v2 with new content.
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "package.json"), `{"name":"test-pkg","version":"2.0.0"}`)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
 	if err := cli.RunPublish(false, false, false, false); err != nil {
 		t.Fatalf("Failed to publish v2: %v", err)
 	}
 
-	// Add updated version to project
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("test-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add v2: %v", err)
-	}
+	env.addPkg(projectDir, "test-pkg", false, false)
 
-	// Verify updated version is linked
 	env.AssertSymlinkExists(projectDir, "test-pkg")
 	env.AssertPackageJSON(projectDir, "test-pkg", "file:.lnpm/test-pkg")
 }
 
-// TestAddConcurrentSameProject tests concurrent adds to same project
+// TestAddConcurrentSameProject tests concurrent adds to same project.
 func TestAddConcurrentSameProject(t *testing.T) {
 	t.Skip("Skipping: concurrent package.json writes cause race conditions, not realistic usage")
-	// Don't use t.Parallel() - this test controls its own concurrency
 	env := setupTest(t)
 
-	// Create and publish multiple packages
 	packages := []string{"pkg-a", "pkg-b", "pkg-c"}
 	for _, name := range packages {
-		pkgDir := env.CreateTestPackage(name, "1.0.0", map[string]string{
-			"index.js": "module.exports = '" + name + "';",
-		})
-		if err := os.Chdir(pkgDir); err != nil {
-			t.Fatalf("Failed to chdir: %v", err)
-		}
-		if err := cli.RunPublish(false, false, false, false); err != nil {
-			t.Fatalf("Failed to publish %s: %v", name, err)
-		}
+		env.simplePkg(name)
 	}
-
-	// Create a project
 	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
 
-	// Add packages concurrently
 	RunConcurrently(t,
-		func() error {
-			if err := os.Chdir(projectDir); err != nil {
-				return err
-			}
-			return cli.RunAdd("pkg-a", false, false, false)
-		},
-		func() error {
-			if err := os.Chdir(projectDir); err != nil {
-				return err
-			}
-			return cli.RunAdd("pkg-b", false, false, false)
-		},
-		func() error {
-			if err := os.Chdir(projectDir); err != nil {
-				return err
-			}
-			return cli.RunAdd("pkg-c", false, false, false)
-		},
+		func() error { _ = os.Chdir(projectDir); return cli.RunAdd("pkg-a", false, false, false) },
+		func() error { _ = os.Chdir(projectDir); return cli.RunAdd("pkg-b", false, false, false) },
+		func() error { _ = os.Chdir(projectDir); return cli.RunAdd("pkg-c", false, false, false) },
 	)
 
-	// Verify all packages were added
 	for _, name := range packages {
 		env.AssertSymlinkExists(projectDir, name)
 		env.AssertDatabaseLink(name, projectDir)
 	}
 }
 
-// TestAddConcurrentDifferentProjects tests concurrent adds to different projects
+// TestAddConcurrentDifferentProjects tests concurrent adds to different projects.
 func TestAddConcurrentDifferentProjects(t *testing.T) {
 	t.Skip("Skipping: os.Chdir is not goroutine-safe, test creates artificial race condition")
-	// Don't use t.Parallel() - this test controls its own concurrency
 	env := setupTest(t)
 
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("shared-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'shared';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create multiple projects
+	env.simplePkg("shared-pkg")
 	project1 := env.CreateTestPackage("project-1", "1.0.0", nil)
 	project2 := env.CreateTestPackage("project-2", "1.0.0", nil)
 	project3 := env.CreateTestPackage("project-3", "1.0.0", nil)
 
-	// Add package to all projects concurrently
 	RunConcurrently(t,
-		func() error {
-			if err := os.Chdir(project1); err != nil {
-				return err
-			}
-			return cli.RunAdd("shared-pkg", false, false, false)
-		},
-		func() error {
-			if err := os.Chdir(project2); err != nil {
-				return err
-			}
-			return cli.RunAdd("shared-pkg", false, false, false)
-		},
-		func() error {
-			if err := os.Chdir(project3); err != nil {
-				return err
-			}
-			return cli.RunAdd("shared-pkg", false, false, false)
-		},
+		func() error { _ = os.Chdir(project1); return cli.RunAdd("shared-pkg", false, false, false) },
+		func() error { _ = os.Chdir(project2); return cli.RunAdd("shared-pkg", false, false, false) },
+		func() error { _ = os.Chdir(project3); return cli.RunAdd("shared-pkg", false, false, false) },
 	)
 
-	// Verify package was added to all projects
 	env.AssertDatabaseLink("shared-pkg", project1)
 	env.AssertDatabaseLink("shared-pkg", project2)
 	env.AssertDatabaseLink("shared-pkg", project3)
 }
 
-// TestAddWithNPMWorkspace tests adding to npm workspace project
+// TestAddWithNPMWorkspace tests adding to a package inside an npm workspace.
 func TestAddWithNPMWorkspace(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("workspace-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'workspace';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	env.simplePkg("workspace-pkg")
 
-	// Copy npm workspace fixture
 	workspaceDir := env.CopyFixture("npm-workspace")
 	packageADir := filepath.Join(workspaceDir, "packages", "package-a")
+	env.addPkg(packageADir, "workspace-pkg", false, false)
 
-	if err := os.Chdir(packageADir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	if err := cli.RunAdd("workspace-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add to workspace package: %v", err)
-	}
-
-	// Verify package was added to the workspace package
 	env.AssertSymlinkExists(packageADir, "workspace-pkg")
 	env.AssertPackageJSON(packageADir, "workspace-pkg", "file:.lnpm/workspace-pkg")
 }
 
-// TestAddMultiplePackages tests adding multiple packages in one command
+// TestAddMultiplePackages tests adding multiple packages in one command.
 func TestAddMultiplePackages(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish multiple packages
 	packages := []string{"multi-pkg-a", "multi-pkg-b", "multi-pkg-c"}
 	for _, name := range packages {
-		pkgDir := env.CreateTestPackage(name, "1.0.0", map[string]string{
-			"index.js": "module.exports = '" + name + "';",
-		})
-		if err := os.Chdir(pkgDir); err != nil {
-			t.Fatalf("Failed to chdir: %v", err)
-		}
-		if err := cli.RunPublish(false, false, false, false); err != nil {
-			t.Fatalf("Failed to publish %s: %v", name, err)
-		}
+		env.simplePkg(name)
 	}
 
-	// Create a project
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	// Add all packages at once
+	projectDir := env.newProject("test-project")
 	if err := cli.RunAddMultiple(packages, false, false, false); err != nil {
 		t.Fatalf("Failed to add multiple packages: %v", err)
 	}
 
-	// Verify all packages were added
 	for _, name := range packages {
 		env.AssertSymlinkExists(projectDir, name)
 		env.AssertPackageJSON(projectDir, name, "file:.lnpm/"+name)
@@ -496,85 +229,44 @@ func TestAddMultiplePackages(t *testing.T) {
 	}
 }
 
-// TestAddMultipleWithPartialFailure tests adding multiple packages where some fail
+// TestAddMultipleWithPartialFailure tests that a partial failure surfaces a
+// non-zero error while still applying the packages that succeeded.
 func TestAddMultipleWithPartialFailure(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish only one package
-	pkgDir := env.CreateTestPackage("exists-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'exists';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	env.simplePkg("exists-pkg")
+	projectDir := env.newProject("test-project")
 
-	// Create a project
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	// Add mix of existing and non-existing packages
 	err := cli.RunAddMultiple([]string{"exists-pkg", "nonexistent-pkg"}, false, false, false)
-
-	// Partial failure must surface as a non-zero error (scriptability), while
-	// still applying the packages that did succeed.
 	if err == nil {
 		t.Fatal("Expected an error when one of the packages fails to add")
 	}
 
-	// Verify the existing package was still added.
 	env.AssertSymlinkExists(projectDir, "exists-pkg")
 	env.AssertPackageJSON(projectDir, "exists-pkg", "file:.lnpm/exists-pkg")
 }
 
-// TestAddLockfileContents tests that lockfile contains correct information
+// TestAddLockfileContents tests that the lockfile records version, hash and source.
 func TestAddLockfileContents(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a test package
-	pkgDir := env.CreateTestPackage("lock-pkg", "1.5.0", map[string]string{
+	env.publishPkg("lock-pkg", "1.5.0", map[string]string{
 		"index.js": "module.exports = 'lock';",
 	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "lock-pkg", false, false)
 
-	// Create a project and add the package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-
-	if err := cli.RunAdd("lock-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Verify lockfile contents
 	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
-		if !lock.Has("lock-pkg") {
-			t.Error("Expected lock-pkg in lockfile")
-		}
-
 		pkg, ok := lock.Get("lock-pkg")
 		if !ok {
-			t.Fatal("Expected to get lock-pkg from lockfile")
+			t.Fatal("Expected lock-pkg in lockfile")
 		}
-
 		if pkg.Version != "1.5.0" {
 			t.Errorf("Expected version 1.5.0, got %s", pkg.Version)
 		}
-
 		if pkg.Hash == "" {
 			t.Error("Expected hash to be set")
 		}
-
 		if pkg.Source == "" {
 			t.Error("Expected source to be set")
 		}
@@ -587,20 +279,10 @@ func TestAddLockfileContents(t *testing.T) {
 func TestAddByVersion(t *testing.T) {
 	env := setupTest(t)
 
-	pkgDir := env.CreateTestPackage("ver-pkg", "1.0.0", map[string]string{
+	env.publishPkg("ver-pkg", "1.0.0", map[string]string{
 		"index.js": "module.exports = 'v1';",
 	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-
-	projectDir := env.CreateTestPackage("ver-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	projectDir := env.newProject("ver-project")
 
 	// Matching version resolves.
 	if err := cli.RunAdd("ver-pkg@1.0.0", false, false, false); err != nil {

@@ -4,86 +4,82 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
 )
 
-// TestPushBasic tests basic push functionality
-func TestPushBasic(t *testing.T) {
-	env := setupTest(t)
+// TestPushPropagatesChanges table-drives the "publish, add, modify source, push,
+// assert the linked project saw the change" flow across a few modification
+// shapes: a plain content edit, a version bump, and a newly-added file. They all
+// share one assertion shape — the linked file in .lnpm reflects the change.
+func TestPushPropagatesChanges(t *testing.T) {
+	cases := []struct {
+		name string
+		// mutate applies the source change in pkgDir and returns the
+		// (relativePath, expectedContent) the linked project must end up with.
+		mutate func(env *TestEnvironment, pkgDir string) (rel, want string)
+	}{
+		{
+			name: "content edit",
+			mutate: func(env *TestEnvironment, pkgDir string) (string, string) {
+				env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+				return "index.js", "module.exports = 'v2';"
+			},
+		},
+		{
+			name: "version bump with content edit",
+			mutate: func(env *TestEnvironment, pkgDir string) (string, string) {
+				env.writeFile(filepath.Join(pkgDir, "package.json"), `{"name":"push-pkg","version":"2.0.0"}`)
+				env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+				return "index.js", "module.exports = 'v2';"
+			},
+		},
+		{
+			name: "new file added",
+			mutate: func(env *TestEnvironment, pkgDir string) (string, string) {
+				libDir := filepath.Join(pkgDir, "lib")
+				if err := os.MkdirAll(libDir, 0755); err != nil {
+					env.t.Fatalf("Failed to create lib dir: %v", err)
+				}
+				env.writeFile(filepath.Join(libDir, "utils.js"), "exports.util = () => 'util';")
+				return filepath.Join("lib", "utils.js"), "exports.util = () => 'util';"
+			},
+		},
+	}
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("push-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'v1';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
 
-	// Create a project and add the package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("push-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
+			pkgDir, projectDir := env.publishAndAdd("push-pkg")
 
-	// Modify package
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'v2';"), 0644); err != nil {
-		t.Fatalf("Failed to modify file: %v", err)
-	}
+			env.chdir(pkgDir)
+			rel, want := tc.mutate(env, pkgDir)
 
-	// Push changes
-	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to push: %v", err)
-	}
-
-	// Verify package was updated in project
-	linkedFile := filepath.Join(projectDir, ".lnpm", "push-pkg", "index.js")
-	content, err := os.ReadFile(linkedFile)
-	if err != nil {
-		t.Fatalf("Failed to read linked file: %v", err)
-	}
-	if string(content) != "module.exports = 'v2';" {
-		t.Errorf("Expected updated content, got %s", string(content))
+			if err := cli.RunPush(false); err != nil {
+				t.Fatalf("Failed to push: %v", err)
+			}
+			env.AssertLinkedFileContent(projectDir, "push-pkg", rel, want)
+		})
 	}
 }
 
-// TestPushNoChanges tests push when no changes exist
+// TestPushNoChanges tests push when no changes exist leaves the package's
+// version and content hash untouched.
 func TestPushNoChanges(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("nochange-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	env.simplePkg("nochange-pkg")
 
-	// Capture state before the no-op push
 	pkgBefore, err := env.Database.GetPackageByName("nochange-pkg")
 	if err != nil || pkgBefore == nil {
 		t.Fatalf("Failed to get package before push: %v", err)
 	}
 
-	// Push without changes (should be noop)
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
 
-	// Package state must be unchanged: same version and same content hash
 	pkgAfter, err := env.Database.GetPackageByName("nochange-pkg")
 	if err != nil || pkgAfter == nil {
 		t.Fatalf("Failed to get package after push: %v", err)
@@ -103,42 +99,19 @@ func TestPushNoChanges(t *testing.T) {
 func TestPushIdempotentNoChange(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("idempotent-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	pkgDir, projectDir := env.publishAndAdd("idempotent-pkg")
 
-	// Create a project and add the package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("idempotent-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Capture the content hash before re-pushing
 	pkgBefore, err := env.Database.GetPackageByName("idempotent-pkg")
 	if err != nil || pkgBefore == nil {
 		t.Fatalf("Failed to get package before push: %v", err)
 	}
 	hashBefore := pkgBefore.ContentHash
 
-	// Push with no changes
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
+	env.chdir(pkgDir)
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
 
-	// Content hash must be unchanged (nothing was modified)
 	pkgAfter, err := env.Database.GetPackageByName("idempotent-pkg")
 	if err != nil || pkgAfter == nil {
 		t.Fatalf("Failed to get package after push: %v", err)
@@ -148,178 +121,68 @@ func TestPushIdempotentNoChange(t *testing.T) {
 			pkgAfter.ContentHash, hashBefore)
 	}
 
-	// Linked project must still have the original, intact content
-	linkedFile := filepath.Join(projectDir, ".lnpm", "idempotent-pkg", "index.js")
-	content, err := os.ReadFile(linkedFile)
-	if err != nil {
-		t.Fatalf("Failed to read linked file: %v", err)
-	}
-	if string(content) != "module.exports = 'test';" {
-		t.Errorf("Expected content to be intact after no-op push, got %s", string(content))
-	}
+	env.AssertLinkedFileContent(projectDir, "idempotent-pkg", "index.js", "module.exports = 'idempotent-pkg';")
 }
 
-// TestPushMultipleProjects tests pushing to multiple linked projects
+// TestPushMultipleProjects tests pushing a change to multiple linked projects.
 func TestPushMultipleProjects(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("shared-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'v1';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	pkgDir := env.simplePkg("shared-pkg")
 
-	// Create multiple projects and add package to each
 	projects := []string{"project-1", "project-2", "project-3"}
 	projectDirs := make(map[string]string)
 	for _, name := range projects {
-		projectDir := env.CreateTestPackage(name, "1.0.0", nil)
+		projectDir := env.newProject(name)
 		projectDirs[name] = projectDir
-		if err := os.Chdir(projectDir); err != nil {
-			t.Fatalf("Failed to chdir to %s: %v", name, err)
-		}
-		if err := cli.RunAdd("shared-pkg", false, false, false); err != nil {
-			t.Fatalf("Failed to add package to %s: %v", name, err)
-		}
+		env.addPkg(projectDir, "shared-pkg", false, false)
 	}
 
-	// Modify package
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'v2';"), 0644); err != nil {
-		t.Fatalf("Failed to modify file: %v", err)
-	}
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
 
-	// Push to all projects
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
 
-	// Verify all projects received update
-	for name, dir := range projectDirs {
-		linkedFile := filepath.Join(dir, ".lnpm", "shared-pkg", "index.js")
-		content, err := os.ReadFile(linkedFile)
-		if err != nil {
-			t.Errorf("Failed to read linked file in %s: %v", name, err)
-			continue
-		}
-		if string(content) != "module.exports = 'v2';" {
-			t.Errorf("Project %s: expected updated content, got %s", name, string(content))
-		}
+	for _, dir := range projectDirs {
+		env.AssertLinkedFileContent(dir, "shared-pkg", "index.js", "module.exports = 'v2';")
 	}
 }
 
-// TestPushUnpublishedPackage tests pushing a package that hasn't been published yet
+// TestPushUnpublishedPackage tests that pushing an unpublished package publishes it.
 func TestPushUnpublishedPackage(t *testing.T) {
 	env := setupTest(t)
 
-	// Create package but don't publish
 	pkgDir := env.CreateTestPackage("unpublished-pkg", "1.0.0", map[string]string{
 		"index.js": "module.exports = 'test';",
 	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
+	env.chdir(pkgDir)
 
-	// Push should publish it
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push unpublished package: %v", err)
 	}
-
-	// Verify package is now in database
 	env.AssertPackageInDatabase("unpublished-pkg", true)
 }
 
-// TestPushVersionUpdate tests pushing with version change
-func TestPushVersionUpdate(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish v1.0.0
-	pkgDir := env.CreateTestPackage("version-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'v1';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish v1: %v", err)
-	}
-
-	// Create project and add package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("version-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Update version to 2.0.0
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	pkgJSONPath := filepath.Join(pkgDir, "package.json")
-	if err := os.WriteFile(pkgJSONPath, []byte(`{"name":"version-pkg","version":"2.0.0"}`), 0644); err != nil {
-		t.Fatalf("Failed to update version: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'v2';"), 0644); err != nil {
-		t.Fatalf("Failed to modify file: %v", err)
-	}
-
-	// Push new version
-	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to push v2: %v", err)
-	}
-
-	// Verify project has new version
-	linkedFile := filepath.Join(projectDir, ".lnpm", "version-pkg", "index.js")
-	content, err := os.ReadFile(linkedFile)
-	if err != nil {
-		t.Fatalf("Failed to read linked file: %v", err)
-	}
-	if string(content) != "module.exports = 'v2';" {
-		t.Errorf("Expected v2 content, got %s", string(content))
-	}
-}
-
-// TestPushNoLinkedProjects tests pushing when no projects are linked
+// TestPushNoLinkedProjects tests that pushing a modified package with no linked
+// projects still updates the store (content hash changes).
 func TestPushNoLinkedProjects(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("standalone-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	pkgDir := env.simplePkg("standalone-pkg")
 
-	// Capture content hash before modification
 	pkgBefore, err := env.Database.GetPackageByName("standalone-pkg")
 	if err != nil || pkgBefore == nil {
 		t.Fatalf("Failed to get package before push: %v", err)
 	}
 	hashBefore := pkgBefore.ContentHash
 
-	// Modify and push without any linked projects
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'updated';"), 0644); err != nil {
-		t.Fatalf("Failed to modify file: %v", err)
-	}
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'updated';")
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
 
-	// Even with no linked projects, the store must reflect the modification:
-	// the content hash should have changed.
 	pkgAfter, err := env.Database.GetPackageByName("standalone-pkg")
 	if err != nil || pkgAfter == nil {
 		t.Fatalf("Failed to get package after push: %v", err)
@@ -336,40 +199,19 @@ func TestPushNoLinkedProjects(t *testing.T) {
 func TestPushConcurrentSafe(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("concurrent-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'v1';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
+	pkgDir := env.simplePkg("concurrent-pkg")
 
-	// Create multiple projects so the push fans out across several goroutines
 	const numProjects = 5
 	projectDirs := make([]string, 0, numProjects)
 	for i := 0; i < numProjects; i++ {
-		projectDir := env.CreateTestPackage("project-"+string(rune('a'+i)), "1.0.0", nil)
+		projectDir := env.newProject("project-" + string(rune('a'+i)))
 		projectDirs = append(projectDirs, projectDir)
-		if err := os.Chdir(projectDir); err != nil {
-			t.Fatalf("Failed to chdir: %v", err)
-		}
-		if err := cli.RunAdd("concurrent-pkg", false, false, false); err != nil {
-			t.Fatalf("Failed to add package: %v", err)
-		}
+		env.addPkg(projectDir, "concurrent-pkg", false, false)
 	}
 
-	// Modify package
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'v2';"), 0644); err != nil {
-		t.Fatalf("Failed to modify file: %v", err)
-	}
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
 
-	// Push fans out to all projects concurrently; must be race-free.
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
@@ -377,111 +219,6 @@ func TestPushConcurrentSafe(t *testing.T) {
 	// Every project must have received the update — proves the concurrent
 	// fan-out didn't drop or corrupt any link.
 	for _, dir := range projectDirs {
-		linkedFile := filepath.Join(dir, ".lnpm", "concurrent-pkg", "index.js")
-		content, err := os.ReadFile(linkedFile)
-		if err != nil {
-			t.Errorf("Failed to read linked file in %s: %v", dir, err)
-			continue
-		}
-		if string(content) != "module.exports = 'v2';" {
-			t.Errorf("Project %s: expected updated content, got %s", dir, string(content))
-		}
-	}
-}
-
-// TestPushWithAddedFiles tests pushing when new files are added
-func TestPushWithAddedFiles(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish initial version
-	pkgDir := env.CreateTestPackage("addfiles-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'test';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create project and add package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("addfiles-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Add new files to package
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	libDir := filepath.Join(pkgDir, "lib")
-	if err := os.MkdirAll(libDir, 0755); err != nil {
-		t.Fatalf("Failed to create lib dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(libDir, "utils.js"), []byte("exports.util = () => 'util';"), 0644); err != nil {
-		t.Fatalf("Failed to write new file: %v", err)
-	}
-
-	// Push with new files
-	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to push: %v", err)
-	}
-
-	// Verify new file exists in project
-	linkedFile := filepath.Join(projectDir, ".lnpm", "addfiles-pkg", "lib", "utils.js")
-	if _, err := os.Stat(linkedFile); err != nil {
-		t.Errorf("New file not found in linked project: %v", err)
-	}
-}
-
-// TestPushAfterDelay tests that push detects changes after a time delay
-func TestPushAfterDelay(t *testing.T) {
-	env := setupTest(t)
-
-	// Create and publish a package
-	pkgDir := env.CreateTestPackage("delay-pkg", "1.0.0", map[string]string{
-		"index.js": "module.exports = 'v1';",
-	})
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		t.Fatalf("Failed to publish: %v", err)
-	}
-
-	// Create project and add package
-	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
-	if err := os.Chdir(projectDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := cli.RunAdd("delay-pkg", false, false, false); err != nil {
-		t.Fatalf("Failed to add package: %v", err)
-	}
-
-	// Wait a bit, then modify
-	time.Sleep(100 * time.Millisecond)
-	if err := os.Chdir(pkgDir); err != nil {
-		t.Fatalf("Failed to chdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'v2';"), 0644); err != nil {
-		t.Fatalf("Failed to modify file: %v", err)
-	}
-
-	// Push should detect changes
-	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to push: %v", err)
-	}
-
-	// Verify update was pushed
-	linkedFile := filepath.Join(projectDir, ".lnpm", "delay-pkg", "index.js")
-	content, err := os.ReadFile(linkedFile)
-	if err != nil {
-		t.Fatalf("Failed to read linked file: %v", err)
-	}
-	if string(content) != "module.exports = 'v2';" {
-		t.Errorf("Expected updated content, got %s", string(content))
+		env.AssertLinkedFileContent(dir, "concurrent-pkg", "index.js", "module.exports = 'v2';")
 	}
 }
