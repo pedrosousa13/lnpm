@@ -79,9 +79,9 @@ lnpm push
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm push` | Push changes to all linked projects |
 | `lnpm status` | Show current project's links |
-| `lnpm list` | List packages in store |
+| `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
 | `lnpm doctor` | Diagnose issues |
-| `lnpm gc` | Garbage collect unused packages |
+| `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`) |
 | `lnpm retreat` | Remove all lnpm changes |
 | `lnpm config` | View/edit configuration |
 | `lnpm update` | Update lnpm to the latest version |
@@ -188,7 +188,8 @@ hooks:
   skip_prepare: false      # Default: false (run scripts)
 
   # Custom hooks (optional)
-  pre_publish: npm run build
+  pre_publish: npm run build    # Runs before publish/push packs files
+  post_publish: echo done       # Runs after publish/push completes
   # Runs only when `lnpm add --install` is used; add does NOT install by default
   post_add: npm install
 ```
@@ -200,7 +201,10 @@ lnpm config                     # Show all
 lnpm config store_path          # Get value
 lnpm config store_path /data    # Set value
 lnpm config --path              # Show config file path
+lnpm config --edit              # Open config file in $EDITOR
 ```
+
+Environment overrides: `LNPM_STORE` (store location, wins over `store_path`), `LNPM_CONFIG` (config file path), `LNPM_DEBUG` (debug logging).
 
 ## Build Workflows & Hooks
 
@@ -313,7 +317,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 4. **Push** — Updates store and re-links changed files
 5. **Auto .gitignore** — Optionally manages `.lnpm/` in `.gitignore` (enabled by default)
 
-**Note:** Unlike some tools, lnpm does NOT run `npm install` automatically (matches yalc). Use `--install` flag or run manually if needed.
+**Note:** `lnpm add` does NOT run `npm install` automatically (matches yalc) — pass `--install` or run it yourself if you need to resolve peer dependencies. `lnpm remove`, however, runs your package manager's install afterward to restore the removed dependency.
 
 ```
 Source Package          Store                    Project
