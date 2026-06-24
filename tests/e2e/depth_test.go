@@ -219,3 +219,42 @@ func TestMultipleLibsOneApp(t *testing.T) {
 		t.Fatalf("expected node to resolve both libs to \"a-v1|b-v1\", got %q", got)
 	}
 }
+
+// TestTransitiveLibResolution proves a linked lib can require() another linked
+// lib: lib-a does require("lib-b"). Both are added to the app, so node resolves
+// lib-b by walking up from lib-a's realpath into the app's node_modules. A push
+// to lib-b must also reach lib-a's consumers transitively.
+func TestTransitiveLibResolution(t *testing.T) {
+	t.Parallel()
+	if !nodeAvailable {
+		t.Skip("node not available; skipping real-resolution e2e test")
+	}
+
+	const pkgA, pkgB = "trans-lib-a", "trans-lib-b"
+	libB := makePkgDir(t, pkgB, `module.exports = "b-v1";`+"\n")
+	libA := makePkgDir(t, pkgA, `module.exports = "a-v1:" + require(`+jsString(pkgB)+`);`+"\n")
+	app := makeAppDir(t, "trans-app")
+	store := newStore(t)
+
+	runLNPM(t, store, libB, "publish")
+	runLNPM(t, store, libA, "publish")
+	runLNPM(t, store, app, "add", pkgA, pkgB)
+
+	for _, pkg := range []string{pkgA, pkgB} {
+		assertSymlink(t, filepath.Join(app, "node_modules", pkg))
+	}
+
+	// require(lib-a) loads lib-a, which in turn require()s lib-b — proving
+	// transitive resolution through the app's node_modules.
+	script := requireScript(pkgA)
+	if got := runNode(t, app, script); got != "a-v1:b-v1" {
+		t.Fatalf("expected transitive resolve to \"a-v1:b-v1\", got %q", got)
+	}
+
+	// A push to the transitive dep must reach lib-a's consumer too.
+	writeFile(t, filepath.Join(libB, "index.js"), `module.exports = "b-v2";`+"\n")
+	runLNPM(t, store, libB, "push")
+	if got := runNode(t, app, script); got != "a-v1:b-v2" {
+		t.Fatalf("after pushing lib-b, expected \"a-v1:b-v2\", got %q", got)
+	}
+}
