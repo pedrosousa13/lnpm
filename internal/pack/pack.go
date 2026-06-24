@@ -87,20 +87,6 @@ var defaultExcludes = []string{
 
 // Pack determines which files should be included in a package publish
 func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
-	return PackIncremental(packageDir, nil)
-}
-
-// CachedFile holds previous file state for incremental packing
-type CachedFile struct {
-	RelPath     string
-	Size        int64
-	ModTime     int64
-	ContentHash string
-	Mode        os.FileMode
-}
-
-// PackIncremental packs with optional cached state to skip rehashing unchanged files
-func PackIncremental(packageDir string, cache map[string]*CachedFile) (*PackageJSON, []*FileInfo, error) {
 	debug.Logf("pack: scanning %s", packageDir)
 	// Read package.json
 	pkgJSON, err := readPackageJSON(packageDir)
@@ -110,7 +96,7 @@ func PackIncremental(packageDir string, cache map[string]*CachedFile) (*PackageJ
 	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
 	// Collect files using custom filtering
-	files, err := collectFilesIncremental(packageDir, pkgJSON.Files, cache)
+	files, err := collectFiles(packageDir, pkgJSON.Files)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -149,12 +135,10 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	return &pkg, nil
 }
 
-// collectFilesIncremental walks directory with optional cache for skipping unchanged files
-func collectFilesIncremental(packageDir string, filesField []string, cache map[string]*CachedFile) ([]*FileInfo, error) {
+// collectFiles walks directory and returns files to include in a package
+func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 	var filesToHash []*FileInfo
-	var filesFromCache []*FileInfo
 	fileCount := 0
-	cacheHits := 0
 
 	// Load .npmignore or .gitignore patterns
 	ignorePatterns := loadIgnorePatterns(packageDir)
@@ -163,7 +147,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 	// If files field is specified, use whitelist mode
 	useWhitelist := len(filesField) > 0
 
-	// First pass: collect all files and check cache
+	// First pass: collect all files
 	err := filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -216,34 +200,13 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 			fmt.Printf("\r  Scanning... %d files", fileCount)
 		}
 
-		// Check cache - skip hashing if size+mtime unchanged
-		mtime := info.ModTime().UnixNano()
-		size := info.Size()
-		if cache != nil {
-			if cached, ok := cache[relPath]; ok {
-				if cached.Size == size && cached.ModTime == mtime {
-					// File unchanged, reuse cached hash
-					cacheHits++
-					filesFromCache = append(filesFromCache, &FileInfo{
-						Path:        path,
-						RelPath:     relPath,
-						Size:        size,
-						Mode:        info.Mode(),
-						ContentHash: cached.ContentHash,
-						ModTime:     mtime,
-					})
-					return nil
-				}
-			}
-		}
-
 		// Need to hash this file
 		filesToHash = append(filesToHash, &FileInfo{
 			Path:    path,
 			RelPath: relPath,
-			Size:    size,
+			Size:    info.Size(),
 			Mode:    info.Mode(),
-			ModTime: mtime,
+			ModTime: info.ModTime().UnixNano(),
 		})
 
 		return nil
@@ -251,9 +214,6 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 
 	if fileCount >= 1000 {
 		fmt.Printf("\r                                        \r") // Clear progress line
-	}
-	if cache != nil && cacheHits > 0 {
-		debug.Logf("pack: cache hits %d/%d files (%.0f%%)", cacheHits, fileCount, float64(cacheHits)/float64(fileCount)*100)
 	}
 
 	if err != nil {
@@ -304,12 +264,7 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 		}
 	}
 
-	// Combine results
-	allFiles := make([]*FileInfo, 0, len(filesFromCache)+len(filesToHash))
-	allFiles = append(allFiles, filesFromCache...)
-	allFiles = append(allFiles, filesToHash...)
-
-	return allFiles, nil
+	return filesToHash, nil
 }
 
 // loadIgnorePatterns reads .npmignore or .gitignore
@@ -502,89 +457,6 @@ type FileEntryData struct {
 // ReadPackageJSON reads and returns just the package.json without scanning files
 func ReadPackageJSON(dir string) (*PackageJSON, error) {
 	return readPackageJSON(dir)
-}
-
-// HasFileChanges quickly checks if any source files are newer than stored versions
-// Uses modification time comparison to avoid full file hashing
-func HasFileChanges(packageDir string, storedFiles []*FileEntry) bool {
-	// Build a map of stored files for quick lookup
-	storedMap := make(map[string]*FileEntry, len(storedFiles))
-	for _, f := range storedFiles {
-		storedMap[f.RelativePath] = f
-	}
-
-	// Check for modified or new files
-	hasChanges := false
-	_ = filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(packageDir, path)
-		if err != nil {
-			return nil
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		// Check if this is a file we would include (quick check)
-		if shouldIgnore(relPath) {
-			return nil
-		}
-
-		stored, exists := storedMap[relPath]
-		if !exists {
-			// New file detected
-			debug.Logf("pack: new file detected: %s", relPath)
-			hasChanges = true
-			return filepath.SkipAll
-		}
-
-		// Check if modified (size or mtime changed)
-		modTime := info.ModTime().UnixNano()
-		if info.Size() != stored.Size || modTime > stored.ModTime {
-			debug.Logf("pack: file changed: %s (size: %d->%d, mtime: %d->%d)",
-				relPath, stored.Size, info.Size(), stored.ModTime, modTime)
-			hasChanges = true
-			return filepath.SkipAll
-		}
-
-		return nil
-	})
-
-	// Check for deleted files
-	if !hasChanges {
-		for relPath := range storedMap {
-			fullPath := filepath.Join(packageDir, filepath.FromSlash(relPath))
-			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				debug.Logf("pack: file deleted: %s", relPath)
-				hasChanges = true
-				break
-			}
-		}
-	}
-
-	return hasChanges
-}
-
-// FileEntry represents a stored file entry (from database)
-type FileEntry struct {
-	RelativePath string
-	Size         int64
-	ModTime      int64
-	ContentHash  string
-}
-
-// shouldIgnore does a quick check if a path should be ignored
-// This is a fast pre-filter before full pattern matching
-func shouldIgnore(relPath string) bool {
-	// Quick checks for common patterns
-	if strings.HasPrefix(relPath, "node_modules/") ||
-		strings.HasPrefix(relPath, ".git/") ||
-		strings.HasPrefix(relPath, ".lnpm/") ||
-		strings.Contains(relPath, "/.") {
-		return true
-	}
-	return false
 }
 
 // filterGitFiles removes any files related to .git directories

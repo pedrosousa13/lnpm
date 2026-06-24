@@ -493,26 +493,6 @@ func (db *DB) InsertProject(proj *Project) error {
 	})
 }
 
-// GetAllProjects returns all projects in the database
-func (db *DB) GetAllProjects() ([]*Project, error) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	var projects []*Project
-	err := db.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketProjects)
-		return b.ForEach(func(k, v []byte) error {
-			var proj Project
-			if err := json.Unmarshal(v, &proj); err != nil {
-				return err
-			}
-			projects = append(projects, &proj)
-			return nil
-		})
-	})
-	return projects, err
-}
-
 // GetProjectByPath returns a project by its path
 func (db *DB) GetProjectByPath(path string) (*Project, error) {
 	db.mu.RLock()
@@ -873,13 +853,4 @@ func (db *DB) GetFilesForPackage(packageID int64) ([]*FileEntry, error) {
 	})
 
 	return files, err
-}
-
-// GetFilesForPackageByName returns files using package name lookup
-func (db *DB) GetFilesForPackageByName(name string) ([]*FileEntry, error) {
-	pkg, err := db.GetPackageByName(name)
-	if err != nil || pkg == nil {
-		return nil, err
-	}
-	return db.GetFilesForPackage(pkg.ID)
 }

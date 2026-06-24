@@ -310,11 +310,19 @@ func TestLink_ExistingReadOnlyFile(t *testing.T) {
 	}
 	fileInfos := pack.FileInfoFromStore(storeDir, files)
 
-	// Link - should handle read-only existing file
+	// Link wipes the existing .lnpm/{pkg} dir (RemoveAll) and re-links, so the
+	// stale read-only file is replaced with the new content.
 	linker := New(projectDir)
-	_, err := linker.Link("test-pkg", storeDir, fileInfos)
-	// May fail or succeed depending on OS - we just verify it doesn't panic
-	t.Logf("Link with existing read-only file returned: %v", err)
+	if _, err := linker.Link("test-pkg", storeDir, fileInfos); err != nil {
+		t.Fatalf("Link should replace existing read-only file, got error: %v", err)
+	}
+	content, err := os.ReadFile(existingFile)
+	if err != nil {
+		t.Fatalf("Failed to read linked file: %v", err)
+	}
+	if string(content) != "new" {
+		t.Errorf("Expected linked file content %q, got %q", "new", string(content))
+	}
 }
 
 // TestUnlink_ReadOnlyFiles tests unlinking read-only files
@@ -350,11 +358,18 @@ func TestUnlink_ReadOnlyFiles(t *testing.T) {
 		t.Fatalf("Failed to create symlink: %v", err)
 	}
 
-	// Unlink
+	// Unlink removes the .lnpm/{pkg} tree (RemoveAll handles read-only files
+	// since their parent dir is writable) and the node_modules symlink.
 	linker := New(projectDir)
-	err := linker.Unlink("test-pkg")
-	// Should handle read-only files
-	t.Logf("Unlink with read-only files returned: %v", err)
+	if err := linker.Unlink("test-pkg"); err != nil {
+		t.Fatalf("Unlink should remove read-only files, got error: %v", err)
+	}
+	if _, err := os.Stat(lnpmDir); !os.IsNotExist(err) {
+		t.Errorf("Expected .lnpm/test-pkg to be removed, stat err = %v", err)
+	}
+	if _, err := os.Lstat(symlinkPath); !os.IsNotExist(err) {
+		t.Errorf("Expected node_modules symlink to be removed, lstat err = %v", err)
+	}
 }
 
 // TestLink_PreservesVariousPermissions tests preserving different file permissions

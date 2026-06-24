@@ -113,7 +113,6 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	// Process files in parallel: try reflink/hardlink first, collect failures for copy
 	total := len(files)
 	var reflinkCount, hardLinkCount, copyCount int32
-	warnedAboutCopy := false
 	var filesToCopyMu sync.Mutex
 	var filesToCopy []*pack.FileInfo
 
@@ -193,7 +192,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	}
 
 	// Show warning if needed
-	if len(filesToCopy) > 0 && !warnedAboutCopy && sameFS {
+	if len(filesToCopy) > 0 && sameFS {
 		fmt.Printf("  ⚠ Linking not supported, copying files instead\n")
 	}
 
@@ -284,51 +283,6 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	return finalPath, nil
 }
 
-// Remove removes a package from the store
-func (s *Store) Remove(name, hash string) error {
-	path := s.PackagePath(name, hash)
-	return os.RemoveAll(path)
-}
-
-// List returns all packages in the store
-func (s *Store) List() ([]string, error) {
-	entries, err := os.ReadDir(s.basePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var packages []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			packages = append(packages, entry.Name())
-		}
-	}
-	return packages, nil
-}
-
-// ListVersions returns all versions (hashes) of a package
-func (s *Store) ListVersions(name string) ([]string, error) {
-	packagePath := filepath.Join(s.basePath, name)
-	entries, err := os.ReadDir(packagePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var versions []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			versions = append(versions, entry.Name())
-		}
-	}
-	return versions, nil
-}
-
 // GetFiles returns all files in a stored package
 func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
 	storePath := s.PackagePath(name, hash)
@@ -409,14 +363,6 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 
 	return dstFile.Sync()
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // stripLifecycleScripts removes prepare/prepublish scripts from package.json

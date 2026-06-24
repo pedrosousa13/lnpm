@@ -16,11 +16,6 @@ func Init(debug bool) {
 	}
 }
 
-// Enabled returns whether debug mode is active
-func Enabled() bool {
-	return enabled
-}
-
 // Log prints a debug message with timestamp
 func Log(msg string, args ...any) {
 	if !enabled {

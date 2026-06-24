@@ -361,14 +361,6 @@ func (l *Linker) ListLinked() ([]string, error) {
 	return packages, nil
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // copyFile copies a file
 func copyFile(src, dst string) error {
 	srcInfo, err := os.Stat(src)
