@@ -72,18 +72,39 @@ func TestPushNoChanges(t *testing.T) {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
+	// Capture state before the no-op push
+	pkgBefore, err := env.Database.GetPackageByName("nochange-pkg")
+	if err != nil || pkgBefore == nil {
+		t.Fatalf("Failed to get package before push: %v", err)
+	}
+
 	// Push without changes (should be noop)
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
+
+	// Package state must be unchanged: same version and same content hash
+	pkgAfter, err := env.Database.GetPackageByName("nochange-pkg")
+	if err != nil || pkgAfter == nil {
+		t.Fatalf("Failed to get package after push: %v", err)
+	}
+	if pkgAfter.Version != pkgBefore.Version {
+		t.Errorf("Expected version %s unchanged, got %s", pkgBefore.Version, pkgAfter.Version)
+	}
+	if pkgAfter.ContentHash != pkgBefore.ContentHash {
+		t.Errorf("Expected content hash unchanged, got %s (was %s)", pkgAfter.ContentHash, pkgBefore.ContentHash)
+	}
 }
 
-// TestPushForceFlag tests push with --force flag
-func TestPushForceFlag(t *testing.T) {
+// TestPushIdempotentNoChange verifies that re-pushing an unchanged package is a
+// safe no-op: the content hash is unchanged and the linked project still has the
+// correct file content. (Push has no --force flag; this exercises the
+// "hash unchanged" branch of RunPush, which reuses the existing store path.)
+func TestPushIdempotentNoChange(t *testing.T) {
 	env := setupTest(t)
 
 	// Create and publish a package
-	pkgDir := env.CreateTestPackage("force-pkg", "1.0.0", map[string]string{
+	pkgDir := env.CreateTestPackage("idempotent-pkg", "1.0.0", map[string]string{
 		"index.js": "module.exports = 'test';",
 	})
 	if err := os.Chdir(pkgDir); err != nil {
@@ -98,16 +119,43 @@ func TestPushForceFlag(t *testing.T) {
 	if err := os.Chdir(projectDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
-	if err := cli.RunAdd("force-pkg", false, false, false); err != nil {
+	if err := cli.RunAdd("idempotent-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to add package: %v", err)
 	}
 
-	// Push with force (even with no changes)
+	// Capture the content hash before re-pushing
+	pkgBefore, err := env.Database.GetPackageByName("idempotent-pkg")
+	if err != nil || pkgBefore == nil {
+		t.Fatalf("Failed to get package before push: %v", err)
+	}
+	hashBefore := pkgBefore.ContentHash
+
+	// Push with no changes
 	if err := os.Chdir(pkgDir); err != nil {
 		t.Fatalf("Failed to chdir: %v", err)
 	}
 	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to force push: %v", err)
+		t.Fatalf("Failed to push: %v", err)
+	}
+
+	// Content hash must be unchanged (nothing was modified)
+	pkgAfter, err := env.Database.GetPackageByName("idempotent-pkg")
+	if err != nil || pkgAfter == nil {
+		t.Fatalf("Failed to get package after push: %v", err)
+	}
+	if pkgAfter.ContentHash != hashBefore {
+		t.Errorf("Expected content hash to be unchanged after no-op push, got %s (was %s)",
+			pkgAfter.ContentHash, hashBefore)
+	}
+
+	// Linked project must still have the original, intact content
+	linkedFile := filepath.Join(projectDir, ".lnpm", "idempotent-pkg", "index.js")
+	content, err := os.ReadFile(linkedFile)
+	if err != nil {
+		t.Fatalf("Failed to read linked file: %v", err)
+	}
+	if string(content) != "module.exports = 'test';" {
+		t.Errorf("Expected content to be intact after no-op push, got %s", string(content))
 	}
 }
 
@@ -255,6 +303,13 @@ func TestPushNoLinkedProjects(t *testing.T) {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
+	// Capture content hash before modification
+	pkgBefore, err := env.Database.GetPackageByName("standalone-pkg")
+	if err != nil || pkgBefore == nil {
+		t.Fatalf("Failed to get package before push: %v", err)
+	}
+	hashBefore := pkgBefore.ContentHash
+
 	// Modify and push without any linked projects
 	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = 'updated';"), 0644); err != nil {
 		t.Fatalf("Failed to modify file: %v", err)
@@ -262,9 +317,22 @@ func TestPushNoLinkedProjects(t *testing.T) {
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
 	}
+
+	// Even with no linked projects, the store must reflect the modification:
+	// the content hash should have changed.
+	pkgAfter, err := env.Database.GetPackageByName("standalone-pkg")
+	if err != nil || pkgAfter == nil {
+		t.Fatalf("Failed to get package after push: %v", err)
+	}
+	if pkgAfter.ContentHash == hashBefore {
+		t.Errorf("Expected content hash to change after pushing a modified package, but it stayed %s", hashBefore)
+	}
 }
 
-// TestPushConcurrentSafe tests that concurrent pushes don't cause race conditions
+// TestPushConcurrentSafe verifies that RunPush's internal parallel fan-out
+// (it links to every linked project concurrently, one goroutine per project)
+// is race-free and delivers the update to every project. Run with -race for the
+// strongest signal: `go test -race -run TestPushConcurrentSafe ./tests/`.
 func TestPushConcurrentSafe(t *testing.T) {
 	env := setupTest(t)
 
@@ -279,9 +347,12 @@ func TestPushConcurrentSafe(t *testing.T) {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
-	// Create multiple projects
-	for i := 0; i < 5; i++ {
+	// Create multiple projects so the push fans out across several goroutines
+	const numProjects = 5
+	projectDirs := make([]string, 0, numProjects)
+	for i := 0; i < numProjects; i++ {
 		projectDir := env.CreateTestPackage("project-"+string(rune('a'+i)), "1.0.0", nil)
+		projectDirs = append(projectDirs, projectDir)
 		if err := os.Chdir(projectDir); err != nil {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
@@ -298,9 +369,23 @@ func TestPushConcurrentSafe(t *testing.T) {
 		t.Fatalf("Failed to modify file: %v", err)
 	}
 
-	// Push should handle concurrent linking safely
+	// Push fans out to all projects concurrently; must be race-free.
 	if err := cli.RunPush(false); err != nil {
 		t.Fatalf("Failed to push: %v", err)
+	}
+
+	// Every project must have received the update — proves the concurrent
+	// fan-out didn't drop or corrupt any link.
+	for _, dir := range projectDirs {
+		linkedFile := filepath.Join(dir, ".lnpm", "concurrent-pkg", "index.js")
+		content, err := os.ReadFile(linkedFile)
+		if err != nil {
+			t.Errorf("Failed to read linked file in %s: %v", dir, err)
+			continue
+		}
+		if string(content) != "module.exports = 'v2';" {
+			t.Errorf("Project %s: expected updated content, got %s", dir, string(content))
+		}
 	}
 }
 

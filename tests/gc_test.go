@@ -76,11 +76,21 @@ func TestGCDryRun(t *testing.T) {
 	env.AssertPackageInDatabase("dryrun-pkg", true)
 }
 
-// TestGCWithAge tests GC with age filter
+// TestGCWithAge exercises the --older-than age filter.
+//
+// COVERAGE GAP (deferred): we cannot publish a genuinely "old" package because
+// back-dating a package's UpdatedAt requires a DB/source change (e.g. a test
+// helper on db.DB), which is out of scope for a test-only change. As a result
+// this test cannot prove the filter correctly REMOVES packages older than the
+// threshold while KEEPING newer ones in the same run. Instead it pins the two
+// observable boundary behaviors that need no back-dating:
+//   - a very large threshold must PROTECT a freshly published orphan, and
+//   - a zero threshold ("0d") must NOT protect it (filter is bypassed),
+// so a regression that inverts the age comparison would be caught.
 func TestGCWithAge(t *testing.T) {
 	env := setupTest(t)
 
-	// Create and publish two packages
+	// Create and publish two fresh, orphaned packages.
 	pkg1Dir := env.CreateTestPackage("old-pkg", "1.0.0", map[string]string{
 		"index.js": "module.exports = 'old';",
 	})
@@ -101,15 +111,22 @@ func TestGCWithAge(t *testing.T) {
 		t.Fatalf("Failed to publish new-pkg: %v", err)
 	}
 
-	// Both packages are orphaned but "new"
-	// Run GC with age filter (30 days) - nothing should be deleted
-	if err := cli.RunGC(false, "30d", false); err != nil {
-		t.Fatalf("Failed to run GC with age: %v", err)
+	// A large threshold must PROTECT freshly published orphans: nothing older
+	// than ~100 years exists, so neither package may be removed.
+	if err := cli.RunGC(false, "36500d", false); err != nil {
+		t.Fatalf("Failed to run GC with large age threshold: %v", err)
 	}
-
-	// Both packages should still exist
 	env.AssertPackageInDatabase("old-pkg", true)
 	env.AssertPackageInDatabase("new-pkg", true)
+
+	// A zero threshold ("0d") bypasses the age check entirely, so the orphaned
+	// packages must now be removed. This proves the filter is actually wired to
+	// the threshold rather than always-protecting or always-deleting.
+	if err := cli.RunGC(false, "0d", false); err != nil {
+		t.Fatalf("Failed to run GC with zero age threshold: %v", err)
+	}
+	env.AssertPackageInDatabase("old-pkg", false)
+	env.AssertPackageInDatabase("new-pkg", false)
 }
 
 // TestGCOrphanedLinks tests cleaning up orphaned links
