@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	bolt "go.etcd.io/bbolt"
 )
@@ -149,16 +150,7 @@ func initDB() (*DB, error) {
 
 // getStorePath returns the lnpm store path
 func getStorePath() (string, error) {
-	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
-		return storePath, nil
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	return filepath.Join(homeDir, ".lnpm"), nil
+	return config.GetStorePath()
 }
 
 // Close closes the database

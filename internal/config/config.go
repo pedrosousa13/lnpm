@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
@@ -132,20 +133,41 @@ const (
 	Bun  PackageManager = "bun"
 )
 
-// GetStorePath returns the lnpm store path
+// GetStorePath returns the lnpm store path, honoring (in order): the
+// LNPM_STORE env var, the store_path config option, then ~/.lnpm.
 func GetStorePath() (string, error) {
-	// Check LNPM_STORE environment variable first
+	// 1. LNPM_STORE env var wins (used by tests/CI and one-off overrides).
 	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
 		return storePath, nil
 	}
 
-	// Default to ~/.lnpm
+	// 2. store_path from config, if set.
+	if cfg, err := LoadConfig(); err == nil && cfg != nil && cfg.StorePath != "" {
+		return expandPath(cfg.StorePath)
+	}
+
+	// 3. Default to ~/.lnpm
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 
 	return filepath.Join(homeDir, ".lnpm"), nil
+}
+
+// expandPath expands a leading ~ to the user's home directory.
+func expandPath(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if p == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, p[2:]), nil
+	}
+	return p, nil
 }
 
 // GetPackageStorePath returns the path to the package store

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/pack"
@@ -45,16 +46,7 @@ func New() (*Store, error) {
 
 // getStorePath returns the lnpm store root path
 func getStorePath() (string, error) {
-	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
-		return storePath, nil
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	return filepath.Join(homeDir, ".lnpm"), nil
+	return config.GetStorePath()
 }
 
 // Root returns the store's base directory (…/store).
