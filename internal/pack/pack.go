@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -264,12 +265,21 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 		var wg sync.WaitGroup
 		wg.Add(len(filesToHash))
 
+		// Capture the first hashing error instead of swallowing it — an
+		// empty ContentHash would otherwise corrupt the package content hash.
+		var hashErrMu sync.Mutex
+		var hashErr error
+
 		pool, err := ants.NewPoolWithFunc(runtime.NumCPU()*2, func(i interface{}) {
 			defer wg.Done()
 			file := i.(*FileInfo)
 			hash, err := hashFile(file.Path)
 			if err != nil {
-				debug.Logf("pack: failed to hash %s: %v", file.RelPath, err)
+				hashErrMu.Lock()
+				if hashErr == nil {
+					hashErr = fmt.Errorf("failed to hash %s: %w", file.RelPath, err)
+				}
+				hashErrMu.Unlock()
 				return
 			}
 			file.ContentHash = hash
@@ -288,6 +298,10 @@ func collectFilesIncremental(packageDir string, filesField []string, cache map[s
 
 		// Wait for all workers to complete before proceeding
 		wg.Wait()
+
+		if hashErr != nil {
+			return nil, hashErr
+		}
 	}
 
 	// Combine results
@@ -443,10 +457,20 @@ func hashFile(path string) (string, error) {
 
 // HashFiles calculates a combined hash of all files
 func HashFiles(files []*FileInfo) string {
+	// Sort by path so the hash is independent of collection/cache order, and
+	// include the file mode so permission changes (e.g. chmod +x on a bin)
+	// produce a new hash.
+	sorted := make([]*FileInfo, len(files))
+	copy(sorted, files)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].RelPath < sorted[j].RelPath
+	})
+
 	h := xxhash.New()
-	for _, f := range files {
+	for _, f := range sorted {
 		_, _ = h.Write([]byte(f.RelPath))
 		_, _ = h.Write([]byte(f.ContentHash))
+		_, _ = fmt.Fprintf(h, "%o", f.Mode.Perm())
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
 }
