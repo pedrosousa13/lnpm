@@ -133,7 +133,7 @@ func RunPush(skipHooks bool) error {
 	}
 
 	if len(projects) == 0 {
-		fmt.Printf("✓ Updated %s@%s in store\n", pkgJSON.Name, pkgJSON.Version)
+		fmt.Printf("%s Updated %s@%s in store\n", iconOK(), pkgJSON.Name, pkgJSON.Version)
 		fmt.Println("  No linked projects to update")
 		return nil
 	}
@@ -179,9 +179,9 @@ func RunPush(skipHooks bool) error {
 	successCount := 0
 	for res := range results {
 		if res.err != nil {
-			fmt.Printf("  ✗ %s: %v\n", res.path, res.err)
+			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
 		} else {
-			fmt.Printf("  ✓ %s\n", res.path)
+			fmt.Printf("  %s %s\n", iconOK(), res.path)
 			successCount++
 		}
 	}

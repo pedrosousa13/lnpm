@@ -127,9 +127,9 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 	}
 
 	if len(successful) == 0 {
-		fmt.Println("\n⚠ All packages failed to add:")
+		fmt.Printf("\n%s All packages failed to add:\n", iconWarn())
 		for _, err := range errors {
-			fmt.Printf("  • %v\n", err)
+			fmt.Printf("  - %v\n", err)
 		}
 		return fmt.Errorf("all packages failed to add")
 	}
@@ -138,9 +138,9 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  ⚠ Could not update .gitignore: %v\n", err)
+			fmt.Printf("  %s Could not update .gitignore: %v\n", iconWarn(), err)
 		} else if added {
-			fmt.Println("  ✓ Added .lnpm/ to .gitignore")
+			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", iconOK())
 		}
 	}
 
@@ -156,7 +156,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 		for i := range successful {
 			origVersion, err := updatePackageJSON(pkgJSONPath, successful[i].pkg.Name, dev)
 			if err != nil {
-				fmt.Printf("  ⚠ Failed to update package.json for %s: %v\n", successful[i].pkg.Name, err)
+				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
 				continue
 			}
 			successful[i].origVersion = origVersion
@@ -204,10 +204,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 			LinkType:  string(r.linkType),
 		}
 		if err := database.InsertLink(dbLink); err != nil {
-			fmt.Printf("  ⚠ Failed to record link for %s: %v\n", r.pkg.Name, err)
+			fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), r.pkg.Name, err)
 		}
 
-		fmt.Printf("✓ Added %s@%s (%s)\n", r.pkg.Name, r.pkg.Version, r.linkType)
+		fmt.Printf("%s Added %s@%s (%s)\n", iconOK(), r.pkg.Name, r.pkg.Version, r.linkType)
 	}
 
 	if err := lock.Save(cwd); err != nil {
@@ -215,9 +215,9 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 	}
 
 	if len(errors) > 0 {
-		fmt.Println("\n⚠ Some packages failed:")
+		fmt.Printf("\n%s Some packages failed:\n", iconWarn())
 		for _, err := range errors {
-			fmt.Printf("  • %v\n", err)
+			fmt.Printf("  - %v\n", err)
 		}
 	}
 
@@ -225,10 +225,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool)
 	if runInstall && !pure && len(successful) > 0 {
 		fmt.Println("\nRunning npm install...")
 		if err := hooks.RunPostAdd(cwd, true); err != nil {
-			fmt.Printf("  ⚠ npm install failed: %v\n", err)
+			fmt.Printf("  %s npm install failed: %v\n", iconWarn(), err)
 		}
 	} else if !pure && len(successful) > 0 {
-		fmt.Println("\n  💡 Run 'npm install' if you need to resolve peer dependencies")
+		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
 	}
 
 	// Exit non-zero if any package failed, so scripts can detect it.
@@ -300,9 +300,9 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) erro
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  ⚠ Could not update .gitignore: %v\n", err)
+			fmt.Printf("  %s Could not update .gitignore: %v\n", iconWarn(), err)
 		} else if added {
-			fmt.Println("  ✓ Added .lnpm/ to .gitignore")
+			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", iconOK())
 		}
 	}
 
@@ -372,7 +372,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) erro
 		return fmt.Errorf("failed to record link: %w", err)
 	}
 
-	fmt.Printf("✓ Added %s@%s\n", pkg.Name, pkg.Version)
+	fmt.Printf("%s Added %s@%s\n", iconOK(), pkg.Name, pkg.Version)
 	fmt.Printf("  Link type: %s\n", linkType)
 	fmt.Printf("  Package manager: %s\n", pm)
 	if !pure {
@@ -383,10 +383,10 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool) erro
 	// By default, don't run (matches yalc behavior)
 	if runInstall && !pure {
 		if err := hooks.RunPostAdd(cwd, true); err != nil {
-			fmt.Printf("  ⚠ npm install failed: %v\n", err)
+			fmt.Printf("  %s npm install failed: %v\n", iconWarn(), err)
 		}
 	} else if !pure {
-		fmt.Println("\n  💡 Run 'npm install' if you need to resolve peer dependencies")
+		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
 	}
 
 	return nil

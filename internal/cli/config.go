@@ -3,10 +3,13 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/pedrosousa13/lnpm/internal/config"
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
@@ -92,6 +95,8 @@ func getConfigKey(cfg *config.Config, key string) error {
 		}
 	case "link_mode":
 		fmt.Println(cfg.LinkMode)
+	case "manage_gitignore":
+		fmt.Println(cfg.ShouldManageGitignore())
 	case "hooks.pre_publish":
 		fmt.Println(cfg.Hooks.PrePublish)
 	case "hooks.post_publish":
@@ -114,6 +119,12 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 			return fmt.Errorf("link_mode must be 'hardlink' or 'copy'")
 		}
 		cfg.LinkMode = value
+	case "manage_gitignore":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("manage_gitignore must be a boolean (true/false)")
+		}
+		cfg.ManageGitignore = &b
 	case "hooks.pre_publish":
 		cfg.Hooks.PrePublish = value
 	case "hooks.post_publish":
@@ -132,7 +143,7 @@ func setConfigKey(cfg *config.Config, key, value string) error {
 	return nil
 }
 
-// editConfig opens the config file in an editor
+// editConfig opens the config file in the user's editor
 func editConfig() error {
 	configPath := config.GetConfigPath()
 
@@ -144,20 +155,27 @@ func editConfig() error {
 		}
 	}
 
-	// Find editor
+	// Find editor: $EDITOR, then $VISUAL, then a platform default
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		editor = os.Getenv("VISUAL")
 	}
 	if editor == "" {
-		editor = "vi"
+		if runtime.GOOS == "windows" {
+			editor = "notepad"
+		} else {
+			editor = "vi"
+		}
 	}
 
 	fmt.Printf("Opening %s with %s\n", configPath, editor)
-	fmt.Println("(Config file will be created if it doesn't exist)")
 
-	// This would normally exec the editor, but we'll just print the path
-	// since exec would replace the current process
-	fmt.Printf("\nRun: %s %s\n", editor, configPath)
+	cmd := exec.Command(editor, configPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to launch editor %q: %w", editor, err)
+	}
 	return nil
 }

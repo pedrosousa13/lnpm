@@ -106,7 +106,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 			for _, l := range linksToRemove {
 				_ = database.DeleteLink(l.packageID, l.projectID)
 			}
-			fmt.Printf("✓ Removed %d orphaned link(s)\n", len(linksToRemove))
+			fmt.Printf("%s Removed %d orphaned link(s)\n", iconOK(), len(linksToRemove))
 		}
 	}
 
@@ -121,6 +121,10 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 		fmt.Println()
 
 		if !dryRun {
+			if !confirm("Permanently delete these package(s) from the store?") {
+				fmt.Println("Aborted.")
+				return nil
+			}
 			for _, pkg := range packagesToRemove {
 				// Remove from store, but only if the recorded path is actually
 				// inside the store root (guards against a poisoned DB entry).
@@ -134,12 +138,12 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 				// Remove from database
 				_ = database.DeletePackage(pkg.ID)
 			}
-			fmt.Printf("✓ Removed %d package(s), freed %s\n", len(packagesToRemove), formatSize(totalSize))
+			fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), len(packagesToRemove), formatSize(totalSize))
 		}
 	}
 
 	if len(packagesToRemove) == 0 && len(linksToRemove) == 0 {
-		fmt.Println("✓ Nothing to clean up")
+		fmt.Printf("%s Nothing to clean up\n", iconOK())
 	}
 
 	return nil

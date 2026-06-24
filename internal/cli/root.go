@@ -27,7 +27,7 @@ var rootCmd = &cobra.Command{
 
 It provides a better alternative to yalc with:
   - Hard links for instant, reliable syncing
-  - SQLite-backed state tracking
+  - bbolt-backed state tracking
   - Full visibility into linked packages
 
 Quick start:
