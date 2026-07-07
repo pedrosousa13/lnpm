@@ -186,7 +186,8 @@ func DetectPackageManager(projectPath string) PackageManager {
 		file    string
 		manager PackageManager
 	}{
-		{"bun.lockb", Bun},
+		{"bun.lockb", Bun}, // Bun < 1.2 binary lockfile
+		{"bun.lock", Bun},  // Bun 1.2+ text lockfile
 		{"pnpm-lock.yaml", PNPM},
 		{"yarn.lock", Yarn},
 		{"package-lock.json", NPM},
