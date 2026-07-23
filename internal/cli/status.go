@@ -131,6 +131,10 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 		return nil
 	}
 
+	if packageName != "" && !showProjects {
+		return fmt.Errorf("use --projects to list which projects use %q", packageName)
+	}
+
 	if packageName != "" && showProjects {
 		// List projects using a specific package
 		pkg, err := database.GetPackageByName(packageName)
