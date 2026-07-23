@@ -3,12 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
+	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -170,7 +170,7 @@ func editConfig() error {
 
 	fmt.Printf("Opening %s with %s\n", configPath, editor)
 
-	cmd := exec.Command(editor, configPath)
+	cmd := shellcmd.Command(editor + " " + shellcmd.QuoteArg(configPath))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
