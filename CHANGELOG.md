@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.12.0](https://github.com/pedrosousa13/lnpm/compare/v1.11.0...v1.12.0) (2026-07-23)
+
+
+### Features
+
+* add `lnpm check` guard and `add --link` protocol ([#56](https://github.com/pedrosousa13/lnpm/issues/56)) ([58e1345](https://github.com/pedrosousa13/lnpm/commit/58e1345b323cb9d6f309b9a2c7851acdf9d66cdf))
+
+
+### Bug Fixes
+
+* **config:** support editor commands with args ([#204](https://github.com/pedrosousa13/lnpm/issues/204)) ([6b1727d](https://github.com/pedrosousa13/lnpm/commit/6b1727dc15e1a0c87d1f322efd96b3a3c7e0dccc))
+* detect bun.lock text lockfile and honor list package argument ([#205](https://github.com/pedrosousa13/lnpm/issues/205)) ([f9b0cfb](https://github.com/pedrosousa13/lnpm/commit/f9b0cfb02b9a8722c0d4d03cdc9880a0de603f71))
+
 ## [1.11.0](https://github.com/pedrosousa13/lnpm/compare/v1.10.0...v1.11.0) (2026-06-24)
 
 
