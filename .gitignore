@@ -38,3 +38,8 @@ lnpm.lock
 
 # Node
 node_modules/
+
+# Factory
+.scratch/
+.factory/run.lock
+.factory/journal.json
