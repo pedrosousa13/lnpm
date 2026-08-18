@@ -1,0 +1,11 @@
+{
+  "stampVersion": "2.0.0",
+  "tracker": {
+    "kind": "github",
+    "repo": "pedrosousa13/lnpm"
+  },
+  "merge": {
+    "policy": "squash"
+  },
+  "attackSurface": true
+}
