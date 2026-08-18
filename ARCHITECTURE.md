@@ -64,14 +64,24 @@ project/
 
 ## Intelligent Linking Strategy
 
-### Priority System: Reflink → Hard Link → Parallel Copy
+### Priority System
 
-lnpm uses a sophisticated multi-tier approach for maximum performance:
+lnpm uses a sophisticated multi-tier approach for maximum performance. The tiers
+differ between the two hops:
+
+- **Source → store** (`publish`, `push`): reflink → parallel copy. The store
+  **never** hard links a source file. A hard link would give the source file and
+  the store entry one shared inode, so an in-place rewrite of the source (tsc,
+  webpack, an editor saving over its own output) would mutate content already
+  filed under its content hash. The store must own a private copy of its bytes.
+- **Store → project** (`add`, `push`): reflink → hard link → parallel copy. The
+  store entry is already a private copy, so sharing its inode with consumers is
+  safe as long as consumers treat linked packages as read-only.
 
 | Method | Speed | Platform Support | Use Case | Disk Usage |
 |--------|-------|------------------|----------|------------|
-| **Reflink (CoW)** | Instant (~1ms) | macOS APFS, Linux Btrfs/XFS/OCFS2 | Primary method | Zero (copy-on-write) |
-| **Hard Link** | Instant (~1ms) | Same filesystem (all platforms) | Fallback #1 | Zero (shared inodes) |
+| **Reflink (CoW)** | Instant (~1ms) | macOS APFS, Linux Btrfs/XFS/OCFS2 | Primary method, both hops | Zero (copy-on-write) |
+| **Hard Link** | Instant (~1ms) | Same filesystem (all platforms) | Fallback #1, store → project only | Zero (shared inodes) |
 | **Parallel Copy** | Fast (~100ms for 10k files) | All platforms, cross-filesystem | Fallback #2 | Full copy |
 
 ### Reflink (Copy-on-Write Cloning)
@@ -87,7 +97,7 @@ lnpm uses a sophisticated multi-tier approach for maximum performance:
 #### Platform Implementation
 - **macOS APFS**: Uses `clonefile()` syscall (SYS_CLONEFILE #462)
 - **Linux Btrfs/XFS**: Uses `FICLONE` ioctl (#0x40049409)
-- **Other filesystems**: Gracefully falls back to hard links
+- **Other filesystems**: Gracefully falls back to hard links (store → project) or to a parallel copy (source → store)
 
 #### Why Reflink is Better Than Hard Links
 ```
@@ -102,11 +112,10 @@ Reflink:       source.js ──► [inode 12345: blocks 1-100]
 ### How It Works
 
 #### During `lnpm publish`:
-1. Detect if source and store are on same filesystem
-2. Try reflink first (works even across directories on same FS)
-3. If reflink unsupported, try hard link (requires same filesystem)
-4. If hard link fails, use parallel copy with 8 worker goroutines
-5. Display progress and warnings for user visibility
+1. Try reflink first (works even across directories on same FS)
+2. If reflink is unsupported, use parallel copy with 8 worker goroutines
+3. Hard linking from the source is never attempted — see the priority system above
+4. Display progress for user visibility
 
 #### During `lnpm add`:
 1. Check user config for `link_mode` preference
@@ -118,10 +127,10 @@ Reflink:       source.js ──► [inode 12345: blocks 1-100]
 ```
 Source Package          Store                    Project
 ──────────────          ─────                    ───────
-src/index.ts    ──►   (reflink/hardlink)
+src/index.ts    ──►    (reflink/copy)
 dist/index.js   ──►     ~/.lnpm/store/      ══► .lnpm/pkg/     ──► node_modules/pkg
 package.json    ──►       pkg/abc123/      (reflink/hardlink)     (symlink)
-                       (CoW or shared)      (CoW or shared)
+                       (private copy)       (CoW or shared)
 ```
 
 ### Performance Characteristics
@@ -138,23 +147,20 @@ package.json    ──►       pkg/abc123/      (reflink/hardlink)     (symlink
 
 lnpm intelligently handles edge cases:
 
-1. **Same filesystem**: Try reflink → hard link → parallel copy
-2. **Different filesystem**: Try reflink → parallel copy (skip hard link)
-3. **User config `link_mode: copy`**: Skip linking, use parallel copy
-4. **User config `link_mode: hardlink`**: Try reflink → hard link → parallel copy
+1. **Source → store**: Try reflink → parallel copy (hard link never attempted)
+2. **Store → project, same filesystem**: Try reflink → hard link → parallel copy
+3. **Store → project, different filesystem**: Try reflink → parallel copy (skip hard link)
+4. **User config `link_mode: copy`**: Skip linking, use parallel copy
+5. **User config `link_mode: hardlink`**: Store → project tries reflink → hard link → parallel copy
 
 **User Feedback:**
 ```bash
-# Same filesystem, linking works
-✓ Linked 10,000 files instantly
-
-# Linking not supported
-⚠ Linking not supported, copying files instead
+# Large packages report progress while the store is populated
+  Processing... 10000/10000 files
   Copying... 10000/10000 files
 
-# Cross-filesystem scenario
-ℹ Store and source on different filesystems - files were copied
-💡 Tip: Move your store to the same filesystem for instant linking
+# Store → project hard linking not available
+  ⚠ Hard linking failed, falling back to copying files
 ```
 
 ---

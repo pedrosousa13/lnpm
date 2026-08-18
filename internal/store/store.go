@@ -104,13 +104,6 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		}
 	}()
 
-	// The store must own its bytes: never hard link the source file into the
-	// store. A shared inode means an in-place rewrite of the developer's source
-	// (tsc, webpack, an editor saving in place) silently mutates the store entry,
-	// so the content stored under hash H no longer hashes to H. Reflink is a CoW
-	// clone and stays isolated; otherwise we copy.
-	debug.Log("store: populating store with reflink or copy")
-
 	// Process files in parallel: try reflink first, collect failures for copy
 	total := len(files)
 	var reflinkCount, copyCount int32
@@ -313,6 +306,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	defer func() { _ = dstFile.Close() }()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+
+	// OpenFile's mode argument is masked by the process umask, so the stored
+	// file would not carry the exact permission bits the content hash was
+	// computed from (pack folds Mode.Perm() into the hash). Set them explicitly.
+	if err := dstFile.Chmod(mode); err != nil {
 		return err
 	}
 

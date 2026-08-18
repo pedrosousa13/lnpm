@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/pack"
@@ -12,11 +11,9 @@ import (
 
 // TestStore_DoesNotShareInodeWithSource verifies the store owns its own bytes:
 // a stored file must never be a hard link to the developer's source file.
+// os.SameFile is the portable identity check (inode on unix, volume + file
+// index on Windows), so this assertion holds on every platform.
 func TestStore_DoesNotShareInodeWithSource(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows - inode semantics differ")
-	}
-
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)
 
@@ -59,17 +56,8 @@ func TestStore_DoesNotShareInodeWithSource(t *testing.T) {
 		t.Fatalf("Failed to stat stored file: %v", err)
 	}
 
-	sourceStat, ok := sourceInfo.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Skip("Skipping - stat_t unavailable on this platform")
-	}
-	storedStat, ok := storedInfo.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Skip("Skipping - stat_t unavailable on this platform")
-	}
-
-	if sourceStat.Ino == storedStat.Ino {
-		t.Errorf("Stored file shares inode %d with source file - external writes to the source would corrupt the store", sourceStat.Ino)
+	if os.SameFile(sourceInfo, storedInfo) {
+		t.Error("Stored file is the same file as the source - external writes to the source would corrupt the store")
 	}
 }
 
@@ -78,7 +66,7 @@ func TestStore_DoesNotShareInodeWithSource(t *testing.T) {
 // bytes untouched.
 func TestStore_SourceMutationDoesNotAffectStore(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("Skipping on Windows - permission handling differs")
+		t.Skip("Skipping on Windows - rewriting a file in place is blocked while other handles hold it open")
 	}
 
 	tmpDir := t.TempDir()
