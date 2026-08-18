@@ -9,7 +9,7 @@
 ## Features
 
 - **Blazing fast** — Reflink/CoW + hard links for instant operations on large packages
-- **Smart linking** — Automatically uses the fastest method: reflink → hardlink → parallel copy
+- **Smart linking** — Automatically uses the fastest method: reflink → hardlink → parallel copy (store → project); reflink → parallel copy into the store
 - **Monorepo support** — Publish all workspace packages at once
 - **Cross-platform** — Works on Linux, macOS, and Windows
 - **All package managers** — npm, yarn, pnpm, and bun
@@ -321,7 +321,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 
 ## How It Works
 
-1. **Publish** — Uses `npm pack` rules to determine files, strips lifecycle scripts (`prepare`/`prepublish`), then links or copies to `~/.lnpm/store/{name}/{hash}/`
+1. **Publish** — Uses `npm pack` rules to determine files, strips lifecycle scripts (`prepare`/`prepublish`), then reflinks or copies to `~/.lnpm/store/{name}/{hash}/`
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`, updates package.json to `file:.lnpm/{package}`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
 4. **Push** — Updates store and re-links changed files
@@ -332,7 +332,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 ```
 Source Package          Store                    Project
 ──────────────          ─────                    ───────
-src/index.ts    ──►   (reflink/hardlink)
+src/index.ts    ──►    (reflink/copy)
 dist/index.js   ──►     ~/.lnpm/store/      ══► .lnpm/pkg/     ──► node_modules/pkg
 package.json    ──►       pkg/abc123/      (reflink/hardlink)     (symlink)
 ```
@@ -365,12 +365,19 @@ lnpm automatically manages `.gitignore` entries to prevent committing linked pac
 
 lnpm uses an intelligent priority system for maximum performance:
 
-**Priority Order:** Reflink → Hard Link → Parallel Copy
+**Priority Order:**
+- Source → store: Reflink → Parallel Copy
+- Store → project: Reflink → Hard Link → Parallel Copy
+
+The store never hard links your source files. A hard link would make the source
+file and the store entry share one inode, so rewriting the source in place (tsc,
+webpack, an editor saving over its own output) would silently mutate content
+already filed under its content hash. The store keeps a private copy instead.
 
 | Method | Speed | Platform Support | Disk Usage |
 |--------|-------|------------------|------------|
 | **Reflink (CoW)** | Instant | macOS APFS, Linux Btrfs/XFS | Zero (copy-on-write) |
-| **Hard Link** | Instant | Same filesystem | Zero (shared inodes) |
+| **Hard Link** | Instant | Same filesystem, store → project only | Zero (shared inodes) |
 | **Parallel Copy** | Fast | Always works | Full copy (8 workers) |
 
 **Benefits:**
@@ -385,7 +392,7 @@ lnpm automatically detects the best method and falls back gracefully with helpfu
 
 | Feature | lnpm | yalc |
 |---------|------|------|
-| Link method | Reflink → Hard link → Parallel copy | Sequential copy only |
+| Link method | Reflink → Hard link → Parallel copy (reflink or copy into the store) | Sequential copy only |
 | Large packages (10k+ files) | Instant (~5ms) on APFS/Btrfs | Slow (~5s+) |
 | State tracking | bbolt database | Hash files |
 | Monorepo | Native support | Manual |

@@ -35,6 +35,13 @@ func New(projectPath string) *Linker {
 
 // Link links a package from the store to the project
 // It creates hard links in .lnpm/{package}/ and a symlink in node_modules/{package}
+//
+// Files are materialised by reflink, hard link or copy, whichever the platform
+// allows. Where a hard link is used the linked file shares an inode with the
+// store entry, so a consumer that edits it in place writes back into the store
+// and corrupts that entry for every other consumer. Propagation is therefore
+// one-way by design: linked packages are read-only from the consumer's side,
+// and `push` is the supported way to update them.
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (LinkType, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 
