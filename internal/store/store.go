@@ -66,7 +66,10 @@ func (s *Store) Exists(name, hash string) bool {
 	return err == nil
 }
 
-// Store copies or hard links files to the store
+// Store populates the store with the package's files, using reflink (CoW clone)
+// where the filesystem supports it and a plain copy otherwise. It never hard
+// links a source file into the store: the store entry must be a private copy so
+// later writes to the source cannot mutate content already addressed by hash.
 func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir string) (string, error) {
 	// Guard against path traversal: name is joined into the store path.
 	if err := pack.ValidatePackageName(name); err != nil {
@@ -101,22 +104,20 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		}
 	}()
 
-	// Determine if we can use hard links (same filesystem)
-	useHardLink := s.canUseHardLink(sourceDir)
-	sameFS := useHardLink
-	if useHardLink {
-		debug.Log("store: same filesystem detected, will try reflink or hard link")
-	} else {
-		debug.Log("store: different filesystem, will try reflink or copy")
-	}
+	// The store must own its bytes: never hard link the source file into the
+	// store. A shared inode means an in-place rewrite of the developer's source
+	// (tsc, webpack, an editor saving in place) silently mutates the store entry,
+	// so the content stored under hash H no longer hashes to H. Reflink is a CoW
+	// clone and stays isolated; otherwise we copy.
+	debug.Log("store: populating store with reflink or copy")
 
-	// Process files in parallel: try reflink/hardlink first, collect failures for copy
+	// Process files in parallel: try reflink first, collect failures for copy
 	total := len(files)
-	var reflinkCount, hardLinkCount, copyCount int32
+	var reflinkCount, copyCount int32
 	var filesToCopyMu sync.Mutex
 	var filesToCopy []*pack.FileInfo
 
-	// Parallel pass: try fast methods (reflink/hardlink)
+	// Parallel pass: try the fast method (reflink)
 	numWorkers := min(runtime.NumCPU(), 8)
 	if len(files) < numWorkers {
 		numWorkers = len(files)
@@ -152,15 +153,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 					atomic.AddInt32(&reflinkCount, 1)
 				}
 
-				// 2. Try hard link if on same filesystem and reflink didn't work
-				if !linked && useHardLink {
-					if err := os.Link(f.Path, destFile); err == nil {
-						linked = true
-						atomic.AddInt32(&hardLinkCount, 1)
-					}
-				}
-
-				// 3. Queue for parallel copy if linking didn't work
+				// 2. Queue for parallel copy if reflink didn't work
 				if !linked {
 					filesToCopyMu.Lock()
 					filesToCopy = append(filesToCopy, f)
@@ -191,12 +184,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	default:
 	}
 
-	// Show warning if needed
-	if len(filesToCopy) > 0 && sameFS {
-		fmt.Printf("  ⚠ Linking not supported, copying files instead\n")
-	}
-
-	// Parallel copy for files that couldn't be linked
+	// Parallel copy for files that couldn't be reflinked
 	if len(filesToCopy) > 0 {
 		debug.Logf("store: copying %d files in parallel", len(filesToCopy))
 
@@ -256,12 +244,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		fmt.Printf("\r                                        \r") // Clear progress line
 	}
 
-	if reflinkCount > 0 || hardLinkCount > 0 {
-		debug.Logf("store: reflinked %d, hard linked %d, copied %d files", reflinkCount, hardLinkCount, copyCount)
-	} else if copyCount > 0 && !sameFS {
-		fmt.Printf("  ℹ Store and source on different filesystems - files were copied\n")
-		fmt.Printf("  💡 Tip: Move your store to the same filesystem for instant linking\n")
-	}
+	debug.Logf("store: reflinked %d, copied %d files", reflinkCount, copyCount)
 
 	// Strip lifecycle scripts from package.json to prevent npm from running them
 	// when installed as file: dependency (matches yalc behavior)
@@ -313,35 +296,6 @@ func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
 	})
 
 	return files, err
-}
-
-// canUseHardLink checks if the source directory and store are on the same filesystem
-func (s *Store) canUseHardLink(sourceDir string) bool {
-	// Windows: always try hard links, let it fail if needed
-	if runtime.GOOS == "windows" {
-		return true
-	}
-
-	// Unix: check device IDs
-	storeInfo, err := os.Stat(s.basePath)
-	if err != nil {
-		return false
-	}
-
-	sourceInfo, err := os.Stat(sourceDir)
-	if err != nil {
-		return false
-	}
-
-	storeDev := fsutil.DeviceID(storeInfo)
-	sourceDev := fsutil.DeviceID(sourceInfo)
-
-	if storeDev != 0 && sourceDev != 0 {
-		return storeDev == sourceDev
-	}
-
-	// Default to trying hard link
-	return true
 }
 
 // copyFile copies a file preserving permissions
