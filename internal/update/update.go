@@ -12,6 +12,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -195,11 +196,7 @@ func compareVersions(current, latest string) *Result {
 		UpdateAvailable: false,
 	}
 
-	// Simple string comparison works for semver if same length
-	// For proper comparison we'd need a semver library, but this handles most cases
-	if latestNorm != currentNorm && latestNorm > currentNorm {
-		result.UpdateAvailable = true
-	}
+	result.UpdateAvailable = semver.Compare("v"+latestNorm, "v"+currentNorm) > 0
 
 	debug.Logf("update: current=%s latest=%s available=%v", current, latest, result.UpdateAvailable)
 	return result
