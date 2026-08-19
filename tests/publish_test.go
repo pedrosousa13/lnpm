@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -112,6 +113,42 @@ func TestPublishWithPush(t *testing.T) {
 	}
 
 	env.AssertLinkedFileContent(projectDir, "push-publish-pkg", "index.js", "module.exports = 'v2';")
+}
+
+// TestPublishWithPushReportsFailedProjects tests that publish --push returns an
+// error when a linked project cannot be updated, while still updating the
+// projects that are healthy.
+func TestPublishWithPushReportsFailedProjects(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("push-fail-pkg")
+
+	projectA := env.newProject("project-a")
+	env.addPkg(projectA, "push-fail-pkg", false, false)
+	projectB := env.newProject("project-b")
+	env.addPkg(projectB, "push-fail-pkg", false, false)
+
+	// Break project-b by replacing its .lnpm directory with a regular file, so
+	// creating .lnpm/push-fail-pkg inside it fails during the push.
+	lnpmPath := filepath.Join(projectB, ".lnpm")
+	if err := os.RemoveAll(lnpmPath); err != nil {
+		t.Fatalf("Failed to remove .lnpm: %v", err)
+	}
+	env.writeFile(lnpmPath, "not a directory")
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+
+	err := cli.RunPublish(true, false, true, true)
+	if err == nil {
+		t.Fatal("Expected publish --push to fail when a linked project fails")
+	}
+	if !strings.Contains(err.Error(), "push failed for 1 of 2") {
+		t.Errorf("Expected error to report 1 of 2 projects failed, got: %v", err)
+	}
+
+	// The healthy project still received the update.
+	env.AssertLinkedFileContent(projectA, "push-fail-pkg", "index.js", "module.exports = 'v2';")
 }
 
 // TestPublishConcurrentSamePackage tests concurrent publishes of same package.
