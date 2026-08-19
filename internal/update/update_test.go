@@ -1,6 +1,16 @@
 package update
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func TestCompareVersions(t *testing.T) {
 	tests := []struct {
@@ -33,4 +43,291 @@ func TestCompareVersions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// startAPIServer points githubAPIBaseURL at a local test server for the
+// duration of the test and returns a counter of requests it received. The
+// counter is atomic because the handler runs on the server's goroutines.
+//
+// Don't use t.Parallel() in callers - this helper swaps the process-wide
+// githubAPIBaseURL var.
+func startAPIServer(t *testing.T, handler http.HandlerFunc) *atomic.Int64 {
+	t.Helper()
+
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		handler(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	prev := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	t.Cleanup(func() { githubAPIBaseURL = prev })
+
+	return &hits
+}
+
+func TestGithubAPIBaseURLDefault(t *testing.T) {
+	// The base URL was extracted into a var purely for testability; the default
+	// must stay byte-identical to the previously hardcoded API root.
+	if githubAPIBaseURL != "https://api.github.com" {
+		t.Errorf("githubAPIBaseURL = %q, want https://api.github.com", githubAPIBaseURL)
+	}
+}
+
+func TestFetchLatestVersion(t *testing.T) {
+	wantPath := "/repos/" + githubRepo + "/releases/latest"
+	hits := startAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != wantPath {
+			t.Errorf("request path = %q, want %q", r.URL.Path, wantPath)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name": "v1.2.3"}`))
+	})
+
+	got, err := fetchLatestVersion(context.Background())
+	if err != nil {
+		t.Fatalf("fetchLatestVersion returned error: %v", err)
+	}
+	if got != "v1.2.3" {
+		t.Errorf("fetchLatestVersion = %q, want v1.2.3", got)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("server hits = %d, want 1", n)
+	}
+}
+
+func TestFetchLatestVersionServerError(t *testing.T) {
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	got, err := fetchLatestVersion(context.Background())
+	if err == nil {
+		t.Fatalf("fetchLatestVersion = %q, want error on 500", got)
+	}
+	if got != "" {
+		t.Errorf("fetchLatestVersion = %q, want empty string on error", got)
+	}
+}
+
+func TestSaveAndLoadCacheRoundTrip(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv("LNPM_STORE", store)
+
+	_, cachePath := loadCache()
+	if want := filepath.Join(store, "version_cache.json"); cachePath != want {
+		t.Fatalf("cachePath = %q, want %q", cachePath, want)
+	}
+
+	saveCache(cachePath, "v4.5.6")
+
+	cache, path := loadCache()
+	if path != cachePath {
+		t.Errorf("cachePath = %q, want %q", path, cachePath)
+	}
+	if cache == nil {
+		t.Fatal("loadCache returned nil cache after saveCache")
+	}
+	if cache.LatestVersion != "v4.5.6" {
+		t.Errorf("cache.LatestVersion = %q, want v4.5.6", cache.LatestVersion)
+	}
+	if time.Since(cache.LastCheck) > time.Minute {
+		t.Errorf("cache.LastCheck = %v, want ~now", cache.LastCheck)
+	}
+}
+
+func TestLoadCacheMissingFile(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+
+	cache, cachePath := loadCache()
+	if cache != nil {
+		t.Errorf("loadCache = %+v, want nil for a missing cache file", cache)
+	}
+	if cachePath == "" {
+		t.Error("loadCache returned an empty path; saveCache would then be a no-op")
+	}
+}
+
+func TestLoadCacheCorruptJSON(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv("LNPM_STORE", store)
+
+	cachePath := filepath.Join(store, "version_cache.json")
+	if err := os.WriteFile(cachePath, []byte("{not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cache, path := loadCache()
+	if cache != nil {
+		t.Errorf("loadCache = %+v, want nil for corrupt JSON", cache)
+	}
+	if path != cachePath {
+		t.Errorf("cachePath = %q, want %q", path, cachePath)
+	}
+}
+
+// writeCache writes a cache file directly so the test can control LastCheck.
+func writeCache(t *testing.T, store string, lastCheck time.Time, version string) {
+	t.Helper()
+
+	data, err := json.Marshal(cacheFile{LastCheck: lastCheck, LatestVersion: version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "version_cache.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckUsesFreshCacheWithoutFetching(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv("LNPM_STORE", store)
+	writeCache(t, store, time.Now(), "v9.9.9")
+
+	hits := startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("check made an HTTP request despite a fresh cache")
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	result := check("1.0.0")
+	if got := hits.Load(); got != 0 {
+		t.Errorf("server hits = %d, want 0", got)
+	}
+	if result == nil {
+		t.Fatal("check returned nil")
+	}
+	if result.LatestVersion != "v9.9.9" || !result.UpdateAvailable {
+		t.Errorf("check = %+v, want LatestVersion v9.9.9 with UpdateAvailable true", result)
+	}
+}
+
+func TestCheckRefetchesWhenCacheIsStale(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv("LNPM_STORE", store)
+	writeCache(t, store, time.Now().Add(-25*time.Hour), "v9.9.9")
+
+	hits := startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v2.0.0"}`))
+	})
+
+	result := check("1.0.0")
+	if got := hits.Load(); got != 1 {
+		t.Errorf("server hits = %d, want 1", got)
+	}
+	if result == nil {
+		t.Fatal("check returned nil")
+	}
+	if result.LatestVersion != "v2.0.0" {
+		t.Errorf("check = %+v, want LatestVersion v2.0.0 from the refetch", result)
+	}
+
+	// The refetch must also refresh the cache on disk.
+	cache, _ := loadCache()
+	if cache == nil || cache.LatestVersion != "v2.0.0" {
+		t.Errorf("cache after refetch = %+v, want LatestVersion v2.0.0", cache)
+	}
+}
+
+func TestCheckFreshBypassesCache(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv("LNPM_STORE", store)
+	writeCache(t, store, time.Now(), "v9.9.9")
+
+	hits := startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v3.0.0"}`))
+	})
+
+	result := CheckFresh("1.0.0")
+	if got := hits.Load(); got != 1 {
+		t.Errorf("server hits = %d, want 1 (CheckFresh must ignore a fresh cache)", got)
+	}
+	if result == nil {
+		t.Fatal("CheckFresh returned nil")
+	}
+	if result.LatestVersion != "v3.0.0" || !result.UpdateAvailable {
+		t.Errorf("CheckFresh = %+v, want LatestVersion v3.0.0 with UpdateAvailable true", result)
+	}
+
+	cache, _ := loadCache()
+	if cache == nil || cache.LatestVersion != "v3.0.0" {
+		t.Errorf("cache after CheckFresh = %+v, want LatestVersion v3.0.0", cache)
+	}
+}
+
+func TestCheckFreshSkipsDevBuilds(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("CheckFresh made an HTTP request for a dev build")
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	for _, v := range []string{"dev", ""} {
+		if result := CheckFresh(v); result != nil {
+			t.Errorf("CheckFresh(%q) = %+v, want nil", v, result)
+		}
+	}
+}
+
+// drain reads a result channel to completion, which also guarantees the
+// background goroutine has finished before the test's cleanups run.
+func drain(ch <-chan *Result) []*Result {
+	var got []*Result
+	for r := range ch {
+		got = append(got, r)
+	}
+	return got
+}
+
+func TestCheckAsyncDeliversAvailableUpdate(t *testing.T) {
+	t.Setenv("LNPM_NO_UPDATE_CHECK", "")
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v9.0.0"}`))
+	})
+
+	got := drain(CheckAsync("1.0.0"))
+	if len(got) != 1 {
+		t.Fatalf("CheckAsync delivered %d results, want 1", len(got))
+	}
+	if got[0].LatestVersion != "v9.0.0" || !got[0].UpdateAvailable {
+		t.Errorf("CheckAsync = %+v, want LatestVersion v9.0.0 with UpdateAvailable true", got[0])
+	}
+}
+
+func TestCheckAsyncStaysSilentWhenUpToDate(t *testing.T) {
+	t.Setenv("LNPM_NO_UPDATE_CHECK", "")
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v1.0.0"}`))
+	})
+
+	if got := drain(CheckAsync("1.0.0")); len(got) != 0 {
+		t.Errorf("CheckAsync delivered %+v, want nothing when already up to date", got)
+	}
+}
+
+func TestCheckAsyncDisabled(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("CheckAsync made an HTTP request while disabled")
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	t.Run("via LNPM_NO_UPDATE_CHECK", func(t *testing.T) {
+		t.Setenv("LNPM_NO_UPDATE_CHECK", "1")
+		if got := drain(CheckAsync("1.0.0")); len(got) != 0 {
+			t.Errorf("CheckAsync delivered %+v, want nothing", got)
+		}
+	})
+
+	t.Run("for dev builds", func(t *testing.T) {
+		t.Setenv("LNPM_NO_UPDATE_CHECK", "")
+		for _, v := range []string{"dev", ""} {
+			if got := drain(CheckAsync(v)); len(got) != 0 {
+				t.Errorf("CheckAsync(%q) delivered %+v, want nothing", v, got)
+			}
+		}
+	})
 }

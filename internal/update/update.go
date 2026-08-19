@@ -21,6 +21,10 @@ const (
 	requestTimeout = 500 * time.Millisecond
 )
 
+// githubAPIBaseURL is the GitHub API root. It is a var so tests can point it at
+// a local httptest server instead of the real API.
+var githubAPIBaseURL = "https://api.github.com"
+
 type cacheFile struct {
 	LastCheck     time.Time `json:"last_check"`
 	LatestVersion string    `json:"latest_version"`
@@ -159,7 +163,7 @@ func saveCache(cachePath, version string) {
 }
 
 func fetchLatestVersion(ctx context.Context) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo)
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", githubAPIBaseURL, githubRepo)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
