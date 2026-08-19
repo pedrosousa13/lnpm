@@ -36,7 +36,8 @@
 **Linting:**
 - Tool: `golangci-lint` (preferred) or `go vet` (fallback)
 - Command: `make lint` or `make lint-staged` for pre-commit
-- CI: Uses `golangci/golangci-lint-action@v6` with `only-new-issues: true`
+- Config: `.golangci.yml` at the repo root defines the enabled linter set
+- CI: Uses `golangci/golangci-lint-action@v9` with the version pinned to `v2.12.2`; lints the full repo on every PR
 - Git hooks: Available via `make hooks-enable` at `.githooks/`
 
 ## Import Organization

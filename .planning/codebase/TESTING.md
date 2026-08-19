@@ -220,7 +220,7 @@ env.AssertLockfile(projectPath, func(lock *lockfile.LockFile) {
 
 **Jobs:**
 - `test`: Unit tests (`./internal/...`) and workspace tests (`./tests/...`)
-- `lint`: golangci-lint with `only-new-issues: true`
+- `lint`: golangci-lint (version pinned to `v2.12.2`), gating the whole repo — the rule set is defined by the committed `.golangci.yml`
 - `test-windows`: Same test suites on `windows-latest`, without coverage
 - `test-macos`: Same test suites on `macos-latest`, without coverage
 - `build`: Multi-platform compilation
