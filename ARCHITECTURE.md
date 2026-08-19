@@ -331,6 +331,36 @@ lnpm push --skip-hooks
    `node_modules/{package}` never sees an empty or half-written package, and a
    failed or interrupted push leaves the previous package in place.
 
+### `lnpm pull [package...]`
+
+Refresh linked packages from the store. The counterpart to `push`: where `push`
+sends a package out to its consumers, `pull` fetches the store's current
+contents into the consumer that runs it.
+
+```bash
+# Refresh every package in lnpm.lock
+lnpm pull
+
+# Refresh only the named packages
+lnpm pull my-package other-pkg
+```
+
+**Process:**
+1. Read the linked set from `lnpm.lock` (all of it, or just the named packages,
+   which must already be linked here — `pull` refreshes links, it never creates
+   them)
+2. For each package, look it up in the store; skip it when the lock entry
+   already matches the store's version and content hash
+3. Hard link the store's current files into a temporary directory and rename it
+   over `.lnpm/{package}/`, exactly as `add` does
+4. Update the entry in `lnpm.lock`, preserving the original `package.json`
+   specifier recorded by `add`
+
+`package.json` is never touched: the `file:.lnpm/{package}` reference it holds
+is already correct, and only the contents behind it change. Nothing is written
+to bbolt either — publishing updates the package row in place, so the link row
+`add` recorded still points at the right package.
+
 ### `lnpm status`
 
 Show current state of all links.

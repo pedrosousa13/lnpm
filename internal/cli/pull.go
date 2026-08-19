@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -44,6 +46,9 @@ func RunPull(packageNames []string) error {
 			fmt.Println("No linked packages to pull")
 			return nil
 		}
+		// lock.List() ranges over a map, so sort to keep the report stable
+		// between runs.
+		sort.Strings(names)
 	} else {
 		for _, name := range names {
 			if !lock.Has(name) {
@@ -60,7 +65,8 @@ func RunPull(packageNames []string) error {
 	linker := link.New(cwd)
 
 	var failed []error
-	pulled := 0
+	refreshed := 0
+	skipped := 0
 	lockChanged := false
 	lastVersion := ""
 
@@ -73,7 +79,7 @@ func RunPull(packageNames []string) error {
 			continue
 		}
 		if pkg == nil {
-			failed = append(failed, fmt.Errorf("%s: not found in store", name))
+			failed = append(failed, fmt.Errorf("%s: not found in store - did you run 'lnpm publish' in the package directory", name))
 			continue
 		}
 
@@ -81,20 +87,26 @@ func RunPull(packageNames []string) error {
 
 		if entry.Version == pkg.Version && entry.Hash == pkg.ContentHash {
 			fmt.Printf("already up to date (%s)\n", pkg.Version)
-			pulled++
-			lastVersion = pkg.Version
+			skipped++
 			continue
 		}
 
+		// Every path out of here closes the "Pulling <name>... " line, so a
+		// failure names itself where it happened instead of leaving the line
+		// dangling until the end-of-run report.
 		files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
 		if err != nil {
-			fmt.Println()
+			fmt.Printf("failed to get package files: %v\n", err)
 			failed = append(failed, fmt.Errorf("%s: failed to get package files: %w", name, err))
 			continue
 		}
 
+		// The link type Link reports is deliberately dropped, and no db link row
+		// is written: publishing updates the existing package row in place, so
+		// the row add recorded still points at the package pull just linked, and
+		// no command surfaces the stored link type.
 		if _, err := linker.Link(pkg.Name, pkg.StorePath, files); err != nil {
-			fmt.Println()
+			fmt.Printf("failed to link package: %v\n", err)
 			failed = append(failed, fmt.Errorf("%s: failed to link package: %w", name, err))
 			continue
 		}
@@ -112,14 +124,27 @@ func RunPull(packageNames []string) error {
 		lockChanged = true
 
 		fmt.Printf("updated %s -> %s\n", entry.Version, pkg.Version)
-		pulled++
+		refreshed++
 		lastVersion = pkg.Version
 	}
 
+	// A failed save must not swallow the per-package failures: both are
+	// reported, and both are returned.
+	var saveErr error
 	if lockChanged {
 		if err := lock.Save(cwd); err != nil {
-			return fmt.Errorf("failed to save lock file: %w", err)
+			saveErr = fmt.Errorf("failed to save lock file: %w", err)
 		}
+	}
+
+	// The success line comes first so a partially failed run ends on the warning
+	// block it exits non-zero for.
+	if refreshed == 1 && len(packageNames) == 1 {
+		fmt.Printf("%s Pulled %s@%s\n", iconOK(), names[0], lastVersion)
+	} else if refreshed > 0 {
+		fmt.Printf("%s Pulled %d package(s)\n", iconOK(), refreshed)
+	} else if skipped > 0 && len(failed) == 0 {
+		fmt.Printf("%s Already up to date\n", iconOK())
 	}
 
 	if len(failed) > 0 {
@@ -128,16 +153,13 @@ func RunPull(packageNames []string) error {
 			fmt.Printf("  - %v\n", err)
 		}
 	}
-
-	if pulled == 1 && len(packageNames) == 1 {
-		fmt.Printf("%s Pulled %s@%s\n", iconOK(), names[0], lastVersion)
-	} else if pulled > 0 {
-		fmt.Printf("%s Pulled %d package(s)\n", iconOK(), pulled)
+	if saveErr != nil {
+		fmt.Printf("\n%s %v\n", iconWarn(), saveErr)
 	}
 
+	var pullErr error
 	if len(failed) > 0 {
-		return fmt.Errorf("%d of %d package(s) failed to pull", len(failed), len(names))
+		pullErr = fmt.Errorf("%d of %d package(s) failed to pull", len(failed), len(names))
 	}
-
-	return nil
+	return errors.Join(pullErr, saveErr)
 }
