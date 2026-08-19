@@ -229,7 +229,7 @@ env.AssertLockfile(projectPath, func(lock *lockfile.LockFile) {
 
 **Platform Testing:**
 - Primary: `ubuntu-latest`
-- Go version: `1.22` (defined in workflow and `go.mod`)
+- Go version: `1.26` (defined in `go.mod`, which workflows read via `go-version-file`)
 
 ---
 
