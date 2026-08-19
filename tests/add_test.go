@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,10 +314,11 @@ func TestAddMultipleByVersion(t *testing.T) {
 		t.Fatalf("add pkg-a@1.2.3 pkg-b should succeed, got: %v", err)
 	}
 
-	env.AssertFilesLinked(projectDir, "pkg-a")
-	env.AssertFilesLinked(projectDir, "pkg-b")
-	env.AssertPackageJSON(projectDir, "pkg-a", "file:.lnpm/pkg-a")
-	env.AssertPackageJSON(projectDir, "pkg-b", "file:.lnpm/pkg-b")
+	for _, name := range []string{"pkg-a", "pkg-b"} {
+		env.AssertSymlinkExists(projectDir, name)
+		env.AssertPackageJSON(projectDir, name, "file:.lnpm/"+name)
+		env.AssertDatabaseLink(name, projectDir)
+	}
 }
 
 // TestAddMultipleByVersionMismatch verifies a non-matching version fails only
@@ -352,36 +352,11 @@ func TestAddMultipleByVersionMismatch(t *testing.T) {
 	}
 
 	// pkg-b still linked, pkg-a not.
-	env.AssertFilesLinked(projectDir, "pkg-b")
+	env.AssertSymlinkExists(projectDir, "pkg-b")
 	env.AssertPackageJSON(projectDir, "pkg-b", "file:.lnpm/pkg-b")
+	env.AssertDatabaseLink("pkg-b", projectDir)
+
 	env.AssertSymlinkMissing(projectDir, "pkg-a")
 	env.AssertPackageJSONMissing(projectDir, "pkg-a")
-}
-
-// captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
-// printed. The multi-package add reports per-package failures on stdout rather
-// than in its returned error, so comparing wording requires reading it.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-	orig := os.Stdout
-	os.Stdout = w
-
-	done := make(chan string, 1)
-	go func() {
-		data, _ := io.ReadAll(r)
-		done <- string(data)
-	}()
-
-	fn()
-
-	os.Stdout = orig
-	_ = w.Close()
-	out := <-done
-	_ = r.Close()
-	return out
+	env.AssertDatabaseNoLink("pkg-a", projectDir)
 }
