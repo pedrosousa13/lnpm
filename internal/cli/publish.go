@@ -252,7 +252,9 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 	return nil
 }
 
-// pushToLinkedProjects pushes updates to all projects linked to this package
+// pushToLinkedProjects pushes updates to all projects linked to this package.
+// It returns an error if any linked project failed to update, matching push's
+// own pushToAllProjects.
 func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) error {
 	projects, err := database.GetProjectsForPackage(pkg.ID)
 	if err != nil {
