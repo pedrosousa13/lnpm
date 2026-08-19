@@ -113,38 +113,38 @@ func TestIsExcluded(t *testing.T) {
 	}
 }
 
-// TestIsExcludedGitignoreSemantics covers the gitignore/npmignore pattern forms
-// whose expected value the current matcher happens to produce. It produces them
-// by accident, not by handling the pattern: "dist/" and "/dist" both contain a
-// "/", so they take the full-path glob branch and then the pattern+"/" prefix
-// check, and neither can ever match; the negation case comes out right only
-// because "dist/*" matches a sibling that should be excluded anyway, with the
-// "!" pattern skipped. They are recorded so the contract sits in one place and
-// so they turn red if a later change regresses them.
-//
-// Its counterpart, TestIsExcludedGitignoreSemanticsPending, holds the cases the
-// current matcher cannot satisfy. The two together are the contract for the
-// isExcluded rewrite in #150; they are split only so the suite stays green
-// today.
+// TestIsExcludedGitignoreSemantics pins the gitignore/npmignore semantics
+// isExcluded implements: a trailing slash excludes a directory and everything
+// under it, a leading slash anchors a pattern to the package root, and among
+// several matching patterns the last one wins, so a "!" pattern can re-include
+// a path an earlier pattern excluded.
 func TestIsExcludedGitignoreSemantics(t *testing.T) {
 	tests := []struct {
 		path     string
 		patterns []string
 		want     bool
 	}{
-		// Trailing slash: "dist/" excludes the dist directory and its contents,
-		// and nothing else.
+		// Trailing slash: "dist/" excludes the dist directory and everything
+		// under it, and nothing else.
+		// CAVEAT on {"dist", ...}: git's trailing slash matches directories
+		// only, and isExcluded gets no directory signal, so it also matches a
+		// same-named plain file. This case assumes "dist" is a directory.
+		{"dist/index.js", []string{"dist/"}, true},
+		{"dist", []string{"dist/"}, true},
 		{"src/index.ts", []string{"dist/"}, false},
 
 		// Leading slash anchors the pattern to the package root, so a nested
-		// "dist" further down the tree is not matched.
+		// path of the same name further down the tree is not matched.
+		{"credentials.json", []string{"/credentials.json"}, true},
+		{"dist/index.js", []string{"/dist"}, true},
 		{"src/dist/index.js", []string{"/dist"}, false},
 
 		// Negation: the last matching pattern wins, so "!dist/keep.js"
 		// re-includes a file that "dist/*" excluded, while its siblings stay
 		// excluded. The pattern is "dist/*" and not "dist/" because a trailing
 		// slash prunes the directory outright, and nothing beneath a pruned
-		// directory can be re-included.
+		// directory can be re-included; on "dist/*" git and npm agree.
+		{"dist/keep.js", []string{"dist/*", "!dist/keep.js"}, false},
 		{"dist/drop.js", []string{"dist/*", "!dist/keep.js"}, true},
 	}
 
@@ -158,40 +158,29 @@ func TestIsExcludedGitignoreSemantics(t *testing.T) {
 	}
 }
 
-// TestIsExcludedGitignoreSemanticsPending records the gitignore/npmignore
-// pattern forms isExcluded silently ignores today: every case here fails
-// against the current matcher. The expected values describe correct gitignore
-// semantics, not current behavior.
-func TestIsExcludedGitignoreSemanticsPending(t *testing.T) {
-	t.Skip("pending isExcluded rewrite - see #150")
-
+// TestIsExcludedNegationDoesNotReachDescendants pins git's rule that "it is not
+// possible to re-include a file if a parent directory of that file is
+// excluded": a "!" pattern re-includes only the paths it matches directly,
+// never the paths that merely sit underneath a directory it matched. A positive
+// pattern keeps the opposite behavior, because git ignores everything inside an
+// ignored directory.
+func TestIsExcludedNegationDoesNotReachDescendants(t *testing.T) {
 	tests := []struct {
 		path     string
 		patterns []string
 		want     bool
 	}{
-		// Trailing slash: "dist/" excludes the dist directory and everything
-		// under it. isExcluded never strips the trailing slash, so the pattern
-		// matches nothing.
-		// CAVEAT on {"dist", ...}: git's trailing slash matches directories
-		// only, and isExcluded gets no directory signal, so this case assumes
-		// "dist" is a directory.
-		{"dist/index.js", []string{"dist/"}, true},
-		{"dist", []string{"dist/"}, true},
+		// "!foo" names the directory, not its contents, so foo/bar stays out.
+		{"foo/bar", []string{"foo/bar", "!foo"}, true},
+		{"foo/sub/baz.js", []string{"foo/**", "!foo"}, true},
+		{"dist/a.js", []string{"dist/", "!dist/"}, true},
 
-		// Leading slash anchors the pattern to the package root. isExcluded
-		// never strips it, so "/credentials.json" matches nothing and the file
-		// is copied into the shared store.
-		{"credentials.json", []string{"/credentials.json"}, true},
-		{"dist/index.js", []string{"/dist"}, true},
+		// A negation still matches its own path exactly.
+		{"foo", []string{"foo", "!foo"}, false},
+		{"dist", []string{"dist/", "!dist/"}, false},
 
-		// Negation: the last matching pattern wins, so "!dist/keep.js"
-		// re-includes a file that "dist/*" excluded. isExcluded skips "!"
-		// patterns entirely, so keep.js stays excluded with its siblings. The
-		// pattern is "dist/*" and not "dist/" because a trailing slash prunes
-		// the directory outright, and nothing beneath a pruned directory can be
-		// re-included.
-		{"dist/keep.js", []string{"dist/*", "!dist/keep.js"}, false},
+		// A positive parent pattern still excludes everything below it.
+		{"node_modules/foo/index.js", []string{"node_modules"}, true},
 	}
 
 	for _, tt := range tests {
@@ -326,6 +315,247 @@ func TestPack(t *testing.T) {
 	for _, name := range excludedFiles {
 		if fileNames[name] {
 			t.Errorf("expected file %q to be excluded", name)
+		}
+	}
+}
+
+// TestPackNpmignoreGitignoreSemantics packs a real package whose .npmignore
+// uses the pattern forms #150 added: a root-anchored "/credentials.json", a
+// trailing-slash directory "dist/", and a negation "!dist/keep.js".
+func TestPackNpmignoreGitignoreSemantics(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "ignore-semantics",
+		"version": "1.0.0"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	npmignore := "/credentials.json\ndist/\n!dist/keep.js\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte(npmignore), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "credentials.json"), []byte(`{"token":"x"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "index.js"), []byte("module.exports = {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	distDir := filepath.Join(tmpDir, "dist")
+	if err := os.MkdirAll(distDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "keep.js"), []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "drop.js"), []byte("drop"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A nested credentials.json proves "/credentials.json" is anchored to the
+	// package root and does not exclude the same name further down the tree.
+	nestedDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "credentials.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range files {
+		packed[f.RelPath] = true
+	}
+
+	for _, name := range []string{"package.json", "index.js", "src/credentials.json"} {
+		if !packed[name] {
+			t.Errorf("expected file %q to be packed, packed set was %v", name, packed)
+		}
+	}
+	for _, name := range []string{"credentials.json", "dist/drop.js", ".npmignore"} {
+		if packed[name] {
+			t.Errorf("expected file %q to be excluded", name)
+		}
+	}
+
+	// "dist/" + "!dist/keep.js" is the one combination where git and npm
+	// disagree: git prunes the whole directory and never reconsiders keep.js,
+	// npm packs both files. lnpm lands on git's answer, but by a different
+	// route than isExcluded alone: isExcluded("dist/keep.js", ...) is false
+	// here, because the negation is the last matching pattern. The file is
+	// still not packed because collectFiles returns filepath.SkipDir for the
+	// excluded "dist" directory, so the walk never reaches keep.js to ask.
+	//
+	// Which answer is correct is an open product decision (see #150). This
+	// assertion records what lnpm does today rather than endorsing it.
+	if packed["dist/keep.js"] {
+		t.Errorf("dist/keep.js was packed: directory pruning no longer beats a negation, which changes documented behavior")
+	}
+}
+
+// TestPackNpmignoreNegationReincludesFile packs a real package whose .npmignore
+// re-includes one file out of an otherwise ignored directory.
+//
+// The pattern is "dist/*", not "dist/": a trailing slash prunes the directory
+// during the walk, so a later negation can never reach inside it. "dist/*"
+// matches the entries instead, and on that form git and npm agree — keep.js is
+// re-included, drop.js stays out.
+func TestPackNpmignoreNegationReincludesFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "ignore-negation",
+		"version": "1.0.0"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	npmignore := "/credentials.json\ndist/*\n!dist/keep.js\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte(npmignore), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "credentials.json"), []byte(`{"token":"x"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "index.js"), []byte("module.exports = {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	distDir := filepath.Join(tmpDir, "dist")
+	if err := os.MkdirAll(distDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "keep.js"), []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "drop.js"), []byte("drop"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A nested credentials.json proves "/credentials.json" is anchored to the
+	// package root and does not exclude the same name further down the tree.
+	nestedDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "credentials.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range files {
+		packed[f.RelPath] = true
+	}
+
+	for _, name := range []string{"package.json", "index.js", "src/credentials.json", "dist/keep.js"} {
+		if !packed[name] {
+			t.Errorf("expected file %q to be packed, packed set was %v", name, packed)
+		}
+	}
+	for _, name := range []string{"credentials.json", "dist/drop.js"} {
+		if packed[name] {
+			t.Errorf("expected file %q to be excluded", name)
+		}
+	}
+}
+
+// TestIsExcludedDefaultExcludesCannotBeNegated proves a user "!" pattern cannot
+// re-include a default-excluded path. collectFiles appends defaultExcludes
+// after the user's patterns, and the last matching pattern wins, so a default
+// exclude always has the final say.
+func TestIsExcludedDefaultExcludesCannotBeNegated(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		userPats []string
+	}{
+		{"negated .env", ".env", []string{"!.env"}},
+		{"negated node_modules file", "node_modules/foo", []string{"!node_modules/foo"}},
+		{"negated node_modules dir", "node_modules", []string{"!node_modules"}},
+		{"negated .npmrc", ".npmrc", []string{"!.npmrc"}},
+		{"negated .git file", ".git/config", []string{"!.git/config"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns := append(append([]string{}, tt.userPats...), defaultExcludes...)
+			if !isExcluded(tt.path, patterns) {
+				t.Errorf("isExcluded(%q, user %v + defaults) = false, want true: a user negation must not re-include a default exclude", tt.path, tt.userPats)
+			}
+		})
+	}
+}
+
+// TestPackDefaultExcludesWinInWhitelistMode proves default excludes still win
+// when package.json has a "files" whitelist and .npmignore tries to negate
+// them: excludes are evaluated before the whitelist, and defaultExcludes are
+// appended last so they have the final say.
+func TestPackDefaultExcludesWinInWhitelistMode(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "whitelist-defaults",
+		"version": "1.0.0",
+		"files": ["dist", ".env", "node_modules"]
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte("!.env\n!node_modules\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("SECRET=1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeModules := filepath.Join(tmpDir, "node_modules", "dep")
+	if err := os.MkdirAll(nodeModules, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeModules, "index.js"), []byte("dep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	distDir := filepath.Join(tmpDir, "dist")
+	if err := os.MkdirAll(distDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.js"), []byte("ok"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range files {
+		packed[f.RelPath] = true
+	}
+
+	if !packed["dist/index.js"] {
+		t.Errorf("expected whitelisted file %q to be packed, packed set was %v", "dist/index.js", packed)
+	}
+	for _, name := range []string{".env", "node_modules/dep/index.js"} {
+		if packed[name] {
+			t.Errorf("default-excluded %q was packed: a user negation must not re-include it", name)
 		}
 	}
 }
