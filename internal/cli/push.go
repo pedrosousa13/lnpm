@@ -51,6 +51,11 @@ func RunPush(skipHooks bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to pack: %w", err)
 		}
+		cleanup, err := pack.RewriteWorkspaceDeps(cwd, files)
+		defer cleanup()
+		if err != nil {
+			return err
+		}
 		return finishPublish(cwd, pkgJSON, files, database, false)
 	}
 
@@ -63,6 +68,14 @@ func RunPush(skipHooks bool) error {
 	_, files, err := pack.Pack(cwd)
 	if err != nil {
 		return fmt.Errorf("failed to pack: %w", err)
+	}
+
+	// Resolve any workspace: dependency specifiers before hashing, so a push
+	// stores the same resolved package.json a publish would.
+	cleanup, err := pack.RewriteWorkspaceDeps(cwd, files)
+	defer cleanup()
+	if err != nil {
+		return err
 	}
 
 	// Calculate content hash

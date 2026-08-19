@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,4 +122,59 @@ func TestNpmYarnWorkspaceResolution(t *testing.T) {
 		appDir:  filepath.Join("apps", "app"),
 		pkgName: "npm-yarn-fix-lib",
 	})
+}
+
+// TestWorkspaceDependencyResolution publishes two packages of one workspace,
+// where the library depends on its sibling through "workspace:^", into a
+// consumer project that sits outside the workspace entirely.
+//
+// npm cannot install a workspace: specifier there, so the manifest lnpm links
+// must carry the sibling's real version instead — and real node must still
+// resolve the library and, through it, the sibling.
+func TestWorkspaceDependencyResolution(t *testing.T) {
+	t.Parallel()
+
+	if !nodeAvailable {
+		t.Skip("node not available; skipping real-resolution e2e test")
+	}
+
+	root := copyFixture(t, "workspace-deps")
+	store := newStore(t)
+
+	libDir := filepath.Join(root, "monorepo", "packages", "lib")
+	utilDir := filepath.Join(root, "monorepo", "packages", "util")
+	consumerDir := filepath.Join(root, "consumer")
+
+	runLNPM(t, store, utilDir, "publish")
+	runLNPM(t, store, libDir, "publish")
+
+	runLNPM(t, store, consumerDir, "add", "@ws-deps/util")
+	runLNPM(t, store, consumerDir, "add", "@ws-deps/lib")
+
+	// The linked manifest must be installable by npm: the sibling specifier is
+	// resolved, and no workspace: protocol survives anywhere in it.
+	linked := filepath.Join(consumerDir, ".lnpm", "@ws-deps", "lib")
+	assertDepValue(t, linked, "@ws-deps/util", "^2.3.0")
+	manifest, err := os.ReadFile(filepath.Join(linked, "package.json"))
+	if err != nil {
+		t.Fatalf("failed to read linked package.json: %v", err)
+	}
+	if strings.Contains(string(manifest), "workspace:") {
+		t.Fatalf("linked package.json still carries a workspace: specifier:\n%s", manifest)
+	}
+
+	// The developer's own manifest keeps the workspace: specifier.
+	source, err := os.ReadFile(filepath.Join(libDir, "package.json"))
+	if err != nil {
+		t.Fatalf("failed to read source package.json: %v", err)
+	}
+	if !strings.Contains(string(source), `"workspace:^"`) {
+		t.Fatalf("expected the source package.json to keep workspace:^, got:\n%s", source)
+	}
+
+	// node must resolve the library and the sibling it requires.
+	script := `process.stdout.write(require("@ws-deps/lib"))`
+	if got := runNode(t, consumerDir, script); got != "lib-v1+util-v1" {
+		t.Fatalf("expected node to resolve @ws-deps/lib to \"lib-v1+util-v1\", got %q", got)
+	}
 }

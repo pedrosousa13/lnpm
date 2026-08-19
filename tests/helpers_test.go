@@ -2,6 +2,7 @@ package tests
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,8 +10,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cespare/xxhash/v2"
+
 	"github.com/pedrosousa13/lnpm/internal/cli"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -824,6 +828,50 @@ func (te *TestEnvironment) publishAndAdd(pkgName string) (pkgDir, projectDir str
 func (te *TestEnvironment) AssertLinkedFileContent(projectDir, pkg, rel, want string) {
 	te.t.Helper()
 	te.AssertFileContent(filepath.Join(projectDir, ".lnpm", pkg, rel), want)
+}
+
+// AssertStoredContentHash checks that the package's recorded content hash is
+// the hash of the bytes actually sitting in the store, file by file. Anything
+// that changes a file's contents between packing and storing - a specifier
+// rewrite, say - has to be reflected in both or the store entry is addressed by
+// a hash of content it does not hold.
+func (te *TestEnvironment) AssertStoredContentHash(packageName string) {
+	te.t.Helper()
+
+	pkg, err := te.Database.GetPackageByName(packageName)
+	if err != nil || pkg == nil {
+		te.t.Fatalf("Package %s not found in database: %v", packageName, err)
+	}
+
+	entries, err := te.Database.GetFilesForPackage(pkg.ID)
+	if err != nil {
+		te.t.Fatalf("Failed to get file manifest for %s: %v", packageName, err)
+	}
+	if len(entries) == 0 {
+		te.t.Fatalf("Expected a file manifest for %s, got none", packageName)
+	}
+
+	data := make([]pack.FileEntryData, len(entries))
+	for i, e := range entries {
+		contents, err := os.ReadFile(filepath.Join(pkg.StorePath, e.RelativePath))
+		if err != nil {
+			te.t.Fatalf("Failed to read stored %s: %v", e.RelativePath, err)
+		}
+		if got := fmt.Sprintf("%016x", xxhash.Sum64(contents)); got != e.ContentHash {
+			te.t.Errorf("Stored %s hashes to %s, but the manifest records %s",
+				e.RelativePath, got, e.ContentHash)
+		}
+		data[i] = pack.FileEntryData{
+			RelPath: e.RelativePath,
+			Size:    e.Size,
+			Mode:    e.Mode,
+			Hash:    e.ContentHash,
+		}
+	}
+
+	if got := pack.HashFiles(pack.FileInfoFromStore(pkg.StorePath, data)); got != pkg.ContentHash {
+		te.t.Errorf("Expected content hash %s for %s, got %s", pkg.ContentHash, packageName, got)
+	}
 }
 
 // writeFile writes content to path (relative to cwd or absolute), failing on error.
