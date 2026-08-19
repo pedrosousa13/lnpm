@@ -70,8 +70,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
-          only-new-issues: true
+          version: v2.12.2
 
   test-windows:
     name: Test (Windows)

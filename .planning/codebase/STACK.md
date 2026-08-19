@@ -63,6 +63,7 @@
 **Build:**
 - `go.mod` - Go module dependencies
 - `Makefile` - Build targets, testing, cross-platform compilation
+- `.golangci.yml` - Lint rule set (enabled linters and exclusions)
 - `.github/workflows/ci.yaml` - CI pipeline configuration
 
 **User Config:**
