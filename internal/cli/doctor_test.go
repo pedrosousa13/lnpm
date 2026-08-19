@@ -33,11 +33,13 @@ func TestRunDoctorChecksConfiguredStorePath(t *testing.T) {
 
 // TestRunDoctorReportsConfiguredStoreHealthy is the acceptance criterion read
 // the other way round: with the configured store present, doctor must not
-// report it missing.
+// report it missing. newDoctorStoreConfig redirects the home directory, so the
+// ~/.lnpm default is absent and a doctor that ignored store_path would report
+// it missing here rather than passing by luck.
 func TestRunDoctorReportsConfiguredStoreHealthy(t *testing.T) {
 	want := filepath.Join(newDoctorStoreConfig(t), "mystore")
 	if err := os.MkdirAll(want, 0755); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Failed to create configured store %q: %v", want, err)
 	}
 
 	out := captureDoctorStdout(t)
@@ -70,6 +72,12 @@ func TestRunDoctorPrefersEnvStoreOverConfig(t *testing.T) {
 // temp dir. The configured directory itself is not created, so the caller
 // decides whether doctor should find it.
 //
+// The home directory is redirected into the same temp dir, so the ~/.lnpm
+// default resolves somewhere that does not exist. Without that, a machine
+// which happens to have a real ~/.lnpm reports it healthy, and a test asserting
+// the configured store was found passes even when doctor ignored the config
+// entirely.
+//
 // config caches the parsed file for the process, so the cache is dropped both
 // before the test (another test in this package may have populated it already)
 // and after it (so this test's config does not leak into the next one).
@@ -80,11 +88,13 @@ func newDoctorStoreConfig(t *testing.T) string {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	storePath := filepath.Join(dir, "mystore")
 	if err := os.WriteFile(cfgPath, []byte("store_path: "+storePath+"\n"), 0644); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Failed to write config file: %v", err)
 	}
 
 	t.Setenv("LNPM_CONFIG", cfgPath)
-	t.Setenv("LNPM_STORE", "") // empty is treated as unset, so config wins
+	t.Setenv("LNPM_STORE", "")   // empty is treated as unset, so config wins
+	t.Setenv("HOME", dir)        // os.UserHomeDir on unix
+	t.Setenv("USERPROFILE", dir) // os.UserHomeDir on windows
 
 	config.ResetForTesting()
 	t.Cleanup(config.ResetForTesting)
