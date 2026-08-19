@@ -156,10 +156,8 @@ func TestRemoveAllNoPackages(t *testing.T) {
 }
 
 // TestRemoveKeepsLockEntryWhenRestoreFails tests that a failed package.json
-// restore aborts the removal instead of silently dropping the lock entry. The
-// entry's OriginalVersion is the only surviving copy of the user's specifier,
-// so losing it would leave package.json pointing at an unlinked .lnpm path with
-// nothing left to restore from.
+// restore aborts the removal, keeping the lock entry (with its OriginalVersion)
+// and the database link.
 func TestRemoveKeepsLockEntryWhenRestoreFails(t *testing.T) {
 	env := setupTest(t)
 
@@ -178,7 +176,7 @@ func TestRemoveKeepsLockEntryWhenRestoreFails(t *testing.T) {
 	env.writeFile(filepath.Join(projectDir, "package.json"), "{not valid json")
 
 	if err := cli.RunRemove("restore-fail-pkg", false, false); err == nil {
-		t.Error("Expected error when package.json restore fails, got nil")
+		t.Fatal("Expected error when package.json restore fails, got nil")
 	}
 
 	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
@@ -205,7 +203,10 @@ func TestRemoveKeepsLockEntryWhenPackageJSONRemovalFails(t *testing.T) {
 	env.addPkg(projectDir, "remove-fail-pkg", false, false)
 	env.AssertPackageJSON(projectDir, "remove-fail-pkg", "file:.lnpm/remove-fail-pkg")
 	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
-		pkg, _ := lock.Get("remove-fail-pkg")
+		pkg, ok := lock.Get("remove-fail-pkg")
+		if !ok {
+			t.Fatal("Expected remove-fail-pkg in lockfile after add")
+		}
 		if pkg.OriginalVersion != "" {
 			t.Fatalf("Test needs an empty OriginalVersion to reach the removal branch, got %q", pkg.OriginalVersion)
 		}
@@ -215,7 +216,7 @@ func TestRemoveKeepsLockEntryWhenPackageJSONRemovalFails(t *testing.T) {
 	env.writeFile(filepath.Join(projectDir, "package.json"), "{not valid json")
 
 	if err := cli.RunRemove("remove-fail-pkg", false, false); err == nil {
-		t.Error("Expected error when package.json update fails, got nil")
+		t.Fatal("Expected error when package.json update fails, got nil")
 	}
 
 	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
