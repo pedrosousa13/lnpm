@@ -8,6 +8,7 @@ require (
 	github.com/panjf2000/ants/v2 v2.11.4
 	github.com/spf13/cobra v1.8.1
 	go.etcd.io/bbolt v1.3.8
+	golang.org/x/mod v0.17.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
