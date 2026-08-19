@@ -62,6 +62,35 @@ func TestReleaseBaseURLDefault(t *testing.T) {
 	}
 }
 
+// failingTransport makes every outbound request fail, standing in for a network
+// that cannot reach the GitHub API.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("simulated network failure")
+}
+
+// An update check that never reached GitHub used to be reported as "Already up
+// to date" with exit code 0, leaving users on an outdated version believing they
+// were current.
+//
+// Don't use t.Parallel() here - this swaps the process-wide default transport.
+func TestRunUpdateReportsCheckFailure(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+
+	prev := http.DefaultTransport
+	http.DefaultTransport = failingTransport{}
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	err := RunUpdate(true, "1.0.0")
+	if err == nil {
+		t.Fatal("RunUpdate = nil, want an error when the update check cannot reach GitHub")
+	}
+	if !strings.Contains(err.Error(), "failed to check for updates") {
+		t.Errorf("RunUpdate error = %q, want it to contain %q", err, "failed to check for updates")
+	}
+}
+
 func TestBuildDownloadURL(t *testing.T) {
 	ext := ".tar.gz"
 	if runtime.GOOS == "windows" {

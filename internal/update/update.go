@@ -16,9 +16,14 @@ import (
 )
 
 const (
-	githubRepo     = "pedrosousa13/lnpm"
-	checkInterval  = 24 * time.Hour
+	githubRepo    = "pedrosousa13/lnpm"
+	checkInterval = 24 * time.Hour
+	// requestTimeout bounds the background check, which runs alongside ordinary
+	// commands and must never noticeably delay them.
 	requestTimeout = 500 * time.Millisecond
+	// freshRequestTimeout bounds the explicit `lnpm update` check, which the user
+	// is waiting on and which must not give up on a merely slow connection.
+	freshRequestTimeout = 15 * time.Second
 )
 
 // githubAPIBaseURL is the GitHub API root. It is a var so tests can point it at
@@ -43,28 +48,32 @@ type Result struct {
 
 // CheckFresh checks for latest version without using cache
 // Used when user explicitly runs 'lnpm update'
-func CheckFresh(currentVersion string) *Result {
+//
+// It returns (nil, nil) only for the dev-build skip. A failed fetch is returned
+// as an error rather than swallowed, so the caller can tell "no update
+// available" apart from "could not check".
+func CheckFresh(currentVersion string) (*Result, error) {
 	if currentVersion == "dev" || currentVersion == "" {
-		return nil
+		return nil, nil
 	}
 
 	debug.Logf("update: checking for fresh version %s (bypassing cache)", currentVersion)
 
 	// Fetch from GitHub directly
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), freshRequestTimeout)
 	defer cancel()
 
 	latest, err := fetchLatestVersion(ctx)
 	if err != nil {
 		debug.Logf("update: fetch failed: %v", err)
-		return nil
+		return nil, fmt.Errorf("failed to fetch latest release from %s: %w", githubAPIBaseURL, err)
 	}
 
 	// Update cache
 	_, cachePath := loadCache()
 	saveCache(cachePath, latest)
 
-	return compareVersions(currentVersion, latest)
+	return compareVersions(currentVersion, latest), nil
 }
 
 // CheckAsync starts a background version check and returns a channel

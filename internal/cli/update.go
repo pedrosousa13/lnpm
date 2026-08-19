@@ -64,9 +64,13 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
+	// CheckFresh returns a nil result only for the dev-build skip, which the
+	// guard at the top of this function already rejects - so this is unreachable
+	// today. It stays because that agreement is two copies of the same condition
+	// in two packages: widen CheckFresh's skip list and this would panic on the
+	// next line instead of exiting cleanly.
 	if result == nil {
-		fmt.Println("Already up to date")
-		return nil
+		return fmt.Errorf("update check returned no result")
 	}
 
 	if !result.UpdateAvailable {
@@ -96,8 +100,7 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 func getLatestVersion(currentVersion string) (*update.Result, error) {
 	// Use fresh check when user explicitly runs 'lnpm update' command
 	// This ensures we always fetch latest from GitHub, not cached version
-	result := update.CheckFresh(currentVersion)
-	return result, nil
+	return update.CheckFresh(currentVersion)
 }
 
 // wasInstalledViaGo checks if lnpm was installed via 'go install'
