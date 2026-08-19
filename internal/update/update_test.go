@@ -239,7 +239,10 @@ func TestCheckFreshBypassesCache(t *testing.T) {
 		_, _ = w.Write([]byte(`{"tag_name": "v3.0.0"}`))
 	})
 
-	result := CheckFresh("1.0.0")
+	result, err := CheckFresh("1.0.0")
+	if err != nil {
+		t.Fatalf("CheckFresh returned error: %v", err)
+	}
 	if got := hits.Load(); got != 1 {
 		t.Errorf("server hits = %d, want 1 (CheckFresh must ignore a fresh cache)", got)
 	}
@@ -256,6 +259,45 @@ func TestCheckFreshBypassesCache(t *testing.T) {
 	}
 }
 
+// A failed fetch must be reported, not swallowed: returning a bare nil made a
+// network failure indistinguishable from "no update available", so `lnpm update`
+// printed "Already up to date" and exited 0 without ever reaching GitHub.
+func TestCheckFreshReturnsErrorWhenFetchFails(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	result, err := CheckFresh("1.0.0")
+	if err == nil {
+		t.Errorf("CheckFresh error = nil, want non-nil when the fetch fails")
+	}
+	if result != nil {
+		t.Errorf("CheckFresh = %+v, want nil result when the fetch fails", result)
+	}
+}
+
+// The happy path must survive the error plumbing: a successful check that finds
+// no newer version still reports success, so the caller prints "Already up to
+// date" and exits 0.
+func TestCheckFreshSucceedsWhenAlreadyUpToDate(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v1.0.0"}`))
+	})
+
+	result, err := CheckFresh("1.0.0")
+	if err != nil {
+		t.Fatalf("CheckFresh returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("CheckFresh returned nil result for a successful check")
+	}
+	if result.UpdateAvailable {
+		t.Errorf("CheckFresh = %+v, want UpdateAvailable false", result)
+	}
+}
+
 func TestCheckFreshSkipsDevBuilds(t *testing.T) {
 	t.Setenv("LNPM_STORE", t.TempDir())
 	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -263,10 +305,57 @@ func TestCheckFreshSkipsDevBuilds(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
+	// The dev-build skip is not a failure, so it must not surface as an error.
 	for _, v := range []string{"dev", ""} {
-		if result := CheckFresh(v); result != nil {
-			t.Errorf("CheckFresh(%q) = %+v, want nil", v, result)
+		result, err := CheckFresh(v)
+		if result != nil || err != nil {
+			t.Errorf("CheckFresh(%q) = (%+v, %v), want (nil, nil)", v, result, err)
 		}
+	}
+}
+
+// The explicit path has a user waiting on it, so it must not give up on a
+// merely slow connection the way the background check does.
+func TestCheckFreshToleratesSlowResponse(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(requestTimeout + 100*time.Millisecond)
+		_, _ = w.Write([]byte(`{"tag_name": "v2.0.0"}`))
+	})
+
+	result, err := CheckFresh("1.0.0")
+	if err != nil {
+		t.Fatalf("CheckFresh returned error: %v", err)
+	}
+	if result == nil || result.LatestVersion != "v2.0.0" {
+		t.Errorf("CheckFresh = %+v, want LatestVersion v2.0.0", result)
+	}
+}
+
+func TestBackgroundRequestTimeoutStaysShort(t *testing.T) {
+	// The background check runs alongside ordinary commands, so it must keep a
+	// timeout short enough that a slow network never noticeably delays them.
+	if requestTimeout > time.Second {
+		t.Errorf("requestTimeout = %v, want at most 1s for the background check", requestTimeout)
+	}
+}
+
+func TestFreshRequestTimeoutIsGenerous(t *testing.T) {
+	// The explicit `lnpm update` check is interactive, so it must allow for a
+	// slow connection rather than reporting a failure the user cannot act on.
+	if freshRequestTimeout < 10*time.Second {
+		t.Errorf("freshRequestTimeout = %v, want at least 10s", freshRequestTimeout)
+	}
+}
+
+func TestCheckStaysSilentOnFetchFailure(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	if result := check("1.0.0"); result != nil {
+		t.Errorf("check = %+v, want nil (the background check must fail silently)", result)
 	}
 }
 
