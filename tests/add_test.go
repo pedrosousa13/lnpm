@@ -360,3 +360,45 @@ func TestAddMultipleByVersionMismatch(t *testing.T) {
 	env.AssertPackageJSONMissing(projectDir, "pkg-a")
 	env.AssertDatabaseNoLink("pkg-a", projectDir)
 }
+
+// TestAddMultipleLeavesSucceedingPackageIntactWhenSiblingFails pins the other
+// half of the failure contract: a package that fails leaves the lock file with
+// no trace of itself, and the package beside it is recorded in full - symlink,
+// package.json reference, database link, and a lock entry carrying its real
+// original specifier.
+//
+// A package.json rewrite cannot be failed for one package alone (the batch
+// shares one file), so the failing sibling here is one that never resolves in
+// the store. It reaches the same end state the rewrite rollback aims for:
+// reported as an error, nothing recorded.
+func TestAddMultipleLeavesSucceedingPackageIntactWhenSiblingFails(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("survivor-pkg")
+
+	projectDir := env.CreateTestPackage("survivor-project", "1.0.0", nil)
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":         "survivor-project",
+		"version":      "1.0.0",
+		"dependencies": map[string]interface{}{"survivor-pkg": "^3.1.0"},
+	})
+
+	env.chdir(projectDir)
+	captureStdout(t, func() {
+		if err := cli.RunAddMultiple([]string{"survivor-pkg", "missing-pkg"}, false, false, false, false); err == nil {
+			t.Error("Expected an error when one of the packages fails to add")
+		}
+	})
+
+	env.AssertSymlinkExists(projectDir, "survivor-pkg")
+	env.AssertPackageJSON(projectDir, "survivor-pkg", "file:.lnpm/survivor-pkg")
+	env.AssertDatabaseLink("survivor-pkg", projectDir)
+	assertOriginalVersion(t, env, projectDir, "survivor-pkg", "^3.1.0")
+
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		if lock.Has("missing-pkg") {
+			t.Error("Expected no lockfile entry for the package that failed to add")
+		}
+	})
+	env.AssertSymlinkMissing(projectDir, "missing-pkg")
+}
