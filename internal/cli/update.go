@@ -202,8 +202,10 @@ func installLatestViaBinary(version string) error {
 		return fmt.Errorf("failed to backup current binary: %w", err)
 	}
 
-	// Replace with new binary
-	if err := os.Rename(newBin, binPath); err != nil {
+	// Replace with new binary. installFile stages inside binPath's own
+	// directory and chmods it, so there is no cross-filesystem rename and no
+	// separate chmod to do here.
+	if err := installFile(newBin, binPath); err != nil {
 		// Restore backup on failure
 		if restoreErr := os.Rename(backup, binPath); restoreErr != nil {
 			return fmt.Errorf("failed to install new binary: %w (and failed to restore backup: %v)", err, restoreErr)
@@ -211,16 +213,66 @@ func installLatestViaBinary(version string) error {
 		return fmt.Errorf("failed to install new binary: %w", err)
 	}
 
-	// Make it executable
-	if err := os.Chmod(binPath, 0755); err != nil {
-		return fmt.Errorf("failed to make binary executable: %w", err)
-	}
-
 	// Remove backup
 	_ = os.Remove(backup)
 
 	fmt.Printf("✓ Successfully updated to latest version\n")
 	fmt.Printf("  Binary location: %s\n", binPath)
+	return nil
+}
+
+// installFile puts src's bytes at dst, staging the copy inside dst's own
+// directory so the final rename stays within one filesystem. The downloaded
+// binary lives under the system temp dir, which is frequently a separate mount
+// from the install location - renaming it straight onto dst fails there with
+// EXDEV, and the update can never succeed.
+func installFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open downloaded binary: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+
+	destDir := filepath.Dir(dst)
+	staged, err := os.CreateTemp(destDir, ".lnpm-update-*")
+	if err != nil {
+		if os.IsPermission(err) {
+			return fmt.Errorf("cannot write to %s: re-run with sufficient privileges (for example under sudo): %w", destDir, err)
+		}
+		return fmt.Errorf("failed to stage new binary in %s: %w", destDir, err)
+	}
+
+	// Cleared once the rename has consumed the staging file, so this cleanup
+	// can never delete the freshly installed binary - or, later, some unrelated
+	// file that happens to reuse the name.
+	stagedPath := staged.Name()
+	defer func() {
+		if stagedPath != "" {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+
+	if _, err := io.Copy(staged, in); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("failed to write new binary: %w", err)
+	}
+
+	// chmod explicitly rather than relying on the process umask: os.CreateTemp
+	// makes the file 0600, and the installed binary has to be executable
+	// whatever umask the user happens to run with.
+	if err := staged.Chmod(0755); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("failed to make new binary executable: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("failed to write new binary: %w", err)
+	}
+
+	if err := os.Rename(stagedPath, dst); err != nil {
+		return fmt.Errorf("failed to move the staged binary into place: %w", err)
+	}
+	stagedPath = ""
+
 	return nil
 }
 
