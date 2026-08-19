@@ -121,7 +121,7 @@ lnpm/
 **tests/fixtures:**
 - Purpose: Test workspace examples
 - Contains: Sample npm/yarn/pnpm workspaces for testing
-- Subdirectories: `npm-workspace/`, `yarn-workspace/`, `pnpm-workspace/`, `turborepo/`, `nx/`
+- Subdirectories: `npm-workspace/`, `npm-workspace-negation/`, `yarn-workspace/`, `pnpm-workspace/`, `turborepo/`, `nx/`
 
 ## Key File Locations
 

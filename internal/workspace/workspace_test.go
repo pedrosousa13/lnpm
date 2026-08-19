@@ -107,7 +107,7 @@ func TestExpandGlobsSkipsDirectoriesWithoutPackageJSON(t *testing.T) {
 	assertPackages(t, packages, []string{pkgA})
 }
 
-func TestDetectPnpmWorkspaceExcludesNegatedPackage(t *testing.T) {
+func TestDetectPNPMWorkspaceExcludesNegatedPackage(t *testing.T) {
 	root := t.TempDir()
 	pkgA := writePackage(t, root, "packages/package-a")
 	writePackage(t, root, "packages/package-b")

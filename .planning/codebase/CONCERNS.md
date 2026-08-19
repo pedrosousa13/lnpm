@@ -187,7 +187,7 @@
 - Priority: High
 
 **Monorepo workspace detection:**
-- What's not tested: Edge cases in workspace file parsing, circular dependencies, invalid workspace configurations
+- What's not tested: Circular dependencies, invalid workspace configurations
 - Files: `internal/workspace/workspace.go`
 - Risk: Silent failures in complex monorepo setups
 - Priority: Medium
