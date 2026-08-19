@@ -168,6 +168,64 @@ func TestLink_DirectoryPermissions(t *testing.T) {
 	}
 }
 
+// TestLink_PackageDirectoryRespectsUmask tests that the package directory Link
+// leaves behind has the mode a plain os.MkdirAll(path, 0755) would produce
+// under the same umask. Link builds it as a temp directory and renames it into
+// place, and the temp directory must not be created in a way that bypasses the
+// umask (os.MkdirTemp's fixed 0700, or a Chmod, which ignores the umask and
+// would force 0755 no matter how restrictive the umask is).
+func TestLink_PackageDirectoryRespectsUmask(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - permission handling differs")
+	}
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	storeDir := filepath.Join(tmpDir, "store", "test-pkg")
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
+		t.Fatalf("Failed to create store dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "index.js"), []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	files := []pack.FileEntryData{
+		{RelPath: "index.js", Size: 4, Mode: 0644, Hash: "test123"},
+	}
+	fileInfos := pack.FileInfoFromStore(storeDir, files)
+
+	// Reference directory, created the way Link used to create the package
+	// directory. Comparing against it pins umask-relative behaviour rather
+	// than a hardcoded mode.
+	refDir := filepath.Join(tmpDir, "reference")
+	if err := os.MkdirAll(refDir, 0755); err != nil {
+		t.Fatalf("Failed to create reference dir: %v", err)
+	}
+	refInfo, err := os.Stat(refDir)
+	if err != nil {
+		t.Fatalf("Failed to stat reference dir: %v", err)
+	}
+
+	linker := New(projectDir)
+	if _, err := linker.Link("test-pkg", storeDir, fileInfos); err != nil {
+		t.Fatalf("Failed to link: %v", err)
+	}
+
+	pkgInfo, err := os.Stat(filepath.Join(projectDir, ".lnpm", "test-pkg"))
+	if err != nil {
+		t.Fatalf("Failed to stat package dir: %v", err)
+	}
+
+	if pkgInfo.Mode().Perm() != refInfo.Mode().Perm() {
+		t.Errorf("Expected .lnpm/test-pkg mode %o (as os.MkdirAll(path, 0755) yields under this umask), got %o",
+			refInfo.Mode().Perm(), pkgInfo.Mode().Perm())
+	}
+}
+
 // TestLink_NodeModulesPermissions tests node_modules symlink creation permissions
 func TestLink_NodeModulesPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -310,8 +368,8 @@ func TestLink_ExistingReadOnlyFile(t *testing.T) {
 	}
 	fileInfos := pack.FileInfoFromStore(storeDir, files)
 
-	// Link wipes the existing .lnpm/{pkg} dir (RemoveAll) and re-links, so the
-	// stale read-only file is replaced with the new content.
+	// Link populates a temp dir and renames it over the existing .lnpm/{pkg},
+	// so the stale read-only file is replaced with the new content.
 	linker := New(projectDir)
 	if _, err := linker.Link("test-pkg", storeDir, fileInfos); err != nil {
 		t.Fatalf("Link should replace existing read-only file, got error: %v", err)

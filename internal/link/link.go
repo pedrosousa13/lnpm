@@ -2,6 +2,7 @@ package link
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,7 +47,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 
 	// Guard against path traversal: packageName is joined into .lnpm/<name>
-	// (which we RemoveAll) and node_modules/<name>.
+	// (which we replace) and node_modules/<name>.
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return "", err
 	}
@@ -55,14 +56,27 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	linkType := l.determineLinkType(storePath)
 	debug.Logf("link: using %s mode", linkType)
 
-	// Create .lnpm/{package} directory
+	// Populate a temp directory next to .lnpm/{package} and rename it into
+	// place once it is complete. Clearing the live directory up front would
+	// expose a consumer building against node_modules/{package} to an empty or
+	// half-written package, and an interrupted link would leave that state
+	// behind permanently.
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
-	if err := os.RemoveAll(lnpmPath); err != nil {
-		return "", fmt.Errorf("failed to clean .lnpm directory: %w", err)
-	}
-	if err := os.MkdirAll(lnpmPath, 0755); err != nil {
+	parentDir := filepath.Dir(lnpmPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create .lnpm directory: %w", err)
 	}
+	tempPath, err := newTempDir(parentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp .lnpm directory: %w", err)
+	}
+	// Remove the temp dir unless it is successfully committed via rename.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(tempPath)
+		}
+	}()
 
 	// Track what methods we actually used (atomic for parallel access)
 	var reflinkCount, hardLinkCount, copyCount int32
@@ -92,7 +106,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 			defer wg.Done()
 			for f := range fileChan {
 				srcPath := filepath.Join(storePath, f.RelPath)
-				dstPath := filepath.Join(lnpmPath, f.RelPath)
+				dstPath := filepath.Join(tempPath, f.RelPath)
 
 				// Create parent directory
 				if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
@@ -217,6 +231,34 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 
 	if reflinkCount > 0 || hardLinkCount > 0 {
 		debug.Logf("link: reflinked %d, hard linked %d, copied %d files", reflinkCount, hardLinkCount, copyCount)
+	}
+
+	// Swap the completed package into place. The previous directory is renamed
+	// aside rather than deleted first, so .lnpm/{package} is missing for a
+	// single rename instead of for as long as a whole package tree takes to
+	// delete, and a failed swap can be rolled back.
+	retiredPath := tempPath + ".old"
+	hadPrevious := false
+	if _, err := os.Lstat(lnpmPath); err == nil {
+		if err := os.Rename(lnpmPath, retiredPath); err != nil {
+			return "", fmt.Errorf("failed to move aside existing linked package: %w", err)
+		}
+		hadPrevious = true
+	}
+	if err := os.Rename(tempPath, lnpmPath); err != nil {
+		if hadPrevious {
+			// If the rollback fails too, the previous package exists only at
+			// retiredPath. Name it in the error so it can be recovered by hand;
+			// deleting it here would destroy the user's only copy.
+			if rollbackErr := os.Rename(retiredPath, lnpmPath); rollbackErr != nil {
+				return "", fmt.Errorf("failed to finalize linked package: %w (the previous package could not be restored: %v, and is preserved at %s)", err, rollbackErr, retiredPath)
+			}
+		}
+		return "", fmt.Errorf("failed to finalize linked package: %w", err)
+	}
+	committed = true
+	if hadPrevious {
+		_ = os.RemoveAll(retiredPath)
 	}
 
 	// Create symlink in node_modules
@@ -361,11 +403,39 @@ func (l *Linker) ListLinked() ([]string, error) {
 
 	var packages []string
 	for _, entry := range entries {
-		if entry.IsDir() {
+		// Skip dot-prefixed entries: they are in-progress or crash-orphaned
+		// relink temp directories, not linked packages. This also skips a
+		// package whose name starts with a dot, which is safe in practice: npm
+		// forbids such names, so one can never have been linked here
+		// (ValidatePackageName itself only rejects "." and "..").
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
 			packages = append(packages, entry.Name())
 		}
 	}
 	return packages, nil
+}
+
+// newTempDir creates a uniquely named directory inside parent and returns its
+// path. The name is dot-prefixed so ListLinked skips it and so the retired-path
+// scheme in Link stays inside the same namespace.
+//
+// This exists instead of os.MkdirTemp because MkdirTemp hardcodes mode 0700,
+// whereas the linked package directory has always been created with 0755 less
+// the process umask. os.Mkdir applies the umask, so the previous permissions
+// are preserved by construction; a follow-up Chmod would not preserve them,
+// since Chmod ignores the umask and would force 0755 unconditionally.
+func newTempDir(parent string) (string, error) {
+	for attempt := 0; attempt < 1000; attempt++ {
+		path := filepath.Join(parent, fmt.Sprintf(".tmp-%x", rand.Uint64()))
+		err := os.Mkdir(path, 0755)
+		if err == nil {
+			return path, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("failed to find an unused temp directory name in %s", parent)
 }
 
 // copyFile copies a file
