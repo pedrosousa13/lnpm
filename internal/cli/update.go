@@ -196,9 +196,32 @@ func installLatestViaBinary(version string) error {
 	}
 	defer func() { _ = os.Remove(newBin) }()
 
+	if err := replaceBinary(newBin, binPath); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Successfully updated to latest version\n")
+	fmt.Printf("  Binary location: %s\n", binPath)
+	return nil
+}
+
+// replaceBinary swaps newBin in for the binary at binPath, keeping a backup so
+// a failed install leaves the working binary in place.
+//
+// This is a separate function purely so the backup/restore contract can be
+// tested: installLatestViaBinary resolves its target through os.Executable(),
+// which is process-global and cannot be injected.
+func replaceBinary(newBin, binPath string) error {
 	// Backup current binary
 	backup := binPath + ".bak"
 	if err := os.Rename(binPath, backup); err != nil {
+		// The backup rename is the first thing that touches the install
+		// directory, so it - not installFile - is where a root-owned
+		// /usr/local/bin actually stops the update. os.IsPermission unwraps the
+		// *os.LinkError os.Rename returns.
+		if os.IsPermission(err) {
+			return insufficientPrivilegesError(filepath.Dir(binPath), err)
+		}
 		return fmt.Errorf("failed to backup current binary: %w", err)
 	}
 
@@ -215,10 +238,18 @@ func installLatestViaBinary(version string) error {
 
 	// Remove backup
 	_ = os.Remove(backup)
-
-	fmt.Printf("✓ Successfully updated to latest version\n")
-	fmt.Printf("  Binary location: %s\n", binPath)
 	return nil
+}
+
+// insufficientPrivilegesError reports that dir cannot be written, shared by
+// every step of the swap that needs write permission on the install directory
+// so they all tell the user the same thing.
+//
+// Deliberate deviation from the "failed to X: %w" convention: this string is
+// read by an end user deciding whether to re-run the update under sudo, so it
+// leads with the problem and the fix rather than a chain of internal steps.
+func insufficientPrivilegesError(dir string, err error) error {
+	return fmt.Errorf("cannot write to %s: re-run with sufficient privileges (for example under sudo): %w", dir, err)
 }
 
 // installFile puts src's bytes at dst, staging the copy inside dst's own
@@ -237,7 +268,7 @@ func installFile(src, dst string) error {
 	staged, err := os.CreateTemp(destDir, ".lnpm-update-*")
 	if err != nil {
 		if os.IsPermission(err) {
-			return fmt.Errorf("cannot write to %s: re-run with sufficient privileges (for example under sudo): %w", destDir, err)
+			return insufficientPrivilegesError(destDir, err)
 		}
 		return fmt.Errorf("failed to stage new binary in %s: %w", destDir, err)
 	}

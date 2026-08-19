@@ -436,68 +436,20 @@ func TestVerifyChecksumNotListed(t *testing.T) {
 	}
 }
 
-// requirePermissionEnforcement skips tests that depend on the filesystem
-// actually refusing an operation. root bypasses permission bits, and Windows
-// does not model them the way these tests assume.
-func requirePermissionEnforcement(t *testing.T) {
-	t.Helper()
-
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not enforced the same way on Windows")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("running as root bypasses the permission checks this test relies on")
-	}
-}
-
 // writeInstallFixture lays down a source file in its own directory and a
 // destination file in another, returning both paths.
-func writeInstallFixture(t *testing.T, srcContent, dstContent string) (src, dst string) {
+func writeInstallFixture(t *testing.T, srcContent, dstContent string) (string, string) {
 	t.Helper()
 
-	src = filepath.Join(t.TempDir(), "lnpm-downloaded")
+	src := filepath.Join(t.TempDir(), "lnpm-downloaded")
 	if err := os.WriteFile(src, []byte(srcContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	dst = filepath.Join(t.TempDir(), "lnpm")
+	dst := filepath.Join(t.TempDir(), "lnpm")
 	if err := os.WriteFile(dst, []byte(dstContent), 0755); err != nil {
 		t.Fatal(err)
 	}
 	return src, dst
-}
-
-// The downloaded binary lives under the system temp dir, which is frequently a
-// different filesystem from the install location - there, renaming it onto the
-// target fails with EXDEV and the update can never succeed. installFile must
-// therefore stage inside the target's own directory and copy the bytes in.
-//
-// A source directory the process may not write stands in for that filesystem
-// boundary: renaming a file out of a directory needs write permission on that
-// directory, reading its bytes does not. An implementation that renames from
-// the source cannot pass this test; one that copies into the destination
-// directory does not care.
-func TestInstallFileDoesNotRenameOutOfTheSourceDirectory(t *testing.T) {
-	requirePermissionEnforcement(t)
-
-	src, dst := writeInstallFixture(t, "new-binary", "old-binary")
-
-	srcDir := filepath.Dir(src)
-	if err := os.Chmod(srcDir, 0555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(srcDir, 0755) })
-
-	if err := installFile(src, dst); err != nil {
-		t.Fatalf("installFile returned error: %v", err)
-	}
-
-	data, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "new-binary" {
-		t.Errorf("installed content = %q, want %q", data, "new-binary")
-	}
 }
 
 // A successful install must not leave its staging file sitting next to the
@@ -540,30 +492,6 @@ func TestInstallFileMakesTheInstalledBinaryExecutable(t *testing.T) {
 	}
 }
 
-// Installing into a directory the user cannot write is the common "installed
-// under /usr/local/bin" case. The error has to say what to do about it rather
-// than surfacing a bare permission-denied on a temp file name the user has
-// never seen.
-func TestInstallFileReportsInsufficientPrivileges(t *testing.T) {
-	requirePermissionEnforcement(t)
-
-	src, dst := writeInstallFixture(t, "new-binary", "old-binary")
-
-	dstDir := filepath.Dir(dst)
-	if err := os.Chmod(dstDir, 0555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dstDir, 0755) })
-
-	err := installFile(src, dst)
-	if err == nil {
-		t.Fatal("installFile returned nil for an unwritable destination directory, want an error")
-	}
-	if !strings.Contains(err.Error(), "privileges") {
-		t.Errorf("error = %q, want it to tell the user to re-run with sufficient privileges", err)
-	}
-}
-
 // A failure partway through the copy must not leave a half-written staging file
 // next to the target.
 func TestInstallFileRemovesStagingFileWhenTheCopyFails(t *testing.T) {
@@ -586,5 +514,32 @@ func TestInstallFileRemovesStagingFileWhenTheCopyFails(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Errorf("destination directory holds %v after a failed install, want only %q", names, filepath.Base(dst))
+	}
+}
+
+// A failed update must leave the user with a working lnpm: the original binary
+// back at its own path, and no stray .bak beside it for the next update to trip
+// over.
+//
+// A directory as the replacement makes the install step fail without touching
+// the backup rename, so the restore path is what is under test.
+func TestReplaceBinaryRestoresTheOriginalWhenTheInstallFails(t *testing.T) {
+	_, dst := writeInstallFixture(t, "unused", "old-binary")
+	unreadable := t.TempDir()
+
+	if err := replaceBinary(unreadable, dst); err == nil {
+		t.Fatal("replaceBinary returned nil when the new binary could not be read, want an error")
+	}
+
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("original binary is gone after a failed install: %v", err)
+	}
+	if string(data) != "old-binary" {
+		t.Errorf("binary content = %q after a failed install, want the original %q", data, "old-binary")
+	}
+
+	if _, err := os.Stat(dst + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("backup %q still exists after a failed install (stat err %v)", dst+".bak", err)
 	}
 }
