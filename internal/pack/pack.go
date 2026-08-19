@@ -307,49 +307,91 @@ func readIgnoreFile(path string) []string {
 	return patterns
 }
 
-// isExcluded checks if a path matches any exclude pattern
+// isExcluded checks if a path matches any exclude pattern.
+//
+// It follows gitignore semantics: every pattern is evaluated and the last one
+// that matches decides the outcome, so a later "!pattern" re-includes a path an
+// earlier pattern excluded. collectFiles appends defaultExcludes after the
+// user's patterns, which is what keeps a user negation from re-including a
+// default-excluded path such as .env or node_modules.
 func isExcluded(relPath string, patterns []string) bool {
 	baseName := filepath.Base(relPath)
+	excluded := false
 
 	for _, pattern := range patterns {
-		// Handle negation patterns
-		if strings.HasPrefix(pattern, "!") {
-			continue // Skip negation for now
+		// A leading "!" negates: a match un-excludes the path.
+		negated := strings.HasPrefix(pattern, "!")
+		if negated {
+			pattern = pattern[1:]
 		}
 
-		// Handle ** patterns (common in .gitignore)
-		if strings.HasSuffix(pattern, "/**") {
-			prefix := strings.TrimSuffix(pattern, "/**")
-			if relPath == prefix || strings.HasPrefix(relPath, prefix+"/") {
-				return true
+		// A leading "/" anchors the pattern to the package root, so it is
+		// matched against the full relative path only, never the basename.
+		anchored := strings.HasPrefix(pattern, "/")
+		if anchored {
+			pattern = pattern[1:]
+		}
+
+		// A trailing "/" marks a directory pattern: it matches the directory
+		// itself and everything under it.
+		//
+		// Limitation: git's trailing slash matches directories only, but
+		// isExcluded receives no directory signal, so a plain *file* named
+		// "dist" is also matched by "dist/". Threading an isDir flag through
+		// the signature is out of scope here.
+		if strings.HasSuffix(pattern, "/") {
+			dir := strings.TrimSuffix(pattern, "/")
+			if dir == "" {
+				continue
+			}
+			if relPath == dir || strings.HasPrefix(relPath, dir+"/") {
+				excluded = !negated
 			}
 			continue
 		}
 
-		// Exact match
-		if pattern == relPath {
+		if pattern == "" {
+			continue
+		}
+
+		if matchesIgnorePattern(relPath, baseName, pattern, anchored) {
+			excluded = !negated
+		}
+	}
+
+	return excluded
+}
+
+// matchesIgnorePattern reports whether relPath matches a single ignore pattern
+// that has already had its "!", leading "/" and trailing "/" stripped.
+func matchesIgnorePattern(relPath, baseName, pattern string, anchored bool) bool {
+	// "dir/**" matches the directory and everything under it.
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		return relPath == prefix || strings.HasPrefix(relPath, prefix+"/")
+	}
+
+	// Exact match
+	if pattern == relPath {
+		return true
+	}
+
+	if !anchored && !strings.Contains(pattern, "/") {
+		// For unanchored patterns without path separators, also match against
+		// the basename. This follows gitignore behavior: "*.log" matches
+		// "foo/bar.log".
+		if matched, _ := filepath.Match(pattern, baseName); matched {
 			return true
 		}
-
-		// For patterns without path separators, also match against basename
-		// This follows gitignore behavior: "*.log" matches "foo/bar.log"
-		if !strings.Contains(pattern, "/") {
-			if matched, _ := filepath.Match(pattern, baseName); matched {
-				return true
-			}
-		} else {
-			// Full path glob match
-			if matched, _ := filepath.Match(pattern, relPath); matched {
-				return true
-			}
-		}
-
-		// Directory prefix match
-		if strings.HasPrefix(relPath, pattern+"/") {
+	} else {
+		// Full path glob match
+		if matched, _ := filepath.Match(pattern, relPath); matched {
 			return true
 		}
 	}
-	return false
+
+	// Directory prefix match: "node_modules" excludes "node_modules/foo".
+	return strings.HasPrefix(relPath, pattern+"/")
 }
 
 // isIncluded checks if a path matches any include pattern (files field)
