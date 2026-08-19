@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -402,7 +403,7 @@ func nextToken(src []byte, base int, dec *json.Decoder) (int, json.Token, error)
 	prev := base + int(dec.InputOffset())
 	tok, err := dec.Token()
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return 0, nil, fmt.Errorf("package.json ended unexpectedly")
 		}
 		return 0, nil, err
