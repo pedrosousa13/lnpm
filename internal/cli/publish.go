@@ -270,8 +270,9 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 
 	// Push to all projects in parallel
 	type result struct {
-		path string
-		err  error
+		path    string
+		skipped bool
+		err     error
 	}
 	results := make(chan result, len(projects))
 	var wg sync.WaitGroup
@@ -280,8 +281,8 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 		wg.Add(1)
 		go func(p *db.Project) {
 			defer wg.Done()
-			err := pushToProject(p, pkg, s)
-			results <- result{path: p.Path, err: err}
+			skipped, err := pushToProject(p, pkg, s)
+			results <- result{path: p.Path, skipped: skipped, err: err}
 		}(proj)
 	}
 
@@ -291,36 +292,57 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 
 	// Print results
 	successCount := 0
+	skippedCount := 0
+	failedCount := 0
 	for res := range results {
-		if res.err != nil {
+		switch {
+		case res.err != nil:
 			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
-		} else {
+			failedCount++
+		case res.skipped:
+			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
+			skippedCount++
+		default:
 			fmt.Printf("  %s %s\n", iconOK(), res.path)
 			successCount++
 		}
 	}
 
-	fmt.Printf("\nPushed to %d/%d projects\n", successCount, len(projects))
+	fmt.Printf("\nPushed to %d/%d projects", successCount, len(projects))
+	if skippedCount > 0 {
+		fmt.Printf(" (%d skipped: live link to source)", skippedCount)
+	}
+	fmt.Println()
 
-	if successCount < len(projects) {
-		return fmt.Errorf("push failed for %d of %d project(s)", len(projects)-successCount, len(projects))
+	if failedCount > 0 {
+		return fmt.Errorf("push failed for %d of %d project(s)", failedCount, len(projects))
 	}
 
 	return nil
 }
 
-// pushToProject pushes a package update to a single project
-func pushToProject(proj *db.Project, pkg *db.Package, s *store.Store) error {
+// pushToProject pushes a package update to a single project, reporting whether
+// the project was skipped rather than relinked.
+func pushToProject(proj *db.Project, pkg *db.Package, s *store.Store) (skipped bool, err error) {
+	// A project that added this package with --link already resolves to the
+	// source directory just published. Relinking it from the store would replace
+	// its live link with a snapshot copy and silently end the live updates it
+	// was added for - the same hazard push guards against, reached here by
+	// `publish --push`.
+	linker := link.New(proj.Path)
+	if linker.IsLiveLinked(pkg.Name) {
+		return true, nil
+	}
+
 	// Get files from store
 	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// Re-link the package
-	linker := link.New(proj.Path)
 	_, err = linker.Link(pkg.Name, pkg.StorePath, files)
-	return err
+	return false, err
 }
 
 // shortHash returns the first 8 characters of a hash

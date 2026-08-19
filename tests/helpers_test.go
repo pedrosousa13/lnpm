@@ -287,6 +287,42 @@ func (te *TestEnvironment) AssertDatabaseNoLink(packageName, projectPath string)
 	}
 }
 
+// AssertDatabaseLinkType verifies the link between packageName and projectPath
+// exists AND was recorded with the given type. A missing row fails: the type is
+// only meaningful if there is a row carrying it, so a loop that quietly matches
+// nothing would assert nothing at all.
+func (te *TestEnvironment) AssertDatabaseLinkType(projectPath, packageName, wantType string) {
+	te.t.Helper()
+
+	pkg, err := te.Database.GetPackageByName(packageName)
+	if err != nil || pkg == nil {
+		te.t.Fatalf("Package %s not found in database: %v", packageName, err)
+	}
+
+	proj, err := te.Database.GetProjectByPath(projectPath)
+	if err != nil || proj == nil {
+		te.t.Fatalf("Project %s not found in database: %v", projectPath, err)
+	}
+
+	links, err := te.Database.GetLinksForProject(proj.ID)
+	if err != nil {
+		te.t.Fatalf("Failed to get links: %v", err)
+	}
+
+	for _, link := range links {
+		if link.PackageID == pkg.ID {
+			if link.LinkType != wantType {
+				te.t.Errorf("Expected link type %s for %s in %s, got %s",
+					wantType, packageName, projectPath, link.LinkType)
+			}
+			return
+		}
+	}
+
+	te.t.Errorf("Expected a link between %s and %s in database, but found none",
+		packageName, projectPath)
+}
+
 // AssertFilesLinked verifies package files are linked to project
 func (te *TestEnvironment) AssertFilesLinked(projectPath, packageName string) {
 	te.t.Helper()
@@ -742,6 +778,22 @@ func (te *TestEnvironment) AssertStoreCopy(projectDir, pkg string) {
 	}
 }
 
+// AssertFileExists is AssertDirectoryExists for a regular file: same check,
+// honest name and message. AssertDirectoryExists only stats, so calling it on a
+// file passes, but the failure it prints then names the wrong kind of thing.
+func (te *TestEnvironment) AssertFileExists(path string, shouldExist bool) {
+	te.t.Helper()
+
+	_, err := os.Stat(path)
+	if exists := err == nil; exists != shouldExist {
+		if shouldExist {
+			te.t.Errorf("Expected file %s to exist, but it doesn't", path)
+		} else {
+			te.t.Errorf("Expected file %s to NOT exist, but it does", path)
+		}
+	}
+}
+
 // AssertFileContent checks that the file at path holds want.
 func (te *TestEnvironment) AssertFileContent(path, want string) {
 	te.t.Helper()
@@ -766,22 +818,12 @@ func (te *TestEnvironment) publishAndAdd(pkgName string) (pkgDir, projectDir str
 	return pkgDir, projectDir
 }
 
-// linkedFileContent reads .lnpm/<pkg>/<rel> in projectDir, failing on error.
-func (te *TestEnvironment) linkedFileContent(projectDir, pkg, rel string) string {
-	te.t.Helper()
-	data, err := os.ReadFile(filepath.Join(projectDir, ".lnpm", pkg, rel))
-	if err != nil {
-		te.t.Fatalf("Failed to read linked file %s for %s: %v", rel, pkg, err)
-	}
-	return string(data)
-}
-
-// AssertLinkedFileContent checks that .lnpm/<pkg>/<rel> equals want.
+// AssertLinkedFileContent checks that .lnpm/<pkg>/<rel> equals want. It is
+// AssertFileContent addressed the way most of the suite wants it - by project,
+// package and relative path - and reads the same file for the same reason.
 func (te *TestEnvironment) AssertLinkedFileContent(projectDir, pkg, rel, want string) {
 	te.t.Helper()
-	if got := te.linkedFileContent(projectDir, pkg, rel); got != want {
-		te.t.Errorf("linked %s/%s: expected %q, got %q", pkg, rel, want, got)
-	}
+	te.AssertFileContent(filepath.Join(projectDir, ".lnpm", pkg, rel), want)
 }
 
 // writeFile writes content to path (relative to cwd or absolute), failing on error.

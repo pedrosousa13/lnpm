@@ -187,10 +187,12 @@ func RunPush(skipHooks bool) error {
 	// Print results in order received (not deterministic order)
 	successCount := 0
 	skippedCount := 0
+	failedCount := 0
 	for res := range results {
 		switch {
 		case res.err != nil:
 			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
+			failedCount++
 		case res.skipped:
 			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
 			skippedCount++
@@ -200,13 +202,18 @@ func RunPush(skipHooks bool) error {
 		}
 	}
 
-	// Live-linked projects leave the denominator: there was nothing to push to
-	// them, so counting them as pending would report a failure that isn't one.
-	pushable := len(projects) - skippedCount
-	fmt.Printf("\nPushed to %d/%d projects\n", successCount, pushable)
+	// The denominator is every project considered, matching the count announced
+	// above. Live-linked projects are reported as skipped instead of being taken
+	// out of the total: removing them made the two lines contradict each other,
+	// and an all-live push report "Pushed to 0/0 projects".
+	fmt.Printf("\nPushed to %d/%d projects", successCount, len(projects))
+	if skippedCount > 0 {
+		fmt.Printf(" (%d skipped: live link to source)", skippedCount)
+	}
+	fmt.Println()
 
-	if successCount < pushable {
-		return fmt.Errorf("push failed for %d of %d project(s)", pushable-successCount, pushable)
+	if failedCount > 0 {
+		return fmt.Errorf("push failed for %d of %d project(s)", failedCount, len(projects))
 	}
 
 	return nil

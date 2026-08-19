@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // retreatLeavesClean asserts the full post-retreat clean state for projectDir:
@@ -207,4 +208,85 @@ func TestRetreatCleansGitignore(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(projectDir, ".gitignore")); err == nil {
 		env.AssertGitignore(projectDir, ".lnpm/", false)
 	}
+}
+
+// TestRetreatForceRestoresLinkedPackage covers `retreat --force` on a package
+// added with --link: the original specifier comes back, .lnpm/ goes away, and
+// the source tree the removed link pointed at is left alone.
+//
+// It is the teardown half of the story, not the isLnpmReference half. The
+// original version this restores is a real one the user wrote, so it exercises
+// the same branch a copy-linked package does; what is specific to --link here is
+// that .lnpm/<pkg> was a link into a real source tree when retreat deleted it.
+// TestRetreatIgnoresLinkReferenceAsOriginalVersion is what pins retreat's
+// handling of a link:.lnpm/ specifier.
+func TestRetreatForceRestoresLinkedPackage(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("retreat-live-lib")
+	projectDir := env.newProject("retreat-live-project")
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":         "retreat-live-project",
+		"version":      "1.0.0",
+		"dependencies": map[string]interface{}{"retreat-live-lib": "^1.0.0"},
+	})
+	env.addLinkedPkg(projectDir, "retreat-live-lib")
+	env.AssertPackageJSON(projectDir, "retreat-live-lib", "link:.lnpm/retreat-live-lib")
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	env.AssertPackageJSON(projectDir, "retreat-live-lib", "^1.0.0")
+	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), false)
+	env.AssertLockfileExists(projectDir, false)
+
+	env.AssertDirectoryExists(pkgDir, true)
+	env.AssertFileContent(filepath.Join(pkgDir, "index.js"), "module.exports = 'retreat-live-lib';")
+	env.AssertFileExists(filepath.Join(pkgDir, "package.json"), true)
+}
+
+// TestRetreatIgnoresLinkReferenceAsOriginalVersion pins that retreat treats a
+// link:.lnpm/ specifier recorded as an original version the same way it treats
+// file:.lnpm/ - as lnpm's own value, not the user's - so the dependency is
+// dropped rather than restored to a reference that no longer resolves.
+//
+// This is the test that carries retreat's --link change: with the recorded
+// original version left alone, retreat writes link:.lnpm/stale-ref-lib straight
+// back into package.json.
+func TestRetreatIgnoresLinkReferenceAsOriginalVersion(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("stale-ref-lib")
+	projectDir := env.newProject("stale-ref-project")
+	env.addLinkedPkg(projectDir, "stale-ref-lib")
+
+	// Rewrite the lock entry the way an older version could have recorded it.
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		entry, ok := lock.Get("stale-ref-lib")
+		if !ok {
+			t.Fatal("stale-ref-lib missing from lockfile")
+		}
+		entry.OriginalVersion = "link:.lnpm/stale-ref-lib"
+		lock.Add("stale-ref-lib", entry)
+		if err := lock.Save(projectDir); err != nil {
+			t.Fatalf("Failed to save lockfile: %v", err)
+		}
+	})
+
+	// The preview must say the same thing the --force run then does.
+	out := captureStdout(t, func() {
+		if err := cli.RunRetreat(false, false); err != nil {
+			t.Fatalf("Failed to preview retreat: %v", err)
+		}
+	})
+	if !strings.Contains(out, "stale-ref-lib: will be removed from package.json") {
+		t.Errorf("Expected the preview to drop the dependency, got:\n%s", out)
+	}
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	env.AssertPackageJSONMissing(projectDir, "stale-ref-lib")
 }

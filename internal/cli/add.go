@@ -71,6 +71,14 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 	linker := link.New(cwd)
 
+	// Announce live linking for the batch. The single-package path names the
+	// package and version here, which this path cannot: resolution happens
+	// inside the parallel phase below, and printing from those goroutines would
+	// interleave. The per-package link type is reported in the summary instead.
+	if useLink {
+		fmt.Printf("Adding %d packages (linked to source)...\n", len(packageSpecs))
+	}
+
 	// Phase 1: Resolve and link packages in parallel
 	var wg sync.WaitGroup
 	results := make(chan addResult, len(packageSpecs))
@@ -267,7 +275,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), r.pkg.Name, err)
 		}
 
-		fmt.Printf("%s Added %s@%s (%s)\n", iconOK(), r.pkg.Name, r.pkg.Version, r.linkType)
+		// Reported exactly as the single-package path reports it, so a live link
+		// is spelled out rather than shown as the bare type name "link".
+		fmt.Printf("%s Added %s@%s\n", iconOK(), r.pkg.Name, r.pkg.Version)
+		fmt.Printf("  Link type: %s\n", linkTypeLabel(r.linkType))
 	}
 
 	if len(errors) > 0 {

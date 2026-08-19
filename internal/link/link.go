@@ -289,6 +289,15 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 		return "", err
 	}
 
+	// An empty source path is rejected before it is resolved, because
+	// filepath.Abs("") returns the working directory and a working directory
+	// stats as a directory: a package row written without a source path would
+	// otherwise link .lnpm/{package} at the consumer's own project root and
+	// report success.
+	if sourcePath == "" {
+		return "", fmt.Errorf("package %s has no recorded source directory - re-publish it from its source", packageName)
+	}
+
 	// An absolute target is what a Windows junction needs, and what keeps the
 	// link valid however deep .lnpm/{package} sits.
 	absSource, err := filepath.Abs(sourcePath)
@@ -304,16 +313,54 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 	}
 
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
-	if err := os.MkdirAll(filepath.Dir(lnpmPath), 0755); err != nil {
+	parentDir := filepath.Dir(lnpmPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create .lnpm directory: %w", err)
 	}
-	// RemoveAll deletes a link without following it, so replacing an existing
-	// live link cannot reach into the source tree it points at.
-	if err := os.RemoveAll(lnpmPath); err != nil {
-		return "", fmt.Errorf("failed to remove existing linked package: %w", err)
-	}
-	if err := createDirSymlink(absSource, lnpmPath); err != nil {
+
+	// Create the link beside .lnpm/{package} and swap it in, for the reason
+	// Link's comment gives. What is being replaced may be a whole store copy —
+	// this is the copy-to-live conversion — and deleting that first would leave
+	// .lnpm/{package} missing for as long as the tree takes to delete, with no
+	// way back if creating the replacement then failed.
+	tempPath, err := newTempLink(parentDir, absSource)
+	if err != nil {
 		return "", fmt.Errorf("failed to link source directory: %w", err)
+	}
+	// Remove the temp link unless it is successfully committed via rename.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	// Lstat, not Stat, so an existing live link whose source has since moved is
+	// still seen and still renamed aside rather than left in place.
+	retiredPath := tempPath + ".old"
+	hadPrevious := false
+	if _, err := os.Lstat(lnpmPath); err == nil {
+		if err := os.Rename(lnpmPath, retiredPath); err != nil {
+			return "", fmt.Errorf("failed to move aside existing linked package: %w", err)
+		}
+		hadPrevious = true
+	}
+	if err := os.Rename(tempPath, lnpmPath); err != nil {
+		if hadPrevious {
+			// If the rollback fails too, the previous package exists only at
+			// retiredPath. Name it in the error so it can be recovered by hand;
+			// deleting it here would destroy the user's only copy.
+			if rollbackErr := os.Rename(retiredPath, lnpmPath); rollbackErr != nil {
+				return "", fmt.Errorf("failed to finalize linked package: %w (the previous package could not be restored: %v, and is preserved at %s)", err, rollbackErr, retiredPath)
+			}
+		}
+		return "", fmt.Errorf("failed to finalize linked package: %w", err)
+	}
+	committed = true
+	if hadPrevious {
+		// RemoveAll deletes a link without following it, so retiring a previous
+		// live link cannot reach into the source tree it pointed at.
+		_ = os.RemoveAll(retiredPath)
 	}
 
 	if err := l.createNodeModulesSymlink(packageName); err != nil {
@@ -447,11 +494,22 @@ func (l *Linker) IsLinked(packageName string) bool {
 // IsLiveLinked reports whether .lnpm/{package} is a live link at the package's
 // source directory rather than a materialised copy of the store entry.
 //
-// A copy is always a real directory, and Lstat reports neither a symlink nor a
-// Windows junction as one, so "not a directory" is the whole test.
+// The test is positive - the entry must carry a link mode bit - rather than
+// merely "not a directory". Callers skip a live link and report success, so a
+// stray file, fifo or device left at that path must not pass: that is a corrupt
+// project, and reporting it as skipped would report corruption as success.
+//
+// The bits to accept come from os/types_windows.go (Go 1.26). Both
+// IO_REPARSE_TAG_SYMLINK and IO_REPARSE_TAG_MOUNT_POINT (a junction) are
+// reparse-tag name surrogates, and fileStat.mode skips "m |= ModeDir" for those,
+// so neither reads as a directory. Its tag switch then sets ModeSymlink for
+// IO_REPARSE_TAG_SYMLINK and falls through to "default: m |= ModeIrregular" for
+// a junction. Under GODEBUG=winsymlink=0 the retained modePreGo1_23 returns
+// ModeSymlink for both tags instead. Accepting either bit therefore covers a
+// Unix symlink, a Windows symlink and a junction under both settings.
 func (l *Linker) IsLiveLinked(packageName string) bool {
 	info, err := os.Lstat(filepath.Join(l.projectPath, ".lnpm", packageName))
-	return err == nil && !info.IsDir()
+	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
 }
 
 // ListLinked returns all packages linked in the project
@@ -500,6 +558,29 @@ func newTempDir(parent string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("failed to find an unused temp directory name in %s", parent)
+}
+
+// createDirSymlinkFn is createDirSymlink behind a variable so a test can force
+// the link creation to fail and prove that LinkSource leaves the previous
+// .lnpm/{package} intact. Production code never reassigns it.
+var createDirSymlinkFn = createDirSymlink
+
+// newTempLink creates a directory link to target under a uniquely named path
+// inside parent and returns that path. It is newTempDir's counterpart for
+// LinkSource: the name is dot-prefixed for the same reasons, so ListLinked
+// skips it and the retired-path scheme stays inside the same namespace.
+func newTempLink(parent, target string) (string, error) {
+	for attempt := 0; attempt < 1000; attempt++ {
+		path := filepath.Join(parent, fmt.Sprintf(".tmp-%x", rand.Uint64()))
+		err := createDirSymlinkFn(target, path)
+		if err == nil {
+			return path, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("failed to find an unused temp link name in %s", parent)
 }
 
 // copyFile copies a file

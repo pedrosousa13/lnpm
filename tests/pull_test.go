@@ -461,3 +461,66 @@ func TestPullNoLinkedPackages(t *testing.T) {
 	}
 	env.AssertLockfileExists(projectDir, false)
 }
+
+// TestPullSkipsLiveLinkedPackage covers pull against a live-linked package.
+// Relinking it from the store would silently swap the live link for a snapshot
+// copy - the consumer would stop seeing source edits with nothing said about it
+// - so pull leaves it alone and says so, in both the all and the named form.
+func TestPullSkipsLiveLinkedPackage(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("pull-live-lib")
+	projectDir := env.newProject("pull-live-project")
+	env.addLinkedPkg(projectDir, "pull-live-lib")
+
+	env.republish(pkgDir, "pull-live-lib", "2.0.0", "module.exports = 'v2';")
+
+	env.chdir(projectDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunPull(nil); err != nil {
+			t.Fatalf("RunPull: %v", err)
+		}
+		if err := cli.RunPull([]string{"pull-live-lib"}); err != nil {
+			t.Fatalf("RunPull by name: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "live link") {
+		t.Errorf("Expected pull to report the live link, got:\n%s", out)
+	}
+	env.AssertLiveLink(projectDir, "pull-live-lib", pkgDir)
+	assertLockVersion(t, env, projectDir, "pull-live-lib", "1.0.0")
+	env.AssertFileContent(filepath.Join(projectDir, "node_modules", "pull-live-lib", "index.js"),
+		"module.exports = 'v2';")
+}
+
+// TestPullAllLiveLinkedDoesNotClaimUpToDate pins the summary line for a pull
+// where every package was skipped as live-linked. Nothing was compared against
+// the store, so the run must not claim parity with it: here the store holds
+// 2.0.0 and the lock still holds 1.0.0, and "Already up to date" would be a
+// statement about a comparison that never happened.
+func TestPullAllLiveLinkedDoesNotClaimUpToDate(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("all-live-lib")
+	projectDir := env.newProject("all-live-project")
+	env.addLinkedPkg(projectDir, "all-live-lib")
+
+	env.republish(pkgDir, "all-live-lib", "2.0.0", "module.exports = 'v2';")
+
+	env.chdir(projectDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunPull(nil); err != nil {
+			t.Fatalf("RunPull: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "Already up to date") {
+		t.Errorf("Expected no up-to-date claim when every package was skipped, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Skipped 1 live-linked package(s)") {
+		t.Errorf("Expected the skipped live-linked packages to be reported, got:\n%s", out)
+	}
+	// The claim would have been false: the lock is still a version behind.
+	assertLockVersion(t, env, projectDir, "all-live-lib", "1.0.0")
+}

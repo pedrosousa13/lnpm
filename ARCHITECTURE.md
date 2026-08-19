@@ -290,13 +290,18 @@ lnpm add my-package --link
 6. Update `package.json` with `file:.lnpm/{package}`
 7. Register link in bbolt
 
-**Live linking (`--link`):** steps 2 and 3 are skipped entirely. `.lnpm/{package}`
-becomes a link to the `source_path` recorded at publish time, `package.json` gets
-`link:.lnpm/{package}`, and the recorded link type is `link`. Nothing is copied,
+**Live linking (`--link`):** step 3 is skipped entirely, and step 2 creates a
+link rather than a directory. `.lnpm/{package}` becomes a link to the
+`source_path` recorded at publish time — created alongside and renamed into
+place, so replacing a store copy never deletes it before its replacement exists
+— `package.json` gets `link:.lnpm/{package}`, and the recorded link type is
+`link`. Nothing is copied,
 so every later edit of the source is visible to the project at once — and so the
-project sees files that were never published or committed, which is exactly the
-isolation the default snapshot gives you. `--link` therefore still requires the
-package to have been published once: that is what records its source path.
+project builds against whatever is in the source tree right now, including files
+that have never been published and are not even committed. That is the isolation
+the default snapshot gives you and `--link` gives up. `--link` therefore still
+requires the package to have been published once: that is what records its
+source path.
 
 Teardown never follows the link: `remove`, `retreat` and a re-`add` all delete
 `.lnpm/{package}` with `os.RemoveAll`, which removes a link without descending

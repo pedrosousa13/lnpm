@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
-	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // TestAddLinkPointsAtSource covers the core of live-link mode: `add --link`
@@ -44,23 +43,46 @@ func TestAddLinkReportsLiveSource(t *testing.T) {
 		t.Errorf("Expected the live source link type, got:\n%s", out)
 	}
 
-	pkg, err := env.Database.GetPackageByName("report-lib")
-	if err != nil || pkg == nil {
-		t.Fatalf("report-lib not in database: %v", err)
+	env.AssertDatabaseLinkType(projectDir, "report-lib", "link")
+}
+
+// TestAddMultipleLinkReportsLiveSource covers the multi-package path, which
+// resolves and links in parallel and reports separately from the single-package
+// one. It must say the same things: that the packages are linked to their
+// sources, and that each got a live link rather than a copy.
+func TestAddMultipleLinkReportsLiveSource(t *testing.T) {
+	env := setupTest(t)
+
+	libA := env.simplePkg("multi-live-a")
+	libB := env.simplePkg("multi-live-b")
+	projectDir := env.newProject("multi-live-project")
+
+	out := captureStdout(t, func() {
+		env.chdir(projectDir)
+		if err := cli.RunAddMultiple([]string{"multi-live-a", "multi-live-b"}, false, false, false, true); err != nil {
+			t.Fatalf("add --link failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "(linked to source)") {
+		t.Errorf("Expected the multi-package add to report linking to source, got:\n%s", out)
 	}
-	proj, err := env.Database.GetProjectByPath(projectDir)
-	if err != nil || proj == nil {
-		t.Fatalf("project not in database: %v", err)
-	}
-	links, err := env.Database.GetLinksForProject(proj.ID)
-	if err != nil {
-		t.Fatalf("Failed to get links: %v", err)
-	}
-	for _, l := range links {
-		if l.PackageID == pkg.ID && l.LinkType != "link" {
-			t.Errorf("Expected recorded link type link, got %s", l.LinkType)
+	for _, name := range []string{"multi-live-a", "multi-live-b"} {
+		if !strings.Contains(out, "Added "+name+"@1.0.0") {
+			t.Errorf("Expected %s in the summary, got:\n%s", name, out)
 		}
 	}
+	// One "Link type" line per package, both naming the live source link. The
+	// bare type name "link" - which is what this path used to print - would not
+	// match.
+	if got := strings.Count(out, "Link type: link (live source)"); got != 2 {
+		t.Errorf("Expected 2 live source link type lines, got %d in:\n%s", got, out)
+	}
+
+	env.AssertLiveLink(projectDir, "multi-live-a", libA)
+	env.AssertLiveLink(projectDir, "multi-live-b", libB)
+	env.AssertDatabaseLinkType(projectDir, "multi-live-a", "link")
+	env.AssertDatabaseLinkType(projectDir, "multi-live-b", "link")
 }
 
 // TestLinkedSourceEditsAreVisibleImmediately covers the reason live-link mode
@@ -106,76 +128,7 @@ func TestRemoveLinkedPackageKeepsSource(t *testing.T) {
 	// The source package must have survived untouched.
 	env.AssertDirectoryExists(pkgDir, true)
 	env.AssertFileContent(filepath.Join(pkgDir, "index.js"), "module.exports = 'remove-live-lib';")
-	env.AssertDirectoryExists(filepath.Join(pkgDir, "package.json"), true)
-}
-
-// TestRetreatForceRestoresLinkedPackage covers `retreat --force` on a
-// live-linked package: the original specifier comes back, .lnpm/ goes away, and
-// the source tree the removed link pointed at is left alone.
-func TestRetreatForceRestoresLinkedPackage(t *testing.T) {
-	env := setupTest(t)
-
-	pkgDir := env.simplePkg("retreat-live-lib")
-	projectDir := env.newProject("retreat-live-project")
-	env.writePackageJSON(projectDir, map[string]interface{}{
-		"name":         "retreat-live-project",
-		"version":      "1.0.0",
-		"dependencies": map[string]interface{}{"retreat-live-lib": "^1.0.0"},
-	})
-	env.addLinkedPkg(projectDir, "retreat-live-lib")
-	env.AssertPackageJSON(projectDir, "retreat-live-lib", "link:.lnpm/retreat-live-lib")
-
-	if err := cli.RunRetreat(true, false); err != nil {
-		t.Fatalf("Failed to retreat: %v", err)
-	}
-
-	env.AssertPackageJSON(projectDir, "retreat-live-lib", "^1.0.0")
-	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), false)
-	env.AssertLockfileExists(projectDir, false)
-
-	env.AssertDirectoryExists(pkgDir, true)
-	env.AssertFileContent(filepath.Join(pkgDir, "index.js"), "module.exports = 'retreat-live-lib';")
-}
-
-// TestRetreatIgnoresLinkReferenceAsOriginalVersion pins that retreat treats a
-// link:.lnpm/ specifier recorded as an original version the same way it treats
-// file:.lnpm/ - as lnpm's own value, not the user's - so the dependency is
-// dropped rather than restored to a reference that no longer resolves.
-func TestRetreatIgnoresLinkReferenceAsOriginalVersion(t *testing.T) {
-	env := setupTest(t)
-
-	env.simplePkg("stale-ref-lib")
-	projectDir := env.newProject("stale-ref-project")
-	env.addLinkedPkg(projectDir, "stale-ref-lib")
-
-	// Rewrite the lock entry the way an older version could have recorded it.
-	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
-		entry, ok := lock.Get("stale-ref-lib")
-		if !ok {
-			t.Fatal("stale-ref-lib missing from lockfile")
-		}
-		entry.OriginalVersion = "link:.lnpm/stale-ref-lib"
-		lock.Add("stale-ref-lib", entry)
-		if err := lock.Save(projectDir); err != nil {
-			t.Fatalf("Failed to save lockfile: %v", err)
-		}
-	})
-
-	// The preview must say the same thing the --force run then does.
-	out := captureStdout(t, func() {
-		if err := cli.RunRetreat(false, false); err != nil {
-			t.Fatalf("Failed to preview retreat: %v", err)
-		}
-	})
-	if !strings.Contains(out, "stale-ref-lib: will be removed from package.json") {
-		t.Errorf("Expected the preview to drop the dependency, got:\n%s", out)
-	}
-
-	if err := cli.RunRetreat(true, false); err != nil {
-		t.Fatalf("Failed to retreat: %v", err)
-	}
-
-	env.AssertPackageJSONMissing(projectDir, "stale-ref-lib")
+	env.AssertFileExists(filepath.Join(pkgDir, "package.json"), true)
 }
 
 // TestReAddOverLiveLinkKeepsSource covers re-adding on top of an existing live
@@ -206,67 +159,14 @@ func TestReAddOverLiveLinkKeepsSource(t *testing.T) {
 	env.AssertFileContent(filepath.Join(pkgDir, "index.js"), "module.exports = 'readd-live-lib';")
 }
 
-// TestPullSkipsLiveLinkedPackage covers pull against a live-linked package.
-// Relinking it from the store would silently swap the live link for a snapshot
-// copy - the consumer would stop seeing source edits with nothing said about it
-// - so pull leaves it alone and says so, in both the all and the named form.
-func TestPullSkipsLiveLinkedPackage(t *testing.T) {
-	env := setupTest(t)
-
-	pkgDir := env.simplePkg("pull-live-lib")
-	projectDir := env.newProject("pull-live-project")
-	env.addLinkedPkg(projectDir, "pull-live-lib")
-
-	env.republish(pkgDir, "pull-live-lib", "2.0.0", "module.exports = 'v2';")
-
-	env.chdir(projectDir)
-	out := captureStdout(t, func() {
-		if err := cli.RunPull(nil); err != nil {
-			t.Fatalf("RunPull: %v", err)
-		}
-		if err := cli.RunPull([]string{"pull-live-lib"}); err != nil {
-			t.Fatalf("RunPull by name: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "live link") {
-		t.Errorf("Expected pull to report the live link, got:\n%s", out)
-	}
-	env.AssertLiveLink(projectDir, "pull-live-lib", pkgDir)
-	assertLockVersion(t, env, projectDir, "pull-live-lib", "1.0.0")
-	env.AssertFileContent(filepath.Join(projectDir, "node_modules", "pull-live-lib", "index.js"),
-		"module.exports = 'v2';")
-}
-
-// TestPushSkipsLiveLinkedConsumer covers push from the other side of the same
-// hazard pull has: pushing relinks every consumer from the store, which for a
-// live-linked consumer would quietly replace its link with a snapshot copy and
-// end the live updates it was added for.
-func TestPushSkipsLiveLinkedConsumer(t *testing.T) {
-	env := setupTest(t)
-
-	pkgDir := env.simplePkg("push-live-lib")
-	projectDir := env.newProject("push-live-project")
-	env.addLinkedPkg(projectDir, "push-live-lib")
-
-	env.chdir(pkgDir)
-	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'pushed';")
-	out := captureStdout(t, func() {
-		if err := cli.RunPush(false); err != nil {
-			t.Fatalf("RunPush: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "live link") {
-		t.Errorf("Expected push to report the live link, got:\n%s", out)
-	}
-	env.AssertLiveLink(projectDir, "push-live-lib", pkgDir)
-	env.AssertFileContent(filepath.Join(projectDir, "node_modules", "push-live-lib", "index.js"),
-		"module.exports = 'pushed';")
-}
-
 // TestAddDefaultStillCopiesFromStore pins that the default path is untouched:
 // without --link, .lnpm/<pkg> is still a real directory of copied files.
+//
+// This is the guarantee TestAddDefaultProtocolUnchanged (link_protocol_test.go)
+// cannot express. That test reads package.json, and the protocol string there
+// was already correct before --link pointed at the source at all: it stayed
+// "file:.lnpm/<pkg>" whether .lnpm/<pkg> held a copy or a link. Only looking at
+// .lnpm/<pkg> itself distinguishes the two.
 func TestAddDefaultStillCopiesFromStore(t *testing.T) {
 	env := setupTest(t)
 
@@ -277,4 +177,3 @@ func TestAddDefaultStillCopiesFromStore(t *testing.T) {
 
 	env.AssertStoreCopy(projectDir, "copy-lib")
 }
-
