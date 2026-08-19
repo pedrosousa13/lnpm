@@ -95,7 +95,7 @@ differ between the two hops:
 - **Safe**: modifications don't affect the original
 
 #### Platform Implementation
-- **macOS APFS**: Uses `clonefile()` syscall (SYS_CLONEFILE #462)
+- **macOS APFS**: Uses the `clonefile()` system call, via `golang.org/x/sys/unix`
 - **Linux Btrfs/XFS**: Uses `FICLONE` ioctl (#0x40049409)
 - **Other filesystems**: Gracefully falls back to hard links (store → project) or to a parallel copy (source → store)
 

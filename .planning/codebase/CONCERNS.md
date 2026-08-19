@@ -98,7 +98,7 @@
 
 **Reflink platform-specific implementations:**
 - Files: `internal/store/reflink_linux.go`, `internal/store/reflink_darwin.go`, `internal/link/reflink_linux.go`, `internal/link/reflink_darwin.go`
-- Why fragile: Direct syscalls using unsafe.Pointer, filesystem-dependent (APFS, Btrfs, XFS)
+- Why fragile: Filesystem-dependent (APFS, Btrfs, XFS) and only exercised on the matching platform; Linux still issues the FICLONE ioctl through a raw syscall, macOS goes through `golang.org/x/sys/unix`
 - Safe modification: Always test on target filesystems, verify fallback to hardlink/copy works
 - Test coverage: Limited testing on different filesystems
 
@@ -175,7 +175,7 @@
 - Priority: High
 
 **Reflink fallback scenarios:**
-- What's not tested: Cross-filesystem copies, filesystems without reflink support, permission errors during syscall
+- What's not tested: Cross-filesystem copies, permission errors during the clone, and the Btrfs/XFS success path (Linux CI runs on ext4, which has no reflink support). Filesystems without reflink support, and the APFS success path, are covered by `internal/fsutil/reflink_test.go`
 - Files: `internal/store/reflink_*.go`, `internal/link/reflink_*.go`
 - Risk: Silent fallback failures, performance degradation not detected
 - Priority: Medium
