@@ -41,6 +41,34 @@ error() {
     exit 1
 }
 
+# Verify the archive's SHA-256 against the release checksums.txt.
+# checksums.txt comes from the same release as the archive, so this catches a
+# corrupted download or an archive altered in transit - not a release where an
+# attacker replaced both files.
+verify_checksum() {
+    dir="$1"
+    file="$2"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha_cmd="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        sha_cmd="shasum -a 256"
+    else
+        error "sha256sum or shasum is required to verify the download"
+    fi
+
+    # goreleaser writes "<hex>  <filename>", one entry per line.
+    entry=$(awk -v f="$file" '$2 == f { print; exit }' "$dir/checksums.txt")
+    if [ -z "$entry" ]; then
+        error "No checksum listed for $file in checksums.txt"
+    fi
+
+    # sha_cmd is unquoted on purpose: it may carry arguments.
+    if ! printf '%s\n' "$entry" | (cd "$dir" && $sha_cmd -c -) >/dev/null 2>&1; then
+        error "Checksum mismatch for $file - the download is corrupted or was altered"
+    fi
+}
+
 # Detect OS
 detect_os() {
     case "$(uname -s)" in
@@ -96,6 +124,7 @@ install() {
     fi
 
     URL="https://github.com/${REPO}/releases/download/v${VERSION}/${FILENAME}"
+    CHECKSUMS_URL="https://github.com/${REPO}/releases/download/v${VERSION}/checksums.txt"
 
     # Create temp directory
     TMP_DIR=$(mktemp -d)
@@ -106,9 +135,17 @@ install() {
     # Download
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$URL" -o "$TMP_DIR/$FILENAME" || error "Download failed"
+        curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/checksums.txt" || error "Failed to download checksums.txt"
     else
         wget -q "$URL" -O "$TMP_DIR/$FILENAME" || error "Download failed"
+        wget -q "$CHECKSUMS_URL" -O "$TMP_DIR/checksums.txt" || error "Failed to download checksums.txt"
     fi
+
+    # Verify before extracting - a corrupted or altered archive must never
+    # reach the user's PATH.
+    info "Verifying checksum..."
+    verify_checksum "$TMP_DIR" "$FILENAME"
+    success "Checksum verified"
 
     # Extract
     info "Extracting..."
