@@ -75,15 +75,23 @@ func RunRemove(packageName string, all bool, yes bool) error {
 			continue
 		}
 
-		// Restore original package.json dependency
+		// Restore original package.json dependency. A failure here aborts this
+		// package: the lock entry's OriginalVersion is the only surviving copy
+		// of the user's specifier, so dropping the entry after a failed write
+		// would leave package.json referencing an unlinked .lnpm path with
+		// nothing left to restore it from.
 		if lockEntry.OriginalVersion != "" {
 			if err := restorePackageJSON(cwd, name, lockEntry.OriginalVersion); err != nil {
-				fmt.Printf("  %s Failed to restore package.json: %v\n", iconWarn(), err)
+				fmt.Printf("  %s Failed to restore package.json: %v\n", iconFail(), err)
+				failed++
+				continue
 			}
 		} else {
 			// Remove the dependency entirely
 			if err := removeFromPackageJSON(cwd, name); err != nil {
-				fmt.Printf("  %s Failed to update package.json: %v\n", iconWarn(), err)
+				fmt.Printf("  %s Failed to update package.json: %v\n", iconFail(), err)
+				failed++
+				continue
 			}
 		}
 
