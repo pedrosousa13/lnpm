@@ -5,7 +5,7 @@
 ## Languages
 
 **Primary:**
-- Go 1.22 - All application code, CLI, internal packages
+- Go 1.26 - All application code, CLI, internal packages
 
 **Secondary:**
 - Shell script - Installation script (`install.sh`)
@@ -14,7 +14,7 @@
 ## Runtime
 
 **Environment:**
-- Go 1.22+
+- Go 1.26+
 
 **Package Manager:**
 - Go modules (go.mod/go.sum)
@@ -72,7 +72,7 @@
 ## Platform Requirements
 
 **Development:**
-- Go 1.22+ required
+- Go 1.26+ required
 - Optional: golangci-lint, goimports, entr (for watch mode)
 - Git hooks support via `.githooks/`
 

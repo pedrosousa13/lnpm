@@ -118,7 +118,7 @@ Reliability and correctness across all platforms. Every operation must work corr
 - **Package manager compatibility**: Must support npm, yarn, pnpm, bun — all existing integrations must continue working
 - **Backward compatibility**: Cannot break existing databases or lock files — migration paths required for schema changes
 - **No external dependencies**: CLI tool remains standalone binary with no runtime dependencies
-- **Go 1.22+**: Maintain current Go version requirement
+- **Go 1.26+**: Maintain current Go version requirement
 
 ## Key Decisions
 

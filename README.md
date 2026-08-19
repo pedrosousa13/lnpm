@@ -437,7 +437,7 @@ make bench-compare  # Compare vs yalc (if installed)
 
 ## Requirements
 
-- Go 1.22+ (for building from source)
+- Go 1.26+ (for building from source)
 - Node.js project with `package.json`
 
 ## Contributing
@@ -446,7 +446,7 @@ Contributions are welcome!
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - Node.js (for integration tests that invoke npm)
 
 ### Setup & Testing
