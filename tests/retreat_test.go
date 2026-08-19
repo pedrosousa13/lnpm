@@ -3,6 +3,7 @@ package tests
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -152,6 +153,42 @@ func TestRetreatPartiallyLinked(t *testing.T) {
 	}
 	env.AssertLockfileExists(projectDir, false)
 	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), false)
+}
+
+// TestRetreatCorruptLockfile tests that retreat aborts with a clear error when
+// lnpm.lock exists but cannot be parsed, in both the preview and --force paths,
+// instead of crashing on the nil lock file that lockfile.Load returns.
+func TestRetreatCorruptLockfile(t *testing.T) {
+	cases := []struct {
+		name  string
+		force bool
+	}{
+		{"preview", false},
+		{"force", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
+
+			_, projectDir := env.publishAndAdd("corrupt-lock-pkg")
+			env.chdir(projectDir)
+			env.writeFile(filepath.Join(projectDir, "lnpm.lock"), "version: 1\npackages: {not valid yaml")
+
+			err := cli.RunRetreat(tc.force, false)
+			if err == nil {
+				t.Fatal("Expected an error for a corrupt lock file, got nil")
+			}
+			if !strings.Contains(err.Error(), "corrupt") {
+				t.Errorf("Expected error to mention corruption, got: %v", err)
+			}
+
+			// Nothing may be touched when the lock file cannot be read.
+			env.AssertSymlinkExists(projectDir, "corrupt-lock-pkg")
+			env.AssertLockfileExists(projectDir, true)
+			env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), true)
+		})
+	}
 }
 
 // TestRetreatCleansGitignore tests that the .lnpm/ entry is removed from
