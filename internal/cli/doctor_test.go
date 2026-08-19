@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,45 +101,21 @@ func newDoctorStoreConfig(t *testing.T) string {
 	return dir
 }
 
-// captureDoctorStdout runs RunDoctor with os.Stdout redirected to a pipe and
-// returns what it printed. RunDoctor reports every check on stdout rather than
-// through its return value, so the findings are only readable this way.
-//
-// The reader goroutine starts before RunDoctor does, so it can write more than
-// the pipe buffer without deadlocking, and the teardown is deferred so
-// os.Stdout is restored however RunDoctor exits.
+// captureDoctorStdout runs RunDoctor and returns what it printed. RunDoctor
+// reports every check on stdout rather than through its return value, so the
+// findings are only readable this way.
 //
 // RunDoctor opens the database, which is cached for the process and would keep
 // a file handle inside the test's temp dir, so it is released on the way out.
-func captureDoctorStdout(t *testing.T) (out string) {
+func captureDoctorStdout(t *testing.T) string {
 	t.Helper()
 
 	db.ResetForTesting()
 	t.Cleanup(db.ResetForTesting)
 
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Failed to create pipe: %v", err)
-	}
-
-	done := make(chan string, 1)
-	go func() {
-		data, _ := io.ReadAll(r)
-		done <- string(data)
-	}()
-
-	orig := os.Stdout
-	os.Stdout = w
-
-	defer func() {
-		os.Stdout = orig
-		_ = w.Close() // unblocks the reader goroutine
-		out = <-done
-		_ = r.Close()
-	}()
-
-	if err := RunDoctor(); err != nil {
-		t.Errorf("RunDoctor() error = %v", err)
-	}
-	return
+	return captureStdout(t, func() {
+		if err := RunDoctor(); err != nil {
+			t.Errorf("RunDoctor() error = %v", err)
+		}
+	})
 }
