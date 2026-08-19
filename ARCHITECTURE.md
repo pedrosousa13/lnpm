@@ -463,6 +463,11 @@ lnpm auto-detects package manager by checking for:
 
 The `file:` protocol is universally supported by all package managers.
 
+Edits are spliced into the file's existing bytes rather than re-serialized from
+a parsed document, so key order, indentation style, line endings and number
+literals outside the edited entry are left exactly as the author wrote them.
+`lnpm add` and `lnpm remove` therefore produce a one-line diff.
+
 ### Cleanup Before Publish
 
 Before publishing to npm registry, run:
