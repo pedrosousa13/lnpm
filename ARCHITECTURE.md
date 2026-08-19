@@ -239,7 +239,9 @@ lnpm publish --push
 
 **Process:**
 1. Read `package.json` for name/version
-2. Determine files to include (respects `.npmignore`, `files` field)
+2. Determine files to include (respects `.npmignore`, `files` field — see the
+   README's "File Filtering" section for the rules and where they part company
+   with `npm publish`)
 3. Calculate content hash of all files
 4. Reflink or copy files into a temporary directory alongside
    `~/.lnpm/store/{name}/{hash}/`, then rename it into place
