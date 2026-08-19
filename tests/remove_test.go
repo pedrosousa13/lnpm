@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -152,6 +153,78 @@ func TestRemoveAllNoPackages(t *testing.T) {
 		t.Fatalf("Remove --all with no packages failed: %v", err)
 	}
 	env.AssertLockfileExists(projectDir, false)
+}
+
+// TestRemoveKeepsLockEntryWhenRestoreFails tests that a failed package.json
+// restore aborts the removal, keeping the lock entry (with its OriginalVersion)
+// and the database link.
+func TestRemoveKeepsLockEntryWhenRestoreFails(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":         "test-project",
+		"version":      "1.0.0",
+		"dependencies": map[string]interface{}{"restore-fail-pkg": "^1.0.0"},
+	})
+
+	env.simplePkg("restore-fail-pkg")
+	env.addPkg(projectDir, "restore-fail-pkg", false, false)
+	env.AssertPackageJSON(projectDir, "restore-fail-pkg", "file:.lnpm/restore-fail-pkg")
+
+	// Unparseable package.json: restorePackageJSON fails at json.Unmarshal.
+	env.writeFile(filepath.Join(projectDir, "package.json"), "{not valid json")
+
+	if err := cli.RunRemove("restore-fail-pkg", false, false); err == nil {
+		t.Fatal("Expected error when package.json restore fails, got nil")
+	}
+
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		pkg, ok := lock.Get("restore-fail-pkg")
+		if !ok {
+			t.Fatal("Expected restore-fail-pkg to remain in lockfile after failed restore")
+		}
+		if pkg.OriginalVersion != "^1.0.0" {
+			t.Errorf("Expected OriginalVersion ^1.0.0 to survive, got %q", pkg.OriginalVersion)
+		}
+	})
+	env.AssertDatabaseLink("restore-fail-pkg", projectDir)
+}
+
+// TestRemoveKeepsLockEntryWhenPackageJSONRemovalFails covers the other failure
+// branch: a package added when package.json had no prior entry has an empty
+// OriginalVersion, so remove takes the "delete the dependency" path. A failure
+// there must abort the removal too, keeping the lock entry and database link.
+func TestRemoveKeepsLockEntryWhenPackageJSONRemovalFails(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("remove-fail-pkg")
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "remove-fail-pkg", false, false)
+	env.AssertPackageJSON(projectDir, "remove-fail-pkg", "file:.lnpm/remove-fail-pkg")
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		pkg, ok := lock.Get("remove-fail-pkg")
+		if !ok {
+			t.Fatal("Expected remove-fail-pkg in lockfile after add")
+		}
+		if pkg.OriginalVersion != "" {
+			t.Fatalf("Test needs an empty OriginalVersion to reach the removal branch, got %q", pkg.OriginalVersion)
+		}
+	})
+
+	// Unparseable package.json: removeFromPackageJSON fails at json.Unmarshal.
+	env.writeFile(filepath.Join(projectDir, "package.json"), "{not valid json")
+
+	if err := cli.RunRemove("remove-fail-pkg", false, false); err == nil {
+		t.Fatal("Expected error when package.json update fails, got nil")
+	}
+
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		if !lock.Has("remove-fail-pkg") {
+			t.Error("Expected remove-fail-pkg to remain in lockfile after failed package.json update")
+		}
+	})
+	env.AssertDatabaseLink("remove-fail-pkg", projectDir)
 }
 
 // TestRemoveKeepsOthers tests that removing one package keeps the rest linked and
