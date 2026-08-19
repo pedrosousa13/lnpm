@@ -18,8 +18,11 @@ import (
 // workspace, so it must never reach a consumer's package.json.
 const workspaceProtocol = "workspace:"
 
-// depFields are the package.json fields whose specifiers get resolved.
-var depFields = []string{"dependencies", "devDependencies"}
+// depFields are the package.json fields whose specifiers get resolved. Issue
+// #192 named only dependencies and devDependencies, but pnpm accepts the
+// workspace: protocol in all four dependency maps and every one of them reaches
+// consumers through the same stored package.json, so all four are resolved.
+var depFields = []string{"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
 
 // workspaceDep is one dependency entry carrying a workspace: specifier.
 type workspaceDep struct {
@@ -96,16 +99,20 @@ func RewriteWorkspaceDeps(pkgDir string, files []*FileInfo) (func(), error) {
 // to find the names would reformat everything the splice exists to preserve.
 func findWorkspaceDeps(src []byte) ([]workspaceDep, error) {
 	var manifest struct {
-		Dependencies    map[string]any `json:"dependencies"`
-		DevDependencies map[string]any `json:"devDependencies"`
+		Dependencies         map[string]any `json:"dependencies"`
+		DevDependencies      map[string]any `json:"devDependencies"`
+		PeerDependencies     map[string]any `json:"peerDependencies"`
+		OptionalDependencies map[string]any `json:"optionalDependencies"`
 	}
 	if err := json.Unmarshal(src, &manifest); err != nil {
 		return nil, fmt.Errorf("failed to parse package.json: %w", err)
 	}
 
 	byField := map[string]map[string]any{
-		"dependencies":    manifest.Dependencies,
-		"devDependencies": manifest.DevDependencies,
+		"dependencies":         manifest.Dependencies,
+		"devDependencies":      manifest.DevDependencies,
+		"peerDependencies":     manifest.PeerDependencies,
+		"optionalDependencies": manifest.OptionalDependencies,
 	}
 
 	var deps []workspaceDep
@@ -157,9 +164,12 @@ func indexWorkspace(pkgDir string, first workspaceDep) (*workspaceIndex, error) 
 }
 
 // resolveWorkspaceSpec turns a workspace: specifier into the version range a
-// consumer outside the workspace can install, matching pnpm and yalc. A form it
-// cannot resolve is an error rather than a pass-through: shipping the literal
-// specifier is exactly the breakage this rewrite exists to prevent.
+// consumer outside the workspace can install, matching pnpm and yalc: "*" and
+// "latest" become the sibling's exact version, "^" and "~" that version behind
+// the matching range operator, and every other form is the protocol prefix
+// stripped off - "workspace:^1.2.3" installs as "^1.2.3". A bare "workspace:"
+// names no range to fall back on and is the one error, alongside a sibling the
+// workspace does not contain, whose version is simply not knowable.
 func resolveWorkspaceSpec(dep workspaceDep, index *workspaceIndex) (string, error) {
 	version, ok := index.versions[dep.name]
 	if !ok {
@@ -167,16 +177,17 @@ func resolveWorkspaceSpec(dep workspaceDep, index *workspaceIndex) (string, erro
 			dep.spec, dep.name, index.root)
 	}
 
-	switch strings.TrimPrefix(dep.spec, workspaceProtocol) {
+	switch rest := strings.TrimPrefix(dep.spec, workspaceProtocol); rest {
+	case "":
+		return "", fmt.Errorf("cannot resolve %q for dependency %s: the workspace: protocol carries no version",
+			dep.spec, dep.name)
 	case "*", "latest":
 		return version, nil
-	case "^":
-		return "^" + version, nil
-	case "~":
-		return "~" + version, nil
+	case "^", "~":
+		return rest + version, nil
+	default:
+		return rest, nil
 	}
-
-	return "", fmt.Errorf("unsupported workspace specifier %q for dependency %s", dep.spec, dep.name)
 }
 
 // packedPackageJSON returns the package.json entry of files, or nil.
@@ -197,6 +208,12 @@ func packedPackageJSON(files []*FileInfo) *FileInfo {
 func materializePackageJSON(entry *FileInfo, out []byte) (func(), error) {
 	noop := func() {}
 
+	// The system temp dir, rather than a location beside the destination the way
+	// link.newTempDir and store's MkdirTemp keep theirs: the store path is not
+	// known here and the source tree must not be written to. The consequence is
+	// that /tmp is usually a different filesystem, so fsutil.Reflink cannot
+	// clone this file into the store and store falls back to copyFile - one
+	// small file, so the cost is negligible.
 	tmp, err := os.CreateTemp("", "lnpm-package-json-")
 	if err != nil {
 		return noop, fmt.Errorf("failed to create temporary package.json: %w", err)
@@ -209,7 +226,7 @@ func materializePackageJSON(entry *FileInfo, out []byte) (func(), error) {
 		return noop, err
 	}
 
-	hash, err := hashFile(tmpPath)
+	hash, err := HashFile(tmpPath)
 	if err != nil {
 		cleanup()
 		return noop, fmt.Errorf("failed to hash rewritten package.json: %w", err)

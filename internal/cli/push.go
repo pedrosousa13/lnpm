@@ -54,6 +54,8 @@ func RunPush(skipHooks bool) error {
 		cleanup, err := pack.RewriteWorkspaceDeps(cwd, files)
 		defer cleanup()
 		if err != nil {
+			// Deliberately unwrapped: RewriteWorkspaceDeps' errors are already
+			// self-contained, so wrapping them here would only stutter.
 			return err
 		}
 		return finishPublish(cwd, pkgJSON, files, database, false)
@@ -75,6 +77,7 @@ func RunPush(skipHooks bool) error {
 	cleanup, err := pack.RewriteWorkspaceDeps(cwd, files)
 	defer cleanup()
 	if err != nil {
+		// Deliberately unwrapped, as above.
 		return err
 	}
 

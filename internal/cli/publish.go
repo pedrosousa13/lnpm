@@ -156,6 +156,10 @@ func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation boo
 	cleanup, err := pack.RewriteWorkspaceDeps(pkgPath, files)
 	defer cleanup()
 	if err != nil {
+		// Deliberately unwrapped, against the "always wrap" convention: every
+		// error out of RewriteWorkspaceDeps already names the specifier, the
+		// dependency and the workspace, so a "failed to resolve workspace
+		// dependencies:" prefix would only stutter in front of it.
 		return err
 	}
 

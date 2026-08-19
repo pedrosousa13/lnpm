@@ -694,17 +694,17 @@ func TestHashFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hash1, err := hashFile(file1)
+	hash1, err := HashFile(file1)
 	if err != nil {
-		t.Fatalf("hashFile(file1) error: %v", err)
+		t.Fatalf("HashFile(file1) error: %v", err)
 	}
-	hash2, err := hashFile(file2)
+	hash2, err := HashFile(file2)
 	if err != nil {
-		t.Fatalf("hashFile(file2) error: %v", err)
+		t.Fatalf("HashFile(file2) error: %v", err)
 	}
-	hash3, err := hashFile(file3)
+	hash3, err := HashFile(file3)
 	if err != nil {
-		t.Fatalf("hashFile(file3) error: %v", err)
+		t.Fatalf("HashFile(file3) error: %v", err)
 	}
 
 	// Same content should have same hash

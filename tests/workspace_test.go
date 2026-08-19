@@ -135,86 +135,77 @@ func TestNoWorkspace(t *testing.T) {
 
 // --- workspace: dependency specifiers ----------------------------------------
 //
-// The pnpm-workspace fixture's lib-b depends on its sibling lib-a with
-// "workspace:*". npm cannot install that specifier outside the workspace, so
-// publish must resolve it to the sibling's real version on the way into the
-// store, without touching the developer's own package.json.
-
-// storedPackageJSONPath returns the path of a published package's package.json
-// inside the isolated store.
-func storedPackageJSONPath(t *testing.T, env *TestEnvironment, name string) string {
-	t.Helper()
-
-	pkg, err := env.Database.GetPackageByName(name)
-	if err != nil || pkg == nil {
-		t.Fatalf("Package %s not found in database: %v", name, err)
-	}
-	return filepath.Join(pkg.StorePath, "package.json")
-}
+// The workspace-deps fixture exists for this and nothing else: its lib depends
+// on its sibling util with "workspace:*", at 2.3.0. npm cannot install that
+// specifier outside the workspace, so publish must resolve it to the sibling's
+// real version on the way into the store, without touching the developer's own
+// package.json. The other workspace fixtures stay free of workspace: specifiers
+// so the tests that only care about workspace discovery do not depend on this
+// rewrite working.
 
 func TestPublishResolvesWorkspaceDependency(t *testing.T) {
 	env := setupTest(t)
 
-	wsDir := env.CopyFixture("pnpm-workspace")
-	libBDir := filepath.Join(wsDir, "packages", "lib-b")
-	sourcePath := filepath.Join(libBDir, "package.json")
+	wsDir := env.CopyFixture("workspace-deps")
+	libDir := filepath.Join(wsDir, "packages", "lib")
+	sourcePath := filepath.Join(libDir, "package.json")
 
 	source, err := os.ReadFile(sourcePath)
 	if err != nil {
-		t.Fatalf("Failed to read lib-b package.json: %v", err)
+		t.Fatalf("Failed to read lib package.json: %v", err)
 	}
 	if !strings.Contains(string(source), `"workspace:*"`) {
-		t.Fatalf("Fixture lib-b must depend on lib-a with workspace:*, got:\n%s", source)
+		t.Fatalf("Fixture lib must depend on util with workspace:*, got:\n%s", source)
 	}
 
-	env.chdir(libBDir)
+	env.chdir(libDir)
 	// Skip validation: fixtures have no built files.
 	if err := cli.RunPublish(false, false, false, true); err != nil {
-		t.Fatalf("Failed to publish @pnpm-test/lib-b: %v", err)
+		t.Fatalf("Failed to publish @ws-deps/lib: %v", err)
 	}
 
 	// The developer's own package.json must come out byte-identical.
 	after, err := os.ReadFile(sourcePath)
 	if err != nil {
-		t.Fatalf("Failed to re-read lib-b package.json: %v", err)
+		t.Fatalf("Failed to re-read lib package.json: %v", err)
 	}
 	if string(after) != string(source) {
 		t.Errorf("Expected the source package.json to be untouched.\nBefore:\n%s\nAfter:\n%s", source, after)
 	}
 
-	// The stored package.json carries lib-a's real version, and nothing but the
+	// The stored package.json carries util's real version, and nothing but the
 	// specifier changed - key order and indentation survive the rewrite.
-	want := strings.Replace(string(source), `"workspace:*"`, `"1.0.0"`, 1)
-	env.AssertFileContent(storedPackageJSONPath(t, env, "@pnpm-test/lib-b"), want)
+	want := strings.Replace(string(source), `"workspace:*"`, `"2.3.0"`, 1)
+	env.AssertFileContent(env.storedPackageJSONPath("@ws-deps/lib"), want)
 
 	// The content hash addresses those rewritten bytes, not the ones on disk.
-	env.AssertStoredContentHash("@pnpm-test/lib-b")
+	env.AssertStoredContentHash("@ws-deps/lib")
 
 	// And that is exactly what a consumer receives.
-	projectDir := env.newProject("lib-b-consumer")
-	env.addPkg(projectDir, "@pnpm-test/lib-b", false, false)
-	env.AssertLinkedFileContent(projectDir, "@pnpm-test/lib-b", "package.json", want)
+	projectDir := env.newProject("lib-consumer")
+	env.addPkg(projectDir, "@ws-deps/lib", false, false)
+	env.AssertLinkedFileContent(projectDir, "@ws-deps/lib", "package.json", want)
 }
 
 // A package with no workspace: specifiers is stored byte-for-byte as written.
 func TestPublishWithoutWorkspaceDependenciesIsUnchanged(t *testing.T) {
 	env := setupTest(t)
 
-	wsDir := env.CopyFixture("pnpm-workspace")
-	libADir := filepath.Join(wsDir, "packages", "lib-a")
+	wsDir := env.CopyFixture("workspace-deps")
+	utilDir := filepath.Join(wsDir, "packages", "util")
 
-	source, err := os.ReadFile(filepath.Join(libADir, "package.json"))
+	source, err := os.ReadFile(filepath.Join(utilDir, "package.json"))
 	if err != nil {
-		t.Fatalf("Failed to read lib-a package.json: %v", err)
+		t.Fatalf("Failed to read util package.json: %v", err)
 	}
 
-	env.chdir(libADir)
+	env.chdir(utilDir)
 	if err := cli.RunPublish(false, false, false, true); err != nil {
-		t.Fatalf("Failed to publish @pnpm-test/lib-a: %v", err)
+		t.Fatalf("Failed to publish @ws-deps/util: %v", err)
 	}
 
-	env.AssertFileContent(storedPackageJSONPath(t, env, "@pnpm-test/lib-a"), string(source))
-	env.AssertStoredContentHash("@pnpm-test/lib-a")
+	env.AssertFileContent(env.storedPackageJSONPath("@ws-deps/util"), string(source))
+	env.AssertStoredContentHash("@ws-deps/util")
 }
 
 // A workspace: specifier in a package that is not in any workspace has nothing
@@ -244,12 +235,12 @@ func TestPublishWorkspaceDependencyOutsideWorkspaceFails(t *testing.T) {
 func TestPublishUnknownWorkspaceSiblingFails(t *testing.T) {
 	env := setupTest(t)
 
-	wsDir := env.CopyFixture("pnpm-workspace")
-	libBDir := filepath.Join(wsDir, "packages", "lib-b")
-	env.writeFile(filepath.Join(libBDir, "package.json"),
-		`{"name":"@pnpm-test/lib-b","version":"2.0.0","dependencies":{"@pnpm-test/ghost":"workspace:*"}}`)
+	wsDir := env.CopyFixture("workspace-deps")
+	libDir := filepath.Join(wsDir, "packages", "lib")
+	env.writeFile(filepath.Join(libDir, "package.json"),
+		`{"name":"@ws-deps/lib","version":"1.0.0","dependencies":{"@ws-deps/ghost":"workspace:*"}}`)
 
-	env.chdir(libBDir)
+	env.chdir(libDir)
 	err := cli.RunPublish(false, false, false, true)
 	if err == nil {
 		t.Fatal("Expected publish to fail for a sibling missing from the workspace, got nil")
@@ -257,7 +248,7 @@ func TestPublishUnknownWorkspaceSiblingFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "no such package in the workspace") {
 		t.Errorf("Expected an error naming the missing sibling, got: %v", err)
 	}
-	env.AssertPackageInDatabase("@pnpm-test/lib-b", false)
+	env.AssertPackageInDatabase("@ws-deps/lib", false)
 }
 
 // push re-packs and re-stores, so it has to resolve specifiers exactly as
@@ -265,33 +256,33 @@ func TestPublishUnknownWorkspaceSiblingFails(t *testing.T) {
 func TestPushResolvesWorkspaceDependency(t *testing.T) {
 	env := setupTest(t)
 
-	wsDir := env.CopyFixture("pnpm-workspace")
-	libBDir := filepath.Join(wsDir, "packages", "lib-b")
+	wsDir := env.CopyFixture("workspace-deps")
+	libDir := filepath.Join(wsDir, "packages", "lib")
 
-	source, err := os.ReadFile(filepath.Join(libBDir, "package.json"))
+	source, err := os.ReadFile(filepath.Join(libDir, "package.json"))
 	if err != nil {
-		t.Fatalf("Failed to read lib-b package.json: %v", err)
+		t.Fatalf("Failed to read lib package.json: %v", err)
 	}
-	want := strings.Replace(string(source), `"workspace:*"`, `"1.0.0"`, 1)
+	want := strings.Replace(string(source), `"workspace:*"`, `"2.3.0"`, 1)
 
-	env.chdir(libBDir)
+	env.chdir(libDir)
 	if err := cli.RunPublish(false, false, false, true); err != nil {
-		t.Fatalf("Failed to publish @pnpm-test/lib-b: %v", err)
+		t.Fatalf("Failed to publish @ws-deps/lib: %v", err)
 	}
 
-	projectDir := env.newProject("lib-b-push-consumer")
-	env.addPkg(projectDir, "@pnpm-test/lib-b", false, false)
+	projectDir := env.newProject("lib-push-consumer")
+	env.addPkg(projectDir, "@ws-deps/lib", false, false)
 
 	// Change the source so push has new content to store.
-	env.writeFile(filepath.Join(libBDir, "index.js"), "module.exports = 'lib-b-v2';")
-	env.chdir(libBDir)
+	env.writeFile(filepath.Join(libDir, "index.js"), "module.exports = 'lib-v2';")
+	env.chdir(libDir)
 	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to push @pnpm-test/lib-b: %v", err)
+		t.Fatalf("Failed to push @ws-deps/lib: %v", err)
 	}
 
-	env.AssertFileContent(storedPackageJSONPath(t, env, "@pnpm-test/lib-b"), want)
-	env.AssertStoredContentHash("@pnpm-test/lib-b")
-	env.AssertLinkedFileContent(projectDir, "@pnpm-test/lib-b", "package.json", want)
+	env.AssertFileContent(env.storedPackageJSONPath("@ws-deps/lib"), want)
+	env.AssertStoredContentHash("@ws-deps/lib")
+	env.AssertLinkedFileContent(projectDir, "@ws-deps/lib", "package.json", want)
 }
 
 // push on a package that was never published delegates to the publish path, so
@@ -299,20 +290,20 @@ func TestPushResolvesWorkspaceDependency(t *testing.T) {
 func TestPushUnpublishedResolvesWorkspaceDependency(t *testing.T) {
 	env := setupTest(t)
 
-	wsDir := env.CopyFixture("pnpm-workspace")
-	libBDir := filepath.Join(wsDir, "packages", "lib-b")
+	wsDir := env.CopyFixture("workspace-deps")
+	libDir := filepath.Join(wsDir, "packages", "lib")
 
-	source, err := os.ReadFile(filepath.Join(libBDir, "package.json"))
+	source, err := os.ReadFile(filepath.Join(libDir, "package.json"))
 	if err != nil {
-		t.Fatalf("Failed to read lib-b package.json: %v", err)
+		t.Fatalf("Failed to read lib package.json: %v", err)
 	}
 
-	env.chdir(libBDir)
+	env.chdir(libDir)
 	if err := cli.RunPush(false); err != nil {
-		t.Fatalf("Failed to push @pnpm-test/lib-b: %v", err)
+		t.Fatalf("Failed to push @ws-deps/lib: %v", err)
 	}
 
-	want := strings.Replace(string(source), `"workspace:*"`, `"1.0.0"`, 1)
-	env.AssertFileContent(storedPackageJSONPath(t, env, "@pnpm-test/lib-b"), want)
-	env.AssertStoredContentHash("@pnpm-test/lib-b")
+	want := strings.Replace(string(source), `"workspace:*"`, `"2.3.0"`, 1)
+	env.AssertFileContent(env.storedPackageJSONPath("@ws-deps/lib"), want)
+	env.AssertStoredContentHash("@ws-deps/lib")
 }

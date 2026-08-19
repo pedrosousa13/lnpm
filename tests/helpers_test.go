@@ -2,15 +2,12 @@ package tests
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/cespare/xxhash/v2"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -835,6 +832,11 @@ func (te *TestEnvironment) AssertLinkedFileContent(projectDir, pkg, rel, want st
 // that changes a file's contents between packing and storing - a specifier
 // rewrite, say - has to be reflected in both or the store entry is addressed by
 // a hash of content it does not hold.
+//
+// The invariant only holds for packages without a prepare or prepublish script:
+// store.stripLifecycleScripts re-marshals the stored package.json after the
+// hash is taken, so for those the stored bytes legitimately differ from the
+// hashed ones and this helper would report a mismatch it did not cause.
 func (te *TestEnvironment) AssertStoredContentHash(packageName string) {
 	te.t.Helper()
 
@@ -853,11 +855,13 @@ func (te *TestEnvironment) AssertStoredContentHash(packageName string) {
 
 	data := make([]pack.FileEntryData, len(entries))
 	for i, e := range entries {
-		contents, err := os.ReadFile(filepath.Join(pkg.StorePath, e.RelativePath))
+		// pack.HashFile rather than a local xxhash of the bytes: the manifest
+		// records what pack produced, so the check has to be pack's own.
+		got, err := pack.HashFile(filepath.Join(pkg.StorePath, e.RelativePath))
 		if err != nil {
-			te.t.Fatalf("Failed to read stored %s: %v", e.RelativePath, err)
+			te.t.Fatalf("Failed to hash stored %s: %v", e.RelativePath, err)
 		}
-		if got := fmt.Sprintf("%016x", xxhash.Sum64(contents)); got != e.ContentHash {
+		if got != e.ContentHash {
 			te.t.Errorf("Stored %s hashes to %s, but the manifest records %s",
 				e.RelativePath, got, e.ContentHash)
 		}
@@ -872,6 +876,18 @@ func (te *TestEnvironment) AssertStoredContentHash(packageName string) {
 	if got := pack.HashFiles(pack.FileInfoFromStore(pkg.StorePath, data)); got != pkg.ContentHash {
 		te.t.Errorf("Expected content hash %s for %s, got %s", pkg.ContentHash, packageName, got)
 	}
+}
+
+// storedPackageJSONPath returns the path of a published package's package.json
+// inside the isolated store.
+func (te *TestEnvironment) storedPackageJSONPath(packageName string) string {
+	te.t.Helper()
+
+	pkg, err := te.Database.GetPackageByName(packageName)
+	if err != nil || pkg == nil {
+		te.t.Fatalf("Package %s not found in database: %v", packageName, err)
+	}
+	return filepath.Join(pkg.StorePath, "package.json")
 }
 
 // writeFile writes content to path (relative to cwd or absolute), failing on error.

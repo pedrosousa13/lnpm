@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,13 @@ func TestRewriteWorkspaceDepsResolvesSpecifierForms(t *testing.T) {
 		{"workspace:latest", "2.3.0"},
 		{"workspace:^", "^2.3.0"},
 		{"workspace:~", "~2.3.0"},
+		// Every other form is the protocol prefix stripped off, exactly as pnpm
+		// does it: the range the developer wrote is the range consumers get,
+		// whatever the sibling's current version happens to be.
+		{"workspace:^1.2.3", "^1.2.3"},
+		{"workspace:~1.2.3", "~1.2.3"},
+		{"workspace:1.2.3", "1.2.3"},
+		{"workspace:>=1.0.0 <3", ">=1.0.0 <3"},
 	}
 
 	for _, tt := range tests {
@@ -127,28 +135,70 @@ func TestRewriteWorkspaceDepsResolvesSpecifierForms(t *testing.T) {
 	}
 }
 
-func TestRewriteWorkspaceDepsRewritesDevDependencies(t *testing.T) {
-	root := newTestWorkspace(t)
-	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
-	libDir := addTestPackage(t, root, "lib", `{
+// pnpm accepts the workspace: protocol in all four dependency maps, and a
+// specifier left in any of them reaches consumers through the stored manifest.
+func TestRewriteWorkspaceDepsRewritesEveryDependencyField(t *testing.T) {
+	for _, field := range []string{"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"} {
+		t.Run(field, func(t *testing.T) {
+			root := newTestWorkspace(t)
+			addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
+			libDir := addTestPackage(t, root, "lib", `{
   "name": "@ws/lib",
   "version": "1.0.0",
-  "devDependencies": {
+  "`+field+`": {
     "@ws/util": "workspace:^"
   }
 }
 `)
 
-	files := packWorkspacePkg(t, libDir)
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
-	defer cleanup()
+			files := packWorkspacePkg(t, libDir)
+			cleanup, err := RewriteWorkspaceDeps(libDir, files)
+			defer cleanup()
+			if err != nil {
+				t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+			}
+
+			entry := packageJSONEntry(t, files)
+			if got := depValue(t, entry.Path, field, "@ws/util"); got != "^2.3.0" {
+				t.Errorf("Expected %s.@ws/util to resolve to \"^2.3.0\", got %q", field, got)
+			}
+		})
+	}
+}
+
+// findWorkspaceDeps reads Go maps, whose iteration order is randomised, so it
+// sorts: errors and debug output must name the same dependency on every run.
+// The fields below are deliberately in two orders - depFields lists
+// peerDependencies before optionalDependencies, sorting puts them the other way
+// round - so this pins the sort rather than the traversal order.
+func TestFindWorkspaceDepsSortsByFieldThenName(t *testing.T) {
+	deps, err := findWorkspaceDeps([]byte(`{
+  "name": "@ws/lib",
+  "version": "1.0.0",
+  "dependencies": {"@ws/d": "workspace:*", "@ws/b": "workspace:*"},
+  "devDependencies": {"@ws/c": "workspace:*", "@ws/a": "workspace:*"},
+  "peerDependencies": {"@ws/e": "workspace:*"},
+  "optionalDependencies": {"@ws/f": "workspace:*"}
+}`))
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("findWorkspaceDeps failed: %v", err)
 	}
 
-	entry := packageJSONEntry(t, files)
-	if got := depValue(t, entry.Path, "devDependencies", "@ws/util"); got != "^2.3.0" {
-		t.Errorf("Expected @ws/util to resolve to \"^2.3.0\", got %q", got)
+	want := []workspaceDep{
+		{field: "dependencies", name: "@ws/b", spec: "workspace:*"},
+		{field: "dependencies", name: "@ws/d", spec: "workspace:*"},
+		{field: "devDependencies", name: "@ws/a", spec: "workspace:*"},
+		{field: "devDependencies", name: "@ws/c", spec: "workspace:*"},
+		{field: "optionalDependencies", name: "@ws/f", spec: "workspace:*"},
+		{field: "peerDependencies", name: "@ws/e", spec: "workspace:*"},
+	}
+	if len(deps) != len(want) {
+		t.Fatalf("Expected %d workspace deps, got %d: %v", len(want), len(deps), deps)
+	}
+	for i, w := range want {
+		if deps[i] != w {
+			t.Errorf("Dep %d: expected %v, got %v", i, w, deps[i])
+		}
 	}
 }
 
@@ -170,7 +220,7 @@ func TestRewriteWorkspaceDepsRehashesRewrittenBytes(t *testing.T) {
 		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
 	}
 
-	rewritten, err := hashFile(entry.Path)
+	rewritten, err := HashFile(entry.Path)
 	if err != nil {
 		t.Fatalf("Failed to hash rewritten package.json: %v", err)
 	}
@@ -344,21 +394,23 @@ func TestRewriteWorkspaceDepsUnknownSiblingFails(t *testing.T) {
 	}
 }
 
-// A workspace: form this rewrite cannot resolve must fail loudly rather than
-// ship the literal specifier to consumers.
-func TestRewriteWorkspaceDepsUnsupportedSpecifierFails(t *testing.T) {
+// A bare "workspace:" carries no range to strip down to, so there is nothing to
+// publish: it must fail rather than ship an empty specifier.
+func TestRewriteWorkspaceDepsBareProtocolFails(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
-	libDir := addTestPackage(t, root, "lib", libManifest("workspace:^1.2.3"))
+	libDir := addTestPackage(t, root, "lib", libManifest("workspace:"))
 
 	files := packWorkspacePkg(t, libDir)
 	cleanup, err := RewriteWorkspaceDeps(libDir, files)
 	defer cleanup()
 	if err == nil {
-		t.Fatal("Expected an error for an unsupported workspace: specifier, got nil")
+		t.Fatal("Expected an error for a bare workspace: specifier, got nil")
 	}
-	if !strings.Contains(err.Error(), "workspace:^1.2.3") {
-		t.Errorf("Expected error to mention the specifier, got: %v", err)
+	for _, want := range []string{"workspace:", "@ws/util"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Expected error to mention %q, got: %v", want, err)
+		}
 	}
 }
 
@@ -386,37 +438,71 @@ func TestRewriteWorkspaceDepsCleanupRemovesTempFile(t *testing.T) {
 	}
 }
 
-// A failed rewrite must leave nothing behind either.
-func TestRewriteWorkspaceDepsLeavesNoTempFileOnFailure(t *testing.T) {
+// A rewrite that fails while resolving gives up before any temporary file is
+// created, so the packed entry must still point at the source tree - publish
+// deferred the cleanup before checking the error, and the entry it hands to the
+// store has to be the untouched one.
+func TestRewriteWorkspaceDepsFailingResolutionKeepsPackedEntry(t *testing.T) {
 	root := newTestWorkspace(t)
-	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
-	libDir := addTestPackage(t, root, "lib", `{
-  "name": "@ws/lib",
-  "version": "1.0.0",
-  "dependencies": {
-    "@ws/zombie": "workspace:*",
-    "@ws/ghost": "workspace:*"
-  }
-}
-`)
+	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
 
 	files := packWorkspacePkg(t, libDir)
 	entry := packageJSONEntry(t, files)
-	sourcePath := entry.Path
+	sourcePath, sourceHash, sourceSize := entry.Path, entry.ContentHash, entry.Size
 
 	cleanup, err := RewriteWorkspaceDeps(libDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected an error for a sibling missing from the workspace, got nil")
 	}
-	// The entries are resolved in sorted order, so which of the two
-	// unresolvable siblings is reported does not depend on Go's map iteration
-	// order.
-	if !strings.Contains(err.Error(), "@ws/ghost") || strings.Contains(err.Error(), "@ws/zombie") {
-		t.Errorf("Expected the first unresolvable dependency (@ws/ghost) to be reported, got: %v", err)
-	}
 	if entry.Path != sourcePath {
 		t.Errorf("Expected a failed rewrite to leave package.json packed from %s, got %s", sourcePath, entry.Path)
+	}
+	if entry.ContentHash != sourceHash || entry.Size != sourceSize {
+		t.Errorf("Expected a failed rewrite to leave the packed hash/size alone, got %s/%d", entry.ContentHash, entry.Size)
+	}
+}
+
+// The genuine leak path: a failure raised after the temporary file exists must
+// still remove it. Mode 0 is what gets it there - materialization gives the
+// temporary file the packed entry's mode, and hashing an unreadable file fails.
+func TestRewriteWorkspaceDepsRemovesTempFileWhenMaterializationFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows leaves a mode 0 file readable, so hashing it would not fail")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 0 file whatever its permissions say")
+	}
+
+	root := newTestWorkspace(t)
+	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
+	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
+
+	// os.CreateTemp writes into os.TempDir(), so pointing that at an empty
+	// directory makes anything left behind directly observable.
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+
+	files := packWorkspacePkg(t, libDir)
+	entry := packageJSONEntry(t, files)
+	entry.Mode = 0
+
+	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	defer cleanup()
+	if err == nil {
+		t.Fatal("Expected hashing an unreadable rewritten package.json to fail, got nil")
+	}
+
+	left, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("Failed to read %s: %v", tmpDir, readErr)
+	}
+	if len(left) != 0 {
+		names := make([]string, len(left))
+		for i, e := range left {
+			names[i] = e.Name()
+		}
+		t.Errorf("Expected a failed rewrite to leave no temporary file, found %v in %s", names, tmpDir)
 	}
 }
 
