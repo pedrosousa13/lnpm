@@ -13,7 +13,8 @@ import (
 )
 
 // RunPrepare runs prepare scripts before publishing
-// Executes prepare, prepublishOnly, or prepack scripts from package.json
+// Executes every prepublishOnly, prepare and prepack script present in
+// package.json, in that order (npm's publish order)
 func RunPrepare(pkgPath string, skipHooks bool) error {
 	// Check if hooks should be skipped
 	cfg := config.Get()
@@ -36,8 +37,9 @@ func RunPrepare(pkgPath string, skipHooks bool) error {
 		return fmt.Errorf("failed to parse package.json: %w", err)
 	}
 
-	// Try prepare scripts in order of precedence
-	scripts := []string{"prepare", "prepublishOnly", "prepack"}
+	// Run every applicable script, in npm's publish order
+	scripts := []string{"prepublishOnly", "prepare", "prepack"}
+	ran := false
 	for _, scriptName := range scripts {
 		if _, exists := pkgJSON.Scripts[scriptName]; exists {
 			fmt.Printf("Running %s script...\n", scriptName)
@@ -48,12 +50,13 @@ func RunPrepare(pkgPath string, skipHooks bool) error {
 				return fmt.Errorf("%s script failed: %w", scriptName, err)
 			}
 
-			// Only run the first matching script
-			return nil
+			ran = true
 		}
 	}
 
-	debug.Log("hooks: no prepare scripts found")
+	if !ran {
+		debug.Log("hooks: no prepare scripts found")
+	}
 	return nil
 }
 

@@ -5,8 +5,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
+
+// orderLogName is the file each test lifecycle script appends its own name to.
+const orderLogName = "order.log"
+
+// readOrderLog returns the script names recorded in dir's order log, in the
+// order they ran. A missing log means no script ran.
+func readOrderLog(t *testing.T, dir string) []string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(dir, orderLogName))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("failed to read order log: %v", err)
+	}
+
+	return strings.Fields(string(data))
+}
 
 func TestRunPrepare(t *testing.T) {
 	// RunPrepare shells out to `npm run <script>` for any matched script.
@@ -16,53 +37,62 @@ func TestRunPrepare(t *testing.T) {
 		t.Skip("npm not found in PATH; skipping prepare-hook tests")
 	}
 
-	// sentinelFor returns a script that writes a sentinel file named after the
-	// hook, so the test can prove which script actually ran.
-	sentinelFor := func(name string) string {
-		return "echo ran > " + name + ".sentinel"
+	// logFor returns a script that appends the hook name to one shared log file,
+	// so the test can prove which scripts ran and in which order.
+	logFor := func(name string) string {
+		return "echo " + name + " >> " + orderLogName
 	}
 
 	tests := []struct {
 		name      string
 		scripts   map[string]string
 		skipHooks bool
-		wantRun   string // which script should run (empty if none)
+		wantRun   []string // scripts that should run, in order (nil if none)
 		wantError bool
 	}{
 		{
 			name: "runs prepare script",
 			scripts: map[string]string{
-				"prepare": sentinelFor("prepare"),
+				"prepare": logFor("prepare"),
 			},
-			wantRun: "prepare",
+			wantRun: []string{"prepare"},
 		},
 		{
-			name: "runs prepare over prepublishOnly",
+			name: "runs prepublishOnly before prepare",
 			scripts: map[string]string{
-				"prepare":        sentinelFor("prepare"),
-				"prepublishOnly": sentinelFor("prepublishOnly"),
+				"prepare":        logFor("prepare"),
+				"prepublishOnly": logFor("prepublishOnly"),
 			},
-			wantRun: "prepare", // prepare runs first in precedence
+			wantRun: []string{"prepublishOnly", "prepare"},
+		},
+		{
+			name: "runs every publish script in npm order",
+			scripts: map[string]string{
+				"prepack":        logFor("prepack"),
+				"prepare":        logFor("prepare"),
+				"prepublishOnly": logFor("prepublishOnly"),
+			},
+			wantRun: []string{"prepublishOnly", "prepare", "prepack"},
 		},
 		{
 			name: "runs prepack if no prepare",
 			scripts: map[string]string{
-				"prepack": sentinelFor("prepack"),
+				"prepack": logFor("prepack"),
 			},
-			wantRun: "prepack",
+			wantRun: []string{"prepack"},
 		},
 		{
 			name: "skips when skipHooks=true",
 			scripts: map[string]string{
-				"prepare": sentinelFor("prepare"),
+				"prepare": logFor("prepare"),
 			},
 			skipHooks: true,
-			wantRun:   "",
+			wantRun:   nil,
 		},
 		{
 			name:      "no scripts is ok",
 			scripts:   map[string]string{},
-			wantRun:   "",
+			wantRun:   nil,
 			wantError: false,
 		},
 		{
@@ -71,6 +101,16 @@ func TestRunPrepare(t *testing.T) {
 				"prepare": "exit 1",
 			},
 			wantError: true,
+		},
+		{
+			name: "stops at the first failing script",
+			scripts: map[string]string{
+				"prepublishOnly": "echo prepublishOnly >> " + orderLogName + "; exit 1",
+				"prepare":        logFor("prepare"),
+				"prepack":        logFor("prepack"),
+			},
+			wantError: true,
+			wantRun:   []string{"prepublishOnly"},
 		},
 	}
 
@@ -101,22 +141,14 @@ func TestRunPrepare(t *testing.T) {
 				if err == nil {
 					t.Errorf("expected error but got nil")
 				}
-				return
-			}
-			if err != nil {
+			} else if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
 
-			// Verify the expected script ran (and only that one) via sentinel files.
-			ranScript := func(name string) bool {
-				_, statErr := os.Stat(filepath.Join(tmpDir, name+".sentinel"))
-				return statErr == nil
-			}
-			for _, name := range []string{"prepare", "prepublishOnly", "prepack"} {
-				want := name == tt.wantRun
-				if got := ranScript(name); got != want {
-					t.Errorf("script %q ran=%v, want %v", name, got, want)
-				}
+			// The shared log records exactly which scripts ran, in order, so
+			// comparing the whole sequence checks both membership and ordering.
+			if got := readOrderLog(t, tmpDir); !slices.Equal(got, tt.wantRun) {
+				t.Errorf("scripts ran %v, want %v", got, tt.wantRun)
 			}
 		})
 	}
