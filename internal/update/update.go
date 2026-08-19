@@ -186,17 +186,18 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 }
 
 func compareVersions(current, latest string) *Result {
-	// Normalize versions (strip v prefix)
-	currentNorm := strings.TrimPrefix(current, "v")
-	latestNorm := strings.TrimPrefix(latest, "v")
+	// Normalize mixed v-prefixed and bare inputs to canonical vX.Y.Z form
+	currentSemver := "v" + strings.TrimPrefix(current, "v")
+	latestSemver := "v" + strings.TrimPrefix(latest, "v")
 
+	// semver.Compare treats an invalid version as less than any valid one, so an
+	// unparseable current (e.g. a bare commit hash from an untagged build) would
+	// otherwise always look outdated.
 	result := &Result{
 		CurrentVersion:  current,
 		LatestVersion:   latest,
-		UpdateAvailable: false,
+		UpdateAvailable: semver.IsValid(currentSemver) && semver.Compare(latestSemver, currentSemver) > 0,
 	}
-
-	result.UpdateAvailable = semver.Compare("v"+latestNorm, "v"+currentNorm) > 0
 
 	debug.Logf("update: current=%s latest=%s available=%v", current, latest, result.UpdateAvailable)
 	return result

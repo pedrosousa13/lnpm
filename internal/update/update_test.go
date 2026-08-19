@@ -16,6 +16,12 @@ func TestCompareVersions(t *testing.T) {
 		{"v-prefixed inputs", "v1.9.0", "v1.11.0", true},
 		{"mixed v-prefixed and bare inputs", "1.9.0", "v1.11.0", true},
 		{"v-prefixed same version", "v1.11.0", "1.11.0", false},
+		{"unparseable current from untagged build", "a1b2c3d", "1.12.0", false},
+		{"malformed latest", "1.11.0", "release-1.12", false},
+		{"empty latest", "1.11.0", "", false},
+		{"newer pre-release", "1.11.0", "1.12.0-rc.1", true},
+		{"current pre-release newer than latest", "1.12.0-rc.1", "1.11.0", false},
+		{"release supersedes its own rc", "1.12.0-rc.1", "1.12.0", true},
 	}
 
 	for _, tt := range tests {
