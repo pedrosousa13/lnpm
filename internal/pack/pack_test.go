@@ -115,12 +115,12 @@ func TestIsExcluded(t *testing.T) {
 
 // TestIsExcludedGitignoreSemantics covers the gitignore/npmignore pattern forms
 // whose expected value the current matcher happens to produce. It produces them
-// by matching nothing at all, not by handling the pattern: "dist/" and "/dist"
-// both contain a "/", so they take the full-path glob branch and then the
-// pattern+"/" prefix check, and neither can ever match. Every case here would
-// pass just as well against a matcher that always returned false. They are
-// recorded so the contract sits in one place and so they turn red if a later
-// change regresses them.
+// by accident, not by handling the pattern: "dist/" and "/dist" both contain a
+// "/", so they take the full-path glob branch and then the pattern+"/" prefix
+// check, and neither can ever match; the negation case comes out right only
+// because "dist/*" matches a sibling that should be excluded anyway, with the
+// "!" pattern skipped. They are recorded so the contract sits in one place and
+// so they turn red if a later change regresses them.
 //
 // Its counterpart, TestIsExcludedGitignoreSemanticsPending, holds the cases the
 // current matcher cannot satisfy. The two together are the contract for the
@@ -141,8 +141,11 @@ func TestIsExcludedGitignoreSemantics(t *testing.T) {
 		{"src/dist/index.js", []string{"/dist"}, false},
 
 		// Negation: the last matching pattern wins, so "!dist/keep.js"
-		// re-includes a file that "dist/" excluded.
-		{"dist/keep.js", []string{"dist/", "!dist/keep.js"}, false},
+		// re-includes a file that "dist/*" excluded, while its siblings stay
+		// excluded. The pattern is "dist/*" and not "dist/" because a trailing
+		// slash prunes the directory outright, and nothing beneath a pruned
+		// directory can be re-included.
+		{"dist/drop.js", []string{"dist/*", "!dist/keep.js"}, true},
 	}
 
 	for _, tt := range tests {
@@ -182,10 +185,13 @@ func TestIsExcludedGitignoreSemanticsPending(t *testing.T) {
 		{"credentials.json", []string{"/credentials.json"}, true},
 		{"dist/index.js", []string{"/dist"}, true},
 
-		// Negation: the last matching pattern wins. isExcluded skips "!"
-		// patterns entirely, so it cannot distinguish a re-included file from
-		// its excluded siblings.
-		{"dist/drop.js", []string{"dist/", "!dist/keep.js"}, true},
+		// Negation: the last matching pattern wins, so "!dist/keep.js"
+		// re-includes a file that "dist/*" excluded. isExcluded skips "!"
+		// patterns entirely, so keep.js stays excluded with its siblings. The
+		// pattern is "dist/*" and not "dist/" because a trailing slash prunes
+		// the directory outright, and nothing beneath a pruned directory can be
+		// re-included.
+		{"dist/keep.js", []string{"dist/*", "!dist/keep.js"}, false},
 	}
 
 	for _, tt := range tests {
