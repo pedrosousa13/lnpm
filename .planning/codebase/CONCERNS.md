@@ -162,9 +162,9 @@
 - Priority: High - silent data corruption possible
 
 **Concurrent access coordination:**
-- Problem: No file locking on database, no inter-process coordination
-- Blocks: Multiple lnpm processes on same machine may corrupt database
-- Priority: High - BoltDB needs exclusive access, concurrent opens at `internal/db/db.go:114` timeout after 1s
+- Problem: bbolt's flock is the only inter-process coordination. It keeps the database from being corrupted, but a process that loses the race just waits, then fails
+- Blocks: Parallel lnpm invocations serialize end to end; nothing queues them or reports progress while they wait
+- Priority: Medium - the wait is `openTimeout` in `internal/db/db.go` (30s, enough to cover an ordinary in-flight command) and exceeding it now reports that another lnpm process holds the database. Multi-process test coverage is still missing (#184)
 
 ## Test Coverage Gaps
 

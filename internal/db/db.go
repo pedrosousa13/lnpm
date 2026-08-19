@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,12 +14,24 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 var (
 	instance *DB
 	once     sync.Once
 )
+
+// openTimeout is how long bolt.Open waits for the bbolt file lock before it
+// gives up. The lock serializes every lnpm process against the shared store,
+// so this has to cover a whole in-flight command (a publish or a push) rather
+// than a single transaction — otherwise parallel invocations from a task
+// runner all die while the first one is still working.
+//
+// It is a var rather than a const purely so tests can shorten it: the
+// production value is long enough that a test which waits it out would stall
+// the suite for half a minute.
+var openTimeout = 30 * time.Second
 
 // Bucket names
 var (
@@ -113,8 +126,13 @@ func initDB() (*DB, error) {
 	debug.Logf("db: opening %s", dbPath)
 
 	// Open bbolt database
-	boltDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+	boltDB, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: openTimeout})
 	if err != nil {
+		// bbolt reports a lost race for the file lock as ErrTimeout. Name the
+		// likely cause, because "timeout" on its own tells the user nothing.
+		if errors.Is(err, bolterrors.ErrTimeout) {
+			return nil, fmt.Errorf("another lnpm process appears to be running (database is locked): %w", err)
+		}
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
