@@ -63,7 +63,7 @@
 
 1. `lnpm publish` → CLI command parses flags
 2. `pack.Pack()` scans package directory, filters files, calculates content hashes
-3. `store.Store()` copies/reflinks files to `~/.lnpm/store/{name}/{hash}/`
+3. `store.Store()` copies/reflinks files into a temp directory and renames it onto `~/.lnpm/store/{name}/{hash}/`, never destroying an entry already committed for that hash
 4. Database records Package, FileEntry records
 5. If `--push` flag: retrieve linked projects, re-link files
 
