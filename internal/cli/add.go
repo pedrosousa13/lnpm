@@ -29,11 +29,17 @@ type addResult struct {
 	pkg         *db.Package
 	linkType    link.LinkType
 	origVersion string
-	// pkgJSONUnreadable records that reading package.json for this package
-	// already failed, so the later write is skipped instead of reporting the
-	// same failure twice.
-	pkgJSONUnreadable bool
-	err               error
+	// rolledBack records that this package's package.json handling failed and
+	// the package was undone, so every later step - the lock entry, the
+	// package.json write, the database link, the success line - skips it.
+	rolledBack bool
+	// priorLock is the lock entry this package already had when the batch
+	// started, and hadPriorLock whether there was one at all. Together they
+	// say whether this invocation created the package, which is what decides
+	// how far a rollback may go.
+	priorLock    lockfile.Package
+	hadPriorLock bool
+	err          error
 }
 
 // RunAddMultiple adds multiple packages with parallel linking
@@ -156,19 +162,29 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		return fmt.Errorf("failed to load lock file: %w", err)
 	}
 
+	// Record what the lock already held for each package before anything
+	// touches it, so a rollback can tell what this invocation created from
+	// what it merely re-added.
+	for i := range successful {
+		successful[i].priorLock, successful[i].hadPriorLock = lock.Get(successful[i].pkg.Name)
+	}
+
 	// ORDERING CONSTRAINT: the user's original specifiers exist only in
 	// package.json, and writing the lnpm references overwrites them. Read them
 	// and save them to the lock file BEFORE package.json is rewritten, so that
-	// a failure of the rewrite - or of anything after it, which for this path
+	// a failure of anything after the lock is saved - which for this path
 	// includes registering the project - still leaves remove/retreat able to
 	// restore the specifiers instead of deleting the dependencies. Do not move
-	// the package.json writes back above lock.Save.
+	// the package.json writes back above lock.Save. A failure of the rewrite
+	// itself needs no such rescue for a package this run added: package.json was
+	// never touched, so it is rolled back instead.
 	if !pure {
 		for i := range successful {
 			deps, err := readPackageJSONDeps(pkgJSONPath, successful[i].pkg.Name, dev)
 			if err != nil {
 				fmt.Printf("  %s Failed to read package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
-				successful[i].pkgJSONUnreadable = true
+				_, rolledBackErr := rollBack(lock, linker, &successful[i], fmt.Errorf("failed to read package.json: %w", err))
+				errors = append(errors, rolledBackErr)
 				continue
 			}
 			successful[i].origVersion = deps.originalVersion
@@ -177,10 +193,14 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 	// Update lockfile for all successful packages
 	for _, r := range successful {
+		if r.rolledBack {
+			continue
+		}
+
 		// Check for existing original version in lockfile
 		existingOrigVersion := ""
-		if existing, ok := lock.Get(r.pkg.Name); ok && existing.OriginalVersion != "" {
-			existingOrigVersion = existing.OriginalVersion
+		if r.hadPriorLock {
+			existingOrigVersion = r.priorLock.OriginalVersion
 		}
 
 		origVersion := r.origVersion
@@ -201,14 +221,25 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		return fmt.Errorf("failed to save lock file: %w", err)
 	}
 
-	// Update package.json for all successful packages
+	// Update package.json for all successful packages. A failure here is found
+	// with the lock already on disk, so dropping a package's entry means saving
+	// the lock a second time.
 	if !pure {
-		for _, r := range successful {
-			if r.pkgJSONUnreadable {
+		lockChanged := false
+		for i := range successful {
+			if successful[i].rolledBack {
 				continue
 			}
-			if err := writeLnpmReference(pkgJSONPath, r.pkg.Name, dev, useLink); err != nil {
-				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), r.pkg.Name, err)
+			if err := writeLnpmReference(pkgJSONPath, successful[i].pkg.Name, dev, useLink); err != nil {
+				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
+				removed, rolledBackErr := rollBack(lock, linker, &successful[i], fmt.Errorf("failed to update package.json: %w", err))
+				errors = append(errors, rolledBackErr)
+				lockChanged = lockChanged || removed
+			}
+		}
+		if lockChanged {
+			if err := lock.Save(cwd); err != nil {
+				return fmt.Errorf("failed to save lock file: %w", err)
 			}
 		}
 	}
@@ -229,6 +260,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 	}
 
 	for _, r := range successful {
+		if r.rolledBack {
+			continue
+		}
+
 		dbLink := &db.Link{
 			PackageID: r.pkg.ID,
 			ProjectID: existingProj.ID,
@@ -248,13 +283,23 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		}
 	}
 
+	// Rolled-back packages are still in successful - they linked cleanly and
+	// only failed afterwards - so count what actually survived before advising
+	// on npm install, which has nothing to resolve if nothing was added.
+	added := 0
+	for _, r := range successful {
+		if !r.rolledBack {
+			added++
+		}
+	}
+
 	// Run npm install once at the end if requested
-	if runInstall && !pure && len(successful) > 0 {
+	if runInstall && !pure && added > 0 {
 		fmt.Println("\nRunning npm install...")
 		if err := hooks.RunPostAdd(cwd, true); err != nil {
 			fmt.Printf("  %s npm install failed: %v\n", iconWarn(), err)
 		}
-	} else if !pure && len(successful) > 0 {
+	} else if !pure && added > 0 {
 		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
 	}
 
@@ -264,6 +309,37 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 	}
 
 	return nil
+}
+
+// rollBack undoes a package whose package.json handling failed, marks it so
+// every later step skips it, and returns the error to record for it. It reports
+// whether the lock file changed, so a caller that has already saved the lock
+// knows whether it must save it again.
+//
+// How far the undo may go depends on whether this invocation created the
+// package. With no prior lock entry the package is new to the project: the link
+// phase created its .lnpm copy and node_modules symlink, and package.json still
+// holds the user's own specifier because the rewrite never landed, so nothing
+// about it should survive. Leaving a lock entry behind would be worse than
+// useless: it would carry an empty OriginalVersion, and a later remove would
+// read that as "delete the dependency" and destroy the specifier package.json
+// still holds.
+//
+// A package added by an earlier run is left alone entirely. It must not be
+// unlinked - package.json points at the .lnpm copy Unlink would delete - and
+// its fresh lock entry already describes what the link phase just wrote, so
+// there is nothing to undo. Only the package.json write and the database link
+// are skipped, and the error is still recorded so the command exits non-zero.
+func rollBack(lock *lockfile.LockFile, linker *link.Linker, r *addResult, reason error) (lockChanged bool, recorded error) {
+	r.rolledBack = true
+	if !r.hadPriorLock {
+		lock.Remove(r.pkg.Name)
+		lockChanged = true
+		if err := linker.Unlink(r.pkg.Name); err != nil {
+			fmt.Printf("  %s Failed to unlink %s: %v\n", iconWarn(), r.pkg.Name, err)
+		}
+	}
+	return lockChanged, fmt.Errorf("%s: %w", r.spec, reason)
 }
 
 // runAddSingle adds a single package (internal implementation)

@@ -170,3 +170,40 @@ func TestAddNewPackageWithoutOriginal(t *testing.T) {
 	}
 	env.AssertPackageJSONMissing(projectDir, "new-pkg")
 }
+
+// TestAddMultipleRecordsOriginalVersions pins the invariant the multi-package
+// path exists to protect: every package added in one batch keeps its own
+// specifier, read out of the shared package.json before any of the rewrites
+// overwrite it. An entry may never end up with an empty OriginalVersion while
+// package.json held a real specifier for it.
+func TestAddMultipleRecordsOriginalVersions(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("multi-orig-a")
+	env.simplePkg("multi-orig-b")
+
+	projectDir := env.CreateTestPackage("multi-orig-project", "1.0.0", nil)
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":    "multi-orig-project",
+		"version": "1.0.0",
+		"dependencies": map[string]interface{}{
+			"multi-orig-a": "^1.0.0",
+			"multi-orig-b": "^2.0.0",
+		},
+	})
+
+	env.chdir(projectDir)
+	if err := cli.RunAddMultiple([]string{"multi-orig-a", "multi-orig-b"}, false, false, false, false); err != nil {
+		t.Fatalf("Failed to add multiple packages: %v", err)
+	}
+
+	for name, want := range map[string]string{
+		"multi-orig-a": "^1.0.0",
+		"multi-orig-b": "^2.0.0",
+	} {
+		env.AssertSymlinkExists(projectDir, name)
+		env.AssertPackageJSON(projectDir, name, "file:.lnpm/"+name)
+		env.AssertDatabaseLink(name, projectDir)
+		assertOriginalVersion(t, env, projectDir, name, want)
+	}
+}
