@@ -72,14 +72,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 			name, version := parsePackageSpec(pkgSpec)
 
-			var pkg *db.Package
-			var lookupErr error
-			if version != "" {
-				pkg, lookupErr = database.GetPackageByHash(name, version)
-			} else {
-				pkg, lookupErr = database.GetPackageByName(name)
-			}
-
+			// The store keeps the latest published version per package
+			// (latest-wins), so resolve by name and then check the requested
+			// version against what's stored, same as the single-package path.
+			pkg, lookupErr := database.GetPackageByName(name)
 			if lookupErr != nil {
 				result.err = fmt.Errorf("failed to look up package: %w", lookupErr)
 				results <- result
@@ -87,6 +83,11 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			}
 			if pkg == nil {
 				result.err = fmt.Errorf("package %s not found in store", name)
+				results <- result
+				return
+			}
+			if version != "" && pkg.Version != version {
+				result.err = fmt.Errorf("version %s of %s not found in store (latest published is %s). Re-publish %s to update.", version, name, pkg.Version, name)
 				results <- result
 				return
 			}

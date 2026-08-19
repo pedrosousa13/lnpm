@@ -1,8 +1,10 @@
 package tests
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -294,4 +296,92 @@ func TestAddByVersion(t *testing.T) {
 	if err := cli.RunAdd("ver-pkg@9.9.9", false, false, false); err == nil {
 		t.Fatal("add ver-pkg@9.9.9 should fail (only 1.0.0 is published)")
 	}
+}
+
+// TestAddMultipleByVersion verifies a versioned spec resolves in the
+// multi-package path exactly as it does in the single-package one: the version
+// is matched against the stored version, not against the content hash (#154).
+func TestAddMultipleByVersion(t *testing.T) {
+	env := setupTest(t)
+
+	env.publishPkg("pkg-a", "1.2.3", map[string]string{
+		"index.js": "module.exports=1",
+	})
+	env.simplePkg("pkg-b")
+
+	projectDir := env.newProject("consumer")
+
+	if err := cli.RunAddMultiple([]string{"pkg-a@1.2.3", "pkg-b"}, false, false, false, false); err != nil {
+		t.Fatalf("add pkg-a@1.2.3 pkg-b should succeed, got: %v", err)
+	}
+
+	env.AssertFilesLinked(projectDir, "pkg-a")
+	env.AssertFilesLinked(projectDir, "pkg-b")
+	env.AssertPackageJSON(projectDir, "pkg-a", "file:.lnpm/pkg-a")
+	env.AssertPackageJSON(projectDir, "pkg-b", "file:.lnpm/pkg-b")
+}
+
+// TestAddMultipleByVersionMismatch verifies a non-matching version fails only
+// for that package, with the same message the single-package path produces, so
+// the two paths cannot drift (#154).
+func TestAddMultipleByVersionMismatch(t *testing.T) {
+	env := setupTest(t)
+
+	env.publishPkg("pkg-a", "1.2.3", map[string]string{
+		"index.js": "module.exports=1",
+	})
+	env.simplePkg("pkg-b")
+
+	projectDir := env.newProject("consumer")
+
+	// The single-package path is authoritative for the wording.
+	singleErr := cli.RunAdd("pkg-a@9.9.9", false, false, false)
+	if singleErr == nil {
+		t.Fatal("add pkg-a@9.9.9 should fail (only 1.2.3 is published)")
+	}
+
+	output := captureStdout(t, func() {
+		if err := cli.RunAddMultiple([]string{"pkg-a@9.9.9", "pkg-b"}, false, false, false, false); err == nil {
+			t.Error("add pkg-a@9.9.9 pkg-b should fail for pkg-a")
+		}
+	})
+
+	if !strings.Contains(output, singleErr.Error()) {
+		t.Errorf("multi-package error should match the single-package one.\nwant substring: %s\ngot output:\n%s",
+			singleErr.Error(), output)
+	}
+
+	// pkg-b still linked, pkg-a not.
+	env.AssertFilesLinked(projectDir, "pkg-b")
+	env.AssertPackageJSON(projectDir, "pkg-b", "file:.lnpm/pkg-b")
+	env.AssertSymlinkMissing(projectDir, "pkg-a")
+	env.AssertPackageJSONMissing(projectDir, "pkg-a")
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
+// printed. The multi-package add reports per-package failures on stdout rather
+// than in its returned error, so comparing wording requires reading it.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Failed to create pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+
+	fn()
+
+	os.Stdout = orig
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return out
 }
