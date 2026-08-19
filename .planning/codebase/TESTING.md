@@ -117,6 +117,7 @@ workspaceDir := env.CopyFixture("npm-workspace")
 
 **Available Fixtures:**
 - `npm-workspace/`: NPM workspace with multiple packages
+- `npm-workspace-negation/`: NPM workspace whose config negates one package
 - `pnpm-workspace/`: PNPM workspace structure
 - `yarn-workspace/`: Yarn workspace setup
 - `turborepo/`: Turborepo monorepo structure
