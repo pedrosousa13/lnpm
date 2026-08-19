@@ -435,3 +435,93 @@ func TestVerifyChecksumNotListed(t *testing.T) {
 		t.Errorf("error = %q, want it to mention no checksum was listed", err)
 	}
 }
+
+// writeInstallFixture lays down a source file in its own directory and a
+// destination file in another, returning both paths.
+func writeInstallFixture(t *testing.T, srcContent, dstContent string) (string, string) {
+	t.Helper()
+
+	src := filepath.Join(t.TempDir(), "lnpm-downloaded")
+	if err := os.WriteFile(src, []byte(srcContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "lnpm")
+	if err := os.WriteFile(dst, []byte(dstContent), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return src, dst
+}
+
+// A successful install must not leave its staging file sitting next to the
+// installed binary.
+func TestInstallFileLeavesNoStagingFileOnSuccess(t *testing.T) {
+	src, dst := writeInstallFixture(t, "new-binary", "old-binary")
+
+	if err := installFile(src, dst); err != nil {
+		t.Fatalf("installFile returned error: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(dst))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dst) {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("destination directory holds %v, want only %q", names, filepath.Base(dst))
+	}
+}
+
+// A failure partway through the copy must not leave a half-written staging file
+// next to the target.
+func TestInstallFileRemovesStagingFileWhenTheCopyFails(t *testing.T) {
+	_, dst := writeInstallFixture(t, "unused", "old-binary")
+	// A directory can be opened but not read as a stream, so the copy fails
+	// after the staging file has already been created.
+	src := t.TempDir()
+
+	if err := installFile(src, dst); err == nil {
+		t.Fatal("installFile returned nil when the source could not be read, want an error")
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(dst))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dst) {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("destination directory holds %v after a failed install, want only %q", names, filepath.Base(dst))
+	}
+}
+
+// A failed update must leave the user with a working lnpm: the original binary
+// back at its own path, and no stray .bak beside it for the next update to trip
+// over.
+//
+// A directory as the replacement makes the install step fail without touching
+// the backup rename, so the restore path is what is under test.
+func TestReplaceBinaryRestoresTheOriginalWhenTheInstallFails(t *testing.T) {
+	_, dst := writeInstallFixture(t, "unused", "old-binary")
+	unreadable := t.TempDir()
+
+	if err := replaceBinary(unreadable, dst); err == nil {
+		t.Fatal("replaceBinary returned nil when the new binary could not be read, want an error")
+	}
+
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("original binary is gone after a failed install: %v", err)
+	}
+	if string(data) != "old-binary" {
+		t.Errorf("binary content = %q after a failed install, want the original %q", data, "old-binary")
+	}
+
+	if _, err := os.Stat(dst + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("backup %q still exists after a failed install (stat err %v)", dst+".bak", err)
+	}
+}
