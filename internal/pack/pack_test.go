@@ -216,6 +216,44 @@ func TestIsIncluded(t *testing.T) {
 	}
 }
 
+// TestIsIncludedPatternForms pins every spelling of a directory entry in the
+// "files" whitelist against one path. npm treats a leading "/" as anchoring to
+// the package root rather than as an absolute path, and a trailing "/" as a
+// directory marker, so the plain, anchored and "/**" spellings of "dist" all
+// ship dist/cli/index.js.
+//
+// "dist/**/" is the exception that keeps the trailing-slash normalization
+// honest: npm ships nothing from dist for it, because a trailing slash on a
+// glob is not a directory marker. Each expectation here was verified against
+// "npm pack --dry-run" on a fixture package.
+func TestIsIncludedPatternForms(t *testing.T) {
+	const relPath = "dist/cli/index.js"
+
+	tests := []struct {
+		pattern string
+		want    bool
+	}{
+		{"dist", true},
+		{"/dist", true},
+		{"dist/", true},
+		{"/dist/", true},
+		{"dist/**", true},
+		{"/dist/**", true},
+		{"dist/**/", false},
+		{"lib", false},
+		{"/lib", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			got := isIncluded(relPath, []string{tt.pattern})
+			if got != tt.want {
+				t.Errorf("isIncluded(%q, [%q]) = %v, want %v", relPath, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsDefaultInclude(t *testing.T) {
 	tests := []struct {
 		path string
@@ -316,6 +354,84 @@ func TestPack(t *testing.T) {
 		if fileNames[name] {
 			t.Errorf("expected file %q to be excluded", name)
 		}
+	}
+}
+
+// TestPackRootAnchoredFilesWhitelist packs a real package whose "files"
+// whitelist is spelled with a leading "/", the form npm treats as anchored to
+// the package root. Regression test for #207: the anchored entries matched
+// nothing, so dist/ was silently dropped and the reporting package published
+// without the CLI entry point its "bin" field pointed at.
+//
+// Every assertion below names a path the whitelist actually controls. The
+// fixture's package.json and README.md are deliberately not asserted: they ship
+// via isDefaultInclude whatever "files" says, so asserting them would pass even
+// with the whitelist broken, which is what this test exists to catch.
+func TestPackRootAnchoredFilesWhitelist(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "root-anchored-files",
+		"version": "1.0.0",
+		"files": ["/dist", "/dist-cjs", "README.md"]
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("# Test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cliDir := filepath.Join(tmpDir, "dist", "cli")
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cliDir, "index.js"), []byte("#!/usr/bin/env node"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "dist", "index.js"), []byte("module.exports = {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cjsDir := filepath.Join(tmpDir, "dist-cjs")
+	if err := os.MkdirAll(cjsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cjsDir, "index.cjs"), []byte("module.exports = {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "index.ts"), []byte("export {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range files {
+		packed[f.RelPath] = true
+	}
+
+	expected := []string{
+		"dist/index.js",
+		"dist/cli/index.js",
+		"dist-cjs/index.cjs",
+	}
+	for _, name := range expected {
+		if !packed[name] {
+			t.Errorf("expected %q to be packed, packed set was %v", name, packed)
+		}
+	}
+
+	if packed["src/index.ts"] {
+		t.Errorf("%q is outside the whitelist and must not be packed", "src/index.ts")
 	}
 }
 
