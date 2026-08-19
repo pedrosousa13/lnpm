@@ -38,6 +38,12 @@ type jsonObject struct {
 	members []jsonMember
 }
 
+// Duplicate keys are legal JSON, and encoding/json resolves them last-wins.
+// The editors below follow that rule when reading and leave at most one entry
+// per key when writing, which is what the map round-trip they replaced did
+// implicitly: a delete removes every copy, a set collapses the copies down to
+// the last one. Anything else would leave a stale specifier live in the file.
+
 // member returns the last member with the given key, or nil. Last wins because
 // that is how encoding/json resolves duplicate keys.
 func (o *jsonObject) member(key string) *jsonMember {
@@ -49,9 +55,31 @@ func (o *jsonObject) member(key string) *jsonMember {
 	return nil
 }
 
+// find returns the index of the first member with the given key and how many
+// members carry it. The index is -1 when there are none.
+func (o *jsonObject) find(key string) (first, count int) {
+	first = -1
+	for i := range o.members {
+		if o.members[i].key == key {
+			if first < 0 {
+				first = i
+			}
+			count++
+		}
+	}
+	return first, count
+}
+
 // setPackageJSONDep sets field.name to value, leaving every other byte of src
 // alone. A missing or non-object field is created.
 func setPackageJSONDep(src []byte, field, name, value string) ([]byte, error) {
+	// Drop every copy of the entry but the last, so the edit below leaves one
+	// value rather than a live one beside a stale one.
+	src, err := trimDeps(src, field, name, 1)
+	if err != nil {
+		return nil, err
+	}
+
 	top, err := parsePackageJSON(src)
 	if err != nil {
 		return nil, err
@@ -107,67 +135,78 @@ func setPackageJSONDep(src []byte, field, name, value string) ([]byte, error) {
 	return insertMember(src, deps, entry, unit, nl), nil
 }
 
-// deletePackageJSONDep removes field.name, leaving every other byte of src
-// alone. Removing an entry that is not there is a no-op, not an error.
+// deletePackageJSONDep removes every entry named field.name, leaving every
+// other byte of src alone. Removing an entry that is not there is a no-op, not
+// an error.
 func deletePackageJSONDep(src []byte, field, name string) ([]byte, error) {
-	top, err := parsePackageJSON(src)
-	if err != nil {
-		return nil, err
-	}
-
-	target := top.member(field)
-	if target == nil || src[target.valStart] != '{' {
-		return src, nil
-	}
-
-	deps, err := parseObject(src, target.valStart, target.valEnd)
-	if err != nil {
-		return nil, err
-	}
-
-	i := -1
-	for j := range deps.members {
-		if deps.members[j].key == name {
-			i = j
-			break
-		}
-	}
-	if i < 0 {
-		return src, nil
-	}
-
-	victim := deps.members[i]
-	switch {
-	case i+1 < len(deps.members):
-		// Delete up to the next key, so that key inherits the indentation the
-		// removed one sat on and its separating comma goes with it.
-		return splice(src, victim.keyStart, deps.members[i+1].keyStart, ""), nil
-	case i > 0:
-		// Last of several: take the comma that preceded it too.
-		return splice(src, deps.members[i-1].valEnd, victim.valEnd, ""), nil
-	default:
-		// The only member: collapse the object to "{}".
-		return splice(src, deps.open+1, deps.close-1, ""), nil
-	}
+	return trimDeps(src, field, name, 0)
 }
 
 // hasPackageJSONDep reports whether field.name is present in src.
 func hasPackageJSONDep(src []byte, field, name string) (bool, error) {
+	deps, err := dependencyField(src, field)
+	if err != nil || deps == nil {
+		return false, err
+	}
+	return deps.member(name) != nil, nil
+}
+
+// trimDeps deletes entries named field.name until at most keep of them are
+// left, the survivors being the last ones - the copies encoding/json reads.
+//
+// It re-parses between deletions because every splice invalidates the offsets
+// of the members after it. Duplicate keys are rare enough that the repeated
+// parse costs nothing worth trading clarity for.
+func trimDeps(src []byte, field, name string, keep int) ([]byte, error) {
+	for {
+		deps, err := dependencyField(src, field)
+		if err != nil {
+			return nil, err
+		}
+		if deps == nil {
+			return src, nil
+		}
+
+		i, count := deps.find(name)
+		if count <= keep {
+			return src, nil
+		}
+		src = deleteMember(src, deps, i)
+	}
+}
+
+// dependencyField parses the object held by the given top-level field. It
+// returns nil when the field is absent or holds something other than an object,
+// neither of which is an error - there is simply nothing there to edit.
+func dependencyField(src []byte, field string) (*jsonObject, error) {
 	top, err := parsePackageJSON(src)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	target := top.member(field)
 	if target == nil || src[target.valStart] != '{' {
-		return false, nil
+		return nil, nil
 	}
+	return parseObject(src, target.valStart, target.valEnd)
+}
 
-	deps, err := parseObject(src, target.valStart, target.valEnd)
-	if err != nil {
-		return false, err
+// deleteMember removes obj's i'th member from src, taking the punctuation that
+// held it in place with it.
+func deleteMember(src []byte, obj *jsonObject, i int) []byte {
+	victim := obj.members[i]
+	switch {
+	case i+1 < len(obj.members):
+		// Delete up to the next key, so that key inherits the indentation the
+		// removed one sat on and its separating comma goes with it.
+		return splice(src, victim.keyStart, obj.members[i+1].keyStart, "")
+	case i > 0:
+		// Last of several: take the comma that preceded it too.
+		return splice(src, obj.members[i-1].valEnd, victim.valEnd, "")
+	default:
+		// The only member: collapse the object to "{}".
+		return splice(src, obj.open+1, obj.close-1, "")
 	}
-	return deps.member(name) != nil, nil
 }
 
 // insertMember appends entry ("key": value, already encoded) to obj, matching

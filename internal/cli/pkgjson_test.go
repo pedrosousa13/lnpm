@@ -540,6 +540,71 @@ func TestRemoveFromPackageJSONRemovesFromBothFields(t *testing.T) {
 	assertBytes(t, readPkgJSON(t, path), want)
 }
 
+// Duplicate keys are legal JSON, and encoding/json resolves them last-wins. A
+// removal that took out only one copy would leave a live file: reference to a
+// directory lnpm has just deleted, so every copy has to go.
+func TestRemoveFromPackageJSONRemovesEveryDuplicateEntry(t *testing.T) {
+	before := `{
+  "dependencies": {
+    "my-lib": "file:.lnpm/my-lib",
+    "zod": "^3.22.0",
+    "my-lib": "file:.lnpm/my-lib"
+  }
+}
+`
+	want := `{
+  "dependencies": {
+    "zod": "^3.22.0"
+  }
+}
+`
+	dir, path := newPkgJSON(t, before)
+
+	if err := removeFromPackageJSON(dir, "my-lib"); err != nil {
+		t.Fatalf("removeFromPackageJSON: %v", err)
+	}
+
+	assertBytes(t, readPkgJSON(t, path), want)
+}
+
+func TestDeletePackageJSONDepRemovesEveryDuplicateEntry(t *testing.T) {
+	src := `{"dependencies":{"my-lib":"file:.lnpm/my-lib","my-lib":"file:.lnpm/my-lib"}}`
+	want := `{"dependencies":{}}`
+
+	got, err := deletePackageJSONDep([]byte(src), "dependencies", "my-lib")
+	if err != nil {
+		t.Fatalf("deletePackageJSONDep: %v", err)
+	}
+
+	assertBytes(t, string(got), want)
+}
+
+// Setting an entry that appears twice must leave exactly one behind, at the
+// position encoding/json would have read: the last one.
+func TestSetPackageJSONDepCollapsesDuplicateEntries(t *testing.T) {
+	src := `{
+  "dependencies": {
+    "my-lib": "^1.0.0",
+    "zod": "^3.22.0",
+    "my-lib": "file:.lnpm/my-lib"
+  }
+}
+`
+	want := `{
+  "dependencies": {
+    "zod": "^3.22.0",
+    "my-lib": "^2.5.0"
+  }
+}
+`
+	got, err := setPackageJSONDep([]byte(src), "dependencies", "my-lib", "^2.5.0")
+	if err != nil {
+		t.Fatalf("setPackageJSONDep: %v", err)
+	}
+
+	assertBytes(t, string(got), want)
+}
+
 func TestRemoveFromPackageJSONRejectsInvalidJSON(t *testing.T) {
 	dir, _ := newPkgJSON(t, "{not valid json")
 
