@@ -14,10 +14,11 @@ import (
 // newStore returns a fresh, isolated LNPM_STORE directory for a single test.
 //
 // Each test gets its OWN store (and therefore its own bbolt database). lnpm
-// opens the database with an exclusive file lock and only a 1s timeout, so
-// sharing one store across t.Parallel() tests would race two binaries on that
-// lock. A per-test store removes the contention entirely while keeping the
-// store off the real ~/.lnpm.
+// opens the database with an exclusive file lock, so sharing one store across
+// t.Parallel() tests would serialize every binary invocation on that lock. A
+// per-test store removes the contention entirely while keeping the store off
+// the real ~/.lnpm. TestConcurrentProcessesSharedStore is the one deliberate
+// exception — it shares a store precisely to exercise that lock.
 func newStore(t *testing.T) string {
 	t.Helper()
 	return t.TempDir()
@@ -32,6 +33,22 @@ func newStore(t *testing.T) string {
 func runLNPM(t *testing.T, store, dir string, args ...string) string {
 	t.Helper()
 
+	out, err := runLNPMErr(t, store, dir, args...)
+	if err != nil {
+		t.Fatalf("lnpm %s (dir=%s) failed: %v\n%s", strings.Join(args, " "), dir, err, out)
+	}
+	return out
+}
+
+// runLNPMErr is runLNPM without the t.Fatalf: it returns the combined output
+// and the exit error so the caller can inspect a failure instead of dying on
+// it. Contention tests need this — a run that loses the store lock is a valid
+// outcome to assert on, not a test failure.
+//
+// It is safe to call from a goroutine: it only uses t for t.Helper().
+func runLNPMErr(t *testing.T, store, dir string, args ...string) (string, error) {
+	t.Helper()
+
 	cmd := exec.Command(lnpmBin, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -40,10 +57,7 @@ func runLNPM(t *testing.T, store, dir string, args ...string) string {
 	)
 
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("lnpm %s (dir=%s) failed: %v\n%s", strings.Join(args, " "), dir, err, out)
-	}
-	return string(out)
+	return string(out), err
 }
 
 // runNode runs `node -e <script>` with cmd.Dir=dir and returns trimmed stdout.
