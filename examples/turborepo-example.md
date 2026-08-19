@@ -6,7 +6,7 @@ Quick example showing lnpm with Turborepo.
 
 ```
 my-turborepo/
-├── package.json         # Root with lnpm installed
+├── package.json         # Root workspace config (lnpm is a system binary, not a dependency)
 ├── turbo.json          # Turborepo config
 ├── packages/
 │   └── ui/
@@ -34,14 +34,15 @@ my-turborepo/
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lnpm:pub": "lnpm publish --all",
-    "lnpm:push": "lnpm push"
+    "lnpm:pub": "lnpm publish --all"
   },
   "devDependencies": {
     "turbo": "latest"
   }
 }
 ```
+
+No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the directory it runs from, so from the root it would pack `my-turborepo` instead of `@my/ui`. Push from `packages/ui`, or via the `lnpm:push` script below, which Turborepo runs with that package's directory as its cwd.
 
 **2. Package config (packages/ui/package.json):**
 
@@ -52,7 +53,8 @@ my-turborepo/
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "lnpm:push": "lnpm push"
   }
 }
 ```
@@ -70,10 +72,16 @@ my-turborepo/
     "dev": {
       "cache": false,
       "persistent": true
+    },
+    "lnpm:push": {
+      "dependsOn": ["build"],
+      "cache": false
     }
   }
 }
 ```
+
+Then `turbo run lnpm:push --filter=@my/ui` builds `@my/ui` and pushes it, both with `packages/ui` as the working directory.
 
 ## Usage
 
@@ -107,12 +115,12 @@ lnpm add @my/ui
 Run Turborepo's own watch mode to rebuild on change, then push when you're ready:
 
 ```bash
-cd ~/projects/my-turborepo
-
 # Terminal 1: watch and rebuild on changes
+cd ~/projects/my-turborepo
 turbo run build --filter=@my/ui --watch
 
 # Terminal 2: push built output to linked projects
+cd ~/projects/my-turborepo/packages/ui
 lnpm push
 ```
 
@@ -131,7 +139,8 @@ vim packages/ui/src/button.tsx
 # Build with Turborepo
 npm run build
 
-# Push to linked projects
+# Push to linked projects, from the package directory
+cd packages/ui
 lnpm push
 ```
 
@@ -150,11 +159,11 @@ turbo run build --filter=@my/ui...
 **2. Combine Turborepo watch with push:**
 
 ```bash
-# Terminal 1: rebuild on change
+# Terminal 1: rebuild on change (from the workspace root)
 turbo run build --filter=@my/ui --watch
 
-# Terminal 2: push built output when ready
-lnpm push
+# Terminal 2: push built output when ready (from the package)
+cd packages/ui && lnpm push
 ```
 
 **3. Multiple packages:**
@@ -171,9 +180,10 @@ lnpm add @my/ui
 lnpm add @my/components
 lnpm add @my/utils
 
-# Rebuild a specific package, then push
+# Rebuild a specific package, then push from that package's directory
 cd ~/projects/my-turborepo
 turbo run build --filter=@my/ui
+cd packages/ui
 lnpm push
 ```
 
@@ -228,7 +238,8 @@ Pushed to 1/1 projects
 
 And build before you push. `@my/ui` points `main` at `./dist/index.js`, so the app loads the built output — editing `src/` alone ships the previous build and push still reports `Pushed to 1/1 projects`:
 ```bash
-turbo run build --filter=@my/ui && lnpm push
+turbo run build --filter=@my/ui
+cd packages/ui && lnpm push
 ```
 
 lnpm does run your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so moving the build into one of those makes push rebuild for you. The plain `build` script above is not run automatically.

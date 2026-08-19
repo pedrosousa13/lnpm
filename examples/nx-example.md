@@ -6,7 +6,7 @@ Quick example showing lnpm with Nx monorepo.
 
 ```
 my-nx-workspace/
-├── package.json         # Root with lnpm installed
+├── package.json         # Root workspace config (lnpm is a system binary, not a dependency)
 ├── nx.json             # Nx config
 ├── libs/
 │   ├── feature-auth/
@@ -31,8 +31,7 @@ my-nx-workspace/
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "lnpm:pub": "lnpm publish --all",
-    "lnpm:push": "lnpm push"
+    "lnpm:pub": "lnpm publish --all"
   },
   "devDependencies": {
     "nx": "latest",
@@ -40,6 +39,8 @@ my-nx-workspace/
   }
 }
 ```
+
+No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the directory it runs from, so from the root it would pack `my-nx-workspace` instead of your library. Push from `libs/feature-auth`, or via the `lnpm-push` target below, which sets `cwd` for you.
 
 **2. Library project.json (libs/feature-auth/project.json):**
 
@@ -175,10 +176,10 @@ nx run feature-auth:lnpm-push
 If you have non-buildable libs (just TypeScript, no build step), publish only buildable ones:
 
 ```bash
-# From root - manually specify
-cd libs/feature-auth && lnpm publish
-cd libs/ui && lnpm publish
-cd libs/data-access && lnpm publish
+# From the workspace root - manually specify, each in its own directory
+(cd libs/feature-auth && lnpm publish)
+(cd libs/ui && lnpm publish)
+(cd libs/data-access && lnpm publish)
 ```
 
 Or create a script:
@@ -197,8 +198,8 @@ Or create a script:
 # Rebuild several libs (optionally with nx watch), then push each
 nx run-many --target=build --projects=feature-auth,ui
 
-cd libs/feature-auth && lnpm push
-cd libs/ui && lnpm push
+(cd libs/feature-auth && lnpm push)
+(cd libs/ui && lnpm push)
 ```
 
 ### Use Nx affected
@@ -343,16 +344,15 @@ lnpm push
 ## Example Commands Summary
 
 ```bash
-# Publish all workspace libs
+# Publish all workspace libs (from the workspace root)
 npm run lnpm:pub
 
 # Link to external project
-cd ~/my-app && lnpm add @my-org/feature-auth
+(cd ~/my-app && lnpm add @my-org/feature-auth)
 
 # Build then push (from lib directory)
 nx build feature-auth
-cd libs/feature-auth
-lnpm push
+(cd libs/feature-auth && lnpm push)
 
 # Use custom Nx target (builds + pushes)
 nx run feature-auth:lnpm-push
