@@ -528,12 +528,14 @@ func parsePackageSpec(spec string) (name, version string) {
 }
 
 // packageJSONDeps is what reading package.json tells us about a dependency
-// before the lnpm reference is written: the parsed document, the field the
+// before the lnpm reference is written: the file's raw bytes, the field the
 // reference belongs in, and the specifier the user had there. The
 // field-selection rules live here alone so the read half and the write half
-// cannot drift apart.
+// cannot drift apart. The raw bytes are kept because the write splices them
+// rather than re-serializing a parsed document, which is what preserves the
+// author's key order and formatting.
 type packageJSONDeps struct {
-	doc             map[string]interface{}
+	src             []byte
 	field           string
 	originalVersion string
 }
@@ -572,7 +574,7 @@ func readPackageJSONDeps(path string, packageName string, dev bool) (*packageJSO
 	// - If --dev flag: use devDependencies
 	// - Else if package exists in devDependencies: use devDependencies (preserve location)
 	// - Else: use dependencies (default)
-	deps := &packageJSONDeps{doc: pkgJSON, field: "dependencies"}
+	deps := &packageJSONDeps{src: data, field: "dependencies"}
 	if dev || (!inDeps && inDevDeps) {
 		deps.field = "devDependencies"
 	}
@@ -596,23 +598,16 @@ func readPackageJSONDeps(path string, packageName string, dev bool) (*packageJSO
 	return deps, nil
 }
 
-// write records the lnpm dependency in the parsed document and saves it. When
+// write splices the lnpm dependency into the file's original bytes and saves it,
+// so that every key lnpm did not touch keeps its position and formatting. When
 // useLink is true the dependency uses the "link:" protocol (symlink-style
 // resolution, which helps pnpm/yarn dedupe peer deps) instead of the default
 // "file:".
 func (p *packageJSONDeps) write(path string, packageName string, useLink bool) error {
-	// Get or create dependencies object
-	deps, ok := p.doc[p.field].(map[string]interface{})
-	if !ok {
-		deps = make(map[string]interface{})
-		p.doc[p.field] = deps
-	}
-
 	// Remove from other field to avoid duplicate entries
-	if otherDeps, ok := p.doc[p.otherField()].(map[string]interface{}); ok {
-		if _, ok := otherDeps[packageName].(string); ok {
-			delete(otherDeps, packageName)
-		}
+	output, err := deletePackageJSONDep(p.src, p.otherField(), packageName)
+	if err != nil {
+		return err
 	}
 
 	// Set the lnpm reference (file: by default, link: when requested)
@@ -620,18 +615,12 @@ func (p *packageJSONDeps) write(path string, packageName string, useLink bool) e
 	if useLink {
 		protocol = "link"
 	}
-	deps[packageName] = fmt.Sprintf("%s:.lnpm/%s", protocol, packageName)
-
-	// Write back
-	output, err := json.MarshalIndent(p.doc, "", "  ")
+	output, err = setPackageJSONDep(output, p.field, packageName, fmt.Sprintf("%s:.lnpm/%s", protocol, packageName))
 	if err != nil {
 		return err
 	}
 
-	// Add trailing newline
-	output = append(output, '\n')
-
-	return os.WriteFile(path, output, 0644)
+	return os.WriteFile(path, ensureTrailingNewline(output), 0644)
 }
 
 // writeLnpmReference points package.json at the linked copy of packageName.
