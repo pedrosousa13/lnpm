@@ -17,7 +17,7 @@
 go test ./...                    # Run all tests
 go test -v ./...                 # Verbose output
 go test -race ./...              # Race detection
-go test -coverprofile=coverage.out ./...  # Coverage
+go test -coverpkg=./... -coverprofile=coverage.out ./...  # Coverage (matches CI)
 make test                        # Makefile shortcut
 make test-coverage               # Generate HTML coverage report
 ```
@@ -134,9 +134,20 @@ go tool cover -html=coverage.out
 ```
 
 **CI Coverage:**
-- Runs with `-coverprofile=coverage-unit.out` for unit tests
-- Separate `coverage-workspace.out` for integration tests
+- Runs with `-coverpkg=./... -coverprofile=coverage-unit.out` for unit tests
+- Separate `coverage-workspace.out` for integration tests, also with `-coverpkg=./...`
 - Merged and uploaded to Codecov
+
+`-coverpkg=./...` is required on both. Without it each run measures only the
+package under test, and `tests`/`tests/e2e` hold no statements of their own, so
+the workspace profile came out empty and Codecov saw unit-test coverage only.
+Both profiles now cover the same file set, so the merge concatenates duplicate
+blocks; `go tool cover` sums them, and the merged total matches a single
+unified run exactly.
+
+`tests/e2e` still contributes nothing: it execs the real `lnpm` binary built
+uninstrumented in `TestMain`, so no in-process instrumented code runs there.
+Counting it would need `go build -cover` plus `GOCOVERDIR`.
 
 ## Test Types
 
