@@ -25,6 +25,7 @@ my-turborepo/
 ```json
 {
   "name": "my-turborepo",
+  "version": "0.0.0",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -134,19 +135,6 @@ npm run build
 lnpm push
 ```
 
-### Working with git
-
-```bash
-# Make changes
-vim packages/ui/src/button.tsx
-
-# Stage (no commit needed!)
-git add packages/ui/src/button.tsx
-
-# Push detects staged changes instantly
-lnpm push
-```
-
 ## Tips
 
 **1. Use Turborepo's filtering:**
@@ -210,11 +198,38 @@ Then run it (optionally in watch) before pushing:
 turbo run build --filter=@my/ui --watch
 ```
 
-**Issue: Changes not pushed**
+**Issue: Changes not picked up after a push**
 
-Stage your changes so lnpm picks them up:
+`lnpm push` packs whatever is on disk in the directory you run it from, so git state is irrelevant — there is nothing to stage or commit first. Check these two instead.
+
+Run push from the package directory, not the monorepo root. Pushing from the root publishes the root package, and it exits successfully while your library goes nowhere:
 ```bash
-git add .
-lnpm push
+$ cd ~/projects/my-turborepo
+$ lnpm push
+Package my-turborepo not published yet, publishing...
+Publishing my-turborepo@0.0.0 (6 files)...
+✓ Published my-turborepo@0.0.0
+  Hash: 37e17a1b
+  Files: 6
+  Size: 590 B
+  Store: /home/you/.lnpm/store/my-turborepo/37e17a1bf0121ca4
 ```
+
+Run it from the package instead:
+```bash
+$ cd packages/ui
+$ lnpm push
+Pushing @my/ui@1.0.0...
+Updating 1 linked projects...
+  ✓ /home/you/projects/my-app
+
+Pushed to 1/1 projects
+```
+
+And build before you push. `@my/ui` points `main` at `./dist/index.js`, so the app loads the built output — editing `src/` alone ships the previous build and push still reports `Pushed to 1/1 projects`:
+```bash
+turbo run build --filter=@my/ui && lnpm push
+```
+
+lnpm does run your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so moving the build into one of those makes push rebuild for you. The plain `build` script above is not run automatically.
 

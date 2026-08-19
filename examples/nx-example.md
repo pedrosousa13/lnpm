@@ -168,20 +168,6 @@ lnpm push
 nx run feature-auth:lnpm-push
 ```
 
-### Working with git
-
-```bash
-# Make changes
-vim libs/ui/src/button.tsx
-
-# Stage (no commit needed!)
-git add libs/ui/
-
-# Push detects staged changes
-cd libs/ui
-lnpm push
-```
-
 ## Advanced Usage
 
 ### Publish only buildable libraries
@@ -310,18 +296,35 @@ Check your project.json outputs configuration:
 }
 ```
 
-**Issue: Changes not pushed**
+**Issue: Changes not picked up after a push**
 
-Make sure you're in the library directory or use git staging:
+`cd` into the library directory before running `lnpm push`. Push packs whatever is on disk in the directory you run it from — git state plays no part — so from the workspace root it publishes the root package and exits successfully without touching your library:
 ```bash
-cd libs/feature-auth
-lnpm push
-
-# Or from root with git
-git add libs/feature-auth/
-cd libs/feature-auth
-lnpm push
+$ cd ~/projects/my-nx-workspace
+$ lnpm push
+Package my-nx-workspace not published yet, publishing...
+Publishing my-nx-workspace@1.0.0 (6 files)...
+✓ Published my-nx-workspace@1.0.0
+  Hash: 0322bedf
+  Files: 6
+  Size: 480 B
+  Store: /home/you/.lnpm/store/my-nx-workspace/0322bedfad632406
 ```
+
+Run it from the library instead:
+```bash
+$ cd libs/feature-auth
+$ lnpm push
+Pushing @my-org/feature-auth@1.0.0...
+Updating 1 linked projects...
+  ✓ /home/you/projects/my-app
+
+Pushed to 1/1 projects
+```
+
+Build before you push, and make sure the build output lands where push will see it. The library's `main` is `./dist/index.js`, so the app loads `libs/feature-auth/dist` — editing `src/` and pushing ships the new sources alongside the old build, and the app keeps running the previous one. Note that the `build` target above writes to `dist/libs/feature-auth` at the workspace root, which is outside the directory push packs; point its `outputPath` at `libs/feature-auth/dist` so the output lands inside the library.
+
+lnpm does run your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so wiring `nx build feature-auth` into one of those makes push rebuild for you. A plain `build` script is not run automatically — that is what the `lnpm-push` target's `dependsOn` is for.
 
 **Issue: Nx cache conflicts**
 

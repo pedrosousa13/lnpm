@@ -349,6 +349,7 @@ lnpm push
 ```json
 {
   "name": "my-monorepo",
+  "version": "0.0.0",
   "private": true,
   "workspaces": [
     "packages/*",
@@ -393,6 +394,7 @@ lnpm push
 ```json
 {
   "name": "my-monorepo",
+  "version": "0.0.0",
   "private": true,
   "workspaces": [
     "packages/*"
@@ -482,22 +484,7 @@ cd ~/external-app
 lnpm add @my/ui
 ```
 
-### 5. Git Stage for Fast Iteration
-
-Enable fast change detection with git staging:
-
-```bash
-# Make changes
-vim packages/ui/src/button.tsx
-
-# Stage changes (no commit needed)
-git add packages/ui/src/button.tsx
-
-# Push immediately detects staged changes
-lnpm push
-```
-
-### 6. Use Build Tool's Watch Mode
+### 5. Use Build Tool's Watch Mode
 
 For active development, use your build tool's watch mode combined with `lnpm push`:
 
@@ -543,17 +530,59 @@ Ensure your workspace configuration is correct:
 **NPM/Yarn:** Check `workspaces` field in root `package.json`
 **Turborepo:** Uses package manager's workspace config
 
-### Issue: Changes not detected
+### Issue: Changes not picked up after a push
 
-Stage your changes so lnpm picks them up:
+`lnpm push` re-packs whatever is on disk in the directory you run it from. It does not consult git, so committing or staging makes no difference. Two things usually explain a push that appears to succeed but changes nothing.
+
+**1. You ran it from the workspace root instead of the package directory.**
+
+The root `package.json` of a monorepo is itself a package as far as lnpm is concerned, so pushing from the root publishes the root package, not your library:
 
 ```bash
-# Stage changes (no commit needed)
-git add .
-
-# Push detects staged changes
-lnpm push
+$ cd ~/my-monorepo
+$ lnpm push
+Package my-monorepo not published yet, publishing...
+Publishing my-monorepo@0.0.0 (5 files)...
+✓ Published my-monorepo@0.0.0
+  Hash: a8cfcfa7
+  Files: 5
+  Size: 441 B
+  Store: /home/you/.lnpm/store/my-monorepo/a8cfcfa78070eb53
 ```
+
+That exits 0 and nothing warns you. `cd` into the package you actually changed and push from there:
+
+```bash
+$ cd packages/ui
+$ lnpm push
+Pushing @my/ui@1.0.0...
+Updating 1 linked projects...
+  ✓ /home/you/external-app
+
+Pushed to 1/1 projects
+```
+
+A directory with no `package.json` at all is the one case push does complain about:
+
+```bash
+$ cd ~/my-monorepo/apps
+$ lnpm push
+Error: failed to read package.json: failed to read package.json: open /home/you/my-monorepo/apps/package.json: no such file or directory
+```
+
+**2. You changed a source file but did not rebuild.**
+
+If `files` in your `package.json` ships `dist/`, then `dist/` is what push packs. Editing `src/` without running the build sends the previous build's output, and the push still reports `Pushed to 1/1 projects`. Run your build first:
+
+```bash
+# Turborepo
+turbo run build --filter=@my/ui && lnpm push
+
+# Nx
+nx build my-lib && lnpm push
+```
+
+lnpm runs your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so if your build is wired into one of those, push rebuilds for you. A plain `build` script is not run automatically.
 
 ### Issue: Slow push times
 
