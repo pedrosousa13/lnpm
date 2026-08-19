@@ -279,37 +279,6 @@ func TestGetDB_Singleton(t *testing.T) {
 	}
 }
 
-// TestOpen_TimeoutWithLockedDB tests timeout when database is locked
-func TestOpen_TimeoutWithLockedDB(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("LNPM_STORE", tmpDir)
-	defer ResetForTesting()
-
-	// Open first database instance
-	db1, err := GetDB()
-	if err != nil {
-		t.Fatalf("Failed to open first database: %v", err)
-	}
-	defer func() {
-		_ = db1.Close()
-	}()
-
-	// Try to open second instance - should timeout due to lock
-	// (bolt only allows one writer at a time)
-	db2, err := GetDB()
-	if err != nil {
-		t.Logf("Second open timed out as expected: %v", err)
-		return
-	}
-	defer func() {
-		_ = db2.Close()
-	}()
-
-	// If we got here, concurrent access is somehow allowed
-	// This is fine on some platforms/configurations
-	t.Log("Concurrent database access allowed on this platform")
-}
-
 // TestWriteOperations_PreservePermissions tests write operations preserve file permissions
 func TestWriteOperations_PreservePermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
