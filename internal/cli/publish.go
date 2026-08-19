@@ -298,6 +298,12 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 		}
 	}
 
+	fmt.Printf("\nPushed to %d/%d projects\n", successCount, len(projects))
+
+	if successCount < len(projects) {
+		return fmt.Errorf("push failed for %d of %d project(s)", len(projects)-successCount, len(projects))
+	}
+
 	return nil
 }
 
