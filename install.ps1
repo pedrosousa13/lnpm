@@ -72,17 +72,17 @@ try {
     $Actual = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash
     # goreleaser writes "<hex>  <filename>", one entry per line.
     $Expected = $null
-    foreach ($line in Get-Content $ChecksumsPath) {
-        $fields = $line -split '\s+' | Where-Object { $_ -ne "" }
-        if ($fields.Count -eq 2 -and $fields[1] -eq $Filename) {
-            $Expected = $fields[0]
+    foreach ($Line in Get-Content $ChecksumsPath) {
+        $Fields = $Line -split '\s+' | Where-Object { $_ -ne "" }
+        if ($Fields.Count -eq 2 -and $Fields[1] -eq $Filename) {
+            $Expected = $Fields[0]
             break
         }
     }
     if (-not $Expected) {
         Write-Err "No checksum listed for $Filename in checksums.txt"
     }
-    if (-not ($Expected -ieq $Actual)) {
+    if ($Expected -ine $Actual) {
         Write-Err "Checksum mismatch for $Filename - the download is corrupted or was altered"
     }
     Write-Ok "Checksum verified"
