@@ -151,6 +151,44 @@ func TestPublishWithPushReportsFailedProjects(t *testing.T) {
 	env.AssertLinkedFileContent(projectA, "push-fail-pkg", "index.js", "module.exports = 'v2';")
 }
 
+// TestPublishWithPushSkipsLiveLinkedConsumer covers the relink loop reached by
+// `publish --push`, which is a separate one from `push`'s. It has the same
+// hazard: relinking a live-linked consumer from the store turns its link into a
+// snapshot copy, and the source edits it was added for stop arriving with
+// nothing said about it.
+func TestPublishWithPushSkipsLiveLinkedConsumer(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("pub-live-lib")
+	copyProject := env.newProject("pub-copy-project")
+	env.addPkg(copyProject, "pub-live-lib", false, false)
+	liveProject := env.newProject("pub-live-project")
+	env.addLinkedPkg(liveProject, "pub-live-lib")
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+	out := captureStdout(t, func() {
+		if err := cli.RunPublish(true, false, false, false); err != nil {
+			t.Fatalf("Failed to publish with push: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Pushed to 1/2 projects (1 skipped: live link to source)") {
+		t.Errorf("Expected a coherent 1/2 summary naming the skip, got:\n%s", out)
+	}
+
+	// The copy-linked project got the snapshot, as always.
+	env.AssertLinkedFileContent(copyProject, "pub-live-lib", "index.js", "module.exports = 'v2';")
+
+	// The live-linked one is still a link, and a later edit still reaches it
+	// with no lnpm command - which is the acceptance criterion a clobbered link
+	// silently breaks.
+	env.AssertLiveLink(liveProject, "pub-live-lib", pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v3';")
+	env.AssertFileContent(filepath.Join(liveProject, "node_modules", "pub-live-lib", "index.js"),
+		"module.exports = 'v3';")
+}
+
 // TestPublishConcurrentSamePackage tests concurrent publishes of same package.
 func TestPublishConcurrentSamePackage(t *testing.T) {
 	env := setupTest(t)

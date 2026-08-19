@@ -66,12 +66,23 @@ func RunPull(packageNames []string) error {
 
 	var failed []error
 	refreshed := 0
-	skipped := 0
+	upToDate := 0
+	liveLinked := 0
 	lockChanged := false
 	lastVersion := ""
 
 	for _, name := range names {
 		entry, _ := lock.Get(name)
+
+		// A package added with --link resolves to its source directory, so there
+		// is nothing to refresh: relinking it from the store would replace the
+		// live link with a snapshot copy and silently end the live updates the
+		// consumer was relying on.
+		if linker.IsLiveLinked(name) {
+			fmt.Printf("Pulling %s... skipped (live link to source)\n", name)
+			liveLinked++
+			continue
+		}
 
 		pkg, err := database.GetPackageByName(name)
 		if err != nil {
@@ -87,7 +98,7 @@ func RunPull(packageNames []string) error {
 
 		if entry.Version == pkg.Version && entry.Hash == pkg.ContentHash {
 			fmt.Printf("already up to date (%s)\n", pkg.Version)
-			skipped++
+			upToDate++
 			continue
 		}
 
@@ -143,8 +154,17 @@ func RunPull(packageNames []string) error {
 		fmt.Printf("%s Pulled %s@%s\n", iconOK(), names[0], lastVersion)
 	} else if refreshed > 0 {
 		fmt.Printf("%s Pulled %d package(s)\n", iconOK(), refreshed)
-	} else if skipped > 0 && len(failed) == 0 {
+	} else if upToDate > 0 && len(failed) == 0 {
 		fmt.Printf("%s Already up to date\n", iconOK())
+	}
+
+	// Live-linked packages are reported apart from the up-to-date ones. Nothing
+	// about them was compared against the store, so folding them into "already
+	// up to date" would claim a store parity that was never checked - a pull
+	// where every package is live-linked said so while the store held a newer
+	// version and the lock still held the old one.
+	if liveLinked > 0 && len(failed) == 0 {
+		fmt.Printf("%s Skipped %d live-linked package(s)\n", iconOK(), liveLinked)
 	}
 
 	if len(failed) > 0 {

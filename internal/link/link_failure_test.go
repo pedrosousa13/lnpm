@@ -339,3 +339,189 @@ func TestUnlinkRemovesEmptyLnpmDir(t *testing.T) {
 		t.Errorf(".lnpm still exists after unlinking the last package (Stat err = %v), want it removed", err)
 	}
 }
+
+// TestLinkSourceRejectsUnusableSource drives LinkSource's guards on the source
+// directory recorded when the package was published. That directory can have
+// been deleted or replaced since, and linking .lnpm/{package} at it anyway
+// would defer the failure to whatever tool next resolved node_modules.
+func TestLinkSourceRejectsUnusableSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceFile := filepath.Join(tmpDir, "a-file")
+	if err := os.WriteFile(sourceFile, []byte("not a package"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{"missing source", filepath.Join(tmpDir, "deleted-source"), "is not available"},
+		{"source is a file", sourceFile, "is not a directory"},
+		// A package row can carry no source path at all. filepath.Abs("")
+		// resolves to the working directory, which stats as a directory, so
+		// without an explicit guard this links .lnpm/{package} at whatever
+		// directory the consumer happened to run lnpm from.
+		{"empty source", "", "no recorded source directory"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			linker := New(projectPath)
+
+			_, err := linker.LinkSource("my-package", tc.source)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LinkSource(%s) error = %v, want one containing %q", tc.source, err, tc.wantErr)
+			}
+
+			assertNoSymlink(t, projectPath, "my-package")
+			if _, err := os.Lstat(filepath.Join(projectPath, ".lnpm", "my-package")); !os.IsNotExist(err) {
+				t.Errorf(".lnpm/my-package exists after a failed LinkSource (Lstat err = %v), want it absent", err)
+			}
+		})
+	}
+}
+
+// TestLinkSourceKeepsPreviousOnFailure pins LinkSource's rollback. The previous
+// .lnpm/{package} is a store copy here - the copy-to-live conversion, which is
+// the case Link's comment names, because deleting a whole package tree is not
+// instantaneous - and it must survive a failure to create the replacement link
+// instead of being cleared up front with nothing left to restore.
+func TestLinkSourceKeepsPreviousOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	sourcePath := filepath.Join(tmpDir, "source")
+	for _, dir := range []string{projectPath, sourcePath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	contents := map[string]string{
+		"package.json":  `{"name":"my-package"}`,
+		"dist/index.js": "index contents",
+	}
+	storePath, files := storeFixture(t, tmpDir, contents)
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("Link(): %v", err)
+	}
+
+	// Force the replacement link's creation to fail. Nothing else about the
+	// project is disturbed, so the only reason .lnpm/my-package could go missing
+	// is LinkSource having removed it before creating the replacement.
+	forced := errors.New("forced link failure")
+	original := createDirSymlinkFn
+	createDirSymlinkFn = func(string, string) error { return forced }
+	t.Cleanup(func() { createDirSymlinkFn = original })
+
+	if _, err := linker.LinkSource("my-package", sourcePath); !errors.Is(err, forced) {
+		t.Fatalf("LinkSource() error = %v, want one wrapping the forced failure", err)
+	}
+
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	info, err := os.Lstat(lnpmPath)
+	if err != nil {
+		t.Fatalf(".lnpm/my-package is gone after a failed LinkSource: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf(".lnpm/my-package mode = %v after a failed LinkSource, want the previous store copy", info.Mode())
+	}
+	for rel, want := range contents {
+		got, err := os.ReadFile(filepath.Join(lnpmPath, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Errorf("reading %s from the preserved package: %v", rel, err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("preserved %s = %q, want %q", rel, string(got), want)
+		}
+	}
+
+	// No abandoned temp link either.
+	if names := entryNames(t, filepath.Join(projectPath, ".lnpm")); len(names) != 1 || names[0] != "my-package" {
+		t.Errorf(".lnpm entries after a failed LinkSource = %v, want [my-package]", names)
+	}
+}
+
+// TestIsLiveLinkedRejectsNonLinks pins what IsLiveLinked accepts. pull and push
+// skip a live-linked package and report the skip as success, so anything at
+// .lnpm/{package} that is not a link - a stray file left by a crashed tool, say
+// - must not be taken for one: that would report a corrupt project as fine.
+func TestIsLiveLinkedRejectsNonLinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	lnpmDir := filepath.Join(projectPath, ".lnpm")
+	sourcePath := filepath.Join(tmpDir, "source")
+	for _, dir := range []string{lnpmDir, sourcePath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	linker := New(projectPath)
+
+	if linker.IsLiveLinked("absent") {
+		t.Error("IsLiveLinked(absent) = true, want false")
+	}
+
+	if err := os.MkdirAll(filepath.Join(lnpmDir, "a-copy"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if linker.IsLiveLinked("a-copy") {
+		t.Error("IsLiveLinked(a-copy) = true for a store copy, want false")
+	}
+
+	if err := os.WriteFile(filepath.Join(lnpmDir, "a-file"), []byte("stray"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if linker.IsLiveLinked("a-file") {
+		t.Error("IsLiveLinked(a-file) = true for a regular file, want false")
+	}
+
+	if _, err := linker.LinkSource("a-link", sourcePath); err != nil {
+		t.Fatalf("LinkSource(a-link): %v", err)
+	}
+	if !linker.IsLiveLinked("a-link") {
+		t.Error("IsLiveLinked(a-link) = false for a live link, want true")
+	}
+
+	// A live link whose source has since been deleted is still a live link:
+	// relinking it from the store would still end the live updates silently.
+	if err := os.RemoveAll(sourcePath); err != nil {
+		t.Fatal(err)
+	}
+	if !linker.IsLiveLinked("a-link") {
+		t.Error("IsLiveLinked(a-link) = false for a dangling live link, want true")
+	}
+}
+
+// TestLinkSourceRejectsTraversingName asserts that LinkSource validates the
+// package name before joining it into .lnpm and node_modules, exactly as Link
+// does: the name reaches both from the store, and a traversing one would place
+// a link outside the project.
+func TestLinkSourceRejectsTraversingName(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	sourcePath := filepath.Join(tmpDir, "source")
+	for _, dir := range []string{projectPath, sourcePath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	linker := New(projectPath)
+	if _, err := linker.LinkSource("../escaped", sourcePath); err == nil {
+		t.Fatal("LinkSource(../escaped) error = nil, want a validation error")
+	}
+
+	if _, err := os.Lstat(filepath.Join(tmpDir, "escaped")); !os.IsNotExist(err) {
+		t.Errorf("a link was created outside the project (Lstat err = %v), want none", err)
+	}
+}

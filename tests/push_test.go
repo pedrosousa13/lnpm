@@ -3,6 +3,7 @@ package tests
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -221,4 +222,64 @@ func TestPushConcurrentSafe(t *testing.T) {
 	for _, dir := range projectDirs {
 		env.AssertLinkedFileContent(dir, "concurrent-pkg", "index.js", "module.exports = 'v2';")
 	}
+}
+
+// TestPushSkipsLiveLinkedConsumer covers push from the other side of the same
+// hazard pull has: pushing relinks every consumer from the store, which for a
+// live-linked consumer would quietly replace its link with a snapshot copy and
+// end the live updates it was added for.
+func TestPushSkipsLiveLinkedConsumer(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("push-live-lib")
+	projectDir := env.newProject("push-live-project")
+	env.addLinkedPkg(projectDir, "push-live-lib")
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'pushed';")
+	out := captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("RunPush: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "live link") {
+		t.Errorf("Expected push to report the live link, got:\n%s", out)
+	}
+	env.AssertLiveLink(projectDir, "push-live-lib", pkgDir)
+	env.AssertFileContent(filepath.Join(projectDir, "node_modules", "push-live-lib", "index.js"),
+		"module.exports = 'pushed';")
+}
+
+// TestPushReportsCoherentProjectCounts pins push's summary line against the
+// count it announced: the denominator stays every project considered, and a
+// live-linked project is reported as a skip rather than removed from the total.
+// The two lines used to contradict each other - "Updating 2 linked projects"
+// then "Pushed to 1/1 projects" - and an all-live push reported "0/0".
+func TestPushReportsCoherentProjectCounts(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("count-lib")
+	copyProject := env.newProject("count-copy-project")
+	env.addPkg(copyProject, "count-lib", false, false)
+	liveProject := env.newProject("count-live-project")
+	env.addLinkedPkg(liveProject, "count-lib")
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+	out := captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("RunPush: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Updating 2 linked projects") {
+		t.Errorf("Expected 2 projects to be announced, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Pushed to 1/2 projects (1 skipped: live link to source)") {
+		t.Errorf("Expected a coherent 1/2 summary naming the skip, got:\n%s", out)
+	}
+
+	env.AssertLinkedFileContent(copyProject, "count-lib", "index.js", "module.exports = 'v2';")
+	env.AssertLiveLink(liveProject, "count-lib", pkgDir)
 }

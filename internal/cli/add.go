@@ -71,6 +71,14 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 	linker := link.New(cwd)
 
+	// Announce live linking for the batch. The single-package path names the
+	// package and version here, which this path cannot: resolution happens
+	// inside the parallel phase below, and printing from those goroutines would
+	// interleave. The per-package link type is reported in the summary instead.
+	if useLink {
+		fmt.Printf("Adding %d packages (linked to source)...\n", len(packageSpecs))
+	}
+
 	// Phase 1: Resolve and link packages in parallel
 	var wg sync.WaitGroup
 	results := make(chan addResult, len(packageSpecs))
@@ -105,16 +113,9 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 			result.pkg = pkg
 
-			files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+			linkType, err := linkPackage(linker, s, pkg, useLink)
 			if err != nil {
-				result.err = fmt.Errorf("failed to get package files: %w", err)
-				results <- result
-				return
-			}
-
-			linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
-			if err != nil {
-				result.err = fmt.Errorf("failed to link package: %w", err)
+				result.err = err
 				results <- result
 				return
 			}
@@ -274,7 +275,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), r.pkg.Name, err)
 		}
 
-		fmt.Printf("%s Added %s@%s (%s)\n", iconOK(), r.pkg.Name, r.pkg.Version, r.linkType)
+		// Reported exactly as the single-package path reports it, so a live link
+		// is spelled out rather than shown as the bare type name "link".
+		fmt.Printf("%s Added %s@%s\n", iconOK(), r.pkg.Name, r.pkg.Version)
+		fmt.Printf("  Link type: %s\n", linkTypeLabel(r.linkType))
 	}
 
 	if len(errors) > 0 {
@@ -343,6 +347,39 @@ func rollBack(lock *lockfile.LockFile, linker *link.Linker, r *addResult, reason
 	return lockChanged, fmt.Errorf("%s: %w", r.spec, reason)
 }
 
+// linkTypeLabel renders a link type for the add summary, spelling out that a
+// live link resolves to the package's source directory rather than to a copy.
+func linkTypeLabel(t link.LinkType) string {
+	if t == link.Live {
+		return "link (live source)"
+	}
+	return string(t)
+}
+
+// linkPackage points the project at pkg. With useLink the project resolves to
+// pkg's live source directory, so later source edits reach it with no further
+// command; otherwise the published snapshot is materialised out of the store.
+func linkPackage(linker *link.Linker, s *store.Store, pkg *db.Package, useLink bool) (link.LinkType, error) {
+	if useLink {
+		linkType, err := linker.LinkSource(pkg.Name, pkg.SourcePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to link package source: %w", err)
+		}
+		return linkType, nil
+	}
+
+	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+	if err != nil {
+		return "", fmt.Errorf("failed to get package files: %w", err)
+	}
+
+	linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
+	if err != nil {
+		return "", fmt.Errorf("failed to link package: %w", err)
+	}
+	return linkType, nil
+}
+
 // runAddSingle adds a single package (internal implementation)
 func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useLink bool) error {
 	// Parse package spec (name[@version])
@@ -379,7 +416,11 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("version %s of %s not found in store (latest published is %s). Re-publish %s to update.", version, name, pkg.Version, name)
 	}
 
-	fmt.Printf("Adding %s@%s...\n", pkg.Name, pkg.Version)
+	if useLink {
+		fmt.Printf("Adding %s@%s (linked to source)...\n", pkg.Name, pkg.Version)
+	} else {
+		fmt.Printf("Adding %s@%s...\n", pkg.Name, pkg.Version)
+	}
 
 	// Get store
 	s, err := store.New()
@@ -387,17 +428,11 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("failed to access store: %w", err)
 	}
 
-	// Get files from store
-	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
-	if err != nil {
-		return fmt.Errorf("failed to get package files: %w", err)
-	}
-
 	// Link the package
 	linker := link.New(cwd)
-	linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
+	linkType, err := linkPackage(linker, s, pkg, useLink)
 	if err != nil {
-		return fmt.Errorf("failed to link package: %w", err)
+		return err
 	}
 
 	// Update .gitignore if enabled
@@ -490,7 +525,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 	}
 
 	fmt.Printf("%s Added %s@%s\n", iconOK(), pkg.Name, pkg.Version)
-	fmt.Printf("  Link type: %s\n", linkType)
+	fmt.Printf("  Link type: %s\n", linkTypeLabel(linkType))
 	fmt.Printf("  Package manager: %s\n", pm)
 	if !pure {
 		fmt.Printf("  Updated: package.json\n")
