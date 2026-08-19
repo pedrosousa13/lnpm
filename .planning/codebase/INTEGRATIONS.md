@@ -22,7 +22,7 @@
 **Databases:**
 - bbolt (embedded key-value store)
   - Connection: Local file at `~/.lnpm/lnpm.db`
-  - Client: `go.etcd.io/bbolt` v1.3.8
+  - Client: `go.etcd.io/bbolt` v1.5.0
   - Purpose: Track packages, projects, links, file metadata
   - Location: `internal/db/db.go`
 

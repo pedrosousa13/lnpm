@@ -23,7 +23,7 @@
 ## Frameworks
 
 **Core:**
-- `github.com/spf13/cobra` v1.8.1 - CLI framework for command structure
+- `github.com/spf13/cobra` v1.10.2 - CLI framework for command structure
 
 **Testing:**
 - Standard Go testing (`testing` package) - All test files use built-in Go testing
@@ -36,22 +36,22 @@
 ## Key Dependencies
 
 **Critical:**
-- `go.etcd.io/bbolt` v1.3.8 - Embedded key-value database for state tracking
+- `go.etcd.io/bbolt` v1.5.0 - Embedded key-value database for state tracking
   - Stores packages, projects, links, files metadata
   - Database location: `~/.lnpm/lnpm.db`
 
 **File Operations:**
 - `github.com/fsnotify/fsnotify` v1.7.0 - Cross-platform file system notifications for watch mode
-- `github.com/bmatcuk/doublestar/v4` v4.6.1 - Glob pattern matching for file filtering
+- `github.com/bmatcuk/doublestar/v4` v4.10.0 - Glob pattern matching for file filtering
 
 **Performance:**
 - `github.com/cespare/xxhash/v2` v2.3.0 - Fast hashing for content-based deduplication
-- `github.com/panjf2000/ants/v2` v2.11.4 - Goroutine pool for parallel file operations
+- `github.com/panjf2000/ants/v2` v2.12.1 - Goroutine pool for parallel file operations
 
 **Infrastructure:**
 - `gopkg.in/yaml.v3` v3.0.1 - YAML parsing for configuration
-- `golang.org/x/sync` v0.11.0 - Extended synchronization primitives (indirect)
-- `golang.org/x/sys` v0.4.0 - Low-level system calls for reflink/device detection (indirect)
+- `golang.org/x/sync` v0.22.0 - Extended synchronization primitives (indirect)
+- `golang.org/x/sys` v0.47.0 - Low-level system calls for reflink/device detection (indirect)
 
 ## Configuration
 
