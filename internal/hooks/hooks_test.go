@@ -38,9 +38,17 @@ func TestRunPrepare(t *testing.T) {
 	}
 
 	// logFor returns a script that appends the hook name to one shared log file,
-	// so the test can prove which scripts ran and in which order.
+	// so the test can prove which scripts ran and in which order. It goes
+	// through node rather than shell built-ins because npm runs scripts under
+	// cmd.exe on Windows, where `>>` appends a trailing space and `;` is not a
+	// command separator. node is already required here, so this costs nothing.
 	logFor := func(name string) string {
-		return "echo " + name + " >> " + orderLogName
+		return `node -e "require('fs').appendFileSync('` + orderLogName + `','` + name + `\n')"`
+	}
+
+	// failAfterLog returns a script that logs its own name and then fails.
+	failAfterLog := func(name string) string {
+		return `node -e "require('fs').appendFileSync('` + orderLogName + `','` + name + `\n');process.exit(1)"`
 	}
 
 	tests := []struct {
@@ -58,6 +66,13 @@ func TestRunPrepare(t *testing.T) {
 			wantRun: []string{"prepare"},
 		},
 		{
+			name: "runs prepublishOnly if it is the only script",
+			scripts: map[string]string{
+				"prepublishOnly": logFor("prepublishOnly"),
+			},
+			wantRun: []string{"prepublishOnly"},
+		},
+		{
 			name: "runs prepublishOnly before prepare",
 			scripts: map[string]string{
 				"prepare":        logFor("prepare"),
@@ -66,7 +81,7 @@ func TestRunPrepare(t *testing.T) {
 			wantRun: []string{"prepublishOnly", "prepare"},
 		},
 		{
-			name: "runs every publish script in npm order",
+			name: "runs every publish script in order",
 			scripts: map[string]string{
 				"prepack":        logFor("prepack"),
 				"prepare":        logFor("prepare"),
@@ -105,7 +120,7 @@ func TestRunPrepare(t *testing.T) {
 		{
 			name: "stops at the first failing script",
 			scripts: map[string]string{
-				"prepublishOnly": "echo prepublishOnly >> " + orderLogName + "; exit 1",
+				"prepublishOnly": failAfterLog("prepublishOnly"),
 				"prepare":        logFor("prepare"),
 				"prepack":        logFor("prepack"),
 			},
