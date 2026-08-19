@@ -8,6 +8,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -150,19 +151,19 @@ func restorePackageJSON(projectPath, packageName, originalVersion string) error 
 
 	// Check both dependencies and devDependencies
 	for _, field := range []string{"dependencies", "devDependencies"} {
-		exists, err := hasPackageJSONDep(output, field, packageName)
+		exists, err := pkgjson.HasDep(output, field, packageName)
 		if err != nil {
 			return err
 		}
 		if exists {
-			if output, err = setPackageJSONDep(output, field, packageName, originalVersion); err != nil {
+			if output, err = pkgjson.SetDep(output, field, packageName, originalVersion); err != nil {
 				return err
 			}
 			break
 		}
 	}
 
-	return os.WriteFile(pkgJSONPath, ensureTrailingNewline(output), 0644)
+	return os.WriteFile(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
 }
 
 // removeFromPackageJSON removes a dependency from package.json, editing the
@@ -177,10 +178,10 @@ func removeFromPackageJSON(projectPath, packageName string) error {
 
 	// Remove from both dependencies and devDependencies
 	for _, field := range []string{"dependencies", "devDependencies"} {
-		if output, err = deletePackageJSONDep(output, field, packageName); err != nil {
+		if output, err = pkgjson.RemoveDep(output, field, packageName); err != nil {
 			return err
 		}
 	}
 
-	return os.WriteFile(pkgJSONPath, ensureTrailingNewline(output), 0644)
+	return os.WriteFile(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
 }

@@ -7,7 +7,11 @@ import (
 	"testing"
 )
 
-// These tests assert on the RAW BYTES package.json is left with. A parsed-map
+// These tests cover the package.json writes add and remove perform: reading the
+// file, choosing the dependency field, and saving the edited bytes back. The
+// editor those writes splice with is tested directly in internal/pkgjson.
+//
+// They assert on the RAW BYTES package.json is left with. A parsed-map
 // comparison cannot see the bug they exist for - key order, indentation and
 // large integer literals all survive a round trip through map[string]interface{}
 // as far as a parsed comparison is concerned, and are all destroyed on disk.
@@ -153,125 +157,6 @@ func TestWriteLnpmReferenceOnlyTouchesTheDependencyLines(t *testing.T) {
 		[]string{`        "express": "^4.18.0"`})
 }
 
-func TestWriteLnpmReferencePreservesTabIndentation(t *testing.T) {
-	before := "{\n\t\"name\": \"my-app\",\n\t\"dependencies\": {\n\t\t\"zod\": \"^3.22.0\"\n\t}\n}\n"
-	want := "{\n\t\"name\": \"my-app\",\n\t\"dependencies\": {\n\t\t\"zod\": \"^3.22.0\",\n\t\t\"my-lib\": \"file:.lnpm/my-lib\"\n\t}\n}\n"
-
-	_, path := newPkgJSON(t, before)
-
-	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-// An entry that already exists keeps its position in the object rather than
-// being re-sorted to wherever alphabetical order would put it.
-func TestWriteLnpmReferenceReplacesExistingEntryInPlace(t *testing.T) {
-	before := `{
-  "dependencies": {
-    "zod": "^3.22.0",
-    "my-lib": "^1.0.0",
-    "express": "^4.18.0"
-  }
-}
-`
-	want := `{
-  "dependencies": {
-    "zod": "^3.22.0",
-    "my-lib": "link:.lnpm/my-lib",
-    "express": "^4.18.0"
-  }
-}
-`
-	_, path := newPkgJSON(t, before)
-
-	if err := writeLnpmReference(path, "my-lib", false, true); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-func TestWriteLnpmReferenceCreatesMissingDependenciesField(t *testing.T) {
-	before := `{
-  "name": "my-app",
-  "version": "1.0.0"
-}
-`
-	want := `{
-  "name": "my-app",
-  "version": "1.0.0",
-  "dependencies": {
-    "my-lib": "file:.lnpm/my-lib"
-  }
-}
-`
-	_, path := newPkgJSON(t, before)
-
-	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-func TestWriteLnpmReferenceFillsEmptyDependenciesObject(t *testing.T) {
-	before := `{
-    "name": "my-app",
-    "dependencies": {}
-}
-`
-	want := `{
-    "name": "my-app",
-    "dependencies": {
-        "my-lib": "file:.lnpm/my-lib"
-    }
-}
-`
-	_, path := newPkgJSON(t, before)
-
-	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-// A package.json with no keys at all has nothing to copy an indent from, so the
-// new field falls back to the 2-space default.
-func TestWriteLnpmReferenceFillsEmptyDocument(t *testing.T) {
-	want := `{
-  "dependencies": {
-    "my-lib": "file:.lnpm/my-lib"
-  }
-}
-`
-	_, path := newPkgJSON(t, "{}\n")
-
-	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-// A minified package.json has no lines to match, so the new entry goes inline
-// beside its siblings rather than dragging a newline into the file.
-func TestWriteLnpmReferenceKeepsMinifiedFileInline(t *testing.T) {
-	before := `{"version":"1.0.0","name":"my-app","dependencies":{"zod":"^3.22.0"}}`
-	want := `{"version":"1.0.0","name":"my-app","dependencies":{"zod":"^3.22.0", "my-lib": "file:.lnpm/my-lib"}}` + "\n"
-
-	_, path := newPkgJSON(t, before)
-
-	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
 // --dev on a package already in dependencies moves it to devDependencies. Both
 // objects are edited, and nothing else in the file may move.
 func TestWriteLnpmReferenceMovesEntryBetweenFields(t *testing.T) {
@@ -300,21 +185,6 @@ func TestWriteLnpmReferenceMovesEntryBetweenFields(t *testing.T) {
 	_, path := newPkgJSON(t, before)
 
 	if err := writeLnpmReference(path, "my-lib", true, false); err != nil {
-		t.Fatalf("writeLnpmReference: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-// CI runs Windows, where package.json files routinely have CRLF line endings.
-// The inserted line must use the file's own ending, not a bare LF.
-func TestWriteLnpmReferencePreservesCRLFLineEndings(t *testing.T) {
-	before := "{\r\n  \"name\": \"my-app\",\r\n  \"dependencies\": {\r\n    \"zod\": \"^3.22.0\"\r\n  }\r\n}\r\n"
-	want := "{\r\n  \"name\": \"my-app\",\r\n  \"dependencies\": {\r\n    \"zod\": \"^3.22.0\",\r\n    \"my-lib\": \"file:.lnpm/my-lib\"\r\n  }\r\n}\r\n"
-
-	_, path := newPkgJSON(t, before)
-
-	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
 		t.Fatalf("writeLnpmReference: %v", err)
 	}
 
@@ -447,46 +317,22 @@ func TestRemoveFromPackageJSONOnlyTouchesTheAffectedLine(t *testing.T) {
 	assertDiff(t, before, after, nil, []string{`        "my-lib": "file:.lnpm/my-lib",`})
 }
 
-// Removing the last entry of the list must not leave a dangling comma behind.
-func TestRemoveFromPackageJSONRemovesLastEntryWithoutDanglingComma(t *testing.T) {
+// Duplicate keys are legal JSON, and encoding/json resolves them last-wins. A
+// removal that took out only one copy would leave a live file: reference to a
+// directory lnpm has just deleted, so every copy has to go.
+func TestRemoveFromPackageJSONRemovesEveryDuplicateEntry(t *testing.T) {
 	before := `{
-    "version": "1.0.0",
-    "name": "my-app",
-    "dependencies": {
-        "zod": "^3.22.0",
-        "my-lib": "file:.lnpm/my-lib"
-    }
-}
-`
-	want := `{
-    "version": "1.0.0",
-    "name": "my-app",
-    "dependencies": {
-        "zod": "^3.22.0"
-    }
-}
-`
-	dir, path := newPkgJSON(t, before)
-
-	if err := removeFromPackageJSON(dir, "my-lib"); err != nil {
-		t.Fatalf("removeFromPackageJSON: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-// Removing the only entry leaves a valid empty object.
-func TestRemoveFromPackageJSONLeavesEmptyObject(t *testing.T) {
-	before := `{
-  "name": "my-app",
   "dependencies": {
+    "my-lib": "file:.lnpm/my-lib",
+    "zod": "^3.22.0",
     "my-lib": "file:.lnpm/my-lib"
   }
 }
 `
 	want := `{
-  "name": "my-app",
-  "dependencies": {}
+  "dependencies": {
+    "zod": "^3.22.0"
+  }
 }
 `
 	dir, path := newPkgJSON(t, before)
@@ -496,18 +342,6 @@ func TestRemoveFromPackageJSONLeavesEmptyObject(t *testing.T) {
 	}
 
 	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-func TestRemoveFromPackageJSONIsNoOpWhenPackageAbsent(t *testing.T) {
-	before := "{\n\t\"name\": \"my-app\",\n\t\"dependencies\": {\n\t\t\"zod\": \"^3.22.0\"\n\t}\n}\n"
-
-	dir, path := newPkgJSON(t, before)
-
-	if err := removeFromPackageJSON(dir, "my-lib"); err != nil {
-		t.Fatalf("removeFromPackageJSON: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), before)
 }
 
 func TestRemoveFromPackageJSONRemovesFromBothFields(t *testing.T) {
@@ -538,71 +372,6 @@ func TestRemoveFromPackageJSONRemovesFromBothFields(t *testing.T) {
 	}
 
 	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-// Duplicate keys are legal JSON, and encoding/json resolves them last-wins. A
-// removal that took out only one copy would leave a live file: reference to a
-// directory lnpm has just deleted, so every copy has to go.
-func TestRemoveFromPackageJSONRemovesEveryDuplicateEntry(t *testing.T) {
-	before := `{
-  "dependencies": {
-    "my-lib": "file:.lnpm/my-lib",
-    "zod": "^3.22.0",
-    "my-lib": "file:.lnpm/my-lib"
-  }
-}
-`
-	want := `{
-  "dependencies": {
-    "zod": "^3.22.0"
-  }
-}
-`
-	dir, path := newPkgJSON(t, before)
-
-	if err := removeFromPackageJSON(dir, "my-lib"); err != nil {
-		t.Fatalf("removeFromPackageJSON: %v", err)
-	}
-
-	assertBytes(t, readPkgJSON(t, path), want)
-}
-
-func TestDeletePackageJSONDepRemovesEveryDuplicateEntry(t *testing.T) {
-	src := `{"dependencies":{"my-lib":"file:.lnpm/my-lib","my-lib":"file:.lnpm/my-lib"}}`
-	want := `{"dependencies":{}}`
-
-	got, err := deletePackageJSONDep([]byte(src), "dependencies", "my-lib")
-	if err != nil {
-		t.Fatalf("deletePackageJSONDep: %v", err)
-	}
-
-	assertBytes(t, string(got), want)
-}
-
-// Setting an entry that appears twice must leave exactly one behind, at the
-// position encoding/json would have read: the last one.
-func TestSetPackageJSONDepCollapsesDuplicateEntries(t *testing.T) {
-	src := `{
-  "dependencies": {
-    "my-lib": "^1.0.0",
-    "zod": "^3.22.0",
-    "my-lib": "file:.lnpm/my-lib"
-  }
-}
-`
-	want := `{
-  "dependencies": {
-    "zod": "^3.22.0",
-    "my-lib": "^2.5.0"
-  }
-}
-`
-	got, err := setPackageJSONDep([]byte(src), "dependencies", "my-lib", "^2.5.0")
-	if err != nil {
-		t.Fatalf("setPackageJSONDep: %v", err)
-	}
-
-	assertBytes(t, string(got), want)
 }
 
 func TestRemoveFromPackageJSONRejectsInvalidJSON(t *testing.T) {

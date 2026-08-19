@@ -14,6 +14,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -605,7 +606,7 @@ func readPackageJSONDeps(path string, packageName string, dev bool) (*packageJSO
 // "file:".
 func (p *packageJSONDeps) write(path string, packageName string, useLink bool) error {
 	// Remove from other field to avoid duplicate entries
-	output, err := deletePackageJSONDep(p.src, p.otherField(), packageName)
+	output, err := pkgjson.RemoveDep(p.src, p.otherField(), packageName)
 	if err != nil {
 		return err
 	}
@@ -615,12 +616,12 @@ func (p *packageJSONDeps) write(path string, packageName string, useLink bool) e
 	if useLink {
 		protocol = "link"
 	}
-	output, err = setPackageJSONDep(output, p.field, packageName, fmt.Sprintf("%s:.lnpm/%s", protocol, packageName))
+	output, err = pkgjson.SetDep(output, p.field, packageName, fmt.Sprintf("%s:.lnpm/%s", protocol, packageName))
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, ensureTrailingNewline(output), 0644)
+	return os.WriteFile(path, pkgjson.EnsureTrailingNewline(output), 0644)
 }
 
 // writeLnpmReference points package.json at the linked copy of packageName.

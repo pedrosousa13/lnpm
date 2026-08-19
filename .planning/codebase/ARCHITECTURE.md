@@ -45,8 +45,8 @@
 
 **Utilities Layer:**
 - Purpose: Cross-cutting concerns
-- Location: `internal/config/`, `internal/debug/`, `internal/gitignore/`, `internal/update/`
-- Contains: Configuration, logging, .gitignore management, version checking
+- Location: `internal/config/`, `internal/debug/`, `internal/gitignore/`, `internal/pkgjson/`, `internal/update/`
+- Contains: Configuration, logging, .gitignore management, package.json editing, version checking
 - Depends on: Nothing (leaf modules)
 - Used by: All layers
 

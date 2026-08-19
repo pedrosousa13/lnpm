@@ -1,4 +1,20 @@
-package cli
+// Package pkgjson makes order-preserving edits to a package.json document.
+//
+// lnpm changes exactly one entry of "dependencies" or "devDependencies". Parsing
+// the file into a map[string]interface{} and re-marshalling it would rewrite the
+// whole document: encoding/json sorts map keys alphabetically, forces a 2-space
+// indent, and rounds every number through float64. The result is a diff over
+// nearly every line and silent corruption of integer literals beyond 2^53.
+//
+// So the editors here never re-serialize the document. They locate the byte
+// range of the entry to change using encoding/json's token stream - real JSON
+// parsing, no regex guesswork - and splice new bytes into that range. Everything
+// outside it comes out byte-identical, which preserves key order, indentation
+// style, line endings and number literals for free.
+//
+// The editors work on bytes rather than paths: reading the file, and writing it
+// back, belong to the caller.
+package pkgjson
 
 import (
 	"bytes"
@@ -7,20 +23,6 @@ import (
 	"fmt"
 	"io"
 )
-
-// Order-preserving edits to package.json.
-//
-// lnpm changes exactly one entry of "dependencies" or "devDependencies". Parsing
-// the file into a map[string]interface{} and re-marshalling it would rewrite the
-// whole document: encoding/json sorts map keys alphabetically, forces a 2-space
-// indent, and rounds every number through float64. The result is a diff over
-// nearly every line and silent corruption of integer literals beyond 2^53.
-//
-// So the editors below never re-serialize the document. They locate the byte
-// range of the entry to change using encoding/json's token stream - real JSON
-// parsing, no regex guesswork - and splice new bytes into that range. Everything
-// outside it comes out byte-identical, which preserves key order, indentation
-// style, line endings and number literals for free.
 
 // jsonMember is one key/value pair of a JSON object, with the byte offsets its
 // key and value occupy in the source.
@@ -71,9 +73,9 @@ func (o *jsonObject) find(key string) (first, count int) {
 	return first, count
 }
 
-// setPackageJSONDep sets field.name to value, leaving every other byte of src
-// alone. A missing or non-object field is created.
-func setPackageJSONDep(src []byte, field, name, value string) ([]byte, error) {
+// SetDep sets field.name to value in src, leaving every other byte alone. A
+// missing or non-object field is created.
+func SetDep(src []byte, field, name, value string) ([]byte, error) {
 	// Drop every copy of the entry but the last, so the edit below leaves one
 	// value rather than a live one beside a stale one.
 	src, err := trimDeps(src, field, name, 1)
@@ -136,15 +138,14 @@ func setPackageJSONDep(src []byte, field, name, value string) ([]byte, error) {
 	return insertMember(src, deps, entry, unit, nl), nil
 }
 
-// deletePackageJSONDep removes every entry named field.name, leaving every
-// other byte of src alone. Removing an entry that is not there is a no-op, not
-// an error.
-func deletePackageJSONDep(src []byte, field, name string) ([]byte, error) {
+// RemoveDep removes every entry named field.name from src, leaving every other
+// byte alone. Removing an entry that is not there is a no-op, not an error.
+func RemoveDep(src []byte, field, name string) ([]byte, error) {
 	return trimDeps(src, field, name, 0)
 }
 
-// hasPackageJSONDep reports whether field.name is present in src.
-func hasPackageJSONDep(src []byte, field, name string) (bool, error) {
+// HasDep reports whether field.name is present in src.
+func HasDep(src []byte, field, name string) (bool, error) {
 	deps, err := dependencyField(src, field)
 	if err != nil || deps == nil {
 		return false, err
@@ -302,9 +303,10 @@ func detectLineEnding(src []byte) string {
 	return "\n"
 }
 
-// ensureTrailingNewline keeps lnpm's long-standing habit of leaving
-// package.json with a final newline.
-func ensureTrailingNewline(src []byte) []byte {
+// EnsureTrailingNewline keeps lnpm's long-standing habit of leaving
+// package.json with a final newline. It lives here because the ending it adds
+// is the one the document already uses, which only this package can tell.
+func EnsureTrailingNewline(src []byte) []byte {
 	if len(src) > 0 && src[len(src)-1] == '\n' {
 		return src
 	}

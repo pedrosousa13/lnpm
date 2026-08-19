@@ -16,6 +16,7 @@ lnpm/
 │   ├── gitignore/        # .gitignore file management
 │   ├── link/             # Package linking logic
 │   ├── pack/             # File packing and filtering
+│   ├── pkgjson/          # Order-preserving package.json editing
 │   ├── store/            # Package store operations
 │   ├── update/           # Version update checking
 │   ├── watch/            # File watching implementation
@@ -102,6 +103,11 @@ lnpm/
 - Purpose: Automatic .gitignore management
 - Contains: Pattern insertion/removal with atomic writes
 - Key files: `gitignore.go`
+
+**internal/pkgjson:**
+- Purpose: Order-preserving package.json editing
+- Contains: Dependency set/remove/lookup that splice the file's own bytes, so key order, indentation, line endings and number literals survive an edit
+- Key files: `pkgjson.go`
 
 **internal/debug:**
 - Purpose: Debug logging
