@@ -298,3 +298,36 @@ func TestCopyFile(t *testing.T) {
 		t.Errorf("copied content = %q, want %q", string(data), content)
 	}
 }
+
+// TestLinkSourceResolvesRelativeSource pins that a relative source path is
+// resolved against the working directory, not against .lnpm/. Only an absolute
+// target makes the link valid from where it is created - and a Windows junction
+// accepts nothing else.
+func TestLinkSourceResolvesRelativeSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	sourcePath := filepath.Join(tmpDir, "source")
+	for _, dir := range []string{projectPath, sourcePath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "index.js"), []byte("live"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(tmpDir)
+
+	linker := New(projectPath)
+	if _, err := linker.LinkSource("my-package", "source"); err != nil {
+		t.Fatalf("LinkSource(source): %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(projectPath, ".lnpm", "my-package", "index.js"))
+	if err != nil {
+		t.Fatalf("Failed to read through the live link: %v", err)
+	}
+	if string(content) != "live" {
+		t.Errorf("linked index.js = %q, want %q", content, "live")
+	}
+}

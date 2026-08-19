@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -52,8 +51,8 @@ func RunRetreat(force bool, runInstall bool) error {
 			for _, name := range linkedPkgs {
 				pkg, _ := lock.Get(name)
 				originalVersion := pkg.OriginalVersion
-				// Ignore file:.lnpm/ as original version (bug from older versions)
-				if strings.HasPrefix(originalVersion, "file:.lnpm/") {
+				// Ignore lnpm's own reference as original version (bug from older versions)
+				if isLnpmReference(originalVersion) {
 					originalVersion = ""
 				}
 				if originalVersion != "" {
@@ -92,9 +91,9 @@ func RunRetreat(force bool, runInstall bool) error {
 		_ = os.Remove(nodeModulesLink)
 
 		// Restore original package.json dependency
-		// Ignore file:.lnpm/ as original version (bug from older versions)
+		// Ignore lnpm's own reference as original version (bug from older versions)
 		originalVersion := pkg.OriginalVersion
-		if strings.HasPrefix(originalVersion, "file:.lnpm/") {
+		if isLnpmReference(originalVersion) {
 			originalVersion = ""
 		}
 

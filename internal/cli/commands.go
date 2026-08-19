@@ -45,6 +45,12 @@ This command:
   4. Updates package.json with file: dependency
   5. Updates lnpm.lock
 
+With --link the package is not copied at all: .lnpm/{package} is linked straight
+at the source directory it was published from, so every source edit reaches this
+project with no further command, and package.json uses link: instead of file:.
+That trades away the isolation the default gives you - the project then builds
+against files that have not been published, or even committed.
+
 Examples:
   lnpm add my-package            # Add latest version
   lnpm add pkg1 pkg2 pkg3        # Add multiple packages
@@ -52,7 +58,7 @@ Examples:
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
   lnpm add my-package --pure     # Don't modify package.json
-  lnpm add my-package --link     # Use link: protocol instead of file:`,
+  lnpm add my-package --link     # Link to the live source instead of a store copy`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dev, _ := cmd.Flags().GetBool("dev")
@@ -275,7 +281,7 @@ func init() {
 	addCmd.Flags().Bool("dev", false, "Add as devDependency")
 	addCmd.Flags().Bool("pure", false, "Don't modify package.json")
 	addCmd.Flags().Bool("install", false, "Run npm install after adding (default: no)")
-	addCmd.Flags().Bool("link", false, "Use link: protocol in package.json instead of file:")
+	addCmd.Flags().Bool("link", false, "Link to the package's live source directory instead of a store copy (the project then sees unpublished, uncommitted files)")
 
 	// remove flags
 	removeCmd.Flags().Bool("all", false, "Remove all linked packages")

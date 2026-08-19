@@ -270,6 +270,9 @@ lnpm add my-package --pure
 
 # Add with dev dependency
 lnpm add my-package --dev
+
+# Link to the live source directory instead of a store copy
+lnpm add my-package --link
 ```
 
 **Process:**
@@ -286,6 +289,18 @@ lnpm add my-package --dev
 
 6. Update `package.json` with `file:.lnpm/{package}`
 7. Register link in bbolt
+
+**Live linking (`--link`):** steps 2 and 3 are skipped entirely. `.lnpm/{package}`
+becomes a link to the `source_path` recorded at publish time, `package.json` gets
+`link:.lnpm/{package}`, and the recorded link type is `link`. Nothing is copied,
+so every later edit of the source is visible to the project at once — and so the
+project sees files that were never published or committed, which is exactly the
+isolation the default snapshot gives you. `--link` therefore still requires the
+package to have been published once: that is what records its source path.
+
+Teardown never follows the link: `remove`, `retreat` and a re-`add` all delete
+`.lnpm/{package}` with `os.RemoveAll`, which removes a link without descending
+through it, so the source tree is untouched.
 
 ### `lnpm remove <package>`
 
@@ -322,6 +337,9 @@ lnpm push --skip-hooks
 2. Calculate new content hash
 3. Update store with new version
 4. For each linked project:
+   - Skip it if it is live-linked (`.lnpm/{package}` is a link, not a
+     directory): it already resolves to the source directory being pushed, and
+     relinking would swap its live link for a snapshot copy
    - Create new hard links in a temporary directory alongside `.lnpm/{package}/`
    - Rename it over `.lnpm/{package}/`, then delete the old directory
    - Preserve `node_modules` symlink
@@ -349,11 +367,14 @@ lnpm pull my-package other-pkg
 1. Read the linked set from `lnpm.lock` (all of it, or just the named packages,
    which must already be linked here — `pull` refreshes links, it never creates
    them)
-2. For each package, look it up in the store; skip it when the lock entry
-   already matches the store's version and content hash
-3. Hard link the store's current files into a temporary directory and rename it
+2. Skip any package that is live-linked (`.lnpm/{package}` is a link, not a
+   directory): it resolves to its source, so there is nothing to refresh, and
+   relinking it would silently swap the live link for a snapshot copy
+3. For each remaining package, look it up in the store; skip it when the lock
+   entry already matches the store's version and content hash
+4. Hard link the store's current files into a temporary directory and rename it
    over `.lnpm/{package}/`, exactly as `add` does
-4. Update the entry in `lnpm.lock`, preserving the original `package.json`
+5. Update the entry in `lnpm.lock`, preserving the original `package.json`
    specifier recorded by `add`
 
 `package.json` is never touched: the `file:.lnpm/{package}` reference it holds

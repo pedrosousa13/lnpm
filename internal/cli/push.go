@@ -155,8 +155,9 @@ func RunPush(skipHooks bool) error {
 
 	// Link to all projects in parallel
 	type result struct {
-		path string
-		err  error
+		path    string
+		skipped bool
+		err     error
 	}
 	results := make(chan result, len(projects))
 	var wg sync.WaitGroup
@@ -166,6 +167,14 @@ func RunPush(skipHooks bool) error {
 		go func(p *db.Project) {
 			defer wg.Done()
 			linker := link.New(p.Path)
+			// A project that added this package with --link already resolves to
+			// the source directory being pushed. Relinking it from the store
+			// would replace its live link with a snapshot copy and silently end
+			// the live updates it was added for.
+			if linker.IsLiveLinked(pkg.Name) {
+				results <- result{path: p.Path, skipped: true}
+				return
+			}
 			_, err := linker.Link(pkg.Name, storePath, storeFiles)
 			results <- result{path: p.Path, err: err}
 		}(proj)
@@ -177,19 +186,27 @@ func RunPush(skipHooks bool) error {
 
 	// Print results in order received (not deterministic order)
 	successCount := 0
+	skippedCount := 0
 	for res := range results {
-		if res.err != nil {
+		switch {
+		case res.err != nil:
 			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
-		} else {
+		case res.skipped:
+			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
+			skippedCount++
+		default:
 			fmt.Printf("  %s %s\n", iconOK(), res.path)
 			successCount++
 		}
 	}
 
-	fmt.Printf("\nPushed to %d/%d projects\n", successCount, len(projects))
+	// Live-linked projects leave the denominator: there was nothing to push to
+	// them, so counting them as pending would report a failure that isn't one.
+	pushable := len(projects) - skippedCount
+	fmt.Printf("\nPushed to %d/%d projects\n", successCount, pushable)
 
-	if successCount < len(projects) {
-		return fmt.Errorf("push failed for %d of %d project(s)", len(projects)-successCount, len(projects))
+	if successCount < pushable {
+		return fmt.Errorf("push failed for %d of %d project(s)", pushable-successCount, pushable)
 	}
 
 	return nil

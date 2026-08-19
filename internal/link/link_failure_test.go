@@ -339,3 +339,69 @@ func TestUnlinkRemovesEmptyLnpmDir(t *testing.T) {
 		t.Errorf(".lnpm still exists after unlinking the last package (Stat err = %v), want it removed", err)
 	}
 }
+
+// TestLinkSourceRejectsUnusableSource drives LinkSource's guards on the source
+// directory recorded when the package was published. That directory can have
+// been deleted or replaced since, and linking .lnpm/{package} at it anyway
+// would defer the failure to whatever tool next resolved node_modules.
+func TestLinkSourceRejectsUnusableSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceFile := filepath.Join(tmpDir, "a-file")
+	if err := os.WriteFile(sourceFile, []byte("not a package"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{"missing source", filepath.Join(tmpDir, "deleted-source"), "is not available"},
+		{"source is a file", sourceFile, "is not a directory"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			linker := New(projectPath)
+
+			_, err := linker.LinkSource("my-package", tc.source)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LinkSource(%s) error = %v, want one containing %q", tc.source, err, tc.wantErr)
+			}
+
+			assertNoSymlink(t, projectPath, "my-package")
+			if _, err := os.Lstat(filepath.Join(projectPath, ".lnpm", "my-package")); !os.IsNotExist(err) {
+				t.Errorf(".lnpm/my-package exists after a failed LinkSource (Lstat err = %v), want it absent", err)
+			}
+		})
+	}
+}
+
+// TestLinkSourceRejectsTraversingName asserts that LinkSource validates the
+// package name before joining it into .lnpm and node_modules, exactly as Link
+// does: the name reaches both from the store, and a traversing one would place
+// a link outside the project.
+func TestLinkSourceRejectsTraversingName(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	sourcePath := filepath.Join(tmpDir, "source")
+	for _, dir := range []string{projectPath, sourcePath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	linker := New(projectPath)
+	if _, err := linker.LinkSource("../escaped", sourcePath); err == nil {
+		t.Fatal("LinkSource(../escaped) error = nil, want a validation error")
+	}
+
+	if _, err := os.Lstat(filepath.Join(tmpDir, "escaped")); !os.IsNotExist(err) {
+		t.Errorf("a link was created outside the project (Lstat err = %v), want none", err)
+	}
+}

@@ -689,6 +689,72 @@ func (te *TestEnvironment) addPkg(projectDir, spec string, dev, pure bool) {
 	}
 }
 
+// addLinkedPkg chdirs into projectDir and adds spec in live-link mode (--link),
+// failing on error.
+func (te *TestEnvironment) addLinkedPkg(projectDir, spec string) {
+	te.t.Helper()
+	te.chdir(projectDir)
+	if err := cli.RunAddMultiple([]string{spec}, false, false, false, true); err != nil {
+		te.t.Fatalf("Failed to add %s --link: %v", spec, err)
+	}
+}
+
+// AssertLiveLink checks that .lnpm/<pkg> is a link resolving to sourceDir rather
+// than a materialised store copy.
+func (te *TestEnvironment) AssertLiveLink(projectDir, pkg, sourceDir string) {
+	te.t.Helper()
+
+	lnpmPath := filepath.Join(projectDir, ".lnpm", pkg)
+	info, err := os.Lstat(lnpmPath)
+	if err != nil {
+		te.t.Fatalf("Expected .lnpm/%s to exist: %v", pkg, err)
+	}
+	// A store copy is a real directory. A live link is a symlink, or on Windows
+	// possibly a junction, and Lstat reports neither as a directory.
+	if info.IsDir() {
+		te.t.Fatalf("Expected .lnpm/%s to be a live link, but it is a directory", pkg)
+	}
+
+	got, err := filepath.EvalSymlinks(lnpmPath)
+	if err != nil {
+		te.t.Fatalf("Failed to resolve .lnpm/%s: %v", pkg, err)
+	}
+	want, err := filepath.EvalSymlinks(sourceDir)
+	if err != nil {
+		te.t.Fatalf("Failed to resolve source %s: %v", sourceDir, err)
+	}
+	if got != want {
+		te.t.Errorf("Expected .lnpm/%s to resolve to %s, got %s", pkg, want, got)
+	}
+}
+
+// AssertStoreCopy checks that .lnpm/<pkg> is a real directory of copied files,
+// which is what everything but --link produces.
+func (te *TestEnvironment) AssertStoreCopy(projectDir, pkg string) {
+	te.t.Helper()
+
+	info, err := os.Lstat(filepath.Join(projectDir, ".lnpm", pkg))
+	if err != nil {
+		te.t.Fatalf("Expected .lnpm/%s to exist: %v", pkg, err)
+	}
+	if !info.IsDir() {
+		te.t.Errorf("Expected .lnpm/%s to be a store copy, but it is a link", pkg)
+	}
+}
+
+// AssertFileContent checks that the file at path holds want.
+func (te *TestEnvironment) AssertFileContent(path, want string) {
+	te.t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		te.t.Fatalf("Failed to read %s: %v", path, err)
+	}
+	if string(data) != want {
+		te.t.Errorf("%s: expected %q, got %q", path, want, data)
+	}
+}
+
 // publishAndAdd publishes pkgName (single index.js) and adds it to a fresh
 // "test-project", returning (pkgDir, projectDir). The cwd is left inside the
 // project. This is the single most common setup across the suite.

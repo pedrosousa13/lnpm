@@ -73,6 +73,16 @@ func RunPull(packageNames []string) error {
 	for _, name := range names {
 		entry, _ := lock.Get(name)
 
+		// A package added with --link resolves to its source directory, so there
+		// is nothing to refresh: relinking it from the store would replace the
+		// live link with a snapshot copy and silently end the live updates the
+		// consumer was relying on.
+		if linker.IsLiveLinked(name) {
+			fmt.Printf("Pulling %s... skipped (live link to source)\n", name)
+			skipped++
+			continue
+		}
+
 		pkg, err := database.GetPackageByName(name)
 		if err != nil {
 			failed = append(failed, fmt.Errorf("%s: failed to look up package: %w", name, err))

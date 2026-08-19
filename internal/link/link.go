@@ -22,6 +22,9 @@ type LinkType string
 const (
 	HardLink LinkType = "hardlink"
 	Copy     LinkType = "copy"
+	// Live is the type recorded when .lnpm/{package} is a link at the package's
+	// source directory rather than a materialised copy of the store entry.
+	Live LinkType = "link"
 )
 
 // Linker handles linking packages to projects
@@ -269,6 +272,57 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	return actualType, nil
 }
 
+// LinkSource points a project at a package's live source directory instead of
+// at a copy of its published snapshot: .lnpm/{package} becomes a link to
+// sourcePath, and node_modules/{package} the usual link into .lnpm.
+//
+// Nothing is materialised, so every later edit of the source is visible to the
+// consumer with no further command. That is the point, and also the tradeoff:
+// the consumer sees files that have not been published, or even committed,
+// unlike the snapshot the default path copies out of the store.
+func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, error) {
+	debug.Logf("link: live linking %s to %s", packageName, sourcePath)
+
+	// Guard against path traversal: packageName is joined into .lnpm/<name>
+	// (which we replace) and node_modules/<name>.
+	if err := pack.ValidatePackageName(packageName); err != nil {
+		return "", err
+	}
+
+	// An absolute target is what a Windows junction needs, and what keeps the
+	// link valid however deep .lnpm/{package} sits.
+	absSource, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve source path: %w", err)
+	}
+	info, err := os.Stat(absSource)
+	if err != nil {
+		return "", fmt.Errorf("source directory %s is not available: %w", absSource, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("source path %s is not a directory", absSource)
+	}
+
+	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
+	if err := os.MkdirAll(filepath.Dir(lnpmPath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create .lnpm directory: %w", err)
+	}
+	// RemoveAll deletes a link without following it, so replacing an existing
+	// live link cannot reach into the source tree it points at.
+	if err := os.RemoveAll(lnpmPath); err != nil {
+		return "", fmt.Errorf("failed to remove existing linked package: %w", err)
+	}
+	if err := createDirSymlink(absSource, lnpmPath); err != nil {
+		return "", fmt.Errorf("failed to link source directory: %w", err)
+	}
+
+	if err := l.createNodeModulesSymlink(packageName); err != nil {
+		return "", err
+	}
+
+	return Live, nil
+}
+
 // Unlink removes a linked package from the project
 func (l *Linker) Unlink(packageName string) error {
 	if err := pack.ValidatePackageName(packageName); err != nil {
@@ -388,6 +442,16 @@ func (l *Linker) IsLinked(packageName string) bool {
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
 	_, err := os.Stat(lnpmPath)
 	return err == nil
+}
+
+// IsLiveLinked reports whether .lnpm/{package} is a live link at the package's
+// source directory rather than a materialised copy of the store entry.
+//
+// A copy is always a real directory, and Lstat reports neither a symlink nor a
+// Windows junction as one, so "not a directory" is the whole test.
+func (l *Linker) IsLiveLinked(packageName string) bool {
+	info, err := os.Lstat(filepath.Join(l.projectPath, ".lnpm", packageName))
+	return err == nil && !info.IsDir()
 }
 
 // ListLinked returns all packages linked in the project

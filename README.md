@@ -100,11 +100,32 @@ lnpm publish
 # Add to a project (supports multiple packages)
 lnpm add my-package
 lnpm add pkg-a pkg-b pkg-c
-lnpm add my-package --link   # Use link: protocol instead of file:
+lnpm add my-package --link   # Link to the live source instead of a store copy
 
 # Push updates after making changes
 lnpm push
 ```
+
+### Live Linking (`--link`)
+
+By default `lnpm add` copies the package's published snapshot into
+`.lnpm/{package}/`, so the project only sees changes you deliberately
+`publish` or `push`. With `--link`, `.lnpm/{package}` is instead a link to the
+directory the package was published from, and `package.json` says
+`link:.lnpm/{package}`:
+
+```bash
+lnpm add my-package --link
+# Every edit in the source package is visible to this project immediately,
+# with no publish, push or pull.
+```
+
+The tradeoff is the isolation you give up: the project builds against whatever
+is in the source tree right now, including files that have never been published
+and are not even committed. Prefer the default when you want a reproducible
+snapshot; use `--link` while you iterate. `lnpm pull` and `lnpm push` skip
+live-linked packages rather than replacing them with a snapshot, and
+`lnpm remove` / `lnpm retreat` delete only the link, never the source.
 
 ### Monorepo Support
 
