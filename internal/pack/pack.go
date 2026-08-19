@@ -178,6 +178,9 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 		// Check if excluded
 		if isExcluded(relPath, ignorePatterns) {
 			if info.IsDir() {
+				// Pruning is the one place last-match-wins does not hold end
+				// to end: the walk never descends, so a later "!" pattern
+				// inside this directory is never consulted.
 				return filepath.SkipDir
 			}
 			return nil
@@ -333,7 +336,9 @@ func isExcluded(relPath string, patterns []string) bool {
 		}
 
 		// A trailing "/" marks a directory pattern: it matches the directory
-		// itself and everything under it.
+		// itself and everything under it. A negated one matches the directory
+		// only, never its contents, because git cannot re-include a file whose
+		// parent directory is excluded.
 		//
 		// Limitation: git's trailing slash matches directories only, but
 		// isExcluded receives no directory signal, so a plain *file* named
@@ -344,7 +349,7 @@ func isExcluded(relPath string, patterns []string) bool {
 			if dir == "" {
 				continue
 			}
-			if relPath == dir || strings.HasPrefix(relPath, dir+"/") {
+			if relPath == dir || (!negated && strings.HasPrefix(relPath, dir+"/")) {
 				excluded = !negated
 			}
 			continue
@@ -354,7 +359,7 @@ func isExcluded(relPath string, patterns []string) bool {
 			continue
 		}
 
-		if matchesIgnorePattern(relPath, baseName, pattern, anchored) {
+		if matchesIgnorePattern(relPath, baseName, pattern, anchored, negated) {
 			excluded = !negated
 		}
 	}
@@ -363,12 +368,19 @@ func isExcluded(relPath string, patterns []string) bool {
 }
 
 // matchesIgnorePattern reports whether relPath matches a single ignore pattern
-// that has already had its "!", leading "/" and trailing "/" stripped.
-func matchesIgnorePattern(relPath, baseName, pattern string, anchored bool) bool {
+// that has already had its "!" and leading "/" stripped. Directory patterns
+// (a trailing "/") never reach here: isExcluded handles them inline.
+//
+// negated says the "!" was there. It only ever narrows the match: a negated
+// pattern matches the paths it names directly, but not the paths merely
+// underneath a directory it names, because git cannot re-include a file whose
+// parent directory is excluded. A positive pattern keeps that reach, since git
+// ignores everything inside an ignored directory.
+func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated bool) bool {
 	// "dir/**" matches the directory and everything under it.
 	if strings.HasSuffix(pattern, "/**") {
 		prefix := strings.TrimSuffix(pattern, "/**")
-		return relPath == prefix || strings.HasPrefix(relPath, prefix+"/")
+		return relPath == prefix || (!negated && strings.HasPrefix(relPath, prefix+"/"))
 	}
 
 	// Exact match
@@ -391,7 +403,7 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored bool) bool
 	}
 
 	// Directory prefix match: "node_modules" excludes "node_modules/foo".
-	return strings.HasPrefix(relPath, pattern+"/")
+	return !negated && strings.HasPrefix(relPath, pattern+"/")
 }
 
 // isIncluded checks if a path matches any include pattern (files field)

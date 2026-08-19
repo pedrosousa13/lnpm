@@ -202,6 +202,41 @@ func TestIsExcludedGitignoreSemanticsPending(t *testing.T) {
 	}
 }
 
+// TestIsExcludedNegationDoesNotReachDescendants pins git's rule that "it is not
+// possible to re-include a file if a parent directory of that file is
+// excluded": a "!" pattern re-includes only the paths it matches directly,
+// never the paths that merely sit underneath a directory it matched. A positive
+// pattern keeps the opposite behavior, because git ignores everything inside an
+// ignored directory.
+func TestIsExcludedNegationDoesNotReachDescendants(t *testing.T) {
+	tests := []struct {
+		path     string
+		patterns []string
+		want     bool
+	}{
+		// "!foo" names the directory, not its contents, so foo/bar stays out.
+		{"foo/bar", []string{"foo/bar", "!foo"}, true},
+		{"foo/sub/baz.js", []string{"foo/**", "!foo"}, true},
+		{"dist/a.js", []string{"dist/", "!dist/"}, true},
+
+		// A negation still matches its own path exactly.
+		{"foo", []string{"foo", "!foo"}, false},
+		{"dist", []string{"dist/", "!dist/"}, false},
+
+		// A positive parent pattern still excludes everything below it.
+		{"node_modules/foo/index.js", []string{"node_modules"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := isExcluded(tt.path, tt.patterns)
+			if got != tt.want {
+				t.Errorf("isExcluded(%q, %v) = %v, want %v", tt.path, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsIncluded(t *testing.T) {
 	tests := []struct {
 		path     string
@@ -387,7 +422,7 @@ func TestPackNpmignoreGitignoreSemantics(t *testing.T) {
 
 	for _, name := range []string{"package.json", "index.js", "src/credentials.json"} {
 		if !packed[name] {
-			t.Errorf("expected file %q to be packed, got %v", name, files)
+			t.Errorf("expected file %q to be packed, packed set was %v", name, packed)
 		}
 	}
 	for _, name := range []string{"credentials.json", "dist/drop.js", ".npmignore"} {
@@ -474,7 +509,7 @@ func TestPackNpmignoreNegationReincludesFile(t *testing.T) {
 
 	for _, name := range []string{"package.json", "index.js", "src/credentials.json", "dist/keep.js"} {
 		if !packed[name] {
-			t.Errorf("expected file %q to be packed, got %v", name, files)
+			t.Errorf("expected file %q to be packed, packed set was %v", name, packed)
 		}
 	}
 	for _, name := range []string{"credentials.json", "dist/drop.js"} {
@@ -560,7 +595,7 @@ func TestPackDefaultExcludesWinInWhitelistMode(t *testing.T) {
 	}
 
 	if !packed["dist/index.js"] {
-		t.Errorf("expected whitelisted file %q to be packed, got %v", "dist/index.js", files)
+		t.Errorf("expected whitelisted file %q to be packed, packed set was %v", "dist/index.js", packed)
 	}
 	for _, name := range []string{".env", "node_modules/dep/index.js"} {
 		if packed[name] {
