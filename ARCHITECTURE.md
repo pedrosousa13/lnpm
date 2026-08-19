@@ -277,8 +277,14 @@ lnpm add my-package --dev
 2. Create a temporary directory alongside `.lnpm/{package}/`
 3. Hard link all files from store into it, then rename it to `.lnpm/{package}/`
 4. Create symlink `node_modules/{package}` → `.lnpm/{package}`
-5. Update `package.json` with `file:.lnpm/{package}`
-6. Update `lnpm.lock`
+5. Update `lnpm.lock`, recording the current `package.json` specifier as the
+   original version
+
+   The lock write stays ahead of the rewrite below: the original specifier
+   exists only in `package.json`, so a rewrite that ran first would overwrite
+   it and any later failure would leave `remove` nothing to restore.
+
+6. Update `package.json` with `file:.lnpm/{package}`
 7. Register link in bbolt
 
 ### `lnpm remove <package>`

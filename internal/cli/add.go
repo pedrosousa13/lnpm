@@ -29,7 +29,11 @@ type addResult struct {
 	pkg         *db.Package
 	linkType    link.LinkType
 	origVersion string
-	err         error
+	// pkgJSONUnreadable records that reading package.json for this package
+	// already failed, so the later write is skipped instead of reporting the
+	// same failure twice.
+	pkgJSONUnreadable bool
+	err               error
 }
 
 // RunAddMultiple adds multiple packages with parallel linking
@@ -152,33 +156,26 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		return fmt.Errorf("failed to load lock file: %w", err)
 	}
 
-	// Update package.json for all successful packages
+	// ORDERING CONSTRAINT: the user's original specifiers exist only in
+	// package.json, and writing the lnpm references overwrites them. Read them
+	// and save them to the lock file BEFORE package.json is rewritten, so that
+	// a failure of the rewrite - or of anything after it, which for this path
+	// includes registering the project - still leaves remove/retreat able to
+	// restore the specifiers instead of deleting the dependencies. Do not move
+	// the package.json writes back above lock.Save.
 	if !pure {
 		for i := range successful {
-			origVersion, err := updatePackageJSON(pkgJSONPath, successful[i].pkg.Name, dev, useLink)
+			deps, err := readPackageJSONDeps(pkgJSONPath, successful[i].pkg.Name, dev)
 			if err != nil {
-				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
+				fmt.Printf("  %s Failed to read package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
+				successful[i].pkgJSONUnreadable = true
 				continue
 			}
-			successful[i].origVersion = origVersion
+			successful[i].origVersion = deps.originalVersion
 		}
 	}
 
-	// Update lockfile and database for all successful packages
-	proj := &db.Project{
-		Path:           cwd,
-		Name:           getProjectName(cwd),
-		PackageManager: string(pm),
-	}
-	if err := database.InsertProject(proj); err != nil {
-		return fmt.Errorf("failed to register project: %w", err)
-	}
-
-	existingProj, err := database.GetProjectByPath(cwd)
-	if err != nil {
-		return fmt.Errorf("failed to get project: %w", err)
-	}
-
+	// Update lockfile for all successful packages
 	for _, r := range successful {
 		// Check for existing original version in lockfile
 		existingOrigVersion := ""
@@ -198,7 +195,40 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			Linked:          time.Now(),
 			OriginalVersion: origVersion,
 		})
+	}
 
+	if err := lock.Save(cwd); err != nil {
+		return fmt.Errorf("failed to save lock file: %w", err)
+	}
+
+	// Update package.json for all successful packages
+	if !pure {
+		for _, r := range successful {
+			if r.pkgJSONUnreadable {
+				continue
+			}
+			if err := writeLnpmReference(pkgJSONPath, r.pkg.Name, dev, useLink); err != nil {
+				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), r.pkg.Name, err)
+			}
+		}
+	}
+
+	// Update database for all successful packages
+	proj := &db.Project{
+		Path:           cwd,
+		Name:           getProjectName(cwd),
+		PackageManager: string(pm),
+	}
+	if err := database.InsertProject(proj); err != nil {
+		return fmt.Errorf("failed to register project: %w", err)
+	}
+
+	existingProj, err := database.GetProjectByPath(cwd)
+	if err != nil {
+		return fmt.Errorf("failed to get project: %w", err)
+	}
+
+	for _, r := range successful {
 		dbLink := &db.Link{
 			PackageID: r.pkg.ID,
 			ProjectID: existingProj.ID,
@@ -209,10 +239,6 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		}
 
 		fmt.Printf("%s Added %s@%s (%s)\n", iconOK(), r.pkg.Name, r.pkg.Version, r.linkType)
-	}
-
-	if err := lock.Save(cwd); err != nil {
-		return fmt.Errorf("failed to save lock file: %w", err)
 	}
 
 	if len(errors) > 0 {
@@ -322,13 +348,19 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		existingOriginalVersion = existing.OriginalVersion
 	}
 
-	// Update package.json (unless --pure)
+	// ORDERING CONSTRAINT: the user's original specifier exists only in
+	// package.json, and writing the lnpm reference overwrites it. Read it and
+	// save it to the lock file BEFORE package.json is rewritten, so that a
+	// failure of the rewrite - or of anything after it - still leaves
+	// remove/retreat able to restore the specifier instead of deleting the
+	// dependency. Do not move the package.json write back above lock.Save.
 	var originalVersion string
 	if !pure {
-		originalVersion, err = updatePackageJSON(pkgJSONPath, pkg.Name, dev, useLink)
+		deps, err := readPackageJSONDeps(pkgJSONPath, pkg.Name, dev)
 		if err != nil {
-			return fmt.Errorf("failed to update package.json: %w", err)
+			return fmt.Errorf("failed to read package.json: %w", err)
 		}
+		originalVersion = deps.originalVersion
 	}
 
 	// Use existing original version if we didn't find one (re-add scenario)
@@ -346,6 +378,13 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 
 	if err := lock.Save(cwd); err != nil {
 		return fmt.Errorf("failed to save lock file: %w", err)
+	}
+
+	// Update package.json (unless --pure)
+	if !pure {
+		if err := writeLnpmReference(pkgJSONPath, pkg.Name, dev, useLink); err != nil {
+			return fmt.Errorf("failed to update package.json: %w", err)
+		}
 	}
 
 	// Register project and link in database
@@ -412,19 +451,38 @@ func parsePackageSpec(spec string) (name, version string) {
 	return spec, ""
 }
 
-// updatePackageJSON updates package.json with the lnpm dependency. When link is
-// true the dependency uses the "link:" protocol (symlink-style resolution,
-// which helps pnpm/yarn dedupe peer deps) instead of the default "file:".
-func updatePackageJSON(path string, packageName string, dev bool, useLink bool) (originalVersion string, err error) {
-	// Read existing package.json
+// packageJSONDeps is what reading package.json tells us about a dependency
+// before the lnpm reference is written: the parsed document, the field the
+// reference belongs in, and the specifier the user had there. The
+// field-selection rules live here alone so the read half and the write half
+// cannot drift apart.
+type packageJSONDeps struct {
+	doc             map[string]interface{}
+	field           string
+	originalVersion string
+}
+
+// otherField is the dependency field the entry does NOT belong in; the write
+// folds any entry found there into the chosen field.
+func (p *packageJSONDeps) otherField() string {
+	if p.field == "devDependencies" {
+		return "dependencies"
+	}
+	return "devDependencies"
+}
+
+// readPackageJSONDeps parses package.json and works out what writing the lnpm
+// reference would do, without writing anything. Callers can therefore persist
+// originalVersion to the lock file before the rewrite is attempted.
+func readPackageJSONDeps(path string, packageName string, dev bool) (*packageJSONDeps, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var pkgJSON map[string]interface{}
 	if err := json.Unmarshal(data, &pkgJSON); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Check where package currently exists
@@ -438,36 +496,45 @@ func updatePackageJSON(path string, packageName string, dev bool, useLink bool) 
 	// - If --dev flag: use devDependencies
 	// - Else if package exists in devDependencies: use devDependencies (preserve location)
 	// - Else: use dependencies (default)
-	depsField := "dependencies"
+	deps := &packageJSONDeps{doc: pkgJSON, field: "dependencies"}
 	if dev || (!inDeps && inDevDeps) {
-		depsField = "devDependencies"
+		deps.field = "devDependencies"
 	}
 
-	// Get or create dependencies object
-	deps, ok := pkgJSON[depsField].(map[string]interface{})
-	if !ok {
-		deps = make(map[string]interface{})
-		pkgJSON[depsField] = deps
-	}
-
-	// Save original version from target field (ignore lnpm references)
-	if v, ok := deps[packageName].(string); ok {
-		if !isLnpmReference(v) {
-			originalVersion = v
+	// Original version from the target field (ignore lnpm references)
+	if target, ok := pkgJSON[deps.field].(map[string]interface{}); ok {
+		if v, ok := target[packageName].(string); ok && !isLnpmReference(v) {
+			deps.originalVersion = v
 		}
 	}
 
 	// Also check other field for original version
-	otherField := "devDependencies"
-	if depsField == "devDependencies" {
-		otherField = "dependencies"
-	}
-	if otherDeps, ok := pkgJSON[otherField].(map[string]interface{}); ok {
+	if otherDeps, ok := pkgJSON[deps.otherField()].(map[string]interface{}); ok {
 		if v, ok := otherDeps[packageName].(string); ok {
-			if originalVersion == "" && !isLnpmReference(v) {
-				originalVersion = v
+			if deps.originalVersion == "" && !isLnpmReference(v) {
+				deps.originalVersion = v
 			}
-			// Remove from other field to avoid duplicate entries
+		}
+	}
+
+	return deps, nil
+}
+
+// write records the lnpm dependency in the parsed document and saves it. When
+// useLink is true the dependency uses the "link:" protocol (symlink-style
+// resolution, which helps pnpm/yarn dedupe peer deps) instead of the default
+// "file:".
+func (p *packageJSONDeps) write(path string, packageName string, useLink bool) error {
+	// Get or create dependencies object
+	deps, ok := p.doc[p.field].(map[string]interface{})
+	if !ok {
+		deps = make(map[string]interface{})
+		p.doc[p.field] = deps
+	}
+
+	// Remove from other field to avoid duplicate entries
+	if otherDeps, ok := p.doc[p.otherField()].(map[string]interface{}); ok {
+		if _, ok := otherDeps[packageName].(string); ok {
 			delete(otherDeps, packageName)
 		}
 	}
@@ -480,19 +547,28 @@ func updatePackageJSON(path string, packageName string, dev bool, useLink bool) 
 	deps[packageName] = fmt.Sprintf("%s:.lnpm/%s", protocol, packageName)
 
 	// Write back
-	output, err := json.MarshalIndent(pkgJSON, "", "  ")
+	output, err := json.MarshalIndent(p.doc, "", "  ")
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	// Add trailing newline
 	output = append(output, '\n')
 
-	if err := os.WriteFile(path, output, 0644); err != nil {
-		return "", err
-	}
+	return os.WriteFile(path, output, 0644)
+}
 
-	return originalVersion, nil
+// writeLnpmReference points package.json at the linked copy of packageName.
+//
+// It re-reads the file rather than reusing an earlier read, so that writing
+// several packages in sequence does not have each write clobber the previous
+// one with a stale document.
+func writeLnpmReference(path string, packageName string, dev bool, useLink bool) error {
+	deps, err := readPackageJSONDeps(path, packageName, dev)
+	if err != nil {
+		return err
+	}
+	return deps.write(path, packageName, useLink)
 }
 
 // isLnpmReference checks if a version string is an lnpm reference (file:.lnpm/ or link:.lnpm/)
