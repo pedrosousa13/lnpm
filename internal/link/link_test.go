@@ -160,10 +160,20 @@ func TestLinkScopedPackage(t *testing.T) {
 		t.Fatalf("Link() error for scoped package: %v", err)
 	}
 
+	// Relink to exercise the temp-and-swap replace path
+	if _, err := linker.Link("@org/my-package", storePath, files); err != nil {
+		t.Fatalf("second Link() error for scoped package: %v", err)
+	}
+
 	// Verify scoped .lnpm directory
 	lnpmPath := filepath.Join(projectPath, ".lnpm", "@org/my-package")
 	if _, err := os.Stat(lnpmPath); err != nil {
 		t.Errorf(".lnpm/@org/my-package not created: %v", err)
+	}
+
+	// The temp-and-swap path must not leave anything behind in the scope dir
+	if names := entryNames(t, filepath.Join(projectPath, ".lnpm", "@org")); len(names) != 1 || names[0] != "my-package" {
+		t.Errorf(".lnpm/@org entries = %v, want [my-package]", names)
 	}
 
 	// Verify scoped node_modules symlink

@@ -265,8 +265,8 @@ lnpm add my-package --dev
 
 **Process:**
 1. Find package in store (latest or specified version)
-2. Create `.lnpm/{package}/` directory
-3. Hard link all files from store
+2. Create a temporary directory alongside `.lnpm/{package}/`
+3. Hard link all files from store into it, then rename it to `.lnpm/{package}/`
 4. Create symlink `node_modules/{package}` → `.lnpm/{package}`
 5. Update `package.json` with `file:.lnpm/{package}`
 6. Update `lnpm.lock`
@@ -307,9 +307,14 @@ lnpm push --skip-hooks
 2. Calculate new content hash
 3. Update store with new version
 4. For each linked project:
-   - Remove old hard links
-   - Create new hard links
+   - Create new hard links in a temporary directory alongside `.lnpm/{package}/`
+   - Rename it over `.lnpm/{package}/`, then delete the old directory
    - Preserve `node_modules` symlink
+
+   The relink is atomic: `.lnpm/{package}/` holds the previous complete package
+   until the new one is fully built, so a consumer building against
+   `node_modules/{package}` never sees an empty or half-written package, and a
+   failed or interrupted push leaves the previous package in place.
 
 ### `lnpm status`
 
