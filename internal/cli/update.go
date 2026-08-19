@@ -26,6 +26,10 @@ import (
 // hung connection can't block the updater indefinitely.
 var updateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 
+// releaseBaseURL is the root under which release assets are published. It is a
+// var so tests can point it at a local httptest server instead of GitHub.
+var releaseBaseURL = "https://github.com/pedrosousa13/lnpm/releases/download"
+
 // updateCmd updates lnpm to the latest version
 var updateCmd = &cobra.Command{
 	Use:   "update",
@@ -230,7 +234,7 @@ func buildDownloadURL(version string) (string, string) {
 		filename = fmt.Sprintf("lnpm_%s_%s_%s.tar.gz", version, os, arch)
 	}
 
-	url := fmt.Sprintf("https://github.com/pedrosousa13/lnpm/releases/download/v%s/%s", version, filename)
+	url := fmt.Sprintf("%s/v%s/%s", releaseBaseURL, version, filename)
 	return filename, url
 }
 
@@ -300,7 +304,7 @@ func downloadToFile(url, dst string) error {
 // buildChecksumsURL returns the checksums.txt URL for a release version.
 func buildChecksumsURL(version string) string {
 	version = strings.TrimPrefix(version, "v")
-	return fmt.Sprintf("https://github.com/pedrosousa13/lnpm/releases/download/v%s/checksums.txt", version)
+	return fmt.Sprintf("%s/v%s/checksums.txt", releaseBaseURL, version)
 }
 
 // verifyChecksum computes the SHA-256 of filePath and compares it to the entry
