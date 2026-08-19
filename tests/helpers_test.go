@@ -656,6 +656,22 @@ func (te *TestEnvironment) simplePkg(name string) string {
 	})
 }
 
+// republish rewrites an already published package's source with a new version
+// and index.js, then publishes it again WITHOUT --push, so linked projects are
+// deliberately left stale. That stale state is exactly what pull has to fix.
+// pkgDir need not be the directory the package was first published from -
+// passing a different one republishes the same package from a new source path.
+// The cwd is left inside the package directory.
+func (te *TestEnvironment) republish(pkgDir, name, version, indexJS string) {
+	te.t.Helper()
+	te.chdir(pkgDir)
+	te.writeFile(filepath.Join(pkgDir, "package.json"), `{"name":"`+name+`","version":"`+version+`"}`)
+	te.writeFile(filepath.Join(pkgDir, "index.js"), indexJS)
+	if err := cli.RunPublish(false, false, false, false); err != nil {
+		te.t.Fatalf("Failed to republish %s@%s: %v", name, version, err)
+	}
+}
+
 // newProject creates an empty project (package.json only) and chdirs into it.
 func (te *TestEnvironment) newProject(name string) string {
 	te.t.Helper()
