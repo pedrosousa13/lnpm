@@ -474,24 +474,6 @@ func TestInstallFileLeavesNoStagingFileOnSuccess(t *testing.T) {
 	}
 }
 
-// The staging file is created by os.CreateTemp, which makes it 0600 and
-// unusable as a binary. installFile owns making the installed file executable.
-func TestInstallFileMakesTheInstalledBinaryExecutable(t *testing.T) {
-	src, dst := writeInstallFixture(t, "new-binary", "old-binary")
-
-	if err := installFile(src, dst); err != nil {
-		t.Fatalf("installFile returned error: %v", err)
-	}
-
-	info, err := os.Stat(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0755 {
-		t.Errorf("installed binary mode = %04o, want 0755", got)
-	}
-}
-
 // A failure partway through the copy must not leave a half-written staging file
 // next to the target.
 func TestInstallFileRemovesStagingFileWhenTheCopyFails(t *testing.T) {

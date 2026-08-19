@@ -8,15 +8,24 @@ import (
 	"testing"
 )
 
+// requirePermissionBits skips tests that depend on Unix permission bits. On
+// Windows os models only a read-only bit, so Mode().Perm() reports 0666 or
+// 0444 whatever was chmodded, and chmod cannot express the rest.
+func requirePermissionBits(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports only a read-only bit, not Unix permission bits")
+	}
+}
+
 // requirePermissionEnforcement skips tests that depend on the filesystem
 // actually refusing an operation. root bypasses permission bits, and Windows
 // does not model them the way these tests assume.
 func requirePermissionEnforcement(t *testing.T) {
 	t.Helper()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not enforced the same way on Windows")
-	}
+	requirePermissionBits(t)
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses the permission checks this test relies on")
 	}
@@ -105,5 +114,27 @@ func TestReplaceBinaryReportsInsufficientPrivileges(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), dstDir) {
 		t.Errorf("error = %q, want it to name the directory %q", err, dstDir)
+	}
+}
+
+// The staging file is created by os.CreateTemp, which makes it 0600 and
+// unusable as a binary. installFile owns making the installed file executable.
+// root does not change what chmod records, so this one only needs the bits to
+// exist at all - it must still run as root.
+func TestInstallFileMakesTheInstalledBinaryExecutable(t *testing.T) {
+	requirePermissionBits(t)
+
+	src, dst := writeInstallFixture(t, "new-binary", "old-binary")
+
+	if err := installFile(src, dst); err != nil {
+		t.Fatalf("installFile returned error: %v", err)
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Errorf("installed binary mode = %04o, want 0755", got)
 	}
 }
