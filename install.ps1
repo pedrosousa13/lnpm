@@ -61,6 +61,32 @@ try {
     Write-Info "Downloading from $Url..."
     Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
 
+    # Verify before extracting. checksums.txt comes from the same release as the
+    # archive, so this catches a corrupted download or an archive altered in
+    # transit - not a release where an attacker replaced both files.
+    Write-Info "Verifying checksum..."
+    $ChecksumsUrl = "https://github.com/$Repo/releases/download/v$Version/checksums.txt"
+    $ChecksumsPath = Join-Path $TmpDir "checksums.txt"
+    Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $ChecksumsPath -UseBasicParsing
+
+    $Actual = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash
+    # goreleaser writes "<hex>  <filename>", one entry per line.
+    $Expected = $null
+    foreach ($Line in Get-Content $ChecksumsPath) {
+        $Fields = $Line -split '\s+' | Where-Object { $_ -ne "" }
+        if ($Fields.Count -eq 2 -and $Fields[1] -eq $Filename) {
+            $Expected = $Fields[0]
+            break
+        }
+    }
+    if (-not $Expected) {
+        Write-Err "No checksum listed for $Filename in checksums.txt"
+    }
+    if ($Expected -ine $Actual) {
+        Write-Err "Checksum mismatch for $Filename - the download is corrupted or was altered"
+    }
+    Write-Ok "Checksum verified"
+
     Write-Info "Extracting..."
     Expand-Archive -Path $ZipPath -DestinationPath $TmpDir -Force
 

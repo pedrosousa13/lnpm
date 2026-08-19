@@ -41,6 +41,41 @@ error() {
     exit 1
 }
 
+# Verify the archive's SHA-256 against the release checksums.txt.
+# checksums.txt comes from the same release as the archive, so this catches a
+# corrupted download or an archive altered in transit - not a release where an
+# attacker replaced both files.
+# sh has no 'local', so the variables below are prefixed to keep them scoped to
+# this helper by convention.
+verify_checksum() {
+    VC_DIR="$1"
+    VC_FILE="$2"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        VC_SHA_CMD="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        VC_SHA_CMD="shasum -a 256"
+    else
+        error "sha256sum or shasum is required to verify the download"
+    fi
+
+    if [ ! -r "$VC_DIR/checksums.txt" ]; then
+        error "checksums.txt is missing or unreadable"
+    fi
+
+    # goreleaser writes "<hex>  <filename>", one entry per line. The CR is
+    # stripped so a CRLF checksums.txt both matches here and hashes below.
+    VC_ENTRY=$(awk -v f="$VC_FILE" '{ sub(/\r$/, "") } $2 == f { print; exit }' "$VC_DIR/checksums.txt")
+    if [ -z "$VC_ENTRY" ]; then
+        error "No checksum listed for $VC_FILE in checksums.txt"
+    fi
+
+    # VC_SHA_CMD is unquoted on purpose: it may carry arguments.
+    if ! printf '%s\n' "$VC_ENTRY" | (cd "$VC_DIR" && $VC_SHA_CMD -c -) >/dev/null 2>&1; then
+        error "Checksum mismatch for $VC_FILE - the download is corrupted or was altered"
+    fi
+}
+
 # Detect OS
 detect_os() {
     case "$(uname -s)" in
@@ -96,6 +131,7 @@ install() {
     fi
 
     URL="https://github.com/${REPO}/releases/download/v${VERSION}/${FILENAME}"
+    CHECKSUMS_URL="https://github.com/${REPO}/releases/download/v${VERSION}/checksums.txt"
 
     # Create temp directory
     TMP_DIR=$(mktemp -d)
@@ -106,9 +142,16 @@ install() {
     # Download
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$URL" -o "$TMP_DIR/$FILENAME" || error "Download failed"
+        curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/checksums.txt" || error "Failed to download checksums.txt"
     else
         wget -q "$URL" -O "$TMP_DIR/$FILENAME" || error "Download failed"
+        wget -q "$CHECKSUMS_URL" -O "$TMP_DIR/checksums.txt" || error "Failed to download checksums.txt"
     fi
+
+    # Verify before extracting
+    info "Verifying checksum..."
+    verify_checksum "$TMP_DIR" "$FILENAME"
+    success "Checksum verified"
 
     # Extract
     info "Extracting..."
