@@ -135,10 +135,11 @@ lnpm integrates seamlessly with Turborepo, Nx, and all workspace managers:
 # lnpm is installed globally (one-time system install)
 # See installation section above
 
-# Publish all workspace packages
+# Publish all workspace packages (from the workspace root)
 lnpm publish --all
 
-# Push updates to all linked projects
+# Push updates for one package (from that package's own directory)
+cd packages/ui
 lnpm push
 ```
 
@@ -312,17 +313,17 @@ lnpm publish --skip-validation # Skip validation (for broken packages)
 
 ```bash
 # In your TypeScript library
-cd my-library
+cd ~/code/my-library
 # package.json has "prepare": "tsc"
 
 lnpm publish    # Automatically builds TypeScript → dist/
 
 # In your app
-cd my-app
+cd ~/code/my-app
 lnpm add my-library   # Links and runs npm install
 
 # Make changes to library
-cd my-library
+cd ~/code/my-library
 # Edit src/index.ts
 lnpm push       # Rebuilds and updates all linked projects
 ```
