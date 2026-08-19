@@ -60,11 +60,15 @@ lnpm/
 - Key files: `db.go` (Package, Project, Link, FileEntry models)
 
 **internal/pack:**
-- Purpose: Package file discovery and filtering
-- Contains: File scanning, .npmignore/.gitignore parsing, content hashing
+- Purpose: Package file discovery, filtering, and manifest resolution
+- Contains: File scanning, .npmignore/.gitignore parsing, content hashing,
+  `workspace:` dependency rewriting (depends on `internal/pkgjson` and
+  `internal/workspace`)
 - Key files:
   - `pack.go`: Main packing logic, incremental hashing
   - `git_filter.go`: Safety filter for .git files
+  - `workspacedeps.go`: Resolves `workspace:` specifiers into the published
+    package.json, without touching the source one
 
 **internal/store:**
 - Purpose: Package store management

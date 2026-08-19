@@ -41,7 +41,8 @@
 - Location: `internal/workspace/`
 - Contains: Detection and parsing of npm/yarn/pnpm/bun workspaces
 - Depends on: YAML parser (gopkg.in/yaml.v3)
-- Used by: Publish command for `--all` flag
+- Used by: Publish command for `--all` flag, and `internal/pack` to resolve
+  `workspace:` dependency specifiers against sibling versions
 
 **Utilities Layer:**
 - Purpose: Cross-cutting concerns

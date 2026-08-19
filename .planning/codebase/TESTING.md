@@ -122,6 +122,9 @@ workspaceDir := env.CopyFixture("npm-workspace")
 - `yarn-workspace/`: Yarn workspace setup
 - `turborepo/`: Turborepo monorepo structure
 - `nx/`: Nx workspace example
+- `workspace-deps/`: PNPM workspace whose lib depends on its sibling util with
+  `workspace:*`; the only fixture carrying a `workspace:` specifier, so the
+  other workspace fixtures stay independent of the publish-time rewrite
 
 ## Coverage
 

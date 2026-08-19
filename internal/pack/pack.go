@@ -236,7 +236,7 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 		pool, err := ants.NewPoolWithFunc(runtime.NumCPU()*2, func(i interface{}) {
 			defer wg.Done()
 			file := i.(*FileInfo)
-			hash, err := hashFile(file.Path)
+			hash, err := HashFile(file.Path)
 			if err != nil {
 				hashErrMu.Lock()
 				if hashErr == nil {
@@ -472,8 +472,8 @@ func isDefaultInclude(relPath string) bool {
 	return false
 }
 
-// hashFile calculates the xxhash of a file's contents
-func hashFile(path string) (string, error) {
+// HashFile calculates the xxhash of a file's contents
+func HashFile(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err

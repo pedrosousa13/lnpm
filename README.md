@@ -142,6 +142,24 @@ lnpm publish --all
 lnpm push
 ```
 
+**`workspace:` specifiers are resolved on publish.** A sibling dependency written
+with the `workspace:` protocol means nothing outside the workspace it came from,
+so lnpm resolves it in the *stored* package.json — your own package.json is left
+byte-for-byte as you wrote it. All four dependency maps are covered:
+`dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`.
+
+| Specifier | Stored as (sibling at 2.3.0) |
+|-----------|------------------------------|
+| `workspace:*` | `2.3.0` |
+| `workspace:latest` | `2.3.0` |
+| `workspace:^` | `^2.3.0` |
+| `workspace:~` | `~2.3.0` |
+| `workspace:^1.2.3`, `workspace:1.2.3`, any explicit range | the range itself: `^1.2.3`, `1.2.3`, … |
+
+Publishing fails instead if the sibling is not a package of the workspace, if the
+package is not in a workspace at all, or on a bare `workspace:` — shipping the
+literal specifier would only break the consumer's `npm install` later.
+
 **📖 See [MONOREPO.md](MONOREPO.md) for complete guides on:**
 - Turborepo integration
 - Nx integration
@@ -345,7 +363,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 
 ## How It Works
 
-1. **Publish** — Uses `npm pack` rules to determine files, strips lifecycle scripts (`prepare`/`prepublish`), then reflinks or copies to `~/.lnpm/store/{name}/{hash}/`
+1. **Publish** — Uses `npm pack` rules to determine files, strips lifecycle scripts (`prepare`/`prepublish`), resolves `workspace:` dependency specifiers to versions npm can install (see [Monorepo Support](#monorepo-support)), then reflinks or copies to `~/.lnpm/store/{name}/{hash}/`
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`, updates package.json to `file:.lnpm/{package}`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
 4. **Push** — Updates store and re-links changed files
