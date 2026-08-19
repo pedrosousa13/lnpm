@@ -11,31 +11,17 @@ import (
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
-// republish rewrites an already published package's source with a new version
-// and index.js, then publishes it again WITHOUT --push, so linked projects are
-// deliberately left stale. That stale state is exactly what pull has to fix.
-// The cwd is left inside the package directory.
-func (te *TestEnvironment) republish(pkgDir, name, version, indexJS string) {
-	te.t.Helper()
-	te.chdir(pkgDir)
-	te.writeFile(filepath.Join(pkgDir, "package.json"), `{"name":"`+name+`","version":"`+version+`"}`)
-	te.writeFile(filepath.Join(pkgDir, "index.js"), indexJS)
-	if err := cli.RunPublish(false, false, false, false); err != nil {
-		te.t.Fatalf("Failed to republish %s@%s: %v", name, version, err)
-	}
-}
-
 // lockEntry returns a project's lock entry for pkg, failing if it has none.
-func lockEntry(t *testing.T, projectDir, pkg string) lockfile.Package {
+func lockEntry(t *testing.T, env *TestEnvironment, projectDir, pkg string) lockfile.Package {
 	t.Helper()
-	lock, err := lockfile.Load(projectDir)
-	if err != nil {
-		t.Fatalf("Failed to load lockfile: %v", err)
-	}
-	entry, ok := lock.Get(pkg)
-	if !ok {
-		t.Fatalf("Package %s not in lockfile", pkg)
-	}
+	var entry lockfile.Package
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		found, ok := lock.Get(pkg)
+		if !ok {
+			t.Fatalf("Package %s not in lockfile", pkg)
+		}
+		entry = found
+	})
 	return entry
 }
 
@@ -50,9 +36,9 @@ func readBytes(t *testing.T, path string) []byte {
 }
 
 // assertLockVersion checks a package's recorded version in the project's lockfile.
-func assertLockVersion(t *testing.T, projectDir, pkg, want string) {
+func assertLockVersion(t *testing.T, env *TestEnvironment, projectDir, pkg, want string) {
 	t.Helper()
-	if got := lockEntry(t, projectDir, pkg).Version; got != want {
+	if got := lockEntry(t, env, projectDir, pkg).Version; got != want {
 		t.Errorf("Expected %s at version %s in lockfile, got %s", pkg, want, got)
 	}
 }
@@ -78,8 +64,52 @@ func TestPullAllRefreshesEveryLinkedPackage(t *testing.T) {
 
 	env.AssertLinkedFileContent(projectDir, "pull-a", "index.js", "module.exports = 'a-v2';")
 	env.AssertLinkedFileContent(projectDir, "pull-b", "index.js", "module.exports = 'b-v2';")
-	assertLockVersion(t, projectDir, "pull-a", "2.0.0")
-	assertLockVersion(t, projectDir, "pull-b", "3.0.0")
+	assertLockVersion(t, env, projectDir, "pull-a", "2.0.0")
+	assertLockVersion(t, env, projectDir, "pull-b", "3.0.0")
+
+	// The relink must leave the link every consumer resolves through intact:
+	// .lnpm/<pkg> still there, node_modules/<pkg> still a symlink into it.
+	for _, name := range []string{"pull-a", "pull-b"} {
+		env.AssertFilesLinked(projectDir, name)
+		env.AssertSymlinkExists(projectDir, name)
+	}
+}
+
+// TestPullAllReportsInSortedOrder pins that the no-argument form reports
+// packages in name order. The set comes from a map, so an unsorted
+// implementation gets the right order by luck often enough that one run proves
+// nothing - the pull is repeated, and every repeat has to agree.
+func TestPullAllReportsInSortedOrder(t *testing.T) {
+	env := setupTest(t)
+
+	names := []string{"order-delta", "order-bravo", "order-charlie", "order-alpha"}
+	projectDir := env.newProject("test-project")
+	for _, name := range names {
+		env.simplePkg(name)
+		env.addPkg(projectDir, name, false, false)
+	}
+
+	wantOrder := []string{"order-alpha", "order-bravo", "order-charlie", "order-delta"}
+	for run := 0; run < 4; run++ {
+		env.chdir(projectDir)
+		out := captureStdout(t, func() {
+			if err := cli.RunPull(nil); err != nil {
+				t.Errorf("RunPull: %v", err)
+			}
+		})
+
+		at := -1
+		for _, name := range wantOrder {
+			idx := strings.Index(out, "Pulling "+name+"...")
+			if idx < 0 {
+				t.Fatalf("Run %d: expected %s to be reported, got:\n%s", run, name, out)
+			}
+			if idx < at {
+				t.Fatalf("Run %d: expected packages reported in name order %v, got:\n%s", run, wantOrder, out)
+			}
+			at = idx
+		}
+	}
 }
 
 // TestPullNamedPackageLeavesOthersAlone covers `lnpm pull <pkg>`: only the named
@@ -102,11 +132,11 @@ func TestPullNamedPackageLeavesOthersAlone(t *testing.T) {
 	}
 
 	env.AssertLinkedFileContent(projectDir, "named-a", "index.js", "module.exports = 'a-v2';")
-	assertLockVersion(t, projectDir, "named-a", "2.0.0")
+	assertLockVersion(t, env, projectDir, "named-a", "2.0.0")
 
 	// named-b keeps the contents and lock entry it had from `add`.
 	env.AssertLinkedFileContent(projectDir, "named-b", "index.js", "module.exports = 'named-b';")
-	assertLockVersion(t, projectDir, "named-b", "1.0.0")
+	assertLockVersion(t, env, projectDir, "named-b", "1.0.0")
 }
 
 // TestPullUpToDateIsNoOp pins that pulling a package already at the store's
@@ -131,8 +161,14 @@ func TestPullUpToDateIsNoOp(t *testing.T) {
 	if !strings.Contains(out, "already up to date") {
 		t.Errorf("Expected an 'already up to date' notice, got:\n%s", out)
 	}
-	// The linked copy is still the one add produced.
-	env.AssertLinkedFileContent(projectDir, "uptodate-pkg", "index.js", "module.exports = 'uptodate-pkg';")
+	// A package that was skipped was not pulled, and the summary must not claim
+	// otherwise.
+	if strings.Contains(out, "Pulled") {
+		t.Errorf("Expected no 'Pulled' summary when nothing moved, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Already up to date") {
+		t.Errorf("Expected an 'Already up to date' summary line, got:\n%s", out)
+	}
 }
 
 // TestPullUnlinkedPackageErrors pins that naming a package this project has
@@ -204,7 +240,7 @@ func TestPullNeverModifiesPackageJSON(t *testing.T) {
 func TestPullUpdatesLockfileEntry(t *testing.T) {
 	env := setupTest(t)
 
-	pkgDir := env.simplePkg("lock-pull-pkg")
+	env.simplePkg("lock-pull-pkg")
 	projectDir := env.CreateTestPackage("test-project", "1.0.0", nil)
 	env.writePackageJSON(projectDir, map[string]interface{}{
 		"name":         "test-project",
@@ -213,9 +249,13 @@ func TestPullUpdatesLockfileEntry(t *testing.T) {
 	})
 	env.addPkg(projectDir, "lock-pull-pkg", false, false)
 
-	before := lockEntry(t, projectDir, "lock-pull-pkg")
+	before := lockEntry(t, env, projectDir, "lock-pull-pkg")
 
-	env.republish(pkgDir, "lock-pull-pkg", "2.0.0", "module.exports = 'v2';")
+	// Republished from a DIFFERENT directory, so the store's source path really
+	// moves and the Source assertion below can only pass if pull writes the
+	// store's path rather than carrying the old lock entry's over.
+	relocated := env.CreateTestPackage("lock-pull-pkg-relocated", "2.0.0", nil)
+	env.republish(relocated, "lock-pull-pkg", "2.0.0", "module.exports = 'v2';")
 
 	env.chdir(projectDir)
 	if err := cli.RunPull(nil); err != nil {
@@ -227,7 +267,7 @@ func TestPullUpdatesLockfileEntry(t *testing.T) {
 		t.Fatalf("Failed to read lock-pull-pkg from the store: %v", err)
 	}
 
-	after := lockEntry(t, projectDir, "lock-pull-pkg")
+	after := lockEntry(t, env, projectDir, "lock-pull-pkg")
 	if after.Version != "2.0.0" {
 		t.Errorf("Expected lock version 2.0.0, got %s", after.Version)
 	}
@@ -306,10 +346,100 @@ func TestPullReportsPackageMissingFromStore(t *testing.T) {
 	if !strings.Contains(out, "ghost-pkg: not found in store") {
 		t.Errorf("Expected ghost-pkg to be reported as missing from the store, got:\n%s", out)
 	}
+	// Missing from the store is nearly always an unpublished package, so the
+	// report has to say what to do about it - as `add` does.
+	if !strings.Contains(out, "did you run 'lnpm publish' in the package directory") {
+		t.Errorf("Expected the report to hint at 'lnpm publish', got:\n%s", out)
+	}
 
 	// The healthy package beside it was still refreshed.
 	env.AssertLinkedFileContent(projectDir, "present-pkg", "index.js", "module.exports = 'v2';")
-	assertLockVersion(t, projectDir, "present-pkg", "2.0.0")
+	assertLockVersion(t, env, projectDir, "present-pkg", "2.0.0")
+}
+
+// TestPullReportsFailuresAtTheFailingPackage pins where a failure is reported:
+// the "Pulling <pkg>... " line is closed by the failure itself rather than left
+// dangling, and the run ends on the warning block it exits non-zero for, not on
+// the success line for the package that did refresh.
+func TestPullReportsFailuresAtTheFailingPackage(t *testing.T) {
+	env := setupTest(t)
+
+	okDir := env.simplePkg("ok-pkg")
+	brokenDir := env.simplePkg("broken-pkg")
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "ok-pkg", false, false)
+	env.addPkg(projectDir, "broken-pkg", false, false)
+
+	env.republish(okDir, "ok-pkg", "2.0.0", "module.exports = 'ok-v2';")
+	env.republish(brokenDir, "broken-pkg", "2.0.0", "module.exports = 'broken-v2';")
+
+	// Delete the store contents the new broken-pkg entry points at, so reading
+	// its files fails midway through the pull.
+	broken, err := env.Database.GetPackageByName("broken-pkg")
+	if err != nil || broken == nil {
+		t.Fatalf("Failed to read broken-pkg from the store: %v", err)
+	}
+	if err := os.RemoveAll(broken.StorePath); err != nil {
+		t.Fatalf("Failed to remove the store path: %v", err)
+	}
+
+	env.chdir(projectDir)
+	var pullErr error
+	out := captureStdout(t, func() { pullErr = cli.RunPull(nil) })
+
+	if pullErr == nil {
+		t.Fatal("Expected a non-zero result when a package's store files are unreadable")
+	}
+	if !strings.Contains(out, "Pulling broken-pkg... failed to get package files") {
+		t.Errorf("Expected the failure to close the 'Pulling broken-pkg... ' line, got:\n%s", out)
+	}
+
+	okAt := strings.Index(out, "Pulled 1 package(s)")
+	warnAt := strings.Index(out, "Some packages failed")
+	if okAt < 0 || warnAt < 0 {
+		t.Fatalf("Expected both a success line and a failure block, got:\n%s", out)
+	}
+	if okAt > warnAt {
+		t.Errorf("Expected the success line before the failure block, got:\n%s", out)
+	}
+}
+
+// TestPullPicksUpSameVersionContentChange covers the republish that changes
+// nothing but the files: same version, new contents. The version alone cannot
+// tell pull anything here, so only the content hash can.
+func TestPullPicksUpSameVersionContentChange(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("samever-pkg")
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "samever-pkg", false, false)
+
+	before := lockEntry(t, env, projectDir, "samever-pkg")
+
+	// Same version 1.0.0, different contents.
+	env.republish(pkgDir, "samever-pkg", "1.0.0", "module.exports = 'samever-pkg-patched';")
+
+	env.chdir(projectDir)
+	if err := cli.RunPull(nil); err != nil {
+		t.Fatalf("RunPull: %v", err)
+	}
+
+	env.AssertLinkedFileContent(projectDir, "samever-pkg", "index.js", "module.exports = 'samever-pkg-patched';")
+
+	after := lockEntry(t, env, projectDir, "samever-pkg")
+	if after.Version != "1.0.0" {
+		t.Errorf("Expected the lock version to stay 1.0.0, got %s", after.Version)
+	}
+	if after.Hash == before.Hash {
+		t.Errorf("Expected the lock hash to change when the contents did, still %s", after.Hash)
+	}
+	stored, err := env.Database.GetPackageByName("samever-pkg")
+	if err != nil || stored == nil {
+		t.Fatalf("Failed to read samever-pkg from the store: %v", err)
+	}
+	if after.Hash != stored.ContentHash {
+		t.Errorf("Expected lock hash %s (the store's current content hash), got %s", stored.ContentHash, after.Hash)
+	}
 }
 
 // TestPullNoLinkedPackages pins that pulling in a project with nothing linked
