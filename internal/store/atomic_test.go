@@ -74,6 +74,52 @@ func TestStoreAtomicCommit(t *testing.T) {
 	noTempLeftovers(t, s, "atomic-pkg")
 }
 
+// TestStoreFinalizeKeepsExistingEntry pins the finalize step against destroying
+// a store entry another publisher already committed. finalize is exercised
+// directly because Store's early Exists() short-circuit means a plain
+// re-publish never reaches the rename with a populated destination.
+func TestStoreFinalizeKeepsExistingEntry(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	s, err := New()
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	// A complete entry for this hash, as committed by someone who got there first.
+	finalPath := s.PackagePath("clobber-pkg", "feedface")
+	if err := os.MkdirAll(finalPath, 0755); err != nil {
+		t.Fatalf("seed final dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(finalPath, "index.js"), []byte("sentinel"), 0644); err != nil {
+		t.Fatalf("seed final file: %v", err)
+	}
+
+	// Our own fully built temp dir, about to lose the race to rename into place.
+	destPath, err := os.MkdirTemp(filepath.Dir(finalPath), ".feedface.tmp-")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(destPath, "index.js"), []byte("loser"), 0644); err != nil {
+		t.Fatalf("seed temp file: %v", err)
+	}
+
+	renamed, err := s.finalize("clobber-pkg", "feedface", destPath, finalPath)
+	if err != nil {
+		t.Fatalf("finalize should succeed against an existing entry: %v", err)
+	}
+	if renamed {
+		t.Error("finalize reported the temp dir as committed, but the destination was already occupied")
+	}
+
+	content, err := os.ReadFile(filepath.Join(finalPath, "index.js"))
+	if err != nil {
+		t.Fatalf("existing entry was destroyed: %v", err)
+	}
+	if string(content) != "sentinel" {
+		t.Errorf("existing entry content is %q, want %q", content, "sentinel")
+	}
+}
+
 // TestStoreConcurrentSameHash runs many concurrent stores of the same content
 // and verifies exactly one complete package and no temp leftovers result.
 func TestStoreConcurrentSameHash(t *testing.T) {

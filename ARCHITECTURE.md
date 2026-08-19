@@ -241,7 +241,16 @@ lnpm publish --push
 1. Read `package.json` for name/version
 2. Determine files to include (respects `.npmignore`, `files` field)
 3. Calculate content hash of all files
-4. Copy files to `~/.lnpm/store/{name}/{hash}/`
+4. Reflink or copy files into a temporary directory alongside
+   `~/.lnpm/store/{name}/{hash}/`, then rename it into place
+
+   The store commit is atomic: `~/.lnpm/store/{name}/{hash}/` appears all at
+   once, so a reader never sees a half-written package, and an interrupted
+   publish leaves only the temporary directory behind. An entry already
+   committed for the same hash is never destroyed — the store is
+   content-addressed, so an occupied destination already holds this exact
+   content.
+
 5. Record in bbolt database
 6. If `--push`, update all linked projects
 

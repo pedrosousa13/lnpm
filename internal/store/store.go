@@ -246,17 +246,34 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	}
 
 	// Atomically move the completed package into place.
-	_ = os.RemoveAll(finalPath)
-	if err := os.Rename(destPath, finalPath); err != nil {
-		// A concurrent publish of the same hash may have already created it.
-		if s.Exists(name, hash) {
-			return finalPath, nil // temp dir cleaned up by deferred guard
-		}
-		return "", fmt.Errorf("failed to finalize store package: %w", err)
+	renamed, err := s.finalize(name, hash, destPath, finalPath)
+	if err != nil {
+		return "", err
 	}
-	committed = true
+	committed = renamed
 
 	return finalPath, nil
+}
+
+// finalize atomically renames the fully built temp directory destPath onto
+// finalPath. It reports whether the rename consumed destPath, so the caller
+// knows whether the deferred temp-dir cleanup still has work to do.
+//
+// It never deletes finalPath. finalPath is keyed by the content hash, so an
+// occupied destination means another goroutine or process already committed
+// this exact content, and that entry is complete by construction.
+func (s *Store) finalize(name, hash, destPath, finalPath string) (bool, error) {
+	if err := os.Rename(destPath, finalPath); err != nil {
+		// A concurrent publish of the same hash may have already created it.
+		// Deliberately Exists(name, hash) rather than a bare stat of finalPath,
+		// even though the two are equivalent today: any future completeness
+		// check belongs in Exists, and this call site should inherit it.
+		if s.Exists(name, hash) {
+			return false, nil // temp dir cleaned up by deferred guard
+		}
+		return false, fmt.Errorf("failed to finalize store package: %w", err)
+	}
+	return true, nil
 }
 
 // GetFiles returns all files in a stored package
