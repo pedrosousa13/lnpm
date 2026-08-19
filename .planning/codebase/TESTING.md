@@ -221,6 +221,8 @@ env.AssertLockfile(projectPath, func(lock *lockfile.LockFile) {
 **Jobs:**
 - `test`: Unit tests (`./internal/...`) and workspace tests (`./tests/...`)
 - `lint`: golangci-lint with `only-new-issues: true`
+- `test-windows`: Same test suites on `windows-latest`, without coverage
+- `test-macos`: Same test suites on `macos-latest`, without coverage
 - `build`: Multi-platform compilation
 
 **Race Detection:**
@@ -228,7 +230,7 @@ env.AssertLockfile(projectPath, func(lock *lockfile.LockFile) {
 - Location: `.github/workflows/ci.yaml`
 
 **Platform Testing:**
-- Primary: `ubuntu-latest`
+- Runners: `ubuntu-latest` (primary, with coverage), `windows-latest`, `macos-latest`
 - Go version: `1.26` (defined in `go.mod`, which workflows read via `go-version-file`)
 
 ---
