@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,5 +35,140 @@ func TestGetStorePathEnvWins(t *testing.T) {
 	}
 	if got != "/tmp/from-env" {
 		t.Errorf("GetStorePath = %q, want /tmp/from-env", got)
+	}
+}
+
+// TestSaveConfigRoundTrip checks that everything SaveConfig writes comes back
+// out of the file unchanged, and that the parent directory is created on the
+// way.
+//
+// The read-back goes through loadConfigFile rather than LoadConfig on purpose:
+// LoadConfig memoizes the first successful load in a package-level sync.Once
+// for the life of the test binary, so it would either return another test's
+// config or pin this one for everyone else. loadConfigFile reads the file every
+// time, which is what a round-trip needs.
+func TestSaveConfigRoundTrip(t *testing.T) {
+	// "nested" does not exist yet, so a SaveConfig that skipped MkdirAll would
+	// fail to write here.
+	configPath := filepath.Join(t.TempDir(), "nested", "config.yaml")
+	t.Setenv("LNPM_CONFIG", configPath)
+
+	manageGitignore := false
+	want := &Config{
+		StorePath:       filepath.Join(t.TempDir(), "custom-store"),
+		LinkMode:        "copy",
+		ManageGitignore: &manageGitignore,
+		Hooks:           HooksConfig{PostAdd: "echo added", SkipPrepare: true},
+	}
+
+	if err := SaveConfig(want); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	got, err := loadConfigFile()
+	if err != nil {
+		t.Fatalf("loadConfigFile: %v", err)
+	}
+
+	if got.StorePath != want.StorePath {
+		t.Errorf("StorePath = %q, want %q", got.StorePath, want.StorePath)
+	}
+	if got.LinkMode != want.LinkMode {
+		t.Errorf("LinkMode = %q, want %q", got.LinkMode, want.LinkMode)
+	}
+	if got.ManageGitignore == nil {
+		t.Errorf("ManageGitignore = nil, want a pointer to false")
+	} else if *got.ManageGitignore {
+		t.Errorf("ManageGitignore = true, want false")
+	}
+	if got.ShouldManageGitignore() {
+		t.Errorf("ShouldManageGitignore() = true, want false (saved value lost, fell back to the default)")
+	}
+	if got.Hooks.PostAdd != want.Hooks.PostAdd {
+		t.Errorf("Hooks.PostAdd = %q, want %q", got.Hooks.PostAdd, want.Hooks.PostAdd)
+	}
+	if !got.Hooks.SkipPrepare {
+		t.Errorf("Hooks.SkipPrepare = false, want true")
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	raw := string(data)
+
+	// The values, not just the keys, have to be on disk: a marshal that emitted
+	// the key with an empty value would still round-trip past a key-only check.
+	for _, line := range []string{
+		"store_path: " + want.StorePath,
+		"link_mode: copy",
+		"manage_gitignore: false",
+		"post_add: echo added",
+		"skip_prepare: true",
+	} {
+		if !strings.Contains(raw, line) {
+			t.Errorf("written config missing %q\n--- file ---\n%s", line, raw)
+		}
+	}
+
+	// omitempty: keys for fields that were never set must not appear at all.
+	for _, absent := range []string{"pre_publish", "post_publish", "skip_post_add"} {
+		if strings.Contains(raw, absent) {
+			t.Errorf("written config contains unset key %q (omitempty lost)\n--- file ---\n%s", absent, raw)
+		}
+	}
+}
+
+// TestSaveConfigOmitsEveryUnsetField pins the omitempty tags on every field: an
+// all-zero Config must serialize to the empty mapping, with no keys at all.
+func TestSaveConfigOmitsEveryUnsetField(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("LNPM_CONFIG", configPath)
+
+	if err := SaveConfig(&Config{}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "{}" {
+		t.Errorf("empty config serialized to %q, want \"{}\" (a field lost its omitempty)", got)
+	}
+}
+
+func TestGetConfigPathHonorsEnv(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "elsewhere", "lnpm.yaml")
+	t.Setenv("LNPM_CONFIG", want)
+
+	if got := GetConfigPath(); got != want {
+		t.Errorf("GetConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGetConfigPathDefaultsUnderHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LNPM_CONFIG", "")   // empty is treated as unset, so the default applies
+	t.Setenv("HOME", home)        // os.UserHomeDir on unix
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on windows
+
+	want := filepath.Join(home, ".lnpm", "config.yaml")
+	if got := GetConfigPath(); got != want {
+		t.Errorf("GetConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGetPackageStorePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LNPM_STORE", dir)
+
+	want := filepath.Join(dir, "store")
+	got, err := GetPackageStorePath()
+	if err != nil {
+		t.Fatalf("GetPackageStorePath: %v", err)
+	}
+	if got != want {
+		t.Errorf("GetPackageStorePath() = %q, want %q", got, want)
 	}
 }
