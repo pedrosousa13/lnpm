@@ -94,6 +94,31 @@ Examples:
 	},
 }
 
+// pullCmd refreshes linked packages from the store
+var pullCmd = &cobra.Command{
+	Use:   "pull [package...]",
+	Short: "Sync linked packages with the store",
+	Long: `Re-link packages already linked in this project to the version now in
+the store, picking up anything published since they were added.
+
+With no arguments every package in lnpm.lock is refreshed.
+
+This command:
+  1. Finds each package's current version in the store
+  2. Refreshes .lnpm/{package}/
+  3. Updates lnpm.lock
+
+package.json is never modified: its reference already points at .lnpm/{package}.
+
+Examples:
+  lnpm pull              # Refresh every linked package
+  lnpm pull my-package   # Refresh one package`,
+	Args: cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return RunPull(args)
+	},
+}
+
 // pushCmd pushes updates to all linked projects
 var pushCmd = &cobra.Command{
 	Use:   "push",
