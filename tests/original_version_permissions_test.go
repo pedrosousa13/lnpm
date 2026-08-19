@@ -10,11 +10,11 @@ import (
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
-// requirePackageJSONWriteFailure skips tests that force a package.json rewrite
+// requirePermissionEnforcement skips tests that force a package.json rewrite
 // to fail by making the file read-only. Windows models only a read-only bit and
 // root ignores permission bits entirely, so neither can produce the failure
 // these tests depend on.
-func requirePackageJSONWriteFailure(t *testing.T) {
+func requirePermissionEnforcement(t *testing.T) {
 	t.Helper()
 
 	if runtime.GOOS == "windows" {
@@ -46,7 +46,7 @@ func makePackageJSONReadOnly(t *testing.T, projectDir string) {
 // reach the lock file before package.json is touched - a failed rewrite must
 // still leave the lock able to restore it.
 func TestAddRecordsOriginalVersionWhenPackageJSONWriteFails(t *testing.T) {
-	requirePackageJSONWriteFailure(t)
+	requirePermissionEnforcement(t)
 
 	env := setupTest(t)
 	env.simplePkg("failing-single-pkg")
@@ -73,7 +73,7 @@ func TestAddRecordsOriginalVersionWhenPackageJSONWriteFails(t *testing.T) {
 // The multi-package path has the same ordering constraint, and gets it wrong
 // for every package in the batch at once, so it needs its own coverage.
 func TestAddMultipleRecordsOriginalVersionsWhenPackageJSONWriteFails(t *testing.T) {
-	requirePackageJSONWriteFailure(t)
+	requirePermissionEnforcement(t)
 
 	env := setupTest(t)
 	env.simplePkg("failing-multi-a")

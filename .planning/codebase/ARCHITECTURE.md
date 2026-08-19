@@ -73,8 +73,8 @@
 2. Database lookup: find package by name (or hash if version specified)
 3. `store.GetFiles()` retrieves file list from store
 4. `link.Link()` creates reflinks/hardlinks to `.lnpm/{pkg}/`, symlink to `node_modules/{pkg}/`
-5. Update package.json with `file:.lnpm/{pkg}`
-6. Update lnpm.lock with package metadata
+5. Update lnpm.lock with package metadata, including the original package.json specifier, which must reach the lock before step 6 overwrites it or a failure in between loses it
+6. Update package.json with `file:.lnpm/{pkg}`
 7. Database records Project and Link
 
 **Watch Flow:**

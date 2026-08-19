@@ -167,7 +167,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		for i := range successful {
 			deps, err := readPackageJSONDeps(pkgJSONPath, successful[i].pkg.Name, dev)
 			if err != nil {
-				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
+				fmt.Printf("  %s Failed to read package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
 				successful[i].pkgJSONUnreadable = true
 				continue
 			}
@@ -358,7 +358,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 	if !pure {
 		deps, err := readPackageJSONDeps(pkgJSONPath, pkg.Name, dev)
 		if err != nil {
-			return fmt.Errorf("failed to update package.json: %w", err)
+			return fmt.Errorf("failed to read package.json: %w", err)
 		}
 		originalVersion = deps.originalVersion
 	}
