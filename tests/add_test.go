@@ -3,6 +3,7 @@ package tests
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
@@ -294,4 +295,68 @@ func TestAddByVersion(t *testing.T) {
 	if err := cli.RunAdd("ver-pkg@9.9.9", false, false, false); err == nil {
 		t.Fatal("add ver-pkg@9.9.9 should fail (only 1.0.0 is published)")
 	}
+}
+
+// TestAddMultipleByVersion verifies a versioned spec resolves in the
+// multi-package path exactly as it does in the single-package one: the version
+// is matched against the stored version, not against the content hash (#154).
+func TestAddMultipleByVersion(t *testing.T) {
+	env := setupTest(t)
+
+	env.publishPkg("pkg-a", "1.2.3", map[string]string{
+		"index.js": "module.exports=1",
+	})
+	env.simplePkg("pkg-b")
+
+	projectDir := env.newProject("consumer")
+
+	if err := cli.RunAddMultiple([]string{"pkg-a@1.2.3", "pkg-b"}, false, false, false, false); err != nil {
+		t.Fatalf("add pkg-a@1.2.3 pkg-b should succeed, got: %v", err)
+	}
+
+	for _, name := range []string{"pkg-a", "pkg-b"} {
+		env.AssertSymlinkExists(projectDir, name)
+		env.AssertPackageJSON(projectDir, name, "file:.lnpm/"+name)
+		env.AssertDatabaseLink(name, projectDir)
+	}
+}
+
+// TestAddMultipleByVersionMismatch verifies a non-matching version fails only
+// for that package, with the same message the single-package path produces, so
+// the two paths cannot drift (#154).
+func TestAddMultipleByVersionMismatch(t *testing.T) {
+	env := setupTest(t)
+
+	env.publishPkg("pkg-a", "1.2.3", map[string]string{
+		"index.js": "module.exports=1",
+	})
+	env.simplePkg("pkg-b")
+
+	projectDir := env.newProject("consumer")
+
+	// The single-package path is authoritative for the wording.
+	singleErr := cli.RunAdd("pkg-a@9.9.9", false, false, false)
+	if singleErr == nil {
+		t.Fatal("add pkg-a@9.9.9 should fail (only 1.2.3 is published)")
+	}
+
+	output := captureStdout(t, func() {
+		if err := cli.RunAddMultiple([]string{"pkg-a@9.9.9", "pkg-b"}, false, false, false, false); err == nil {
+			t.Error("add pkg-a@9.9.9 pkg-b should fail for pkg-a")
+		}
+	})
+
+	if !strings.Contains(output, singleErr.Error()) {
+		t.Errorf("multi-package error should match the single-package one.\nwant substring: %s\ngot output:\n%s",
+			singleErr.Error(), output)
+	}
+
+	// pkg-b still linked, pkg-a not.
+	env.AssertSymlinkExists(projectDir, "pkg-b")
+	env.AssertPackageJSON(projectDir, "pkg-b", "file:.lnpm/pkg-b")
+	env.AssertDatabaseLink("pkg-b", projectDir)
+
+	env.AssertSymlinkMissing(projectDir, "pkg-a")
+	env.AssertPackageJSONMissing(projectDir, "pkg-a")
+	env.AssertDatabaseNoLink("pkg-a", projectDir)
 }

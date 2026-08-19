@@ -391,6 +391,42 @@ func RunConcurrently(t *testing.T, funcs ...func() error) {
 	}
 }
 
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
+// printed. The multi-package add reports per-package failures on stdout rather
+// than in its returned error, so comparing wording requires reading it.
+//
+// The reader goroutine starts before fn does, so fn can write more than the
+// pipe buffer without deadlocking, and the teardown is deferred so os.Stdout is
+// restored however fn exits: a t.Fatal inside fn would otherwise leave the rest
+// of the package writing into a dead pipe.
+func captureStdout(t *testing.T, fn func()) (out string) {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Failed to create pipe: %v", err)
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+
+	orig := os.Stdout
+	os.Stdout = w
+
+	defer func() {
+		os.Stdout = orig
+		_ = w.Close() // unblocks the reader goroutine
+		out = <-done
+		_ = r.Close()
+	}()
+
+	fn()
+	return
+}
+
 // Helper functions
 
 func getMapValue(m map[string]interface{}, key string) map[string]interface{} {
