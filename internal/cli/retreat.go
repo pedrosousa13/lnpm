@@ -23,11 +23,12 @@ func RunRetreat(force bool, runInstall bool) error {
 	// Check for lnpm.lock
 	lock, err := lockfile.Load(cwd)
 	// A missing lock file loads as an empty one, so an error here means the file
-	// exists but cannot be parsed, and lock is nil. Abort instead of cleaning up:
-	// without the lock we cannot restore the original package.json dependencies,
-	// so removing .lnpm/ and lnpm.lock would leave the project half-retreated.
+	// exists but could not be read or parsed, and lock is nil. Abort instead of
+	// cleaning up: without the lock we cannot restore the original package.json
+	// dependencies, so removing .lnpm/ and lnpm.lock would leave the project
+	// half-retreated.
 	if err != nil {
-		return fmt.Errorf("lnpm.lock is corrupt: %w. Delete lnpm.lock and re-run 'lnpm retreat' to clean up the rest", err)
+		return fmt.Errorf("could not read lnpm.lock: %w\n\nHint: Fix or remove lnpm.lock, then re-run 'lnpm retreat' to clean up the rest", err)
 	}
 	if len(lock.List()) == 0 {
 		// Check for .lnpm directory

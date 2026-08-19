@@ -179,8 +179,8 @@ func TestRetreatCorruptLockfile(t *testing.T) {
 			if err == nil {
 				t.Fatal("Expected an error for a corrupt lock file, got nil")
 			}
-			if !strings.Contains(err.Error(), "corrupt") {
-				t.Errorf("Expected error to mention corruption, got: %v", err)
+			if !strings.Contains(err.Error(), "lnpm.lock") {
+				t.Errorf("Expected error to mention the lock file, got: %v", err)
 			}
 
 			// Nothing may be touched when the lock file cannot be read.
