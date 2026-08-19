@@ -153,7 +153,7 @@ func TestAddUpdatesExisting(t *testing.T) {
 
 // TestAddConcurrentSameProject tests concurrent adds to same project.
 func TestAddConcurrentSameProject(t *testing.T) {
-	t.Skip("Skipping: concurrent package.json writes cause race conditions, not realistic usage")
+	t.Skip("Skipping: concurrent in-process package.json writes cause race conditions, not realistic usage. Real concurrent use is covered by TestConcurrentProcessesSharedStore in tests/e2e/contention_test.go, which runs overlapping lnpm processes against one shared store.")
 	env := setupTest(t)
 
 	packages := []string{"pkg-a", "pkg-b", "pkg-c"}
@@ -176,7 +176,7 @@ func TestAddConcurrentSameProject(t *testing.T) {
 
 // TestAddConcurrentDifferentProjects tests concurrent adds to different projects.
 func TestAddConcurrentDifferentProjects(t *testing.T) {
-	t.Skip("Skipping: os.Chdir is not goroutine-safe, test creates artificial race condition")
+	t.Skip("Skipping: os.Chdir is not goroutine-safe, test creates artificial race condition. Real concurrent use is covered by TestConcurrentProcessesSharedStore in tests/e2e/contention_test.go, which runs overlapping lnpm processes against one shared store.")
 	env := setupTest(t)
 
 	env.simplePkg("shared-pkg")
