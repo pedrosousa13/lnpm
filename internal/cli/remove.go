@@ -14,7 +14,7 @@ import (
 )
 
 // RunRemove executes the remove command
-func RunRemove(packageName string, all bool) error {
+func RunRemove(packageName string, all bool, yes bool) error {
 	// Get current directory
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -41,7 +41,7 @@ func RunRemove(packageName string, all bool) error {
 			fmt.Println("No linked packages to remove")
 			return nil
 		}
-		if !confirm(fmt.Sprintf("Remove all %d linked package(s) from this project?", len(packagesToRemove))) {
+		if !confirm(fmt.Sprintf("Remove all %d linked package(s) from this project?", len(packagesToRemove)), yes) {
 			fmt.Println("Aborted.")
 			return nil
 		}

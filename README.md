@@ -82,7 +82,7 @@ lnpm push
 | `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
 | `lnpm check` | Fail if package.json still has lnpm references (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
-| `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`) |
+| `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`, `--yes`) |
 | `lnpm retreat` | Remove all lnpm changes |
 | `lnpm config` | View/edit configuration |
 | `lnpm update` | Update lnpm to the latest version |

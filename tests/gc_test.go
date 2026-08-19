@@ -17,12 +17,12 @@ func TestGCRemovesOrphans(t *testing.T) {
 		env := setupTest(t)
 
 		env.publishAndAdd("gc-pkg")
-		if err := cli.RunRemove("gc-pkg", false); err != nil {
+		if err := cli.RunRemove("gc-pkg", false, false); err != nil {
 			t.Fatalf("Failed to remove package: %v", err)
 		}
 		env.AssertPackageInDatabase("gc-pkg", true) // orphaned, not yet collected
 
-		if err := cli.RunGC(false, "", false); err != nil {
+		if err := cli.RunGC(false, "", false, true); err != nil {
 			t.Fatalf("Failed to run GC: %v", err)
 		}
 		env.AssertPackageInDatabase("gc-pkg", false)
@@ -37,7 +37,7 @@ func TestGCRemovesOrphans(t *testing.T) {
 			env.AssertPackageInDatabase(name, true)
 		}
 
-		if err := cli.RunGC(false, "", false); err != nil {
+		if err := cli.RunGC(false, "", false, true); err != nil {
 			t.Fatalf("Failed to run GC: %v", err)
 		}
 		for _, name := range packages {
@@ -46,17 +46,52 @@ func TestGCRemovesOrphans(t *testing.T) {
 	})
 }
 
-// TestGCDryRun tests that dry-run mode reports but does not delete.
-func TestGCDryRun(t *testing.T) {
+// TestGCWithoutYesKeepsOrphans tests that a non-interactive GC without --yes
+// refuses to delete: the orphan stays in the database and in the store.
+func TestGCWithoutYesKeepsOrphans(t *testing.T) {
 	env := setupTest(t)
 
-	env.simplePkg("dryrun-pkg")
-	env.AssertPackageInDatabase("dryrun-pkg", true)
+	env.publishPkg("unconfirmed-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'test';",
+	})
+	env.AssertPackageInDatabase("unconfirmed-pkg", true)
 
-	if err := cli.RunGC(true, "", false); err != nil {
-		t.Fatalf("Failed to run GC dry-run: %v", err)
+	pkg, err := env.Database.GetPackageByName("unconfirmed-pkg")
+	if err != nil || pkg == nil {
+		t.Fatalf("Failed to get package: %v", err)
 	}
-	env.AssertPackageInDatabase("dryrun-pkg", true)
+	storePath := pkg.StorePath
+
+	if err := cli.RunGC(false, "", false, false); err != nil {
+		t.Fatalf("Failed to run GC without --yes: %v", err)
+	}
+
+	env.AssertPackageInDatabase("unconfirmed-pkg", true)
+	if _, err := os.Stat(storePath); err != nil {
+		t.Errorf("Store path was deleted without confirmation: %v", err)
+	}
+}
+
+// TestGCDryRun tests that dry-run mode reports but does not delete, whether or
+// not --yes is given.
+func TestGCDryRun(t *testing.T) {
+	for _, yes := range []bool{false, true} {
+		name := "without --yes"
+		if yes {
+			name = "with --yes"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := setupTest(t)
+
+			env.simplePkg("dryrun-pkg")
+			env.AssertPackageInDatabase("dryrun-pkg", true)
+
+			if err := cli.RunGC(true, "", false, yes); err != nil {
+				t.Fatalf("Failed to run GC dry-run: %v", err)
+			}
+			env.AssertPackageInDatabase("dryrun-pkg", true)
+		})
+	}
 }
 
 // TestGCWithAge exercises the --older-than age filter.
@@ -80,7 +115,7 @@ func TestGCWithAge(t *testing.T) {
 
 	// A large threshold must PROTECT freshly published orphans: nothing older
 	// than ~100 years exists, so neither package may be removed.
-	if err := cli.RunGC(false, "36500d", false); err != nil {
+	if err := cli.RunGC(false, "36500d", false, true); err != nil {
 		t.Fatalf("Failed to run GC with large age threshold: %v", err)
 	}
 	env.AssertPackageInDatabase("old-pkg", true)
@@ -89,7 +124,7 @@ func TestGCWithAge(t *testing.T) {
 	// A zero threshold ("0d") bypasses the age check entirely, so the orphaned
 	// packages must now be removed. This proves the filter is actually wired to
 	// the threshold rather than always-protecting or always-deleting.
-	if err := cli.RunGC(false, "0d", false); err != nil {
+	if err := cli.RunGC(false, "0d", false, true); err != nil {
 		t.Fatalf("Failed to run GC with zero age threshold: %v", err)
 	}
 	env.AssertPackageInDatabase("old-pkg", false)
@@ -120,7 +155,7 @@ func TestGCOrphanedLinks(t *testing.T) {
 	}
 	env.AssertDatabaseLink("link-pkg", projectDir) // still recorded, now orphaned
 
-	if err := cli.RunGC(false, "", true); err != nil {
+	if err := cli.RunGC(false, "", true, true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 	env.AssertDatabaseNoLink("link-pkg", projectDir)
@@ -142,7 +177,7 @@ func TestGCPartiallyOrphanedLinks(t *testing.T) {
 		t.Fatalf("Failed to remove project-1: %v", err)
 	}
 
-	if err := cli.RunGC(false, "", true); err != nil {
+	if err := cli.RunGC(false, "", true, true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 
@@ -164,7 +199,7 @@ func TestGCKeepsLinkedAndCollectsOrphans(t *testing.T) {
 	env.addPkg(projectDir, "linked-pkg", false, false)
 	env.AssertDatabaseLink("linked-pkg", projectDir)
 
-	if err := cli.RunGC(false, "", false); err != nil {
+	if err := cli.RunGC(false, "", false, true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 
@@ -177,7 +212,7 @@ func TestGCKeepsLinkedAndCollectsOrphans(t *testing.T) {
 func TestGCNoPackages(t *testing.T) {
 	_ = setupTest(t)
 
-	if err := cli.RunGC(false, "", false); err != nil {
+	if err := cli.RunGC(false, "", false, true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 }
@@ -200,7 +235,7 @@ func TestGCStorePathCleanup(t *testing.T) {
 		t.Fatalf("Store path doesn't exist: %v", err)
 	}
 
-	if err := cli.RunGC(false, "", false); err != nil {
+	if err := cli.RunGC(false, "", false, true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
 	}
 	if _, err := os.Stat(storePath); !os.IsNotExist(err) {
@@ -212,7 +247,7 @@ func TestGCStorePathCleanup(t *testing.T) {
 func TestGCInvalidDuration(t *testing.T) {
 	_ = setupTest(t)
 
-	if err := cli.RunGC(false, "invalid", false); err == nil {
+	if err := cli.RunGC(false, "invalid", false, false); err == nil {
 		t.Fatal("Expected error with invalid duration, got nil")
 	}
 }
@@ -223,7 +258,7 @@ func TestGCDurationFormats(t *testing.T) {
 
 	env.simplePkg("duration-pkg")
 	for _, dur := range []string{"24h", "7d", "1w"} {
-		if err := cli.RunGC(true, dur, false); err != nil {
+		if err := cli.RunGC(true, dur, false, false); err != nil {
 			t.Errorf("GC failed with duration %s: %v", dur, err)
 		}
 	}

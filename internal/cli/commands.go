@@ -77,10 +77,12 @@ This command:
 
 Examples:
   lnpm remove my-package   # Remove specific package
-  lnpm remove --all        # Remove all linked packages`,
+  lnpm remove --all        # Remove all linked packages
+  lnpm remove --all --yes  # Remove all without a confirmation prompt`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
+		yes, _ := cmd.Flags().GetBool("yes")
 		var packageName string
 		if len(args) > 0 {
 			packageName = args[0]
@@ -88,7 +90,7 @@ Examples:
 		if !all && packageName == "" {
 			return fmt.Errorf("please specify a package name or use --all")
 		}
-		return RunRemove(packageName, all)
+		return RunRemove(packageName, all, yes)
 	},
 }
 
@@ -158,13 +160,15 @@ Examples:
   lnpm gc              # Remove packages with no links
   lnpm gc --dry-run    # Show what would be removed
   lnpm gc --older-than 30d   # Remove packages older than 30 days
-  lnpm gc --fix-links  # Clean up orphaned link records`,
+  lnpm gc --fix-links  # Clean up orphaned link records
+  lnpm gc --yes        # Remove without a confirmation prompt (for scripts)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		olderThan, _ := cmd.Flags().GetString("older-than")
 		fixLinks, _ := cmd.Flags().GetBool("fix-links")
+		yes, _ := cmd.Flags().GetBool("yes")
 
-		return RunGC(dryRun, olderThan, fixLinks)
+		return RunGC(dryRun, olderThan, fixLinks, yes)
 	},
 }
 
@@ -250,6 +254,7 @@ func init() {
 
 	// remove flags
 	removeCmd.Flags().Bool("all", false, "Remove all linked packages")
+	removeCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
 
 	// push flags
 	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
@@ -262,4 +267,5 @@ func init() {
 	gcCmd.Flags().Bool("dry-run", false, "Show what would be removed")
 	gcCmd.Flags().String("older-than", "", "Remove packages older than duration (e.g., 30d)")
 	gcCmd.Flags().Bool("fix-links", false, "Clean up orphaned link records")
+	gcCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
 }
