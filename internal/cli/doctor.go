@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 )
 
@@ -17,9 +18,13 @@ func RunDoctor() error {
 	warnings := 0
 
 	// Check 1: Store directory exists and is writable
-	storePath := getStorePath()
 	fmt.Print("Checking store directory... ")
-	if info, err := os.Stat(storePath); err != nil {
+	storePath, err := config.GetStorePath()
+	if err != nil {
+		fmt.Println("✗ ERROR")
+		fmt.Printf("  Failed to resolve store path: %v\n", err)
+		issues++
+	} else if info, err := os.Stat(storePath); err != nil {
 		fmt.Println("✗ NOT FOUND")
 		fmt.Printf("  Store directory does not exist: %s\n", storePath)
 		fmt.Println("  Fix: Run 'lnpm publish' to create it")
@@ -128,14 +133,4 @@ func RunDoctor() error {
 	}
 
 	return nil
-}
-
-// getStorePath returns the lnpm store path
-func getStorePath() string {
-	if storePath := os.Getenv("LNPM_STORE"); storePath != "" {
-		return storePath
-	}
-
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".lnpm")
 }

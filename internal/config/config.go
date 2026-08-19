@@ -89,6 +89,15 @@ func SaveConfig(cfg *Config) error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
+// ResetForTesting clears the memoized config so a test can point LNPM_CONFIG at
+// a different file and have it take effect.
+// This should only be used in tests.
+func ResetForTesting() {
+	globalConfig = nil
+	globalConfigErr = nil
+	globalConfigOnce = sync.Once{}
+}
+
 // getConfigPath returns the path to the config file
 func getConfigPath() string {
 	if configPath := os.Getenv("LNPM_CONFIG"); configPath != "" {
