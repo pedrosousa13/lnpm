@@ -114,10 +114,18 @@ func TestIsExcluded(t *testing.T) {
 }
 
 // TestIsExcludedGitignoreSemantics covers the gitignore/npmignore pattern forms
-// that isExcluded already handles correctly. Its counterpart,
-// TestIsExcludedGitignoreSemanticsPending, holds the cases the current matcher
-// cannot satisfy. The two together are the contract for the isExcluded rewrite
-// in #150; they are split only so the suite stays green today.
+// whose expected value the current matcher happens to produce. It produces them
+// by matching nothing at all, not by handling the pattern: "dist/" and "/dist"
+// both contain a "/", so they take the full-path glob branch and then the
+// pattern+"/" prefix check, and neither can ever match. Every case here would
+// pass just as well against a matcher that always returned false. They are
+// recorded so the contract sits in one place and so they turn red if a later
+// change regresses them.
+//
+// Its counterpart, TestIsExcludedGitignoreSemanticsPending, holds the cases the
+// current matcher cannot satisfy. The two together are the contract for the
+// isExcluded rewrite in #150; they are split only so the suite stays green
+// today.
 func TestIsExcludedGitignoreSemantics(t *testing.T) {
 	tests := []struct {
 		path     string
@@ -134,10 +142,6 @@ func TestIsExcludedGitignoreSemantics(t *testing.T) {
 
 		// Negation: the last matching pattern wins, so "!dist/keep.js"
 		// re-includes a file that "dist/" excluded.
-		// NOTE: this passes today only because "dist/" itself matches nothing
-		// (see TestIsExcludedGitignoreSemanticsPending). Once #150 makes
-		// trailing-slash patterns work, negation must land with it or this
-		// case turns red.
 		{"dist/keep.js", []string{"dist/", "!dist/keep.js"}, false},
 	}
 
@@ -154,9 +158,9 @@ func TestIsExcludedGitignoreSemantics(t *testing.T) {
 // TestIsExcludedGitignoreSemanticsPending records the gitignore/npmignore
 // pattern forms isExcluded silently ignores today: every case here fails
 // against the current matcher. The expected values describe correct gitignore
-// semantics, not current behaviour.
+// semantics, not current behavior.
 func TestIsExcludedGitignoreSemanticsPending(t *testing.T) {
-	t.Skip("pending isExcluded rewrite — see #150")
+	t.Skip("pending isExcluded rewrite - see #150")
 
 	tests := []struct {
 		path     string
@@ -166,11 +170,9 @@ func TestIsExcludedGitignoreSemanticsPending(t *testing.T) {
 		// Trailing slash: "dist/" excludes the dist directory and everything
 		// under it. isExcluded never strips the trailing slash, so the pattern
 		// matches nothing.
-		// CAVEAT on {"dist", ...}: in git a trailing slash matches directories
-		// only, and isExcluded is given no signal about whether relPath is a
-		// directory (pack.go passes only the path). This case therefore assumes
-		// "dist" is a directory; a plain *file* named "dist" would not be
-		// matched by git. #150 has to decide how to carry that signal.
+		// CAVEAT on {"dist", ...}: git's trailing slash matches directories
+		// only, and isExcluded gets no directory signal, so this case assumes
+		// "dist" is a directory.
 		{"dist/index.js", []string{"dist/"}, true},
 		{"dist", []string{"dist/"}, true},
 
