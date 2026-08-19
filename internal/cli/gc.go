@@ -12,7 +12,7 @@ import (
 )
 
 // RunGC executes the garbage collection command
-func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
+func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	database, err := db.GetDB()
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
@@ -121,7 +121,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool) error {
 		fmt.Println()
 
 		if !dryRun {
-			if !confirm("Permanently delete these package(s) from the store?") {
+			if !confirm("Permanently delete these package(s) from the store?", yes) {
 				fmt.Println("Aborted.")
 				return nil
 			}
