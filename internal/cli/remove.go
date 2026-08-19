@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +8,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -139,65 +139,49 @@ func RunRemove(packageName string, all bool, yes bool) error {
 	return nil
 }
 
-// restorePackageJSON restores the original version of a dependency
+// restorePackageJSON restores the original version of a dependency, editing the
+// file's bytes in place so nothing but that one entry moves.
 func restorePackageJSON(projectPath, packageName, originalVersion string) error {
 	pkgJSONPath := filepath.Join(projectPath, "package.json")
 
-	data, err := os.ReadFile(pkgJSONPath)
+	output, err := os.ReadFile(pkgJSONPath)
 	if err != nil {
-		return err
-	}
-
-	var pkgJSON map[string]interface{}
-	if err := json.Unmarshal(data, &pkgJSON); err != nil {
 		return err
 	}
 
 	// Check both dependencies and devDependencies
 	for _, field := range []string{"dependencies", "devDependencies"} {
-		if deps, ok := pkgJSON[field].(map[string]interface{}); ok {
-			if _, exists := deps[packageName]; exists {
-				deps[packageName] = originalVersion
-				break
+		exists, err := pkgjson.HasDep(output, field, packageName)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if output, err = pkgjson.SetDep(output, field, packageName, originalVersion); err != nil {
+				return err
 			}
+			break
 		}
 	}
 
-	output, err := json.MarshalIndent(pkgJSON, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	output = append(output, '\n')
-	return os.WriteFile(pkgJSONPath, output, 0644)
+	return os.WriteFile(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
 }
 
-// removeFromPackageJSON removes a dependency from package.json
+// removeFromPackageJSON removes a dependency from package.json, editing the
+// file's bytes in place so nothing but that one entry moves.
 func removeFromPackageJSON(projectPath, packageName string) error {
 	pkgJSONPath := filepath.Join(projectPath, "package.json")
 
-	data, err := os.ReadFile(pkgJSONPath)
+	output, err := os.ReadFile(pkgJSONPath)
 	if err != nil {
-		return err
-	}
-
-	var pkgJSON map[string]interface{}
-	if err := json.Unmarshal(data, &pkgJSON); err != nil {
 		return err
 	}
 
 	// Remove from both dependencies and devDependencies
 	for _, field := range []string{"dependencies", "devDependencies"} {
-		if deps, ok := pkgJSON[field].(map[string]interface{}); ok {
-			delete(deps, packageName)
+		if output, err = pkgjson.RemoveDep(output, field, packageName); err != nil {
+			return err
 		}
 	}
 
-	output, err := json.MarshalIndent(pkgJSON, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	output = append(output, '\n')
-	return os.WriteFile(pkgJSONPath, output, 0644)
+	return os.WriteFile(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
 }
