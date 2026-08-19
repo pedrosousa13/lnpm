@@ -11,10 +11,10 @@ import (
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
-// requirePermissionEnforcement skips tests that force a package.json rewrite
-// to fail by making the file read-only. Windows models only a read-only bit and
-// root ignores permission bits entirely, so neither can produce the failure
-// these tests depend on.
+// requirePermissionEnforcement skips tests that force a write to fail by making
+// the target file read-only. Windows models only a read-only bit and root
+// ignores permission bits entirely, so neither can produce the failure these
+// tests depend on.
 func requirePermissionEnforcement(t *testing.T) {
 	t.Helper()
 
@@ -140,8 +140,8 @@ func TestAddMultipleRollsBackPackagesWhenPackageJSONWriteFails(t *testing.T) {
 // OriginalVersion. Dropping that entry would destroy the specifier outright,
 // and unlinking would delete the .lnpm copy package.json still points at -
 // exactly the data loss the rollback exists to prevent. So a failure on a
-// re-add must restore the prior lock entry and leave the link alone, while a
-// package this run added for the first time still rolls back completely.
+// re-add must leave the lock entry and the link alone, while a package this run
+// added for the first time still rolls back completely.
 func TestAddMultipleKeepsPriorStateWhenReAddPackageJSONWriteFails(t *testing.T) {
 	requirePermissionEnforcement(t)
 
