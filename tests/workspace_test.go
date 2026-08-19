@@ -79,6 +79,28 @@ func TestDetectNPMWorkspace(t *testing.T) {
 	}
 }
 
+func TestDetectNPMWorkspaceWithNegation(t *testing.T) {
+	root := filepath.Join("fixtures", "npm-workspace-negation")
+	ws, err := workspace.Detect(root)
+	if err != nil {
+		t.Fatalf("Failed to detect workspace: %v", err)
+	}
+	if ws == nil {
+		t.Fatal("Expected workspace, got nil")
+	}
+
+	packages, err := ws.ListPackages()
+	if err != nil {
+		t.Fatalf("Failed to list packages: %v", err)
+	}
+	if len(packages) != 1 {
+		t.Fatalf("Expected 1 package, got %d: %v", len(packages), packages)
+	}
+	if packages[0].Name != "@npm-test/package-a" {
+		t.Errorf("Expected @npm-test/package-a, got %s", packages[0].Name)
+	}
+}
+
 func TestDetectYarnWorkspace(t *testing.T) {
 	root := filepath.Join("fixtures", "yarn-workspace")
 	ws, err := workspace.Detect(root)

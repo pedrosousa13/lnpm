@@ -153,14 +153,18 @@ func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
 	}, nil
 }
 
-// expandGlobs expands workspace glob patterns to actual package directories
+// expandGlobs expands workspace glob patterns to actual package directories.
+// Patterns prefixed with "!" are negations: they are collected while the
+// included patterns are expanded, then subtracted from the result.
 func expandGlobs(root string, patterns []string) ([]string, error) {
 	var packages []string
+	var negations []string
 	seen := make(map[string]bool)
 
 	for _, pattern := range patterns {
-		// Remove trailing negation patterns
+		// Collect negation patterns to subtract once all includes are expanded
 		if strings.HasPrefix(pattern, "!") {
+			negations = append(negations, strings.TrimPrefix(pattern, "!"))
 			continue
 		}
 
@@ -186,7 +190,30 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 		}
 	}
 
-	return packages, nil
+	if len(negations) == 0 {
+		return packages, nil
+	}
+
+	excluded := make(map[string]bool)
+	for _, pattern := range negations {
+		matches, err := doublestar.Glob(os.DirFS(root), pattern)
+		if err != nil {
+			continue
+		}
+
+		for _, match := range matches {
+			excluded[filepath.Join(root, match)] = true
+		}
+	}
+
+	filtered := make([]string, 0, len(packages))
+	for _, pkgPath := range packages {
+		if !excluded[pkgPath] {
+			filtered = append(filtered, pkgPath)
+		}
+	}
+
+	return filtered, nil
 }
 
 // ListPackages returns all packages in the workspace with their metadata
