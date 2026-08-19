@@ -406,9 +406,33 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 	return !negated && strings.HasPrefix(relPath, pattern+"/")
 }
 
-// isIncluded checks if a path matches any include pattern (files field)
+// isIncluded checks if a path matches any include pattern (files field).
+//
+// Each pattern is normalized before matching, the way npm reads a "files"
+// entry. A leading "/" anchors the pattern to the package root rather than
+// naming an absolute path, and it is dropped because every match below is
+// against the full relative path: isIncluded never matches a basename, so
+// anchoring is already how it behaves and the "/" carries no information.
+// Contrast isExcluded, which keeps the leading "/" as its anchored flag
+// precisely because it does match basenames and must suppress that. Teaching
+// isIncluded to match basenames (npm's "files" does match a bare "*.md"
+// against a nested path) would mean handling anchoring here too.
+//
+// A trailing "/" marks a directory whose contents are included, and is dropped
+// only from patterns with no glob metacharacter. npm does not read a trailing
+// slash on a glob as a directory marker, so "dist/**/" matches nothing and
+// must not be normalized into "dist/**", which matches everything under dist.
+//
+// So "dist", "/dist", "dist/" and "/dist/" are all equivalent, as they are to
+// npm, and "dist/**" and "/dist/**" are equivalent to each other. "dist/**/"
+// is equivalent to none of them.
 func isIncluded(relPath string, patterns []string) bool {
 	for _, pattern := range patterns {
+		pattern = strings.TrimPrefix(pattern, "/")
+		if !strings.Contains(pattern, "*") {
+			pattern = strings.TrimSuffix(pattern, "/")
+		}
+
 		// Direct match
 		if pattern == relPath {
 			return true
