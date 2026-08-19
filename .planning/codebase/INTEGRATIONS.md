@@ -5,10 +5,13 @@
 ## APIs & External Services
 
 **Package Managers (External Commands):**
-- npm - Used via `npm pack --dry-run` to determine which files to publish
-  - Purpose: Get list of files that would be included in `npm publish`
-  - Fallback: Custom filtering if npm unavailable
+- npm - Used to run scripts (`npm run <script>`) and installs, never to select files
+  - Purpose: Lifecycle hooks on publish/push, and `npm install` on `add --install`
+  - Location: `internal/hooks/hooks.go`, `internal/config/config.go`
+- File selection - Pure Go, modeled on npm's rules but not identical to them
+  - Purpose: Decide which files land in the store
   - Location: `internal/pack/pack.go`
+  - Differences from `npm publish`: see the README's "File Filtering" section
 
 **Version Control:**
 - git - Optional integration for git-aware file filtering
