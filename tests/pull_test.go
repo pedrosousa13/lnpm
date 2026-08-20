@@ -314,6 +314,36 @@ func TestPullReportsVersionChange(t *testing.T) {
 	}
 }
 
+// TestPullReportsChangedAndUnchangedCounts pins that a pull says how much of
+// the package it rewrote, as push and publish --push both do. pull runs the same
+// incremental relink, so a pull that reported nothing would be the one command
+// that left the user guessing whether the refresh cost the whole package.
+func TestPullReportsChangedAndUnchangedCounts(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("pull-counted-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+		"lib/a.js": "exports.a = 1;",
+		"lib/b.js": "exports.b = 2;",
+	})
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "pull-counted-pkg", false, false)
+
+	// republish rewrites package.json and index.js and leaves lib/ alone.
+	env.republish(pkgDir, "pull-counted-pkg", "2.0.0", "module.exports = 'v2';")
+
+	env.chdir(projectDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunPull([]string{"pull-counted-pkg"}); err != nil {
+			t.Errorf("RunPull: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "updated 1.0.0 -> 2.0.0 (2 changed, 2 unchanged)") {
+		t.Errorf("Expected the pull to report 2 changed of 4 files, got:\n%s", out)
+	}
+}
+
 // TestPullReportsPackageMissingFromStore covers a lock entry whose package is
 // gone from the store: it is reported and pull exits non-zero, while the
 // packages beside it are still refreshed.

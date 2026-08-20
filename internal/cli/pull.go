@@ -115,8 +115,12 @@ func RunPull(packageNames []string) error {
 		// The link type Link reports is deliberately dropped, and no db link row
 		// is written: publishing updates the existing package row in place, so
 		// the row add recorded still points at the package pull just linked, and
-		// no command surfaces the stored link type.
-		if _, err := linker.Link(pkg.Name, pkg.StorePath, files); err != nil {
+		// no command surfaces the stored link type. The per-file counts are
+		// kept: pull runs the same incremental relink push does, and reporting
+		// nothing would make it the one command that leaves the user guessing
+		// whether the refresh cost the whole package.
+		linkRes, err := linker.Link(pkg.Name, pkg.StorePath, files)
+		if err != nil {
 			fmt.Printf("failed to link package: %v\n", err)
 			failed = append(failed, fmt.Errorf("%s: failed to link package: %w", name, err))
 			continue
@@ -134,7 +138,7 @@ func RunPull(packageNames []string) error {
 		})
 		lockChanged = true
 
-		fmt.Printf("updated %s -> %s\n", entry.Version, pkg.Version)
+		fmt.Printf("updated %s -> %s (%d changed, %d unchanged)\n", entry.Version, pkg.Version, linkRes.Changed, linkRes.Unchanged)
 		refreshed++
 		lastVersion = pkg.Version
 	}

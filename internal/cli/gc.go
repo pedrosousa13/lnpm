@@ -86,7 +86,19 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		// Re-check links after filtering orphans
 		validLinks := len(links) - countLinksForPackage(linksToRemove, pkg.ID)
 
-		// Package is orphaned if no valid links
+		// Package is orphaned if no valid links.
+		//
+		// Note for whoever adds pruning of superseded store generations: an
+		// incremental relink carries an unchanged file across from the package
+		// already in the project with a hard link, so .lnpm/{package} keeps the
+		// inode - and therefore the store generation - that first materialised
+		// each file, however many versions have been published since. Today that
+		// costs nothing, because what gets removed here is the whole package and
+		// only when no valid link remains, so nothing a project still points at
+		// is ever deleted. Start deleting entries a linked project no longer
+		// names and it becomes one extra copy per unchanged file per project:
+		// the last reference to the old generation's inode is the consumer's,
+		// and the disk it shared with the store stops being shared.
 		if validLinks == 0 {
 			// Check age if specified
 			if maxAge > 0 {
