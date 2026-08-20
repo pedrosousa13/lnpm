@@ -23,28 +23,28 @@ func RunDoctor() error {
 	storeUsable := false
 	storePath, err := config.GetStorePath()
 	if err != nil {
-		fmt.Println("✗ ERROR")
+		fmt.Printf("%s ERROR\n", iconFail())
 		fmt.Printf("  Failed to resolve store path: %v\n", err)
 		issues++
 	} else if info, err := os.Stat(storePath); err != nil {
-		fmt.Println("✗ NOT FOUND")
+		fmt.Printf("%s NOT FOUND\n", iconFail())
 		fmt.Printf("  Store directory does not exist: %s\n", storePath)
 		fmt.Println("  Fix: Run 'lnpm publish' to create it")
 		issues++
 	} else if !info.IsDir() {
-		fmt.Println("✗ ERROR")
+		fmt.Printf("%s ERROR\n", iconFail())
 		fmt.Printf("  %s exists but is not a directory\n", storePath)
 		issues++
 	} else {
 		// Check writable
 		testFile := filepath.Join(storePath, ".write-test")
 		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			fmt.Println("✗ NOT WRITABLE")
+			fmt.Printf("%s NOT WRITABLE\n", iconFail())
 			fmt.Printf("  Cannot write to store directory: %v\n", err)
 			issues++
 		} else {
 			_ = os.Remove(testFile)
-			fmt.Println("✓ OK")
+			fmt.Printf("%s OK\n", iconOK())
 			storeUsable = true
 		}
 	}
@@ -53,11 +53,11 @@ func RunDoctor() error {
 	fmt.Print("Checking database... ")
 	database, err := db.GetDB()
 	if err != nil {
-		fmt.Println("✗ ERROR")
+		fmt.Printf("%s ERROR\n", iconFail())
 		fmt.Printf("  Failed to open database: %v\n", err)
 		issues++
 	} else {
-		fmt.Println("✓ OK")
+		fmt.Printf("%s OK\n", iconOK())
 
 		// Check 3: Orphaned packages (packages with no links)
 		fmt.Print("Checking for orphaned packages... ")
@@ -70,11 +70,11 @@ func RunDoctor() error {
 			}
 		}
 		if orphanedCount > 0 {
-			fmt.Printf("⚠ %d orphaned package(s)\n", orphanedCount)
+			fmt.Printf("%s %d orphaned package(s)\n", iconWarn(), orphanedCount)
 			fmt.Println("  Fix: Run 'lnpm gc' to remove unused packages")
 			warnings++
 		} else {
-			fmt.Println("✓ OK")
+			fmt.Printf("%s OK\n", iconOK())
 		}
 
 		// Check 4: Orphaned links (links to non-existent projects)
@@ -95,11 +95,11 @@ func RunDoctor() error {
 			}
 		}
 		if orphanedLinks > 0 {
-			fmt.Printf("⚠ %d orphaned link(s)\n", orphanedLinks)
+			fmt.Printf("%s %d orphaned link(s)\n", iconWarn(), orphanedLinks)
 			fmt.Println("  Fix: Run 'lnpm gc --fix-links' to clean up")
 			warnings++
 		} else {
-			fmt.Println("✓ OK")
+			fmt.Printf("%s OK\n", iconOK())
 		}
 
 		// Check 5: Verify store files exist
@@ -114,11 +114,11 @@ func RunDoctor() error {
 			}
 		}
 		if missingFiles > 0 {
-			fmt.Printf("✗ %d package(s) with missing files\n", missingFiles)
+			fmt.Printf("%s %d package(s) with missing files\n", iconFail(), missingFiles)
 			fmt.Println("  Fix: Re-publish affected packages")
 			issues++
 		} else {
-			fmt.Println("✓ OK")
+			fmt.Printf("%s OK\n", iconOK())
 		}
 	}
 
@@ -132,30 +132,37 @@ func RunDoctor() error {
 		fmt.Print("Checking store completeness markers... ")
 		done, err := store.BackfillDone()
 		if err != nil {
-			fmt.Println("✗ ERROR")
+			fmt.Printf("%s ERROR\n", iconFail())
 			fmt.Printf("  Failed to read the backfill status: %v\n", err)
 			issues++
 		} else if !done {
-			fmt.Println("⚠ PENDING")
+			fmt.Printf("%s PENDING\n", iconWarn())
 			fmt.Println("  Store entries have not been backfilled with completeness markers yet")
 			fmt.Println("  Fix: Run 'lnpm gc --dry-run' (or any command that opens the store)")
 			warnings++
 		} else {
-			fmt.Println("✓ OK")
+			fmt.Printf("%s OK\n", iconOK())
 		}
 	}
 
 	// Summary
 	fmt.Println()
 	if issues == 0 && warnings == 0 {
-		fmt.Println("✓ All checks passed!")
+		fmt.Printf("%s All checks passed!\n", iconOK())
 	} else {
 		if issues > 0 {
-			fmt.Printf("✗ Found %d issue(s)\n", issues)
+			fmt.Printf("%s Found %d issue(s)\n", iconFail(), issues)
 		}
 		if warnings > 0 {
-			fmt.Printf("⚠ Found %d warning(s)\n", warnings)
+			fmt.Printf("%s Found %d warning(s)\n", iconWarn(), warnings)
 		}
+	}
+
+	// The findings are already printed above; the error exists so that a script
+	// running `lnpm doctor && ...` sees a non-zero exit. Warnings do not fail
+	// the command: they describe cleanup worth doing, not a broken install.
+	if issues > 0 {
+		return fmt.Errorf("doctor found %d issue(s)", issues)
 	}
 
 	return nil

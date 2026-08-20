@@ -99,15 +99,15 @@ func RunRetreat(force bool, runInstall bool) error {
 
 		if originalVersion != "" {
 			if err := restorePackageJSON(cwd, name, originalVersion); err != nil {
-				fmt.Printf("    ⚠ Failed to restore package.json: %v\n", err)
+				fmt.Printf("    %s Failed to restore package.json: %v\n", iconWarn(), err)
 			} else {
-				fmt.Printf("    ✓ Restored %s to %s\n", name, originalVersion)
+				fmt.Printf("    %s Restored %s to %s\n", iconOK(), name, originalVersion)
 			}
 		} else {
 			if err := removeFromPackageJSON(cwd, name); err != nil {
-				fmt.Printf("    ⚠ Failed to update package.json: %v\n", err)
+				fmt.Printf("    %s Failed to update package.json: %v\n", iconWarn(), err)
 			} else {
-				fmt.Printf("    ✓ Removed %s from package.json\n", name)
+				fmt.Printf("    %s Removed %s from package.json\n", iconOK(), name)
 			}
 		}
 
@@ -123,27 +123,27 @@ func RunRetreat(force bool, runInstall bool) error {
 	// Remove .lnpm directory
 	lnpmDir := filepath.Join(cwd, ".lnpm")
 	if err := os.RemoveAll(lnpmDir); err != nil {
-		fmt.Printf("  ⚠ Failed to remove .lnpm/: %v\n", err)
+		fmt.Printf("  %s Failed to remove .lnpm/: %v\n", iconWarn(), err)
 	} else {
-		fmt.Println("  ✓ Removed .lnpm/")
+		fmt.Printf("  %s Removed .lnpm/\n", iconOK())
 	}
 
 	// Clean up .gitignore if enabled
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if err := gitignore.RemoveFromGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  ⚠ Could not clean .gitignore: %v\n", err)
+			fmt.Printf("  %s Could not clean .gitignore: %v\n", iconWarn(), err)
 		} else {
-			fmt.Println("  ✓ Cleaned .gitignore")
+			fmt.Printf("  %s Cleaned .gitignore\n", iconOK())
 		}
 	}
 
 	// Remove lnpm.lock
 	lockPath := filepath.Join(cwd, "lnpm.lock")
 	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("  ⚠ Failed to remove lnpm.lock: %v\n", err)
+		fmt.Printf("  %s Failed to remove lnpm.lock: %v\n", iconWarn(), err)
 	} else {
-		fmt.Println("  ✓ Removed lnpm.lock")
+		fmt.Printf("  %s Removed lnpm.lock\n", iconOK())
 	}
 
 	// Run package manager install if requested
@@ -157,15 +157,15 @@ func RunRetreat(force bool, runInstall bool) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("⚠ Install failed: %v\n", err)
+			fmt.Printf("%s Install failed: %v\n", iconWarn(), err)
 		}
 	}
 
 	fmt.Println()
-	fmt.Println("✓ Retreat complete!")
+	fmt.Printf("%s Retreat complete!\n", iconOK())
 
 	if !runInstall {
-		fmt.Println("\n💡 Run 'npm install' to restore original packages")
+		fmt.Printf("\n%s Run 'npm install' to restore original packages\n", iconTip())
 	}
 
 	return nil

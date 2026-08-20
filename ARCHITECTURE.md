@@ -479,6 +479,17 @@ lnpm doctor
 # ⚠ Found 1 warning(s)
 ```
 
+Doctor separates issues from warnings, and so does its exit code: it exits
+non-zero once it has reported an issue, and zero otherwise. Warnings alone —
+the run above among them — still exit zero, because they describe cleanup worth
+doing rather than something broken. That makes `lnpm doctor && deploy.sh` safe
+to script. The findings are printed either way; the exit code only says whether
+any of them was an issue.
+
+The markers are decorative. On a terminal doctor prints `✓`/`✗`/`⚠` as shown
+above; when its output is piped, or `NO_COLOR` is set, it prints `OK`/`x`/`!`
+instead, like the rest of the CLI.
+
 ---
 
 ## Configuration
