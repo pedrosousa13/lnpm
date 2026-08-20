@@ -290,3 +290,123 @@ func TestRetreatIgnoresLinkReferenceAsOriginalVersion(t *testing.T) {
 
 	env.AssertPackageJSONMissing(projectDir, "stale-ref-lib")
 }
+
+// TestRetreatMarkersComeFromTheIconHelpers sweeps retreat's progress report for
+// the decorative markers, so a line printing "✓"/"⚠"/"💡" as a string literal
+// instead of calling the helpers is caught.
+//
+// That, and only that, is what this proves. Capturing stdout replaces it with a
+// pipe, and the helpers fall back to ASCII whenever stdout is not a terminal,
+// so a report free of glyphs here says nothing about NO_COLOR: the pipe alone
+// would have produced it. NO_COLOR is set anyway, so the sweep does not depend
+// on how the capture is implemented. What NO_COLOR does to retreat's own output
+// is covered by TestRunRetreatOnATerminal in internal/cli, which runs retreat
+// with stdout on a real terminal.
+func TestRetreatMarkersComeFromTheIconHelpers(t *testing.T) {
+	cases := []struct {
+		name string
+		// originalVersion, when set, is written into the lock entry so retreat
+		// restores the dependency instead of dropping it. Each branch prints
+		// its own marker, so both are worth sweeping.
+		originalVersion string
+		// readOnly, when set, makes part of the project unwritable so
+		// retreat's failure lines are reached: they carry markers of their
+		// own. Any scenario that sets it needs the filesystem to enforce
+		// permissions, so setting it also selects the guard.
+		readOnly func(t *testing.T, projectDir string)
+		want     string
+	}{
+		{
+			name: "dependency dropped",
+			want: "Removed glyph-pkg from package.json",
+		},
+		{
+			name:            "dependency restored",
+			originalVersion: "^1.0.0",
+			want:            "Restored glyph-pkg to ^1.0.0",
+		},
+		{
+			name:     "package.json cannot be written",
+			readOnly: makePackageJSONReadOnly,
+			want:     "Failed to update package.json",
+		},
+		{
+			name:            "package.json cannot be restored",
+			originalVersion: "^1.0.0",
+			readOnly:        makePackageJSONReadOnly,
+			want:            "Failed to restore package.json",
+		},
+		{
+			name:            "nothing in the project directory can be removed",
+			originalVersion: "^1.0.0",
+			readOnly:        makeProjectDirReadOnly,
+			want:            "Failed to remove .lnpm/", // and .gitignore, lnpm.lock
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.readOnly != nil {
+				requirePermissionEnforcement(t)
+			}
+
+			t.Setenv("NO_COLOR", "1")
+			env := setupTest(t)
+			_, projectDir := env.publishAndAdd("glyph-pkg")
+
+			if tc.originalVersion != "" {
+				env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+					entry, ok := lock.Get("glyph-pkg")
+					if !ok {
+						t.Fatal("glyph-pkg missing from lockfile")
+					}
+					entry.OriginalVersion = tc.originalVersion
+					lock.Add("glyph-pkg", entry)
+					if err := lock.Save(projectDir); err != nil {
+						t.Fatalf("Failed to save lockfile: %v", err)
+					}
+				})
+			}
+			if tc.readOnly != nil {
+				tc.readOnly(t, projectDir)
+			}
+
+			out := captureStdout(t, func() {
+				if err := cli.RunRetreat(true, false); err != nil {
+					t.Errorf("Failed to retreat: %v", err)
+				}
+			})
+
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("Expected the report to contain %q, got:\n%s", tc.want, out)
+			}
+			assertNoRawGlyphs(t, out)
+		})
+	}
+}
+
+// makeProjectDirReadOnly makes the project directory itself unwritable, so
+// every unlink and create inside it fails while its existing files stay
+// readable and writable. makePackageJSONReadOnly cannot stand in for this: it
+// addresses one named file, and its 0444 would also cost the directory the
+// execute bit that makes it traversable at all.
+func makeProjectDirReadOnly(t *testing.T, projectDir string) {
+	t.Helper()
+
+	if err := os.Chmod(projectDir, 0555); err != nil {
+		t.Fatalf("Failed to make the project directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(projectDir, 0755) })
+}
+
+// assertNoRawGlyphs fails when out contains any of the decorative markers,
+// which must have been rendered as ASCII.
+func assertNoRawGlyphs(t *testing.T, out string) {
+	t.Helper()
+
+	for _, glyph := range "✓✗⚠💡" {
+		if strings.ContainsRune(out, glyph) {
+			t.Errorf("Output contains the raw glyph %q, want its ASCII fallback; output was:\n%s", string(glyph), out)
+		}
+	}
+}
