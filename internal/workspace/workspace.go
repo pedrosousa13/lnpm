@@ -241,14 +241,18 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 // ListPackages returns all packages in the workspace with their metadata.
 //
 // A member that will not read, will not parse, or names no package fails the
-// whole listing. This is the "glob legitimately matches a non-package
-// directory" case that docs/adr/0001 leaves open, except that it is not that
-// case: expandGlobs already dropped every directory without a package.json
-// before it reached w.Packages, so a failure here is a broken member of a
-// workspace the caller asked for - a permission problem, a config typo, or a
-// file deleted underneath us - and not a directory that merely is not a
-// package. Skipping it publishes less than `--all` asked for and still reports
-// success.
+// whole listing - the decision docs/adr/0001 records. expandGlobs already
+// dropped every directory without a package.json before it reached w.Packages,
+// so a failure here is a broken member of a workspace the caller asked for - a
+// permission problem, a config typo, or a file deleted underneath us - and not
+// the non-package directory the ADR weighed under Considered options when it
+// declined to hard-fail by default. Skipping it publishes less than the caller
+// asked for and still reports success.
+//
+// Both production callers inherit that. publishAll fails the whole `--all` run,
+// and pack.indexWorkspace fails a single-package publish whose manifest carries
+// workspace: dependencies, so one broken sibling stops `lnpm publish` on an
+// otherwise healthy package.
 //
 // An unreadable member and an unparseable one are deliberately not
 // distinguished; both name the offending file and wrap the underlying error.
