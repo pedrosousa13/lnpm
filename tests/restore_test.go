@@ -132,8 +132,9 @@ func TestRestoreReportsStaleVersionAndContinues(t *testing.T) {
 		t.Error("Expected restore to exit non-zero when a package could not be restored")
 	}
 
-	if !strings.Contains(out, "stale-restore-pkg") || !strings.Contains(out, "2.0.0") {
-		t.Errorf("Expected the report to name stale-restore-pkg and the stored 2.0.0, got:\n%s", out)
+	want := "version 1.0.0 of stale-restore-pkg not found in store (latest published is 2.0.0"
+	if !strings.Contains(out, want) {
+		t.Errorf("Expected the report to contain %q, got:\n%s", want, out)
 	}
 
 	// The healthy package is restored regardless.
@@ -252,8 +253,12 @@ func TestRestoreReportsAnUnknownDependencyField(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "orphan-dev-pkg") || !strings.Contains(out, "dependencies") {
-		t.Errorf("Expected restore to report the guess it made for orphan-dev-pkg, got:\n%s", out)
+	// Matched against the note itself, not just the package name and the word
+	// "dependencies": both of those also appear in the success line and in the
+	// npm install tip, so a looser check passes with the note removed.
+	want := "orphan-dev-pkg was not in package.json before the retreat, so its field is unknown; restoring it into dependencies"
+	if !strings.Contains(out, want) {
+		t.Errorf("Expected the report to contain %q, got:\n%s", want, out)
 	}
 	deps, _ := dependencyFields(t, projectDir)
 	if got := deps["orphan-dev-pkg"]; got != "file:.lnpm/orphan-dev-pkg" {
