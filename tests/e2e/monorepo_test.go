@@ -211,3 +211,48 @@ func TestPublishAllRejectsMalformedWorkspacePattern(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishAllRejectsUnparseableWorkspaceMember is the same proof one level
+// down: a workspace member whose package.json will not parse stops
+// `publish --all` outright instead of quietly publishing the healthy sibling
+// and reporting success. Running the compiled binary is what pins the parts the
+// in-process test cannot see — a non-zero exit, and the offending file reaching
+// the user's terminal.
+func TestPublishAllRejectsUnparseableWorkspaceMember(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store := newStore(t)
+
+	writeFile(t, filepath.Join(root, "package.json"),
+		`{"name":"root","private":true,"workspaces":["packages/*"]}`)
+	writeFile(t, filepath.Join(root, "packages", "healthy", "package.json"),
+		`{"name":"e2e-healthy-member","version":"1.0.0"}`)
+	writeFile(t, filepath.Join(root, "packages", "broken", "package.json"),
+		`{"name":"e2e-broken-member","version":"1.0.0",}`)
+
+	out, err := runLNPMErr(t, store, root, "publish", "--all")
+	if err == nil {
+		t.Fatalf("expected publish --all to exit non-zero for an unparseable member, output:\n%s", out)
+	}
+
+	// The binary builds its paths from its own resolved working directory,
+	// which does not always spell the temp root the way t.TempDir did — macOS
+	// resolves /var to /private/var, Windows expands 8.3 short names — so match
+	// the workspace-relative tail. It still tells the two members apart.
+	brokenRel := filepath.Join("packages", "broken", "package.json")
+	if !strings.Contains(out, brokenRel) {
+		t.Errorf("expected the failure to name %s, output:\n%s", brokenRel, out)
+	}
+	healthyRel := filepath.Join("packages", "healthy", "package.json")
+	if strings.Contains(out, healthyRel) {
+		t.Errorf("expected the failure to name only the broken member, but it names %s:\n%s", healthyRel, out)
+	}
+
+	status := runLNPM(t, store, root, "status")
+	for _, name := range []string{"e2e-healthy-member", "e2e-broken-member"} {
+		if strings.Contains(status, name) {
+			t.Errorf("expected nothing published, but %s is in the store:\n%s", name, status)
+		}
+	}
+}

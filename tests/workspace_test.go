@@ -123,6 +123,37 @@ func TestDetectYarnWorkspace(t *testing.T) {
 	}
 }
 
+// A member the user asked to publish that will not parse must stop the whole
+// run: publishing the rest would report success having published less than
+// `--all` asked for.
+func TestPublishAllUnparseableMemberFailsAndPublishesNothing(t *testing.T) {
+	env := setupTest(t)
+
+	wsDir := env.CopyFixture("npm-workspace")
+	brokenRel := filepath.Join("packages", "package-b", "package.json")
+	env.writeFile(filepath.Join(wsDir, brokenRel), `{"name":"@npm-test/package-b",}`)
+
+	env.chdir(wsDir)
+	err := cli.RunPublish(false, true, false, true)
+	if err == nil {
+		t.Fatal("Expected publish --all to fail for the unparseable member, got nil")
+	}
+	// Assert on the workspace-relative tail, not the absolute path: RunPublish
+	// builds its paths from os.Getwd, which resolves symlinks and 8.3 short
+	// names, so it does not always spell the temp root the way t.TempDir did.
+	// The tail still tells the two members apart, which is the point.
+	if !strings.Contains(err.Error(), brokenRel) {
+		t.Errorf("Expected the error to name %s, got: %v", brokenRel, err)
+	}
+	intactRel := filepath.Join("packages", "package-a", "package.json")
+	if strings.Contains(err.Error(), intactRel) {
+		t.Errorf("Expected the error to name only the broken member, but it names %s: %v", intactRel, err)
+	}
+
+	env.AssertPackageInDatabase("@npm-test/package-a", false)
+	env.AssertPackageInDatabase("@npm-test/package-b", false)
+}
+
 func TestNoWorkspace(t *testing.T) {
 	ws, err := workspace.Detect("/tmp")
 	if err != nil {
