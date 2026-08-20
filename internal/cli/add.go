@@ -106,7 +106,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 				return
 			}
 			if version != "" && pkg.Version != version {
-				result.err = fmt.Errorf("version %s of %s not found in store (latest published is %s). Re-publish %s to update.", version, name, pkg.Version, name)
+				result.err = versionNotInStoreError(version, name, pkg.Version)
 				results <- result
 				return
 			}
@@ -413,7 +413,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
 	}
 	if version != "" && pkg.Version != version {
-		return fmt.Errorf("version %s of %s not found in store (latest published is %s). Re-publish %s to update.", version, name, pkg.Version, name)
+		return versionNotInStoreError(version, name, pkg.Version)
 	}
 
 	if useLink {
@@ -561,6 +561,24 @@ func parsePackageSpec(spec string) (name, version string) {
 		return spec[:idx], spec[idx+1:]
 	}
 	return spec, ""
+}
+
+// versionNotInStoreError reports that the store holds a different version of
+// name than the one the user asked for, shared by the parallel and the
+// single-package add paths so both tell the user the same thing.
+//
+// The parameters are declared in the order the message reads them. All three
+// are plain strings, so a caller that swaps two still compiles and quietly
+// produces a message that lies about which version is which; keeping
+// declaration order and interpolation order identical is what makes such a
+// swap visible at the call site.
+//
+// The remedy is a trailing parenthetical rather than a second sentence: the
+// parallel path wraps this error as "<spec>: %w", so the string has to compose
+// as a clause, and a terminal period would read badly there as well as trip
+// staticcheck's ST1005.
+func versionNotInStoreError(requested, name, stored string) error {
+	return fmt.Errorf("version %s of %s not found in store (latest published is %s; re-publish %s to update)", requested, name, stored, name)
 }
 
 // packageJSONDeps is what reading package.json tells us about a dependency
