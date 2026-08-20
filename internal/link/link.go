@@ -2,6 +2,7 @@ package link
 
 import (
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -602,20 +603,8 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = dstFile.Close() }()
 
-	buf := make([]byte, 1024*1024) // 1MB buffer
-	for {
-		n, err := srcFile.Read(buf)
-		if n > 0 {
-			if _, writeErr := dstFile.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-		}
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return err
-		}
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
 	}
 
 	// OpenFile's mode argument is masked by the process umask, so the copy would

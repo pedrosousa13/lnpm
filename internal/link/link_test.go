@@ -1,6 +1,7 @@
 package link
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -296,6 +297,54 @@ func TestCopyFile(t *testing.T) {
 	}
 	if string(data) != content {
 		t.Errorf("copied content = %q, want %q", string(data), content)
+	}
+}
+
+// TestCopyFile_LargeFile pins that a multi-megabyte source round-trips byte for
+// byte. The transfer is internally chunked whatever io.Copy picks as its buffer
+// size, and the source here is deliberately not a whole number of megabytes, so
+// a rewrite that truncated the tail, reordered chunks or repeated one would be
+// caught here. A source small enough to move in a single chunk — which is every
+// other copyFile test — shows none of that.
+func TestCopyFile_LargeFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	srcPath := filepath.Join(tmpDir, "large.bin")
+	dstPath := filepath.Join(tmpDir, "large-copy.bin")
+
+	// Deliberately not a whole number of megabytes, so the final chunk of the
+	// transfer is a partial one whatever buffer size the implementation picks.
+	content := make([]byte, 5*1024*1024+7919)
+	// A linear congruential generator: deterministic, dependency-free, and with
+	// a period long enough that no two chunks of the file look alike, so a
+	// transposed or duplicated chunk cannot compare equal by accident.
+	state := uint32(1)
+	for i := range content {
+		state = state*1664525 + 1013904223
+		content[i] = byte(state >> 24)
+	}
+
+	if err := os.WriteFile(srcPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyFile(srcPath, dstPath); err != nil {
+		t.Fatalf("copyFile() error: %v", err)
+	}
+
+	got, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatalf("failed to read copied file: %v", err)
+	}
+	if len(got) != len(content) {
+		t.Fatalf("copied file is %d bytes, want %d", len(got), len(content))
+	}
+	if !bytes.Equal(got, content) {
+		for i := range got {
+			if got[i] != content[i] {
+				t.Fatalf("copied file differs from source at byte %d: got %#02x, want %#02x", i, got[i], content[i])
+			}
+		}
 	}
 }
 
