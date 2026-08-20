@@ -552,39 +552,78 @@ func TestLink_FailedIncrementalRelinkLeavesPreviousPackageIntact(t *testing.T) {
 	assertNoTempDirs(t, filepath.Join(projectPath, ".lnpm"))
 }
 
-// TestLink_PackageShippingTheManifestNameKeepsItsOwnFile covers the name
-// collision: a package that ships a file at the manifest's path keeps that file,
-// and relinks in full every time instead.
-func TestLink_PackageShippingTheManifestNameKeepsItsOwnFile(t *testing.T) {
+// TestLink_DoesNotLinkAPackageFileAtTheManifestsName covers the name collision.
+// The name belongs to the linker, so a package that ships a file at it does not
+// see that file in .lnpm/{package}: what sits there is the record of the link,
+// exactly as the store keeps its own completeness marker out of what it hands to
+// consumers.
+//
+// Reserving the name rather than yielding it is what makes the collision a
+// question that cannot be asked. One path cannot hold two files, and a linked
+// package whose .lnpm-linked is sometimes the linker's record and sometimes
+// content that merely looks like one leaves nothing on the way back in able to
+// tell which it is reading.
+//
+// The rest of the package links normally, and because the manifest is the
+// linker's on every link, the relink after it reuses like any other.
+func TestLink_DoesNotLinkAPackageFileAtTheManifestsName(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")
 	if err := os.MkdirAll(projectPath, 0755); err != nil {
 		t.Fatal(err)
 	}
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
 
 	storePath := filepath.Join(tmpDir, "store", "my-package")
 	files := writeHashedStoreFiles(t, storePath, map[string]string{
-		"package.json": `{"name":"my-package","version":"1.0.0"}`,
-		manifestName:   "this file belongs to the package\n",
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+		manifestName:    "this file belongs to the package\n",
 	})
 
 	linker := New(projectPath)
-	for i := 0; i < 2; i++ {
-		res, err := linker.Link("my-package", storePath, files)
-		if err != nil {
-			t.Fatalf("Link() attempt %d error: %v", i+1, err)
-		}
-		if res.Unchanged != 0 {
-			t.Errorf("Link() attempt %d reported %d unchanged, want 0: the collision must disable reuse", i+1, res.Unchanged)
-		}
+	res, err := linker.Link("my-package", storePath, files)
+	if err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+	if res.Changed != 2 || res.Unchanged != 0 {
+		t.Errorf("Link() reported %d changed / %d unchanged, want 2 / 0: the reserved name is not one of the package's files", res.Changed, res.Unchanged)
 	}
 
-	got, err := os.ReadFile(filepath.Join(projectPath, ".lnpm", "my-package", manifestName))
+	// What is at the reserved path is the link's own manifest, not the bytes the
+	// package shipped there.
+	raw, err := os.ReadFile(filepath.Join(lnpmPath, manifestName))
 	if err != nil {
 		t.Fatalf("failed to read linked %s: %v", manifestName, err)
 	}
-	if string(got) != "this file belongs to the package\n" {
-		t.Errorf("linked %s = %q, want the package's own content", manifestName, string(got))
+	if string(raw) == "this file belongs to the package\n" {
+		t.Fatalf("linked %s holds the package's own content: the name was not reserved", manifestName)
+	}
+	m := readManifest(lnpmPath)
+	if m == nil {
+		t.Fatalf("linked %s does not read as a manifest: %s", manifestName, raw)
+	}
+	if len(m.Files) != 2 {
+		t.Errorf("the manifest describes %d files, want the 2 the package actually ships", len(m.Files))
+	}
+	if _, ok := m.Files[manifestName]; ok {
+		t.Errorf("the manifest describes %s as one of the package's files", manifestName)
+	}
+
+	// The package's other files are linked, and the file it shipped at the
+	// reserved name is simply absent, as the store's marker is.
+	if got, err := os.ReadFile(filepath.Join(lnpmPath, "dist", "index.js")); err != nil || string(got) != "module.exports = 1;\n" {
+		t.Errorf("dist/index.js = %q (err %v), want the store's content", string(got), err)
+	}
+
+	// Reuse is not lost to the collision the way it was when the package's file
+	// won the path.
+	again, err := linker.Link("my-package", storePath, files)
+	if err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+	if again.Unchanged != 2 {
+		t.Errorf("relink reported %d unchanged, want 2: reserving the name keeps the manifest readable across links", again.Unchanged)
 	}
 }
 
@@ -641,23 +680,20 @@ func TestLink_UnchangedPackageReportsTheTypeItWasBuiltWith(t *testing.T) {
 	}
 }
 
-// TestLink_DoesNotTrustAManifestThePackageShipped covers the transition out of
-// that collision, which is where the one-sided version of the check gave way.
-// The guard asked only whether the package being linked now ships the manifest's
-// name; it could not ask whether the file already at that path was the last
-// link's manifest or the last version's package content.
+// TestLink_APackageCannotDescribeItsOwnRelink covers the transition out of the
+// collision, which is where yielding the name gave way.
 //
-// So: a version that ships a file at that path, whose bytes are a manifest
-// naming the hashes the next version will have, followed by a version that drops
-// it. The relink would read the package's own file, find every path already
-// accounted for, and hand the consumer the previous version's bytes while
-// everything else reported the new one.
+// A version ships a file at the manifest's path whose bytes are a manifest
+// naming the hashes the next version will have, and the version after it drops
+// the file. If the package's file could occupy that path, the relink would read
+// it, find every path already accounted for, and hand the consumer the previous
+// version's bytes while everything else reported the new one.
 //
-// The forged manifest here records the linked package's real location, which a
-// published file cannot do - one file cannot name every project it will be
-// linked into - so what the test pins is the check rather than the attacker's
-// ignorance of where the package lands.
-func TestLink_DoesNotTrustAManifestThePackageShipped(t *testing.T) {
+// The forged manifest records the linked package's real location, so the test
+// pins the reservation rather than the fact that a published file cannot usually
+// guess where it will be linked. Reserving the name means the file never reaches
+// .lnpm/{package} at all and the question of trusting it never arises.
+func TestLink_APackageCannotDescribeItsOwnRelink(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")
 	if err := os.MkdirAll(projectPath, 0755); err != nil {
@@ -672,7 +708,12 @@ func TestLink_DoesNotTrustAManifestThePackageShipped(t *testing.T) {
 		"dist/index.js": "module.exports = 'v2';\n",
 	})
 
-	forged := linkManifest{SchemaVersion: manifestSchemaVersion, Files: map[string]linkedFile{}}
+	forged := linkManifest{
+		SchemaVersion: manifestSchemaVersion,
+		Path:          manifestPath(lnpmPath),
+		LinkType:      HardLink,
+		Files:         map[string]linkedFile{},
+	}
 	for _, f := range files2 {
 		forged.Files[f.RelPath] = linkedFile{Hash: f.ContentHash, Mode: f.Mode}
 	}
@@ -692,8 +733,8 @@ func TestLink_DoesNotTrustAManifestThePackageShipped(t *testing.T) {
 	if _, err := linker.Link("my-package", v1, files1); err != nil {
 		t.Fatalf("first Link() error: %v", err)
 	}
-	if got, err := os.ReadFile(filepath.Join(lnpmPath, manifestName)); err != nil || string(got) != string(payload) {
-		t.Fatalf("the package's own %s did not reach the linked package, so the transition under test never happened (err = %v)", manifestName, err)
+	if got, err := os.ReadFile(filepath.Join(lnpmPath, manifestName)); err != nil || string(got) == string(payload) {
+		t.Fatalf("the package's own %s occupies the reserved path (err = %v)", manifestName, err)
 	}
 
 	res, err := linker.Link("my-package", v2, files2)
@@ -701,7 +742,7 @@ func TestLink_DoesNotTrustAManifestThePackageShipped(t *testing.T) {
 		t.Fatalf("second Link() error: %v", err)
 	}
 	if res.Unchanged != 0 {
-		t.Errorf("Link() reported %d unchanged, want 0: nothing recorded by a file the package shipped may be reused", res.Unchanged)
+		t.Errorf("Link() reported %d unchanged, want 0: v1 and v2 share no file", res.Unchanged)
 	}
 
 	got, err := os.ReadFile(filepath.Join(lnpmPath, "dist", "index.js"))

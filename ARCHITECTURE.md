@@ -404,10 +404,25 @@ reading every file, which is the cost this exists to remove, and in hardlink mod
 an in-place edit has already written through the shared inode into the store
 entry itself: `lnpm gc` and a re-publish are what fix that.
 
-The file is lnpm's, not the package's. A package that ships a file at that path
-keeps it, and simply relinks in full every time. The recorded location is what
-tells the two apart on the way back: a published file cannot name the project it
-will be linked into, so a `.lnpm-linked` naming this one was written here.
+The name is reserved, exactly as `.lnpm-complete` is reserved by the store. The
+store keeps its marker out of what `GetFiles` hands to consumers because the
+marker belongs to the store and not to the package; the same holds a level down,
+so a package that ships a file called `.lnpm-linked` at its root will **not** find
+it in `.lnpm/{package}` — the file is dropped from the set being linked. Nothing
+else about the package changes.
+
+Reserving it rather than yielding it is what makes the collision impossible
+rather than merely detectable. One path cannot hold two files, and a
+`.lnpm-linked` that is sometimes the record of a link and sometimes package
+content that looks like one leaves nothing on the way back in able to tell them
+apart — a version shipping a manifest that named the next version's hashes could
+then describe its own successor's relink.
+
+The recorded location is a separate, smaller thing: a manifest describes one
+directory, and is only acted on in the directory it names. Copying a project's
+`.lnpm/` into another checkout is the case that happens in practice — the
+manifest travels with it, still describing files by hash — and the mismatch costs
+one full relink, after which the manifest names its new home.
 
 ### `lnpm pull [package...]`
 

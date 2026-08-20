@@ -86,6 +86,14 @@ func New(projectPath string) *Linker {
 // in-place edit has already written through the shared inode into the store
 // entry itself, so no relink ever repaired it: `lnpm gc` and a re-publish are
 // what fix that.
+//
+// The manifest is kept at .lnpm-linked inside the linked package, and that name
+// is the linker's. A package that ships a file called .lnpm-linked at its root
+// does not get it: the file is dropped from the set being linked, exactly as the
+// store drops its own .lnpm-complete marker from what it hands to consumers.
+// What .lnpm/{package} holds is the package plus the record of the link that put
+// it there, and reserving the name is what keeps those two from ever being the
+// same path.
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (Result, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 
@@ -94,6 +102,10 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return Result{}, err
 	}
+
+	// The manifest's name is reserved before anything else reads the file set,
+	// so nothing below has to consider a package's file competing for it.
+	files = withoutManifestName(files)
 
 	// Determine link type based on config and filesystem
 	linkType := l.determineLinkType(storePath)
@@ -108,13 +120,9 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 
 	// What the last link into this project left behind, what of that is still on
 	// disk, and which of the files now being linked it already holds.
-	keepManifest := !shipsManifestName(files)
-	var prior *linkManifest
 	var present map[string]bool
 	var unexpected int
-	if keepManifest {
-		prior = readManifest(lnpmPath)
-	}
+	prior := readManifest(lnpmPath)
 	if prior != nil {
 		present, unexpected = scanLinked(lnpmPath)
 	}
@@ -348,10 +356,9 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 
 	// Record what is in the tree about to be swapped in. Written last inside the
 	// temp directory, so it commits with the content and can never describe a
-	// tree that is not there.
-	if keepManifest {
-		writeManifest(tempPath, lnpmPath, actualType, files)
-	}
+	// tree that is not there. Nothing can already occupy the path: the name is
+	// reserved, so no worker was given a file to materialise there.
+	writeManifest(tempPath, lnpmPath, actualType, files)
 
 	// Swap the completed package into place. The previous directory is renamed
 	// aside rather than deleted first, so .lnpm/{package} is missing for a

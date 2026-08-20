@@ -41,20 +41,18 @@ type linkedFile struct {
 
 // linkManifest is the manifest payload.
 //
-// Path is the manifest's own location, and is what tells a manifest lnpm wrote
-// from a file the package shipped at the same path. shipsManifestName only ever
-// answered half of that: it knows whether the package being linked now carries
-// the name, and cannot know whether the file already at that path is the last
-// link's manifest or the last version's content. A published file cannot name
-// the project it will be linked into - one file, every consumer - so a manifest
-// that names this one was written here, by a link.
+// Path is the manifest's own location. A manifest describes one directory, and
+// what makes it safe to act on is that the directory it describes is the one it
+// is sitting in - so a .lnpm/{package} that arrived by some route other than a
+// link is not believed. Copying a project's .lnpm/ into another checkout is the
+// case that actually happens: the manifest comes along, still describing files
+// by hash, and without this the relink there would carry the copy's content
+// forward as though it had linked it. The check costs one comparison and the
+// mismatch costs one full relink, after which the manifest names its new home.
 //
-// It is not a defence against an author who already knows where the package
-// lands, and it is not meant to be: the same author ships the code the project
-// then builds and runs. What it stops is a file that describes a link being
-// mistaken for one, wherever it came from - a package that ships one, a
-// .lnpm/{package} copied in from another checkout - and it costs one comparison
-// on read.
+// It is not a security boundary, and does not need to be. A package cannot get a
+// file to this path at all - see withoutManifestName - so the only manifests
+// here are ones a link wrote.
 //
 // LinkType is what the link that wrote the manifest achieved, not what it set
 // out to do, so a relink that materialises nothing can report the tree it left
@@ -226,22 +224,36 @@ func scanLinked(lnpmPath string) (map[string]bool, int) {
 	return found, unexpected
 }
 
-// shipsManifestName reports whether the package itself contains a file at the
-// path the manifest occupies. It does, very occasionally, happen that a name
-// collides; when it does the package's file wins and the relink simply goes
-// without a manifest, because there is no reading of one path holding two files
-// where both survive. The cost is a full relink every time, which is what every
-// relink cost before manifests existed.
+// withoutManifestName returns files with any file at the manifest's own path
+// dropped, which is the set a link materialises.
 //
-// This is the write side of the collision only, and knows nothing about the file
-// already at that path. The read side is linkManifest.Path, which is what stops
-// a version that ships a manifest there from being believed by the version that
-// drops it.
-func shipsManifestName(files []*pack.FileInfo) bool {
-	for _, f := range files {
-		if f.RelPath == manifestName {
-			return true
+// The name is the linker's, exactly as .lnpm-complete is the store's: internal/
+// store's GetFiles keeps its marker out of what it hands to consumers on the
+// grounds that the marker belongs to the store and not to the package, and the
+// same holds a level down. What .lnpm/{package} holds is the package plus the
+// record of the link that put it there.
+//
+// Reserving the name is what makes the collision impossible rather than merely
+// detectable. One path cannot hold two files, and yielding it to the package
+// would mean .lnpm/{package}/.lnpm-linked is sometimes a record of the link and
+// sometimes content that looks like one, with nothing on the way back in able to
+// tell which - a version that shipped a manifest naming the next version's
+// hashes could then describe its own successor's relink.
+//
+// The cost is the one the store already pays for its marker: a package that
+// ships a file called .lnpm-linked at its root will not find it in
+// .lnpm/{package}. Nothing else about the package changes, and reuse is not lost
+// the way it was when the collision disabled the manifest.
+func withoutManifestName(files []*pack.FileInfo) []*pack.FileInfo {
+	for i, f := range files {
+		if f.RelPath != manifestName {
+			continue
 		}
+		debug.Logf("link: not linking the package's own %s, which is the link manifest's name", manifestName)
+		kept := make([]*pack.FileInfo, 0, len(files)-1)
+		kept = append(kept, files[:i]...)
+		kept = append(kept, files[i+1:]...)
+		return kept
 	}
-	return false
+	return files
 }
