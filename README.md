@@ -81,7 +81,7 @@ lnpm push
 | `lnpm push` | Push changes to all linked projects |
 | `lnpm status` | Show all published packages and active links across every project |
 | `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
-| `lnpm check` | Fail if package.json still has lnpm references (pre-publish guard) |
+| `lnpm check` | Fail if lnpm has left anything an `npm publish` would ship (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
 | `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`, `--yes`) |
 | `lnpm retreat` | Remove all lnpm changes |
@@ -181,9 +181,12 @@ lnpm check
 npm publish
 ```
 
-`lnpm check` scans `package.json` for leftover `file:.lnpm/` or `link:.lnpm/`
-references and exits non-zero if any remain — drop it in a `prepublishOnly`
-script or CI step to avoid accidentally publishing local links to npm.
+`lnpm check` reports what lnpm has left in the project that an `npm publish`
+would carry into the tarball, and exits non-zero if there is any — drop it in a
+`prepublishOnly` script or CI step. It looks for two things: leftover
+`file:.lnpm/` or `link:.lnpm/` references in `package.json`, and the
+`lnpm.lock.retreat` snapshot described below, when nothing in the project would
+keep that snapshot out of the tarball.
 
 ### After Publishing to npm
 
@@ -196,9 +199,16 @@ lnpm restore
 `lnpm restore` links it all back. Packages added again in the meantime are kept
 as they are; nothing is unlinked. Packages restored this way are store copies
 (`file:.lnpm/<pkg>`) — re-run `lnpm add --link <pkg>` for the ones you want
-pointed back at their live source. `lnpm.lock.retreat` is lnpm's own state: it
-is never published, and a second `lnpm retreat --force` merges into it rather
-than replacing it, so an unfinished restore is not lost.
+pointed back at their live source. A second `lnpm retreat --force` merges into
+`lnpm.lock.retreat` rather than replacing it, so an unfinished restore is not
+lost.
+
+`lnpm.lock.retreat` is lnpm's own state, and it records an absolute source path
+for every package it lists. `lnpm publish` never packs it. `npm publish` knows
+nothing about it, so keep it out of your tarball the way you keep any other file
+out — a `files` field in `package.json`, or a line in `.npmignore` or
+`.gitignore`. `lnpm check` fails if the snapshot is there and none of those
+would stop it.
 
 The snapshot records no `--dev` or `--pure` flag, so a package that had no
 `package.json` entry before the retreat cannot get the same treatment back.

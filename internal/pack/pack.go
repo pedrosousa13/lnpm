@@ -553,6 +553,23 @@ func ReadPackageJSON(dir string) (*PackageJSON, error) {
 	return readPackageJSON(dir)
 }
 
+// ExcludedByProjectRules reports whether the package at dir keeps relPath out of
+// a published tarball through rules of its own: the package.json "files" field
+// passed as filesField, and the root .npmignore - falling back to a root
+// .gitignore when there is none, as npm does.
+//
+// It deliberately does not consult defaultExcludes. Those are lnpm's additions
+// to npm's rules, and this answers what a tool that reads only the project's own
+// rules would ship - which is what `npm publish` is. `lnpm check` uses it to ask
+// whether a file lnpm left in the project root is about to be published by
+// something other than lnpm.
+func ExcludedByProjectRules(dir string, filesField []string, relPath string) bool {
+	if len(filesField) > 0 && !isIncluded(relPath, filesField) && !isDefaultInclude(relPath) {
+		return true
+	}
+	return isExcluded(relPath, loadIgnorePatterns(dir))
+}
+
 // filterGitFiles removes any files related to .git directories
 // This is a defense-in-depth safety filter applied after all other filtering
 func filterGitFiles(files []*FileInfo) []*FileInfo {

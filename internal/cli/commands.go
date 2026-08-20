@@ -270,15 +270,20 @@ Examples:
 // checkCmd scans package.json for leftover lnpm references
 var checkCmd = &cobra.Command{
 	Use:   "check",
-	Short: "Check package.json for leftover lnpm references",
-	Long: `Scan the current project's package.json for lnpm references
-(file:.lnpm/ or link:.lnpm/) left behind by 'lnpm add'.
+	Short: "Check the project for lnpm leftovers an npm publish would ship",
+	Long: `Report what lnpm has left in the current project that an 'npm publish'
+from here would carry into the tarball.
 
-Exits non-zero if any are found, so it can be used as a pre-publish guard
+Two things qualify: lnpm references (file:.lnpm/ or link:.lnpm/) in
+package.json, left behind by 'lnpm add'; and lnpm.lock.retreat, the snapshot
+'lnpm retreat' leaves for 'lnpm restore', when neither the package.json "files"
+field nor .npmignore nor .gitignore would keep it out.
+
+Exits non-zero if anything is found, so it can be used as a pre-publish guard
 in scripts or CI before running 'npm publish'.
 
 Examples:
-  lnpm check   # Fails if any lnpm reference remains in package.json`,
+  lnpm check   # Fails if lnpm has left anything publishable behind`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunCheck()
 	},
