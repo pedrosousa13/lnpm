@@ -79,7 +79,7 @@ lnpm push
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm pull [pkg...]` | Sync linked packages with the store (all of them when no name is given) |
 | `lnpm push` | Push changes to all linked projects |
-| `lnpm status` | Show current project's links |
+| `lnpm status` | Show all published packages and active links across every project |
 | `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
 | `lnpm check` | Fail if package.json still has lnpm references (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
@@ -320,7 +320,7 @@ lnpm publish    # Automatically builds TypeScript → dist/
 
 # In your app
 cd ~/code/my-app
-lnpm add my-library   # Links and runs npm install
+lnpm add my-library   # Links only (pass --install to also run npm install)
 
 # Make changes to library
 cd ~/code/my-library
@@ -367,7 +367,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 1. **Publish** — Selects files with lnpm's own filtering (see [File Filtering](#file-filtering)), strips lifecycle scripts (`prepare`/`prepublish`), resolves `workspace:` dependency specifiers to versions npm can install (see [Monorepo Support](#monorepo-support)), then reflinks or copies to `~/.lnpm/store/{name}/{hash}/`
 2. **Add** — Creates reflinks or hard links from store to `project/.lnpm/{package}/`, updates package.json to `file:.lnpm/{package}`
 3. **Symlink** — Links `node_modules/{package}` → `.lnpm/{package}`
-4. **Push** — Updates store and re-links changed files
+4. **Push** — Updates store and re-links all files to consuming projects
 5. **Auto .gitignore** — Optionally manages `.lnpm/` in `.gitignore` (enabled by default)
 
 **Note:** `lnpm add` does NOT run `npm install` automatically (matches yalc) — pass `--install` or run it yourself if you need to resolve peer dependencies. `lnpm remove`, however, runs your package manager's install afterward to restore the removed dependency.
