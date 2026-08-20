@@ -178,3 +178,36 @@ func TestWorkspaceDependencyResolution(t *testing.T) {
 		t.Fatalf("expected node to resolve @ws-deps/lib to \"lib-v1+util-v1\", got %q", got)
 	}
 }
+
+// TestPublishAllRejectsMalformedWorkspacePattern proves that a workspace glob
+// that will not parse stops `publish --all` outright instead of publishing the
+// package the config tried to exclude. The store is checked afterwards so a
+// silent partial publish cannot pass as a failure.
+func TestPublishAllRejectsMalformedWorkspacePattern(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store := newStore(t)
+
+	writeFile(t, filepath.Join(root, "package.json"),
+		`{"name":"root","private":true,"workspaces":["packages/*","!packages/[internal"]}`)
+	writeFile(t, filepath.Join(root, "packages", "public-api", "package.json"),
+		`{"name":"e2e-public-api","version":"1.0.0"}`)
+	writeFile(t, filepath.Join(root, "packages", "internal-secret", "package.json"),
+		`{"name":"e2e-internal-secret","version":"1.0.0"}`)
+
+	out, err := runLNPMErr(t, store, root, "publish", "--all")
+	if err == nil {
+		t.Fatalf("expected publish --all to exit non-zero for a malformed pattern, output:\n%s", out)
+	}
+	if !strings.Contains(out, "packages/[internal") {
+		t.Errorf("expected the failure to name the offending pattern, output:\n%s", out)
+	}
+
+	status := runLNPM(t, store, root, "status")
+	for _, name := range []string{"e2e-internal-secret", "e2e-public-api"} {
+		if strings.Contains(status, name) {
+			t.Errorf("expected nothing published, but %s is in the store:\n%s", name, status)
+		}
+	}
+}
