@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,24 +22,28 @@ func TestSymlinkSurvivesNpmInstall(t *testing.T) {
 	_, projectDir := env.publishAndAdd("symlink-survive-pkg")
 	env.AssertSymlinkExists(projectDir, "symlink-survive-pkg")
 
-	// Add a small regular npm dependency and install it.
-	pkgJSONPath := filepath.Join(projectDir, "package.json")
-	data, _ := os.ReadFile(pkgJSONPath)
-	var pkgJSON map[string]interface{}
-	if err := json.Unmarshal(data, &pkgJSON); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
+	// Install a real dependency from a vendored tarball. Installing a file path
+	// never contacts the registry, so the install either genuinely happens or
+	// genuinely fails - it can no longer half-succeed and leave the symlink
+	// untouched because npm did nothing. The fixture is `npm pack` run over a
+	// package.json naming lnpm-test-dep@1.0.0 plus a one-line index.js.
+	tarball := env.FixturePath("tarballs", "lnpm-test-dep-1.0.0.tgz")
+	if _, err := os.Stat(tarball); err != nil {
+		t.Fatalf("Vendored tarball fixture missing: %v", err)
 	}
-	pkgJSON["dependencies"].(map[string]interface{})["is-odd"] = "^3.0.1"
-	newData, _ := json.MarshalIndent(pkgJSON, "", "  ")
-	env.writeFile(pkgJSONPath, string(newData))
 
-	cmd := exec.Command("npm", "install", "--prefer-offline")
+	cmd := exec.Command("npm", "install", tarball)
 	cmd.Dir = projectDir
+	// audit and fund are network paths too, so both stay off.
 	cmd.Env = append(os.Environ(), "npm_config_audit=false", "npm_config_fund=false")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// npm install can fail for environmental reasons; what matters is that
-		// our symlink survives whatever npm did.
-		t.Logf("npm install output: %s", output)
+		t.Fatalf("npm install failed: %v\n%s", err, output)
+	}
+
+	// The install must actually have landed, otherwise the symlink was never
+	// threatened and the assertions below prove nothing.
+	if _, err := os.Stat(filepath.Join(projectDir, "node_modules", "lnpm-test-dep", "index.js")); err != nil {
+		t.Fatalf("npm install did not install the vendored dependency: %v", err)
 	}
 
 	env.AssertSymlinkExists(projectDir, "symlink-survive-pkg")

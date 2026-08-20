@@ -109,6 +109,9 @@ pkgDir := env.CreateTestPackage("pkg-name", "1.0.0", map[string]string{
 
 // Copy fixture for workspace tests
 workspaceDir := env.CopyFixture("npm-workspace")
+
+// Read a fixture in place (CopyFixture copies a directory tree, not one file)
+tarball := env.FixturePath("tarballs", "lnpm-test-dep-1.0.0.tgz")
 ```
 
 **Location:**
@@ -125,6 +128,12 @@ workspaceDir := env.CopyFixture("npm-workspace")
 - `workspace-deps/`: PNPM workspace whose lib depends on its sibling util with
   `workspace:*`; the only fixture carrying a `workspace:` specifier, so the
   other workspace fixtures stay independent of the publish-time rewrite
+- `tarballs/`: `lnpm-test-dep-1.0.0.tgz`, a real npm tarball that
+  `TestSymlinkSurvivesNpmInstall` installs by absolute path. The test needs a
+  genuine `npm install` to prove the lnpm symlink survives one, and a file path
+  gives it that without contacting the npm registry. The only binary fixture, so
+  the two sources it was packed from and a regeneration command are committed
+  beside it in `tarballs/lnpm-test-dep/` and `tarballs/README.md`
 
 ## Coverage
 
