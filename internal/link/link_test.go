@@ -45,14 +45,14 @@ func TestLinkAndUnlink(t *testing.T) {
 
 	// Create linker and link package
 	linker := New(projectPath)
-	linkType, err := linker.Link("my-package", storePath, files)
+	res, err := linker.Link("my-package", storePath, files)
 	if err != nil {
 		t.Fatalf("Link() error: %v", err)
 	}
 
 	// Verify link type (should be hardlink on same filesystem)
-	if linkType != HardLink && linkType != Copy {
-		t.Errorf("linkType = %q, want hardlink or copy", linkType)
+	if res.Type != HardLink && res.Type != Copy {
+		t.Errorf("linkType = %q, want hardlink or copy", res.Type)
 	}
 
 	// Verify .lnpm directory created

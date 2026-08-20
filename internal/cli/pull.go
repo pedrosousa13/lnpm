@@ -105,7 +105,7 @@ func RunPull(packageNames []string) error {
 		// Every path out of here closes the "Pulling <name>... " line, so a
 		// failure names itself where it happened instead of leaving the line
 		// dangling until the end-of-run report.
-		files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+		files, err := storeFilesForLink(database, s, pkg)
 		if err != nil {
 			fmt.Printf("failed to get package files: %v\n", err)
 			failed = append(failed, fmt.Errorf("%s: failed to get package files: %w", name, err))

@@ -173,6 +173,7 @@ func RunPush(skipHooks bool) error {
 	type result struct {
 		path    string
 		skipped bool
+		link    link.Result
 		err     error
 	}
 	results := make(chan result, len(projects))
@@ -191,8 +192,8 @@ func RunPush(skipHooks bool) error {
 				results <- result{path: p.Path, skipped: true}
 				return
 			}
-			_, err := linker.Link(pkg.Name, storePath, storeFiles)
-			results <- result{path: p.Path, err: err}
+			linkRes, err := linker.Link(pkg.Name, storePath, storeFiles)
+			results <- result{path: p.Path, link: linkRes, err: err}
 		}(proj)
 	}
 
@@ -213,7 +214,7 @@ func RunPush(skipHooks bool) error {
 			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
 			skippedCount++
 		default:
-			fmt.Printf("  %s %s\n", iconOK(), res.path)
+			fmt.Printf("  %s %s (%d changed, %d unchanged)\n", iconOK(), res.path, res.link.Changed, res.link.Unchanged)
 			successCount++
 		}
 	}

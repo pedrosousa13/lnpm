@@ -11,9 +11,11 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -113,14 +115,14 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 			result.pkg = pkg
 
-			linkType, err := linkPackage(linker, s, pkg, useLink)
+			linkRes, err := linkPackage(database, linker, s, pkg, useLink)
 			if err != nil {
 				result.err = err
 				results <- result
 				return
 			}
 
-			result.linkType = linkType
+			result.linkType = linkRes.Type
 			results <- result
 		}(spec)
 	}
@@ -356,28 +358,62 @@ func linkTypeLabel(t link.LinkType) string {
 	return string(t)
 }
 
+// storeFilesForLink returns the files of pkg's store entry, each carrying the
+// content hash the database recorded for it.
+//
+// Walking the store is what says which files the entry holds; the database is
+// what says what is in them. Link needs both: it compares those hashes against
+// the ones it last linked into the project to decide which files it can leave
+// alone, and a caller that hands it files with no hashes makes every relink
+// rewrite the whole package.
+//
+// A file the manifest does not cover keeps an empty hash and is simply always
+// rewritten, which is also why a manifest that cannot be read is logged rather
+// than returned: it costs the next relink its shortcut and nothing else.
+func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pack.FileInfo, error) {
+	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := database.GetFilesForPackage(pkg.ID)
+	if err != nil {
+		debug.Logf("cli: no file manifest for %s, relinking it in full: %v", pkg.Name, err)
+		return files, nil
+	}
+
+	hashes := make(map[string]string, len(entries))
+	for _, e := range entries {
+		hashes[e.RelativePath] = e.ContentHash
+	}
+	for _, f := range files {
+		f.ContentHash = hashes[f.RelPath]
+	}
+	return files, nil
+}
+
 // linkPackage points the project at pkg. With useLink the project resolves to
 // pkg's live source directory, so later source edits reach it with no further
 // command; otherwise the published snapshot is materialised out of the store.
-func linkPackage(linker *link.Linker, s *store.Store, pkg *db.Package, useLink bool) (link.LinkType, error) {
+func linkPackage(database *db.DB, linker *link.Linker, s *store.Store, pkg *db.Package, useLink bool) (link.Result, error) {
 	if useLink {
 		linkType, err := linker.LinkSource(pkg.Name, pkg.SourcePath)
 		if err != nil {
-			return "", fmt.Errorf("failed to link package source: %w", err)
+			return link.Result{}, fmt.Errorf("failed to link package source: %w", err)
 		}
-		return linkType, nil
+		return link.Result{Type: linkType}, nil
 	}
 
-	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+	files, err := storeFilesForLink(database, s, pkg)
 	if err != nil {
-		return "", fmt.Errorf("failed to get package files: %w", err)
+		return link.Result{}, fmt.Errorf("failed to get package files: %w", err)
 	}
 
-	linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
+	res, err := linker.Link(pkg.Name, pkg.StorePath, files)
 	if err != nil {
-		return "", fmt.Errorf("failed to link package: %w", err)
+		return link.Result{}, fmt.Errorf("failed to link package: %w", err)
 	}
-	return linkType, nil
+	return res, nil
 }
 
 // runAddSingle adds a single package (internal implementation)
@@ -430,10 +466,11 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 
 	// Link the package
 	linker := link.New(cwd)
-	linkType, err := linkPackage(linker, s, pkg, useLink)
+	linkRes, err := linkPackage(database, linker, s, pkg, useLink)
 	if err != nil {
 		return err
 	}
+	linkType := linkRes.Type
 
 	// Update .gitignore if enabled
 	cfg := config.Get()

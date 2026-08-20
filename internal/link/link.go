@@ -28,6 +28,21 @@ const (
 	Live LinkType = "link"
 )
 
+// Result reports what a Link did.
+//
+// Changed counts the files it materialised out of the store, Unchanged the ones
+// it carried over from the previous link without rewriting them. Together they
+// always add up to the package's file count, so a caller can report the size of
+// a push's actual effect rather than the size of the package.
+//
+// LinkSource has no counterpart because it materialises nothing: there is no
+// per-file work for it to have avoided.
+type Result struct {
+	Type      LinkType
+	Changed   int
+	Unchanged int
+}
+
 // Linker handles linking packages to projects
 type Linker struct {
 	projectPath string
@@ -47,13 +62,19 @@ func New(projectPath string) *Linker {
 // and corrupts that entry for every other consumer. Propagation is therefore
 // one-way by design: linked packages are read-only from the consumer's side,
 // and `push` is the supported way to update them.
-func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (LinkType, error) {
+//
+// Only the files that differ from the last link are materialised. The rest are
+// hard linked across from the package already in place, one syscall each and no
+// data moved, so the cost of a relink follows the size of the change rather than
+// the size of the package. When nothing differs at all there is nothing to swap
+// and the package is left exactly as it is.
+func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (Result, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 
 	// Guard against path traversal: packageName is joined into .lnpm/<name>
 	// (which we replace) and node_modules/<name>.
 	if err := pack.ValidatePackageName(packageName); err != nil {
-		return "", err
+		return Result{}, err
 	}
 
 	// Determine link type based on config and filesystem
@@ -66,13 +87,37 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// half-written package, and an interrupted link would leave that state
 	// behind permanently.
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
+
+	// What the last link into this project left behind, and which of the files
+	// now being linked it already holds.
+	keepManifest := !shipsManifestName(files)
+	var prior map[string]linkedFile
+	if keepManifest {
+		prior = readManifest(lnpmPath)
+	}
+	reusable := reusableFiles(prior, files)
+
+	// Nothing to do at all: every file is already there, and the package it is
+	// already holding contains nothing else. Skipping the swap is the point -
+	// the directory the consumer is building against is not touched, so no file
+	// changes identity and none is rewritten. The node_modules link is still
+	// checked, since a caller may be relinking precisely because that went
+	// missing.
+	if len(reusable) == len(files) && len(prior) == len(files) && len(files) > 0 {
+		debug.Logf("link: %s is already up to date (%d files)", packageName, len(files))
+		if err := l.createNodeModulesSymlink(packageName); err != nil {
+			return Result{}, err
+		}
+		return Result{Type: linkType, Unchanged: len(files)}, nil
+	}
+
 	parentDir := filepath.Dir(lnpmPath)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create .lnpm directory: %w", err)
+		return Result{}, fmt.Errorf("failed to create .lnpm directory: %w", err)
 	}
 	tempPath, err := newTempDir(parentDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp .lnpm directory: %w", err)
+		return Result{}, fmt.Errorf("failed to create temp .lnpm directory: %w", err)
 	}
 	// Remove the temp dir unless it is successfully committed via rename.
 	committed := false
@@ -83,7 +128,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	}()
 
 	// Track what methods we actually used (atomic for parallel access)
-	var reflinkCount, hardLinkCount, copyCount int32
+	var reflinkCount, hardLinkCount, copyCount, reusedCount int32
 	actualType := linkType
 	var warnedAboutFallback int32
 	var filesToCopyMu sync.Mutex
@@ -119,6 +164,28 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 					default:
 					}
 					return
+				}
+
+				// 0. Carry the file over from the package already linked here,
+				// when that copy is already the one wanted. A hard link moves
+				// no data and keeps the inode, so a consumer sees the file it
+				// had rather than an identical replacement.
+				//
+				// The link mode does not gate this. What is being linked is a
+				// file the project already has at that path, not a store entry,
+				// so copy mode's reason to exist - never sharing an inode with
+				// the store - is not in play. Preserving identity across a
+				// relink is the behaviour every mode wants.
+				if reusable[f.RelPath] {
+					if err := os.Link(filepath.Join(lnpmPath, f.RelPath), dstPath); err == nil {
+						atomic.AddInt32(&reusedCount, 1)
+						continue
+					} else {
+						// Reuse is only ever an optimisation - a filesystem
+						// that will not hard link, or a file that has since
+						// gone - so fall through and materialise it as usual.
+						debug.Logf("link: cannot reuse %s, materialising it: %v", f.RelPath, err)
+					}
 				}
 
 				linked := false
@@ -169,7 +236,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// Check for errors
 	select {
 	case err := <-errChan:
-		return "", err
+		return Result{}, err
 	default:
 	}
 
@@ -228,13 +295,23 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 		// Check for copy errors
 		select {
 		case err := <-errChan2:
-			return "", err
+			return Result{}, err
 		default:
 		}
 	}
 
 	if reflinkCount > 0 || hardLinkCount > 0 {
 		debug.Logf("link: reflinked %d, hard linked %d, copied %d files", reflinkCount, hardLinkCount, copyCount)
+	}
+	if reusedCount > 0 {
+		debug.Logf("link: carried %d unchanged files over from the previous link", reusedCount)
+	}
+
+	// Record what is in the tree about to be swapped in. Written last inside the
+	// temp directory, so it commits with the content and can never describe a
+	// tree that is not there.
+	if keepManifest {
+		writeManifest(tempPath, files)
 	}
 
 	// Swap the completed package into place. The previous directory is renamed
@@ -245,7 +322,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	hadPrevious := false
 	if _, err := os.Lstat(lnpmPath); err == nil {
 		if err := os.Rename(lnpmPath, retiredPath); err != nil {
-			return "", fmt.Errorf("failed to move aside existing linked package: %w", err)
+			return Result{}, fmt.Errorf("failed to move aside existing linked package: %w", err)
 		}
 		hadPrevious = true
 	}
@@ -255,10 +332,10 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 			// retiredPath. Name it in the error so it can be recovered by hand;
 			// deleting it here would destroy the user's only copy.
 			if rollbackErr := os.Rename(retiredPath, lnpmPath); rollbackErr != nil {
-				return "", fmt.Errorf("failed to finalize linked package: %w (the previous package could not be restored: %v, and is preserved at %s)", err, rollbackErr, retiredPath)
+				return Result{}, fmt.Errorf("failed to finalize linked package: %w (the previous package could not be restored: %v, and is preserved at %s)", err, rollbackErr, retiredPath)
 			}
 		}
-		return "", fmt.Errorf("failed to finalize linked package: %w", err)
+		return Result{}, fmt.Errorf("failed to finalize linked package: %w", err)
 	}
 	committed = true
 	if hadPrevious {
@@ -267,10 +344,15 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 
 	// Create symlink in node_modules
 	if err := l.createNodeModulesSymlink(packageName); err != nil {
-		return "", err
+		return Result{}, err
 	}
 
-	return actualType, nil
+	// Counted from what the workers actually did, not from what the diff
+	// predicted: a reuse that failed and fell through to the store is a file
+	// this link wrote, and saying otherwise would report work that did happen as
+	// work avoided.
+	reused := int(reusedCount)
+	return Result{Type: actualType, Changed: len(files) - reused, Unchanged: reused}, nil
 }
 
 // LinkSource points a project at a package's live source directory instead of
