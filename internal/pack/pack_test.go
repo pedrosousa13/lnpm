@@ -254,6 +254,51 @@ func TestIsIncludedPatternForms(t *testing.T) {
 	}
 }
 
+// TestIsIncludedDegeneratePattern pins the "files" entries that are empty once
+// normalized: "/" and "//" lose everything to the leading- and trailing-slash
+// normalization, and "" starts empty. npm 11.16.0 ships the same file set for
+// all three as it does for a package with no "files" field at all, so an empty
+// normalized pattern includes everything.
+//
+// isExcluded already skips such a pattern (it neither excludes nor un-excludes
+// anything), and the two functions must agree: neither may filter a path out on
+// the strength of a degenerate entry.
+func TestIsIncludedDegeneratePattern(t *testing.T) {
+	const relPath = "dist/cli/index.js"
+
+	tests := []struct {
+		name    string
+		pattern string
+		want    bool
+	}{
+		{"slash", "/", true},
+		{"double slash", "//", true},
+		{"empty", "", true},
+		{"dist", "dist", true},
+		{"lib", "lib", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isIncluded(relPath, []string{tt.pattern})
+			if got != tt.want {
+				t.Errorf("isIncluded(%q, [%q]) = %v, want %v", relPath, tt.pattern, got, tt.want)
+			}
+		})
+	}
+
+	for _, pattern := range []string{"/", "//", ""} {
+		t.Run("agrees with isExcluded "+pattern, func(t *testing.T) {
+			if !isIncluded(relPath, []string{pattern}) {
+				t.Errorf("isIncluded(%q, [%q]) = false, want true", relPath, pattern)
+			}
+			if isExcluded(relPath, []string{pattern}) {
+				t.Errorf("isExcluded(%q, [%q]) = true, want false", relPath, pattern)
+			}
+		})
+	}
+}
+
 func TestIsDefaultInclude(t *testing.T) {
 	tests := []struct {
 		path string
@@ -432,6 +477,82 @@ func TestPackRootAnchoredFilesWhitelist(t *testing.T) {
 
 	if packed["src/index.ts"] {
 		t.Errorf("%q is outside the whitelist and must not be packed", "src/index.ts")
+	}
+}
+
+// TestPackDegenerateFilesEntryShipsEverything packs the same fixture once with
+// no "files" field, as a baseline, then once for each degenerate spelling —
+// ["/"], ["//"] and [""] — and requires every file set to equal the baseline.
+// npm 11.16.0 produces the same tarball for all four; lnpm shipped only
+// package.json and README.md for the degenerate spellings, dropping every file
+// the whitelist named. Regression test for #227.
+//
+// The dist/ and top.js paths are asserted explicitly as well as compared,
+// because package.json and README.md ship via isDefaultInclude whatever "files"
+// says: a set comparison that only ever saw those two would pass with the fix
+// reverted.
+func TestPackDegenerateFilesEntryShipsEverything(t *testing.T) {
+	writeFixture := func(t *testing.T, pkgJSON string) map[string]bool {
+		t.Helper()
+		tmpDir := t.TempDir()
+
+		if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("# Test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmpDir, "top.js"), []byte("module.exports = {}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		cliDir := filepath.Join(tmpDir, "dist", "cli")
+		if err := os.MkdirAll(cliDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cliDir, "index.js"), []byte("#!/usr/bin/env node"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmpDir, "dist", "index.js"), []byte("module.exports = {}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, files, err := Pack(tmpDir)
+		if err != nil {
+			t.Fatalf("Pack() error: %v", err)
+		}
+
+		packed := make(map[string]bool)
+		for _, f := range files {
+			packed[f.RelPath] = true
+		}
+		return packed
+	}
+
+	baseline := writeFixture(t, `{"name": "degenerate-files", "version": "1.0.0"}`)
+
+	for _, entry := range []string{"/", "//", ""} {
+		t.Run("files "+entry, func(t *testing.T) {
+			pkgJSON := `{"name": "degenerate-files", "version": "1.0.0", "files": ["` + entry + `"]}`
+			packed := writeFixture(t, pkgJSON)
+
+			for _, name := range []string{"dist/index.js", "dist/cli/index.js", "top.js"} {
+				if !packed[name] {
+					t.Errorf("expected %q to be packed for files: [%q], packed set was %v", name, entry, packed)
+				}
+			}
+
+			for name := range baseline {
+				if !packed[name] {
+					t.Errorf("files: [%q] dropped %q, which ships with no \"files\" field", entry, name)
+				}
+			}
+			for name := range packed {
+				if !baseline[name] {
+					t.Errorf("files: [%q] shipped %q, which does not ship with no \"files\" field", entry, name)
+				}
+			}
+		})
 	}
 }
 

@@ -426,11 +426,20 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // So "dist", "/dist", "dist/" and "/dist/" are all equivalent, as they are to
 // npm, and "dist/**" and "/dist/**" are equivalent to each other. "dist/**/"
 // is equivalent to none of them.
+//
+// An entry that is empty once normalized — "", "/" or "//" — includes
+// everything, which is what npm does with it: all three ship the same files as
+// a package with no "files" field. isExcluded skips such a pattern for the same
+// reason, so neither function filters a path out on the strength of one.
 func isIncluded(relPath string, patterns []string) bool {
 	for _, pattern := range patterns {
 		pattern = strings.TrimPrefix(pattern, "/")
 		if !strings.Contains(pattern, "*") {
 			pattern = strings.TrimSuffix(pattern, "/")
+		}
+
+		if pattern == "" {
+			return true
 		}
 
 		// Direct match
