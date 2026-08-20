@@ -193,3 +193,47 @@ func TestListLinked_IgnoresDotPrefixedEntries(t *testing.T) {
 		t.Errorf("ListLinked() = %v, want [real-package]", linked)
 	}
 }
+
+// TestListLinkedSkipsTempDirsInsideAScope is the scope-level counterpart of
+// TestListLinked_IgnoresDotPrefixedEntries. A temp directory is a sibling of
+// the target it will replace, so for a scoped package it lands inside the scope
+// directory, exactly where the descent added for scoped names would surface it.
+func TestListLinkedSkipsTempDirsInsideAScope(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	linkPackage(t, linker, filepath.Join(tmpDir, "store"), "@org/my-package")
+
+	if err := os.MkdirAll(filepath.Join(projectPath, ".lnpm", "@org", ".tmp-leftover"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	assertLinked(t, linker, "@org/my-package")
+}
+
+// TestUnlinkKeepsScopeHoldingATempDirectory pins the asymmetry with ListLinked:
+// a dot-prefixed entry is filtered out of the listing, but it still counts when
+// Unlink decides whether a scope directory is empty. Deleting a scope that a
+// live relink is writing into would destroy that relink's work.
+func TestUnlinkKeepsScopeHoldingATempDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	linkPackage(t, linker, filepath.Join(tmpDir, "store"), "@org/pkg-a")
+
+	// Stand in for a concurrent relink of @org/pkg-b, whose temp directory is
+	// created as a sibling of its target inside the scope directory.
+	tempDir := filepath.Join(projectPath, ".lnpm", "@org", ".tmp-inflight")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := linker.Unlink("@org/pkg-a"); err != nil {
+		t.Fatalf("Unlink() error: %v", err)
+	}
+
+	assertExists(t, tempDir)
+	assertExists(t, filepath.Join(projectPath, ".lnpm", "@org"))
+}

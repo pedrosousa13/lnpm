@@ -2,9 +2,11 @@ package link
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/pack"
@@ -273,6 +275,177 @@ func TestLinkMultiplePackages(t *testing.T) {
 	if _, err := os.Stat(lnpmDir); err != nil {
 		t.Error(".lnpm directory removed while packages still linked")
 	}
+}
+
+// linkPackage links packageName into linker's project from a store entry
+// written under storeRoot, following the setup TestLinkScopedPackage uses.
+func linkPackage(t *testing.T, linker *Linker, storeRoot, packageName string) {
+	t.Helper()
+
+	storePath := filepath.Join(storeRoot, filepath.FromSlash(packageName))
+	files := writeStoreFiles(t, storePath, map[string]string{
+		"package.json": `{"name":"` + packageName + `"}`,
+	})
+	if _, err := linker.Link(packageName, storePath, files); err != nil {
+		t.Fatalf("Link(%s) error: %v", packageName, err)
+	}
+}
+
+// assertLinked fails unless ListLinked reports exactly want, in any order.
+func assertLinked(t *testing.T, linker *Linker, want ...string) {
+	t.Helper()
+
+	got, err := linker.ListLinked()
+	if err != nil {
+		t.Fatalf("ListLinked() error: %v", err)
+	}
+	sorted := slices.Sorted(slices.Values(got))
+	slices.Sort(want)
+	if !slices.Equal(sorted, want) {
+		t.Errorf("ListLinked() = %v, want %v", got, want)
+	}
+}
+
+// assertNotExist fails unless path is absent.
+func assertNotExist(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Errorf("%s still exists, want it removed", path)
+	}
+}
+
+// assertExists fails unless path is present.
+func assertExists(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Lstat(path); err != nil {
+		t.Errorf("%s is missing: %v", path, err)
+	}
+}
+
+func TestListLinkedScopedPackage(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	linkPackage(t, linker, filepath.Join(tmpDir, "store"), "@org/my-package")
+
+	assertLinked(t, linker, "@org/my-package")
+}
+
+func TestListLinkedTwoPackagesInOneScope(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	storeRoot := filepath.Join(tmpDir, "store")
+	linkPackage(t, linker, storeRoot, "@org/pkg-a")
+	linkPackage(t, linker, storeRoot, "@org/pkg-b")
+
+	assertLinked(t, linker, "@org/pkg-a", "@org/pkg-b")
+}
+
+func TestListLinkedMixesScopedAndUnscopedPackages(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	storeRoot := filepath.Join(tmpDir, "store")
+	for _, pkgName := range []string{"plain-package", "@org/pkg-a", "@org/pkg-b", "@other/pkg-c"} {
+		linkPackage(t, linker, storeRoot, pkgName)
+	}
+
+	assertLinked(t, linker, "plain-package", "@org/pkg-a", "@org/pkg-b", "@other/pkg-c")
+}
+
+// TestListLinkedToleratesAScopeRemovedMidListing drives ListLinked against the
+// interleaving this package creates for itself: Unlink deletes a scope
+// directory the moment it empties, and ListLinked reads the scope directories
+// one at a time after listing them, so a scope can vanish between the two
+// reads. A scope that goes must drop out of the listing, not fail it — the
+// same way a missing .lnpm is reported as no packages rather than an error.
+//
+// The interleaving is reproduced rather than simulated, so the proof runs one
+// way only: once the ENOENT is skipped the test cannot fail, while without the
+// skip it fails as soon as the window is hit. The filler scopes widen that
+// window by giving the listing loop other scopes to read before it reaches the
+// one being removed.
+func TestListLinkedToleratesAScopeRemovedMidListing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows reports a delete-pending directory as ERROR_ACCESS_DENIED, " +
+			"which is indistinguishable from a genuine permission failure, so " +
+			"scopeVanished deliberately does not treat it as a vanished scope " +
+			"(see scope_windows.go, TestScopeVanished, and #170/#236): a scope " +
+			"removed mid-listing is still reported as an error on windows")
+	}
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	lnpmDir := filepath.Join(projectPath, ".lnpm")
+
+	// "@filler-NNN" sorts before "@zzz", and ReadDir returns entries sorted, so
+	// the loop reaches the scope under test last.
+	for i := 0; i < 200; i++ {
+		if err := os.MkdirAll(filepath.Join(lnpmDir, fmt.Sprintf("@filler-%03d", i), "pkg"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	linker := New(projectPath)
+	done := make(chan struct{})
+	// Wait for the writer even when an assertion below ends the test, so it
+	// cannot report a failure after the test has finished.
+	defer func() { <-done }()
+
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			if err := os.MkdirAll(filepath.Join(lnpmDir, "@zzz", "pkg"), 0755); err != nil {
+				t.Errorf("failed to recreate the scope: %v", err)
+				return
+			}
+			if err := linker.Unlink("@zzz/pkg"); err != nil {
+				t.Errorf("Unlink() error: %v", err)
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+
+		linked, err := linker.ListLinked()
+		if err != nil {
+			t.Fatalf("ListLinked() failed while a scope was being removed: %v", err)
+		}
+		if slices.Contains(linked, "@zzz") {
+			t.Fatalf("ListLinked() reported the bare scope @zzz: %v", linked)
+		}
+	}
+}
+
+func TestUnlinkScopedPackageKeepsScopeWithAnotherPackage(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	storeRoot := filepath.Join(tmpDir, "store")
+	linkPackage(t, linker, storeRoot, "@org/pkg-a")
+	linkPackage(t, linker, storeRoot, "@org/pkg-b")
+
+	if err := linker.Unlink("@org/pkg-a"); err != nil {
+		t.Fatalf("Unlink() error: %v", err)
+	}
+
+	assertExists(t, filepath.Join(projectPath, ".lnpm", "@org", "pkg-b"))
+	assertExists(t, filepath.Join(projectPath, "node_modules", "@org", "pkg-b"))
+	assertNotExist(t, filepath.Join(projectPath, ".lnpm", "@org", "pkg-a"))
+	assertLinked(t, linker, "@org/pkg-b")
 }
 
 func TestCopyFile(t *testing.T) {

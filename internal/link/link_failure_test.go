@@ -340,6 +340,28 @@ func TestUnlinkRemovesEmptyLnpmDir(t *testing.T) {
 	}
 }
 
+// TestUnlinkScopedPackageRemovesEmptyScopeDirectories is the scoped counterpart
+// of TestUnlinkRemovesEmptyLnpmDir. A scoped package leaves a scope directory
+// behind under both .lnpm and node_modules, and until that goes the empty-.lnpm
+// cleanup above can never fire for a scoped package.
+func TestUnlinkScopedPackageRemovesEmptyScopeDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+
+	linker := New(projectPath)
+	linkPackage(t, linker, filepath.Join(tmpDir, "store"), "@org/my-package")
+
+	if err := linker.Unlink("@org/my-package"); err != nil {
+		t.Fatalf("Unlink() error: %v", err)
+	}
+
+	assertNotExist(t, filepath.Join(projectPath, ".lnpm", "@org"))
+	assertNotExist(t, filepath.Join(projectPath, "node_modules", "@org"))
+	// With the scope directory gone, the empty-.lnpm cleanup fires.
+	assertNotExist(t, filepath.Join(projectPath, ".lnpm"))
+	assertLinked(t, linker)
+}
+
 // TestLinkSourceRejectsUnusableSource drives LinkSource's guards on the source
 // directory recorded when the package was published. That directory can have
 // been deleted or replaced since, and linking .lnpm/{package} at it anyway

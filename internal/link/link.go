@@ -389,14 +389,38 @@ func (l *Linker) Unlink(packageName string) error {
 		return fmt.Errorf("failed to remove node_modules symlink: %w", err)
 	}
 
-	// Clean up empty .lnpm directory if no packages left
-	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
-	entries, err := os.ReadDir(lnpmDir)
-	if err == nil && len(entries) == 0 {
-		_ = os.Remove(lnpmDir)
+	// A scoped package leaves its scope directory behind. Drop it once it holds
+	// no packages, otherwise the empty-.lnpm cleanup below never fires for a
+	// scoped package and the stale scope directory survives.
+	if strings.Contains(packageName, "/") {
+		removeDirIfEmpty(filepath.Dir(lnpmPath))
+		removeDirIfEmpty(filepath.Dir(nodeModulesPath))
 	}
 
+	// Clean up empty .lnpm directory if no packages left
+	removeDirIfEmpty(filepath.Join(l.projectPath, ".lnpm"))
+
 	return nil
+}
+
+// removeDirIfEmpty removes dir when it holds no entries at all.
+//
+// Emptiness is literal, deliberately unlike ListLinked's report: a relink
+// creates its temp directory as a sibling of its target, so a live relink of
+// another package in the same scope leaves a dot-prefixed entry in the scope
+// directory. ListLinked filters those out because they are not packages; this
+// check must not, because removing a directory a relink is writing into would
+// destroy that relink's work.
+//
+// Both discarded errors fail closed, per docs/adr/0001: whether the read or the
+// removal fails, the directory survives and Unlink tidies up less than it could.
+// Nothing the caller asked for is undone, so neither is worth failing an
+// otherwise complete unlink.
+func removeDirIfEmpty(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err == nil && len(entries) == 0 {
+		_ = os.Remove(dir)
+	}
 }
 
 // createNodeModulesSymlink creates a symlink from node_modules/{pkg} to .lnpm/{pkg}
@@ -531,9 +555,37 @@ func (l *Linker) ListLinked() ([]string, error) {
 		// package whose name starts with a dot, which is safe in practice: npm
 		// forbids such names, so one can never have been linked here
 		// (ValidatePackageName itself only rejects "." and "..").
-		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-			packages = append(packages, entry.Name())
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
 		}
+
+		// A scope directory holds packages rather than being one, so descend a
+		// level and report each package under it by its full name. The same
+		// dot-prefixed skip applies here: a relink temp directory is a sibling
+		// of its target, which for a scoped package is inside the scope.
+		if strings.HasPrefix(entry.Name(), "@") {
+			scopeEntries, err := os.ReadDir(filepath.Join(lnpmDir, entry.Name()))
+			if err != nil {
+				// Unlink removes a scope directory as soon as it empties, so a
+				// concurrent unlink of the last package in this scope can delete
+				// it between the two reads. Treat that as the scope simply being
+				// gone, matching how a missing .lnpm is not an error above.
+				// What "gone" looks like is platform-specific, so ask.
+				if scopeVanished(err) {
+					continue
+				}
+				return nil, err
+			}
+			for _, scoped := range scopeEntries {
+				if scoped.IsDir() && !strings.HasPrefix(scoped.Name(), ".") {
+					// A package name always uses "/", on every platform.
+					packages = append(packages, entry.Name()+"/"+scoped.Name())
+				}
+			}
+			continue
+		}
+
+		packages = append(packages, entry.Name())
 	}
 	return packages, nil
 }
