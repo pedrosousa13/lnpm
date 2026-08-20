@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -113,7 +115,7 @@ func installBashCompletion() error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	var compDir string
+	var systemDir string
 	if runtime.GOOS == "darwin" {
 		// Try Homebrew location first
 		brewPrefix := os.Getenv("HOMEBREW_PREFIX")
@@ -123,33 +125,35 @@ func installBashCompletion() error {
 				brewPrefix = "/opt/homebrew" // Default for Apple Silicon
 			}
 		}
-		compDir = filepath.Join(brewPrefix, "etc", "bash_completion.d")
-
-		// Fallback to user directory if Homebrew dir doesn't exist
-		if _, err := os.Stat(compDir); os.IsNotExist(err) {
-			compDir = filepath.Join(home, ".bash_completion.d")
-		}
+		systemDir = filepath.Join(brewPrefix, "etc", "bash_completion.d")
 	} else {
-		// Linux - try system directory, fall back to user
-		compDir = "/etc/bash_completion.d"
-		if _, err := os.Stat(compDir); os.IsNotExist(err) {
-			compDir = filepath.Join(home, ".bash_completion.d")
-		}
+		systemDir = "/etc/bash_completion.d"
 	}
 
-	if err := os.MkdirAll(compDir, 0755); err != nil {
-		return fmt.Errorf("failed to create completion directory: %w", err)
+	_, err = installBashCompletionInto(home, systemDir, filepath.Join(home, ".bash_completion.d"))
+	return err
+}
+
+// installBashCompletionInto writes the completion script to systemDir, falling
+// back to fallbackDir when systemDir does not exist or will not take the write,
+// and prints the setup instructions for wherever it landed. It returns the
+// directory written to.
+func installBashCompletionInto(home, systemDir, fallbackDir string) (string, error) {
+	compDir := systemDir
+	if _, err := os.Stat(compDir); os.IsNotExist(err) {
+		compDir = fallbackDir
 	}
 
-	compFile := filepath.Join(compDir, "lnpm")
-	file, err := os.Create(compFile)
+	compFile, err := writeBashCompletionFile(compDir)
+	// The system directory usually exists but belongs to root, so a permission
+	// error there means the user directory instead - not a failed install.
+	// Anything else (a full disk, a read-only filesystem) still surfaces.
+	if err != nil && compDir != fallbackDir && errors.Is(err, fs.ErrPermission) {
+		compDir = fallbackDir
+		compFile, err = writeBashCompletionFile(compDir)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to create completion file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	if err := rootCmd.GenBashCompletion(file); err != nil {
-		return fmt.Errorf("failed to generate completion: %w", err)
+		return "", err
 	}
 
 	fmt.Printf("✓ Installed bash completion to %s\n\n", compFile)
@@ -163,7 +167,28 @@ func installBashCompletion() error {
 
 	fmt.Println("Then reload your shell: exec bash")
 
-	return nil
+	return compDir, nil
+}
+
+// writeBashCompletionFile generates the completion script into compDir and
+// returns the file it wrote.
+func writeBashCompletionFile(compDir string) (string, error) {
+	if err := os.MkdirAll(compDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create completion directory: %w", err)
+	}
+
+	compFile := filepath.Join(compDir, "lnpm")
+	file, err := os.Create(compFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to create completion file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	if err := rootCmd.GenBashCompletion(file); err != nil {
+		return "", fmt.Errorf("failed to generate completion: %w", err)
+	}
+
+	return compFile, nil
 }
 
 func installFishCompletion() error {
