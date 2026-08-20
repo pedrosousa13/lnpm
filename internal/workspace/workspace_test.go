@@ -3,6 +3,7 @@ package workspace
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,80 @@ func TestExpandGlobsSkipsDirectoriesWithoutPackageJSON(t *testing.T) {
 	}
 
 	assertPackages(t, packages, []string{pkgA})
+}
+
+func TestExpandGlobsMalformedNegationFailsAndKeepsNegatedPackageOut(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/public-api")
+	writePackage(t, root, "packages/internal-secret")
+
+	packages, err := expandGlobs(root, []string{"packages/*", "!packages/[internal"})
+	if err == nil {
+		t.Fatalf("Expected an error for the malformed negation, got nil and packages %v", packages)
+	}
+	if !strings.Contains(err.Error(), "packages/[internal") {
+		t.Errorf("Expected the error to name the offending pattern, got: %v", err)
+	}
+	if len(packages) != 0 {
+		t.Errorf("Expected no packages alongside the error, got %v", packages)
+	}
+}
+
+func TestExpandGlobsMalformedIncludeFails(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/public-api")
+
+	packages, err := expandGlobs(root, []string{"packages/[bad"})
+	if err == nil {
+		t.Fatalf("Expected an error for the malformed include, got nil and packages %v", packages)
+	}
+	if !strings.Contains(err.Error(), "packages/[bad") {
+		t.Errorf("Expected the error to name the offending pattern, got: %v", err)
+	}
+}
+
+func TestDetectPackageJSONMalformedPatternReturnsError(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/public-api")
+	writePackage(t, root, "packages/internal-secret")
+
+	manifest := `{"name":"root","workspaces":["packages/*","!packages/[internal"]}`
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("Failed to write package.json: %v", err)
+	}
+
+	ws, err := Detect(root)
+	if err == nil {
+		t.Fatalf("Expected an error for the malformed pattern, got nil and workspace %+v", ws)
+	}
+	if !strings.Contains(err.Error(), "packages/[internal") {
+		t.Errorf("Expected the error to name the offending pattern, got: %v", err)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+func TestDetectPNPMWorkspaceMalformedPatternReturnsError(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/public-api")
+	writePackage(t, root, "packages/internal-secret")
+
+	yaml := "packages:\n  - 'packages/*'\n  - '!packages/[internal'\n"
+	if err := os.WriteFile(filepath.Join(root, "pnpm-workspace.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("Failed to write pnpm-workspace.yaml: %v", err)
+	}
+
+	ws, err := Detect(root)
+	if err == nil {
+		t.Fatalf("Expected an error for the malformed pattern, got nil and workspace %+v", ws)
+	}
+	if !strings.Contains(err.Error(), "packages/[internal") {
+		t.Errorf("Expected the error to name the offending pattern, got: %v", err)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
 }
 
 func TestDetectPNPMWorkspaceExcludesNegatedPackage(t *testing.T) {

@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +32,18 @@ func Detect(startPath string) (*Workspace, error) {
 	current := startPath
 	for {
 		ws, err := detectWorkspaceAt(current)
+		// A malformed glob pattern is a config error, not a "no workspace
+		// here" signal. Walking past it would end in "no workspace found",
+		// which hides the offending pattern from the user, and docs/adr/0001
+		// requires a malformed pattern to abort naming the pattern. Every
+		// other failure keeps the existing walk-up behaviour.
+		//
+		// doublestar.ErrBadPattern is path.ErrBadPattern, so this guard would
+		// also catch a bad-pattern error raised by path.Match anywhere under
+		// detectWorkspaceAt. Nothing under there calls path.Match today.
+		if errors.Is(err, doublestar.ErrBadPattern) {
+			return nil, err
+		}
 		if err == nil && ws != nil {
 			return ws, nil
 		}
@@ -156,6 +170,10 @@ func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
 // expandGlobs expands workspace glob patterns to actual package directories.
 // Patterns prefixed with "!" are negations: they are collected while the
 // included patterns are expanded, then subtracted from the result.
+//
+// A pattern that will not parse fails the whole expansion, includes and
+// negations alike: a swallowed negation failure publishes the package the
+// config excluded, which docs/adr/0001 classifies as a bug.
 func expandGlobs(root string, patterns []string) ([]string, error) {
 	var packages []string
 	var negations []string
@@ -168,10 +186,14 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 			continue
 		}
 
-		// Expand glob
+		// Expand glob. The only failure Glob can report here is a malformed
+		// pattern, so this aborts on a config typo and never on a transient
+		// filesystem condition. An include failure fails closed, which
+		// docs/adr/0001 leaves open, but it follows the negation loop's rule
+		// so the two are handled alike.
 		matches, err := doublestar.Glob(os.DirFS(root), pattern)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("failed to expand workspace pattern %q: %w", pattern, err)
 		}
 
 		for _, match := range matches {
@@ -198,7 +220,7 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 	for _, pattern := range negations {
 		matches, err := doublestar.Glob(os.DirFS(root), pattern)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("failed to expand workspace pattern %q: %w", "!"+pattern, err)
 		}
 
 		for _, match := range matches {
