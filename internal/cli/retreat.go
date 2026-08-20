@@ -66,7 +66,12 @@ func RunRetreat(force bool, runInstall bool) error {
 		}
 
 		fmt.Println("  - Delete .lnpm/ directory")
-		fmt.Printf("  - Save lnpm.lock as %s, for 'lnpm restore'\n", lockfile.RetreatFileName)
+		// Only when there is a lock file to save. A project with a stray .lnpm/
+		// and no lock file reaches here, and --force would print nothing about
+		// the lock file, because there is nothing to move aside.
+		if _, err := os.Stat(lockfile.Path(cwd)); err == nil {
+			fmt.Printf("  - Save lnpm.lock as %s, for 'lnpm restore'\n", lockfile.RetreatFileName)
+		}
 		return nil
 	}
 
@@ -178,14 +183,17 @@ func RunRetreat(force bool, runInstall bool) error {
 // The lock file being stashed then describes only what has been linked since,
 // and moving it over the snapshot would drop every package the earlier retreat
 // unlinked and the restore never got to. So the two are merged instead, this
-// retreat's entries winning any name they share: they are the newer record, and
-// the specifiers they carry are the ones just written back into package.json.
+// retreat's entries winning any name they share: they are the newer record of
+// the link. The exception is the original version, which is not a fact about the
+// link at all and is kept from the snapshot when the newer entry has none - see
+// the merge loop.
 func stashLockForRestore(cwd string, lock *lockfile.LockFile) {
 	if _, err := os.Stat(lockfile.Path(cwd)); err != nil {
 		// No lock file means there is nothing to save and nothing to say. Any
 		// other stat failure is worth a word, since the file may still be there.
 		if !os.IsNotExist(err) {
 			fmt.Printf("  %s Could not check lnpm.lock: %v\n", iconWarn(), err)
+			fmt.Printf("  %s The links are already gone; if lnpm.lock is still there, re-run 'lnpm retreat' to save it for 'lnpm restore'\n", iconWarn())
 		}
 		return
 	}
@@ -212,11 +220,31 @@ func stashLockForRestore(cwd string, lock *lockfile.LockFile) {
 
 	for _, name := range lock.List() {
 		entry, _ := lock.Get(name)
+		// The one field the newer entry must not win on when it is empty. Every
+		// other field describes the link, which the newer entry describes
+		// better; the original version describes what package.json held before
+		// lnpm ever touched it, and once lost it cannot be worked out again -
+		// later retreats would drop the package from package.json instead of
+		// putting the user's range back.
+		//
+		// It goes missing when the earlier retreat could not write package.json,
+		// which it only warns about: package.json then still holds the lnpm
+		// reference, so the `lnpm add` that produced this entry read that as the
+		// original version and recorded nothing.
+		if entry.OriginalVersion == "" {
+			if priorEntry, ok := prior.Get(name); ok {
+				entry.OriginalVersion = priorEntry.OriginalVersion
+			}
+		}
 		prior.Add(name, entry)
 	}
 	if err := prior.SaveRetreat(cwd); err != nil {
 		fmt.Printf("  %s Failed to save lnpm.lock into %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
-		fmt.Printf("  %s lnpm.lock is still in place; 'lnpm restore' has nothing to work from\n", iconWarn())
+		// The snapshot is written through a temp file and a rename, so the
+		// earlier retreat's record is intact and restore can still put those
+		// packages back. Only this retreat's own entries are missing from it,
+		// and they are still in lnpm.lock, which is still in place.
+		fmt.Printf("  %s lnpm.lock is still in place and %s still holds the earlier retreat; re-run 'lnpm retreat' to merge them\n", iconWarn(), lockfile.RetreatFileName)
 		return
 	}
 	if err := os.Remove(lockfile.Path(cwd)); err != nil {

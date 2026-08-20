@@ -533,3 +533,155 @@ func TestRetreatWritesRestoreSnapshot(t *testing.T) {
 		t.Errorf("Expected snapshot-pkg-a to record the original specifier ^1.0.0, got %q", entry.OriginalVersion)
 	}
 }
+
+// TestRetreatPreviewDoesNotPromiseToSaveALockFileThatIsNotThere is the preview
+// half of TestRetreatWithoutALockFileSavesNothing. A project with a stray .lnpm/
+// and no lock file has nothing to save, and --force says nothing about it, so
+// the preview of that same run must not announce a snapshot either.
+func TestRetreatPreviewDoesNotPromiseToSaveALockFileThatIsNotThere(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("no-lock-preview-project")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".lnpm"), 0755); err != nil {
+		t.Fatalf("Failed to create .lnpm/: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := cli.RunRetreat(false, false); err != nil {
+			t.Fatalf("Retreat without force failed: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "lnpm.lock") {
+		t.Errorf("Expected the preview to make no claim about a lock file there is none of, got:\n%s", out)
+	}
+}
+
+// TestRetreatMergeKeepsAnOriginalVersionTheNewerEntryLost covers the one field a
+// merge must not decide by "newest wins".
+//
+// Every other field of an entry describes the link, which the newer entry
+// describes better. The original version describes what package.json held before
+// lnpm ever touched it, and it goes missing exactly when a retreat could not
+// write package.json - which retreat only warns about. package.json is then left
+// holding the lnpm reference, so the next 'lnpm add' reads that as the original
+// version and records nothing, and an empty field allowed to win would take the
+// user's range with it for good: every later retreat would drop the package from
+// package.json instead of restoring the range.
+func TestRetreatMergeKeepsAnOriginalVersionTheNewerEntryLost(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("keep-range-pkg")
+	projectDir := env.newProject("keep-range-project")
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":         "keep-range-project",
+		"version":      "1.0.0",
+		"dependencies": map[string]interface{}{"keep-range-pkg": "^1.0.0"},
+	})
+	env.addPkg(projectDir, "keep-range-pkg", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+	if snapshot, err := lockfile.LoadRetreat(projectDir); err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	} else if entry, _ := snapshot.Get("keep-range-pkg"); entry.OriginalVersion != "^1.0.0" {
+		t.Fatalf("Expected the snapshot to record ^1.0.0, got %q", entry.OriginalVersion)
+	}
+
+	// The state a retreat whose package.json write failed leaves behind: the
+	// lnpm reference is still in package.json, so the add that follows has no
+	// original version to read.
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":         "keep-range-project",
+		"version":      "1.0.0",
+		"dependencies": map[string]interface{}{"keep-range-pkg": "file:.lnpm/keep-range-pkg"},
+	})
+	env.addPkg(projectDir, "keep-range-pkg", false, false)
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		if entry, _ := lock.Get("keep-range-pkg"); entry.OriginalVersion != "" {
+			t.Fatalf("Expected the re-add to record no original version, got %q", entry.OriginalVersion)
+		}
+	})
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat a second time: %v", err)
+	}
+
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("Expected a retreat snapshot after the second retreat, got none")
+	}
+	entry, ok := snapshot.Get("keep-range-pkg")
+	if !ok {
+		t.Fatalf("Expected keep-range-pkg in the snapshot, it holds %v", snapshot.List())
+	}
+	if entry.OriginalVersion != "^1.0.0" {
+		t.Errorf("OriginalVersion = %q, want the ^1.0.0 the earlier retreat recorded", entry.OriginalVersion)
+	}
+}
+
+// TestRetreatKeepsTheSnapshotWhenTheMergeCannotBeWritten covers the merge's
+// failure path, which the rename branch's message does not fit.
+//
+// When a rename cannot save lnpm.lock there is no snapshot and restore really
+// does have nothing to work from. When a merge cannot be written there is one,
+// holding everything the earlier retreat unlinked; it is only this retreat's own
+// additions that are missing, and they are still in lnpm.lock, which is still in
+// place. Saying otherwise pushes the user towards deleting the file the merge
+// exists to protect.
+//
+// And the snapshot has to be intact to say so: the write goes through a temp
+// file and a rename precisely so that a failure cannot leave the record it was
+// merging into truncated.
+func TestRetreatKeepsTheSnapshotWhenTheMergeCannotBeWritten(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("merge-fail-old")
+	env.simplePkg("merge-fail-new")
+	projectDir := env.newProject("merge-fail-project")
+	env.addPkg(projectDir, "merge-fail-old", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	// Read-only snapshot: the merge can read it and cannot write it back.
+	snapshotPath := lockfile.RetreatPath(projectDir)
+	if err := os.Chmod(snapshotPath, 0444); err != nil {
+		t.Fatalf("Failed to chmod the snapshot: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(snapshotPath, 0644) })
+
+	env.addPkg(projectDir, "merge-fail-new", false, false)
+	env.chdir(projectDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunRetreat(true, false); err != nil {
+			t.Fatalf("Failed to retreat a second time: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "has nothing to work from") {
+		t.Errorf("Expected no claim that restore has nothing to work from; the snapshot is right there. Got:\n%s", out)
+	}
+	if !strings.Contains(out, "still holds the earlier retreat") {
+		t.Errorf("Expected the report to say the snapshot survived, got:\n%s", out)
+	}
+
+	// Both records survive: lnpm.lock was not removed, and the snapshot the
+	// merge could not write still holds what the first retreat unlinked.
+	env.AssertLockfileExists(projectDir, true)
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("Expected the snapshot to survive a failed merge, got none")
+	}
+	if !snapshot.Has("merge-fail-old") {
+		t.Errorf("Expected the earlier retreat's record to survive intact, snapshot holds %v", snapshot.List())
+	}
+}
