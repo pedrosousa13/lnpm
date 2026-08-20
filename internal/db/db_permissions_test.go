@@ -126,7 +126,27 @@ func TestOpen_DBDirectoryPermissions(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	t.Setenv("LNPM_STORE", tmpDir)
+	// Point the store at a path that does not exist yet, so the directory under
+	// test is the one initDB creates rather than the one t.TempDir() creates.
+	// The singleton has to be reset for initDB to run at all.
+	storeDir := filepath.Join(tmpDir, "store")
+	t.Setenv("LNPM_STORE", storeDir)
+	ResetForTesting()
+	defer ResetForTesting()
+
+	// Reference directory, created with the same mode argument initDB uses.
+	// Comparing against it pins the relationship the code is responsible for -
+	// the mode a plain os.MkdirAll(path, 0755) yields here - instead of a
+	// literal that only holds under a permissive umask. A Chmod after creation
+	// would ignore the umask and force 0755, and this comparison catches that.
+	refDir := filepath.Join(tmpDir, "reference")
+	if err := os.MkdirAll(refDir, 0755); err != nil {
+		t.Fatalf("Failed to create reference dir: %v", err)
+	}
+	refInfo, err := os.Stat(refDir)
+	if err != nil {
+		t.Fatalf("Failed to stat reference dir: %v", err)
+	}
 
 	// Open database
 	db, err := GetDB()
@@ -138,16 +158,14 @@ func TestOpen_DBDirectoryPermissions(t *testing.T) {
 	}()
 
 	// Check db directory permissions
-	dbDir := tmpDir
-	info, err := os.Stat(dbDir)
+	info, err := os.Stat(storeDir)
 	if err != nil {
 		t.Fatalf("Failed to stat db directory: %v", err)
 	}
 
-	mode := info.Mode() & 0777
-	expectedMode := os.FileMode(0755)
-	if mode != expectedMode {
-		t.Errorf("Expected db directory permissions %o, got %o", expectedMode, mode)
+	if mode := info.Mode().Perm(); mode != refInfo.Mode().Perm() {
+		t.Errorf("Expected db directory permissions %o (as os.MkdirAll(path, 0755) yields under this umask), got %o",
+			refInfo.Mode().Perm(), mode)
 	}
 }
 

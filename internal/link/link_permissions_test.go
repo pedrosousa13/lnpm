@@ -1,13 +1,65 @@
 package link
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
+
+// referenceSeq gives every reference artifact a path of its own. Naming them
+// after the mode instead would make a second call with a read-only mode reopen
+// the first call's artifact, which fails outright for a file: os.WriteFile
+// opens O_WRONLY, and 0444 is not writable.
+var referenceSeq atomic.Uint64
+
+// referenceDirMode returns the permission bits os.MkdirAll(path, mode) actually
+// produces inside dir under the process umask.
+//
+// Permission assertions compare against this rather than against mode itself,
+// because mode is only what the caller asked for: creation applies the umask, so
+// os.MkdirAll(path, 0755) yields 0755 under umask 022 and 0700 under umask 0077.
+// Asserting the literal pins one umask and makes the suite unrunnable under any
+// other. Asserting the reference pins the relationship the linker is actually
+// responsible for - "the mode a plain create with this argument yields here" -
+// and still fails if creation stops respecting the umask, which is exactly the
+// bug shape a Chmod after creation produces, since Chmod is not masked.
+//
+// These helpers live here rather than in link_umask_unix_test.go because they
+// use only os, and the tests calling them are compiled on every platform even
+// though they skip on Windows.
+func referenceDirMode(t *testing.T, dir string, mode os.FileMode) os.FileMode {
+	t.Helper()
+	ref := filepath.Join(dir, fmt.Sprintf(".reference-dir-%o-%d", mode.Perm(), referenceSeq.Add(1)))
+	if err := os.MkdirAll(ref, mode); err != nil {
+		t.Fatalf("Failed to create reference directory: %v", err)
+	}
+	info, err := os.Stat(ref)
+	if err != nil {
+		t.Fatalf("Failed to stat reference directory: %v", err)
+	}
+	return info.Mode().Perm()
+}
+
+// referenceFileMode is referenceDirMode's counterpart for files: the permission
+// bits os.WriteFile(path, data, mode) actually produces inside dir under the
+// process umask.
+func referenceFileMode(t *testing.T, dir string, mode os.FileMode) os.FileMode {
+	t.Helper()
+	ref := filepath.Join(dir, fmt.Sprintf(".reference-file-%o-%d", mode.Perm(), referenceSeq.Add(1)))
+	if err := os.WriteFile(ref, []byte("reference"), mode); err != nil {
+		t.Fatalf("Failed to create reference file: %v", err)
+	}
+	info, err := os.Stat(ref)
+	if err != nil {
+		t.Fatalf("Failed to stat reference file: %v", err)
+	}
+	return info.Mode().Perm()
+}
 
 // TestLink_ReadOnlyDestination tests linking to read-only destination
 func TestLink_ReadOnlyDestination(t *testing.T) {
@@ -142,6 +194,8 @@ func TestLink_DirectoryPermissions(t *testing.T) {
 		t.Fatalf("Failed to link: %v", err)
 	}
 
+	expectedMode := referenceDirMode(t, tmpDir, 0755)
+
 	// Check .lnpm directory permissions
 	lnpmDir := filepath.Join(projectDir, ".lnpm")
 	info, err := os.Stat(lnpmDir)
@@ -149,10 +203,8 @@ func TestLink_DirectoryPermissions(t *testing.T) {
 		t.Fatalf("Failed to stat .lnpm dir: %v", err)
 	}
 
-	mode := info.Mode() & 0777
-	expectedMode := os.FileMode(0755)
-	if mode != expectedMode {
-		t.Errorf("Expected .lnpm mode %o, got %o", expectedMode, mode)
+	if mode := info.Mode().Perm(); mode != expectedMode {
+		t.Errorf("Expected .lnpm mode %o (as os.MkdirAll(path, 0755) yields under this umask), got %o", expectedMode, mode)
 	}
 
 	// Check nested directory permissions
@@ -162,9 +214,8 @@ func TestLink_DirectoryPermissions(t *testing.T) {
 		t.Fatalf("Failed to stat nested dir: %v", err)
 	}
 
-	mode = info.Mode() & 0777
-	if mode != expectedMode {
-		t.Errorf("Expected nested dir mode %o, got %o", expectedMode, mode)
+	if mode := info.Mode().Perm(); mode != expectedMode {
+		t.Errorf("Expected nested dir mode %o (as os.MkdirAll(path, 0755) yields under this umask), got %o", expectedMode, mode)
 	}
 }
 
@@ -198,17 +249,10 @@ func TestLink_PackageDirectoryRespectsUmask(t *testing.T) {
 	}
 	fileInfos := pack.FileInfoFromStore(storeDir, files)
 
-	// Reference directory, created the way Link used to create the package
-	// directory. Comparing against it pins umask-relative behaviour rather
-	// than a hardcoded mode.
-	refDir := filepath.Join(tmpDir, "reference")
-	if err := os.MkdirAll(refDir, 0755); err != nil {
-		t.Fatalf("Failed to create reference dir: %v", err)
-	}
-	refInfo, err := os.Stat(refDir)
-	if err != nil {
-		t.Fatalf("Failed to stat reference dir: %v", err)
-	}
+	// Reference mode, from a directory created the way Link used to create the
+	// package directory. Comparing against it pins umask-relative behaviour
+	// rather than a hardcoded mode.
+	expectedMode := referenceDirMode(t, tmpDir, 0755)
 
 	linker := New(projectDir)
 	if _, err := linker.Link("test-pkg", storeDir, fileInfos); err != nil {
@@ -220,9 +264,9 @@ func TestLink_PackageDirectoryRespectsUmask(t *testing.T) {
 		t.Fatalf("Failed to stat package dir: %v", err)
 	}
 
-	if pkgInfo.Mode().Perm() != refInfo.Mode().Perm() {
+	if pkgInfo.Mode().Perm() != expectedMode {
 		t.Errorf("Expected .lnpm/test-pkg mode %o (as os.MkdirAll(path, 0755) yields under this umask), got %o",
-			refInfo.Mode().Perm(), pkgInfo.Mode().Perm())
+			expectedMode, pkgInfo.Mode().Perm())
 	}
 }
 
@@ -268,10 +312,9 @@ func TestLink_NodeModulesPermissions(t *testing.T) {
 		t.Fatalf("Failed to stat node_modules: %v", err)
 	}
 
-	mode := info.Mode() & 0777
-	expectedMode := os.FileMode(0755)
-	if mode != expectedMode {
-		t.Errorf("Expected node_modules mode %o, got %o", expectedMode, mode)
+	expectedMode := referenceDirMode(t, tmpDir, 0755)
+	if mode := info.Mode().Perm(); mode != expectedMode {
+		t.Errorf("Expected node_modules mode %o (as os.MkdirAll(path, 0755) yields under this umask), got %o", expectedMode, mode)
 	}
 
 	// Check symlink exists
@@ -323,10 +366,9 @@ func TestLink_ScopedPackageDirectoryPermissions(t *testing.T) {
 		t.Fatalf("Failed to stat @org dir: %v", err)
 	}
 
-	mode := info.Mode() & 0777
-	expectedMode := os.FileMode(0755)
-	if mode != expectedMode {
-		t.Errorf("Expected @org dir mode %o, got %o", expectedMode, mode)
+	expectedMode := referenceDirMode(t, tmpDir, 0755)
+	if mode := info.Mode().Perm(); mode != expectedMode {
+		t.Errorf("Expected @org dir mode %o (as os.MkdirAll(path, 0755) yields under this umask), got %o", expectedMode, mode)
 	}
 }
 
@@ -481,7 +523,22 @@ func TestLink_PreservesVariousPermissions(t *testing.T) {
 		t.Fatalf("Failed to link: %v", err)
 	}
 
-	// Verify each file's permissions
+	// Verify each file's permissions.
+	//
+	// The fixture above is written with os.WriteFile(path, data, tc.mode), so it
+	// is masked by the umask exactly as the reference is, and the two degrade
+	// together: under umask 0077 the 0755 case and its reference both land at
+	// 0700, and this loop cannot see an executable bit being stripped. What it
+	// does pin is that the linked file carries the store file's *actual* mode.
+	// copyFile chmods to srcInfo.Mode() for that reason; were it to use the
+	// recorded pack.FileEntryData.Mode instead, the 0644 case would meet a 0600
+	// reference under umask 0077 and fail here.
+	//
+	// The separate guarantee - that a mode survives a restrictive umask at all -
+	// belongs to TestCopyFile_PreservesModeUnderRestrictiveUmask, which calls
+	// copyFile directly. It has to: store and project share one temp directory
+	// here, so Link hard links and the linked file shares the store entry's
+	// inode rather than being copied.
 	for _, tc := range testCases {
 		linkedFile := filepath.Join(projectDir, ".lnpm", "perm-pkg", tc.name)
 		info, err := os.Stat(linkedFile)
@@ -490,9 +547,10 @@ func TestLink_PreservesVariousPermissions(t *testing.T) {
 			continue
 		}
 
-		actualMode := info.Mode() & 0777
-		if actualMode != tc.mode {
-			t.Errorf("File %s: expected mode %o, got %o", tc.name, tc.mode, actualMode)
+		expectedMode := referenceFileMode(t, tmpDir, tc.mode)
+		if actualMode := info.Mode().Perm(); actualMode != expectedMode {
+			t.Errorf("File %s: expected mode %o (as os.WriteFile(path, data, %o) yields under this umask), got %o",
+				tc.name, expectedMode, tc.mode, actualMode)
 		}
 	}
 }
