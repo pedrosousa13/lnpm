@@ -195,3 +195,76 @@ func TestScopedPackages(t *testing.T) {
 		t.Error("Loaded lock file missing @another-org/utils")
 	}
 }
+
+// TestPathAndRetreatPath pins the two file names the CLI has to agree on: the
+// live lock file, and the snapshot `lnpm retreat` leaves for `lnpm restore`.
+func TestPathAndRetreatPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if got, want := Path(tmpDir), filepath.Join(tmpDir, "lnpm.lock"); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+	if got, want := RetreatPath(tmpDir), filepath.Join(tmpDir, "lnpm.lock.retreat"); got != want {
+		t.Errorf("RetreatPath() = %q, want %q", got, want)
+	}
+}
+
+// TestLoadRetreatMissing checks that an absent snapshot is reported as "there is
+// nothing here" rather than as an empty lock file, because the two mean
+// different things to restore: no snapshot at all is a no-op, an empty one is a
+// retreat that had nothing to record.
+func TestLoadRetreatMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	lock, err := LoadRetreat(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadRetreat() error: %v", err)
+	}
+	if lock != nil {
+		t.Errorf("LoadRetreat() = %+v, want nil for a missing snapshot", lock)
+	}
+}
+
+// TestLoadRetreatReadsSnapshot checks that a snapshot written next to the lock
+// file parses with the same format as the lock file itself.
+func TestLoadRetreatReadsSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	lock := &LockFile{Version: currentVersion, Packages: make(map[string]Package)}
+	lock.Add("my-package", Package{Version: "1.2.3", Hash: "abc", OriginalVersion: "^1.0.0"})
+	if err := lock.Save(tmpDir); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+	if err := os.Rename(Path(tmpDir), RetreatPath(tmpDir)); err != nil {
+		t.Fatalf("Rename() error: %v", err)
+	}
+
+	got, err := LoadRetreat(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadRetreat() error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadRetreat() = nil, want the saved snapshot")
+	}
+	pkg, ok := got.Get("my-package")
+	if !ok {
+		t.Fatal("snapshot missing my-package")
+	}
+	if pkg.Version != "1.2.3" || pkg.OriginalVersion != "^1.0.0" {
+		t.Errorf("my-package = %+v, want Version 1.2.3 and OriginalVersion ^1.0.0", pkg)
+	}
+}
+
+// TestLoadRetreatCorrupt checks that an unreadable snapshot is an error, not a
+// silent "nothing to restore".
+func TestLoadRetreatCorrupt(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(RetreatPath(tmpDir), []byte("packages: {not valid yaml"), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	if _, err := LoadRetreat(tmpDir); err == nil {
+		t.Error("LoadRetreat() error = nil, want an error for a corrupt snapshot")
+	}
+}

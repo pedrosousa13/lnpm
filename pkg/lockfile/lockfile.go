@@ -25,22 +25,53 @@ type Package struct {
 }
 
 const (
-	lockFileName   = "lnpm.lock"
-	currentVersion = 1
+	lockFileName = "lnpm.lock"
+	// retreatFileName is the snapshot `lnpm retreat` leaves behind in place of
+	// the lock file it removes, so `lnpm restore` can put the links back.
+	retreatFileName = lockFileName + ".retreat"
+	currentVersion  = 1
 )
+
+// Path returns the lock file path for a project directory.
+func Path(projectPath string) string {
+	return filepath.Join(projectPath, lockFileName)
+}
+
+// RetreatPath returns the path of the retreat snapshot for a project directory.
+func RetreatPath(projectPath string) string {
+	return filepath.Join(projectPath, retreatFileName)
+}
 
 // Load reads a lock file from a project directory
 func Load(projectPath string) (*LockFile, error) {
-	path := filepath.Join(projectPath, lockFileName)
+	lock, err := read(Path(projectPath))
+	if err != nil {
+		return nil, err
+	}
+	if lock == nil {
+		// A missing lock file reads as an empty one.
+		return &LockFile{
+			Version:  currentVersion,
+			Packages: make(map[string]Package),
+		}, nil
+	}
+	return lock, nil
+}
 
+// LoadRetreat reads the retreat snapshot from a project directory. It returns
+// nil when there is no snapshot, which callers must tell apart from a snapshot
+// holding no packages: the first means no retreat has run, the second a retreat
+// that had nothing to record.
+func LoadRetreat(projectPath string) (*LockFile, error) {
+	return read(RetreatPath(projectPath))
+}
+
+// read parses the lock file at path, returning nil when the file does not exist.
+func read(path string) (*LockFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Return empty lock file
-			return &LockFile{
-				Version:  currentVersion,
-				Packages: make(map[string]Package),
-			}, nil
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read lock file: %w", err)
 	}
@@ -60,7 +91,7 @@ func Load(projectPath string) (*LockFile, error) {
 
 // Save writes the lock file to a project directory
 func (l *LockFile) Save(projectPath string) error {
-	path := filepath.Join(projectPath, lockFileName)
+	path := Path(projectPath)
 
 	data, err := yaml.Marshal(l)
 	if err != nil {

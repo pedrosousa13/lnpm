@@ -410,3 +410,49 @@ func assertNoRawGlyphs(t *testing.T, out string) {
 		}
 	}
 }
+
+// TestRetreatWritesRestoreSnapshot covers the first acceptance criterion of
+// `lnpm restore`: `retreat --force` must preserve a record of what it unlinked
+// instead of discarding it, so restore has something to work from. The snapshot
+// stands in for the lock file retreat removes, and carries the same entries.
+func TestRetreatWritesRestoreSnapshot(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("snapshot-pkg-a")
+	env.simplePkg("snapshot-pkg-b")
+	projectDir := env.newProject("snapshot-project")
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":         "snapshot-project",
+		"version":      "1.0.0",
+		"dependencies": map[string]interface{}{"snapshot-pkg-a": "^1.0.0"},
+	})
+	env.addPkg(projectDir, "snapshot-pkg-a", false, false)
+	env.addPkg(projectDir, "snapshot-pkg-b", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	env.AssertLockfileExists(projectDir, false)
+	env.AssertFileExists(lockfile.RetreatPath(projectDir), true)
+
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("Expected a retreat snapshot, got none")
+	}
+	for _, name := range []string{"snapshot-pkg-a", "snapshot-pkg-b"} {
+		entry, ok := snapshot.Get(name)
+		if !ok {
+			t.Fatalf("Expected %s in the retreat snapshot", name)
+		}
+		if entry.Version != "1.0.0" {
+			t.Errorf("Expected %s at 1.0.0 in the snapshot, got %q", name, entry.Version)
+		}
+	}
+	if entry, _ := snapshot.Get("snapshot-pkg-a"); entry.OriginalVersion != "^1.0.0" {
+		t.Errorf("Expected snapshot-pkg-a to record the original specifier ^1.0.0, got %q", entry.OriginalVersion)
+	}
+}

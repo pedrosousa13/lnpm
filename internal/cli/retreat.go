@@ -138,12 +138,14 @@ func RunRetreat(force bool, runInstall bool) error {
 		}
 	}
 
-	// Remove lnpm.lock
-	lockPath := filepath.Join(cwd, "lnpm.lock")
-	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+	// Move lnpm.lock aside rather than deleting it. The rename takes it out of
+	// the project the same way a delete would - nothing resolves lnpm.lock any
+	// more - while keeping the record of what was linked, which is the only
+	// thing 'lnpm restore' can rebuild the links from.
+	if err := os.Rename(lockfile.Path(cwd), lockfile.RetreatPath(cwd)); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("  %s Failed to remove lnpm.lock: %v\n", iconWarn(), err)
 	} else {
-		fmt.Printf("  %s Removed lnpm.lock\n", iconOK())
+		fmt.Printf("  %s Removed lnpm.lock (saved for 'lnpm restore')\n", iconOK())
 	}
 
 	// Run package manager install if requested
