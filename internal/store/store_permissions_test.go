@@ -316,9 +316,16 @@ func TestStore_ReadOnlyDestination(t *testing.T) {
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		t.Fatalf("Failed to create parent dir: %v", err)
 	}
-	// Create final directory as read-only
-	if err := os.Mkdir(destPath, 0555); err != nil {
+	// Create final directory, marked complete as a committed entry is, then
+	// make it read-only
+	if err := os.Mkdir(destPath, 0755); err != nil {
 		t.Fatalf("Failed to create dest dir: %v", err)
+	}
+	if err := writeMarker(destPath, "readonly-hash"); err != nil {
+		t.Fatalf("Failed to mark dest dir complete: %v", err)
+	}
+	if err := os.Chmod(destPath, 0555); err != nil {
+		t.Fatalf("Failed to make dest dir read-only: %v", err)
 	}
 	defer func() {
 		_ = os.Chmod(destPath, 0755) // Cleanup
@@ -434,6 +441,9 @@ func TestExists_WithVariousPermissions(t *testing.T) {
 	pkgPath := store.PackagePath("perm-test", "hash123")
 	if err := os.MkdirAll(pkgPath, 0755); err != nil {
 		t.Fatalf("Failed to create pkg dir: %v", err)
+	}
+	if err := writeMarker(pkgPath, "hash123"); err != nil {
+		t.Fatalf("Failed to mark pkg dir complete: %v", err)
 	}
 
 	// Exists should return true

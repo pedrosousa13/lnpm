@@ -125,20 +125,32 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 				fmt.Println("Aborted.")
 				return nil
 			}
+			removed := 0
+			var freed int64
 			for _, pkg := range packagesToRemove {
 				// Remove from store, but only if the recorded path is actually
 				// inside the store root (guards against a poisoned DB entry).
 				if pkg.StorePath != "" {
 					if isWithinStore(storeRoot, pkg.StorePath) {
-						_ = os.RemoveAll(pkg.StorePath)
+						// The entry is invalidated before its tree is removed,
+						// so an interrupted removal leaves something the store
+						// reports as absent rather than a truncated package.
+						if err := store.RemoveEntry(pkg.StorePath); err != nil {
+							// Keep the database row: it is the only record of
+							// the entry left to delete, and gc can be re-run.
+							fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), pkg.Name, err)
+							continue
+						}
 					} else {
 						fmt.Printf("  ⚠ Skipping %s: store path %q is outside the store root\n", pkg.Name, pkg.StorePath)
 					}
 				}
 				// Remove from database
 				_ = database.DeletePackage(pkg.ID)
+				removed++
+				freed += pkg.TotalSize
 			}
-			fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), len(packagesToRemove), formatSize(totalSize))
+			fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), removed, formatSize(freed))
 		}
 	}
 

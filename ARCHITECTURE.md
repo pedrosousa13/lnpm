@@ -253,6 +253,17 @@ lnpm publish --push
    content-addressed, so an occupied destination already holds this exact
    content.
 
+   Every entry carries a `.lnpm-complete` marker, written as the last file
+   inside the temporary directory and removed before the tree when `lnpm gc`
+   deletes the entry. The store reports an entry as present only when the
+   marker is there, so a deletion interrupted partway reads as absent rather
+   than as a truncated package. Entries written before markers existed are
+   marked once, the first time a command opens the store, and
+   `~/.lnpm/store/.lnpm-markers-backfilled` records that the pass finished. An
+   entry that cannot be marked is skipped and the sentinel is withheld, so the
+   next store open retries it; `lnpm doctor` reports the backfill as pending
+   until it completes.
+
 5. Record in bbolt database
 6. If `--push`, update all linked projects
 
@@ -446,21 +457,26 @@ lnpm gc --older-than 30d
 
 ### `lnpm doctor`
 
-Diagnose and fix common issues.
+Diagnose common issues. Doctor repairs nothing it finds — each finding names
+the command that fixes it instead. It is not otherwise write-free: probing
+whether the store is writable writes and removes a temporary file, and opening
+the database creates it if it is missing.
 
 ```bash
 lnpm doctor
 
 # Output:
-# 🔍 Checking lnpm health...
+# Running lnpm doctor...
 #
-# ✓ Store directory exists
-# ✓ Database is valid
-# ✓ 3 packages in store
-# ✓ 2 active links
-# ⚠ 1 orphaned link found (project deleted)
-#   Run: lnpm gc --fix-links
-# ✓ No cross-filesystem issues detected
+# Checking store directory... ✓ OK
+# Checking database... ✓ OK
+# Checking for orphaned packages... ✓ OK
+# Checking for orphaned links... ⚠ 1 orphaned link(s)
+#   Fix: Run 'lnpm gc --fix-links' to clean up
+# Checking store file integrity... ✓ OK
+# Checking store completeness markers... ✓ OK
+#
+# ⚠ Found 1 warning(s)
 ```
 
 ---
