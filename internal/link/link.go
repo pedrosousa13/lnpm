@@ -35,6 +35,14 @@ const (
 // always add up to the package's file count, so a caller can report the size of
 // a push's actual effect rather than the size of the package.
 //
+// Type is how the linked package is held: what the workers achieved, which is
+// not always what the configuration asked for - a copy that a reflink satisfied
+// is reported as a hard link, and a hard link that the filesystem refused as a
+// copy. A relink that materialised nothing reports how the tree it left in place
+// was built, not a fresh prediction, so re-running a command against an already
+// current package does not turn the recorded type over with nothing having
+// changed.
+//
 // LinkSource has no counterpart because it materialises nothing: there is no
 // per-file work for it to have avoided.
 type Result struct {
@@ -101,7 +109,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// What the last link into this project left behind, what of that is still on
 	// disk, and which of the files now being linked it already holds.
 	keepManifest := !shipsManifestName(files)
-	var prior map[string]linkedFile
+	var prior *linkManifest
 	var present map[string]bool
 	var unexpected int
 	if keepManifest {
@@ -129,7 +137,16 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 		if err := l.createNodeModulesSymlink(packageName); err != nil {
 			return Result{}, err
 		}
-		return Result{Type: linkType, Unchanged: len(files)}, nil
+		// The type reported is the one the tree was built with, not the one
+		// determineLinkType has just predicted: nothing here was materialised,
+		// so the prediction describes work that did not happen. A manifest
+		// written before the type was recorded has none to give, and the
+		// prediction is then the best answer available.
+		reported := linkType
+		if prior.LinkType != "" {
+			reported = prior.LinkType
+		}
+		return Result{Type: reported, Unchanged: len(files)}, nil
 	}
 
 	parentDir := filepath.Dir(lnpmPath)
@@ -333,7 +350,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// temp directory, so it commits with the content and can never describe a
 	// tree that is not there.
 	if keepManifest {
-		writeManifest(tempPath, lnpmPath, files)
+		writeManifest(tempPath, lnpmPath, actualType, files)
 	}
 
 	// Swap the completed package into place. The previous directory is renamed

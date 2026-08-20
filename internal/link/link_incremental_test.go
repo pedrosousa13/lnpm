@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
@@ -450,7 +451,7 @@ func TestLink_DoesNotReuseThroughALiveLink(t *testing.T) {
 		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
 		"dist/index.js": "module.exports = 'edited but never published';\n",
 	})
-	writeManifest(sourcePath, filepath.Join(projectPath, ".lnpm", "my-package"), files)
+	writeManifest(sourcePath, filepath.Join(projectPath, ".lnpm", "my-package"), HardLink, files)
 
 	if _, err := linker.LinkSource("my-package", sourcePath); err != nil {
 		t.Fatalf("LinkSource() error: %v", err)
@@ -584,6 +585,59 @@ func TestLink_PackageShippingTheManifestNameKeepsItsOwnFile(t *testing.T) {
 	}
 	if string(got) != "this file belongs to the package\n" {
 		t.Errorf("linked %s = %q, want the package's own content", manifestName, string(got))
+	}
+}
+
+// TestLink_UnchangedPackageReportsTheTypeItWasBuiltWith pins what Result.Type
+// means on the path that materialises nothing.
+//
+// Every other exit reports what the workers achieved, upgrading to a hard link
+// where a reflink landed and downgrading to a copy where hard linking would not.
+// Reporting determineLinkType's prediction instead would make the type turn over
+// with the configuration rather than with the tree: a caller records it in the
+// database link row and prints it, so re-running `add` against an already
+// current package would rewrite the recorded type with nothing having changed.
+func TestLink_UnchangedPackageReportsTheTypeItWasBuiltWith(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "my-package")
+	files := writeHashedStoreFiles(t, storePath, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+	})
+
+	linker := New(projectPath)
+	built, err := linker.Link("my-package", storePath, files)
+	if err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+	if built.Type != HardLink {
+		t.Fatalf("first Link() built the package with %q, want %q: the test needs a tree the configuration below disagrees with", built.Type, HardLink)
+	}
+
+	// Ask for copies from here on. Nothing about the linked package changes, so
+	// the relink still has nothing to do.
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("link_mode: copy\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LNPM_CONFIG", configPath)
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+
+	res, err := linker.Link("my-package", storePath, files)
+	if err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+	if res.Unchanged != len(files) {
+		t.Fatalf("second Link() reported %d unchanged of %d, want all of them: the test needs the path that materialises nothing", res.Unchanged, len(files))
+	}
+	if res.Type != built.Type {
+		t.Errorf("Link() reported type %q for a package it did not touch, want %q: the tree is still the one the first link built", res.Type, built.Type)
 	}
 }
 

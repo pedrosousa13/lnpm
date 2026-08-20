@@ -55,9 +55,13 @@ type linkedFile struct {
 // mistaken for one, wherever it came from - a package that ships one, a
 // .lnpm/{package} copied in from another checkout - and it costs one comparison
 // on read.
+// LinkType is what the link that wrote the manifest achieved, not what it set
+// out to do, so a relink that materialises nothing can report the tree it left
+// alone rather than a fresh prediction that has nothing to do with it.
 type linkManifest struct {
 	SchemaVersion int                   `json:"schemaVersion"`
 	Path          string                `json:"path"`
+	LinkType      LinkType              `json:"linkType"`
 	Files         map[string]linkedFile `json:"files"`
 }
 
@@ -82,7 +86,7 @@ func manifestPath(lnpmPath string) string {
 // leaves a link to the package's live source there, and reusing "unchanged"
 // files through it would hard link whatever the author has since edited those
 // files to.
-func readManifest(lnpmPath string) map[string]linkedFile {
+func readManifest(lnpmPath string) *linkManifest {
 	if info, err := os.Lstat(lnpmPath); err != nil || !info.IsDir() {
 		return nil
 	}
@@ -105,7 +109,7 @@ func readManifest(lnpmPath string) map[string]linkedFile {
 		debug.Logf("link: ignoring manifest in %s, which records %q rather than %q as its own location", lnpmPath, m.Path, want)
 		return nil
 	}
-	return m.Files
+	return &m
 }
 
 // writeManifest records files in dir, which is the temp directory Link is about
@@ -121,10 +125,11 @@ func readManifest(lnpmPath string) map[string]linkedFile {
 // being committed is complete and correct either way, and a manifest that could
 // not be written only costs the next relink the work this one saved. Failing the
 // link over it would undo something the caller did ask for.
-func writeManifest(dir, lnpmPath string, files []*pack.FileInfo) {
+func writeManifest(dir, lnpmPath string, linkType LinkType, files []*pack.FileInfo) {
 	m := linkManifest{
 		SchemaVersion: manifestSchemaVersion,
 		Path:          manifestPath(lnpmPath),
+		LinkType:      linkType,
 		Files:         make(map[string]linkedFile, len(files)),
 	}
 	for _, f := range files {
@@ -156,14 +161,14 @@ func writeManifest(dir, lnpmPath string, files []*pack.FileInfo) {
 // files' hashes - a link driven straight off a walk of the store does not - and
 // treating "no hash recorded" as "matches the other file with no hash recorded"
 // would carry over stale content.
-func reusableFiles(prior map[string]linkedFile, present map[string]bool, files []*pack.FileInfo) map[string]bool {
+func reusableFiles(prior *linkManifest, present map[string]bool, files []*pack.FileInfo) map[string]bool {
 	if prior == nil {
 		return nil
 	}
 
 	reusable := make(map[string]bool, len(files))
 	for _, f := range files {
-		was, ok := prior[f.RelPath]
+		was, ok := prior.Files[f.RelPath]
 		if ok && present[f.RelPath] && f.ContentHash != "" && was.Hash == f.ContentHash && was.Mode == f.Mode {
 			reusable[f.RelPath] = true
 		}
