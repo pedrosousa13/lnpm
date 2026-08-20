@@ -19,6 +19,7 @@ import (
 
 var (
 	instance *DB
+	initErr  error
 	once     sync.Once
 )
 
@@ -97,16 +98,16 @@ type FileEntry struct {
 	ModTime      int64       `json:"mod_time"` // Unix nano timestamp for quick change detection
 }
 
-// GetDB returns the singleton database instance
+// GetDB returns the singleton database instance.
+//
+// initDB runs once, so its error is kept in package state and handed to every
+// later caller too. A caller that got nil back with no error would panic on
+// first use instead of reporting why the database could not be opened.
 func GetDB() (*DB, error) {
-	var initErr error
 	once.Do(func() {
 		instance, initErr = initDB()
 	})
-	if initErr != nil {
-		return nil, initErr
-	}
-	return instance, nil
+	return instance, initErr
 }
 
 // initDB initializes the database
@@ -200,6 +201,7 @@ func ResetForTesting() {
 		_ = instance.Close()
 	}
 	instance = nil
+	initErr = nil
 	once = sync.Once{}
 }
 

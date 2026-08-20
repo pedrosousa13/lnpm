@@ -80,6 +80,71 @@ func TestGetDB_WaitsOutALockHeldLongerThanASecond(t *testing.T) {
 	}
 }
 
+// TestGetDB_AfterAFailedInit_KeepsReportingTheError checks that a failed
+// initialisation stays reported. sync.Once runs initDB exactly once, so every
+// later caller has to be handed the error the first one saw — otherwise they
+// get a nil handle with no error and panic on first use, losing the diagnostic.
+//
+// The singleton is package-global, so this test must not call t.Parallel() and
+// must not run alongside one that does.
+func TestGetDB_AfterAFailedInit_KeepsReportingTheError(t *testing.T) {
+	ResetForTesting()
+	storeDir := t.TempDir()
+	t.Setenv("LNPM_STORE", storeDir)
+	t.Cleanup(ResetForTesting)
+
+	holdDatabaseLock(t, storeDir)
+	shortenOpenTimeout(t, 200*time.Millisecond)
+
+	if _, err := GetDB(); err == nil {
+		t.Fatal("Expected the first call to fail against a locked database")
+	}
+
+	database, err := GetDB()
+	if err == nil {
+		t.Fatal("Expected the second call to report the failed initialisation too")
+	}
+	if !strings.Contains(err.Error(), lockMessage) {
+		t.Errorf("Expected the second call's error to mention %q, got: %v", lockMessage, err)
+	}
+	if database != nil {
+		t.Error("Expected no database instance from a failed initialisation")
+	}
+}
+
+// TestGetDB_AfterResetFollowingAFailedInit_Succeeds is the flip side: the
+// remembered error must be cleared by ResetForTesting, or a process that failed
+// once could never open the database again.
+//
+// The singleton is package-global, so this test must not call t.Parallel() and
+// must not run alongside one that does.
+func TestGetDB_AfterResetFollowingAFailedInit_Succeeds(t *testing.T) {
+	ResetForTesting()
+	storeDir := t.TempDir()
+	t.Setenv("LNPM_STORE", storeDir)
+	t.Cleanup(ResetForTesting)
+
+	holder := holdDatabaseLock(t, storeDir)
+	shortenOpenTimeout(t, 200*time.Millisecond)
+
+	if _, err := GetDB(); err == nil {
+		t.Fatal("Expected the first call to fail against a locked database")
+	}
+
+	if err := holder.Close(); err != nil {
+		t.Fatalf("Failed to release the database lock: %v", err)
+	}
+	ResetForTesting()
+
+	database, err := GetDB()
+	if err != nil {
+		t.Fatalf("Expected the open to succeed once the lock was released, got: %v", err)
+	}
+	if database == nil {
+		t.Fatal("Expected a database instance")
+	}
+}
+
 // TestGetDB_NonTimeoutFailure_DoesNotBlameAnotherProcess pins the error
 // classification: an open that fails for a reason other than the lock must not
 // be reported as a concurrent lnpm invocation.
