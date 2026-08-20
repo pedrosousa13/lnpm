@@ -55,6 +55,7 @@ type linkedFile struct {
 // mistaken for one, wherever it came from - a package that ships one, a
 // .lnpm/{package} copied in from another checkout - and it costs one comparison
 // on read.
+//
 // LinkType is what the link that wrote the manifest achieved, not what it set
 // out to do, so a relink that materialises nothing can report the tree it left
 // alone rather than a fresh prediction that has nothing to do with it.
@@ -231,6 +232,11 @@ func scanLinked(lnpmPath string) (map[string]bool, int) {
 // without a manifest, because there is no reading of one path holding two files
 // where both survive. The cost is a full relink every time, which is what every
 // relink cost before manifests existed.
+//
+// This is the write side of the collision only, and knows nothing about the file
+// already at that path. The read side is linkManifest.Path, which is what stops
+// a version that ships a manifest there from being believed by the version that
+// drops it.
 func shipsManifestName(files []*pack.FileInfo) bool {
 	for _, f := range files {
 		if f.RelPath == manifestName {
