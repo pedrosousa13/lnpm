@@ -40,9 +40,37 @@ type linkedFile struct {
 }
 
 // linkManifest is the manifest payload.
+//
+// Path is the manifest's own location, and is what tells a manifest lnpm wrote
+// from a file the package shipped at the same path. shipsManifestName only ever
+// answered half of that: it knows whether the package being linked now carries
+// the name, and cannot know whether the file already at that path is the last
+// link's manifest or the last version's content. A published file cannot name
+// the project it will be linked into - one file, every consumer - so a manifest
+// that names this one was written here, by a link.
+//
+// It is not a defence against an author who already knows where the package
+// lands, and it is not meant to be: the same author ships the code the project
+// then builds and runs. What it stops is a file that describes a link being
+// mistaken for one, wherever it came from - a package that ships one, a
+// .lnpm/{package} copied in from another checkout - and it costs one comparison
+// on read.
 type linkManifest struct {
 	SchemaVersion int                   `json:"schemaVersion"`
+	Path          string                `json:"path"`
 	Files         map[string]linkedFile `json:"files"`
+}
+
+// manifestPath is the location a manifest written for lnpmPath records as its
+// own. Absolute, so a caller that reaches the same project by a relative path
+// still reads its own manifest; the raw path when that cannot be resolved, which
+// at worst costs a full relink.
+func manifestPath(lnpmPath string) string {
+	abs, err := filepath.Abs(lnpmPath)
+	if err != nil {
+		return filepath.Clean(lnpmPath)
+	}
+	return abs
 }
 
 // readManifest returns what the last link recorded at lnpmPath, or nil when
@@ -73,19 +101,30 @@ func readManifest(lnpmPath string) map[string]linkedFile {
 		debug.Logf("link: ignoring manifest in %s written with schema %d", lnpmPath, m.SchemaVersion)
 		return nil
 	}
+	if want := manifestPath(lnpmPath); m.Path != want {
+		debug.Logf("link: ignoring manifest in %s, which records %q rather than %q as its own location", lnpmPath, m.Path, want)
+		return nil
+	}
 	return m.Files
 }
 
 // writeManifest records files in dir, which is the temp directory Link is about
-// to swap into place.
+// to swap into place, describing a link at lnpmPath, which is where that swap
+// will put it.
+//
+// The two paths differ because the manifest commits with the content it
+// describes: it is written inside the temp directory and renamed into place with
+// everything else. What it records is the destination, since that is where the
+// next relink will read it from and what it has to match.
 //
 // Failure is reported to the debug log and no further, per ADR-0001: the tree
 // being committed is complete and correct either way, and a manifest that could
 // not be written only costs the next relink the work this one saved. Failing the
 // link over it would undo something the caller did ask for.
-func writeManifest(dir string, files []*pack.FileInfo) {
+func writeManifest(dir, lnpmPath string, files []*pack.FileInfo) {
 	m := linkManifest{
 		SchemaVersion: manifestSchemaVersion,
+		Path:          manifestPath(lnpmPath),
 		Files:         make(map[string]linkedFile, len(files)),
 	}
 	for _, f := range files {

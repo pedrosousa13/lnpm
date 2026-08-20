@@ -333,7 +333,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// temp directory, so it commits with the content and can never describe a
 	// tree that is not there.
 	if keepManifest {
-		writeManifest(tempPath, files)
+		writeManifest(tempPath, lnpmPath, files)
 	}
 
 	// Swap the completed package into place. The previous directory is renamed
