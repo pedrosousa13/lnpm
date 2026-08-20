@@ -359,13 +359,22 @@ func linkTypeLabel(t link.LinkType) string {
 }
 
 // storeFilesForLink returns the files of pkg's store entry, each carrying the
-// content hash the database recorded for it.
+// content hash and permissions the database recorded for it.
 //
 // Walking the store is what says which files the entry holds; the database is
 // what says what is in them. Link needs both: it compares those hashes against
 // the ones it last linked into the project to decide which files it can leave
 // alone, and a caller that hands it files with no hashes makes every relink
 // rewrite the whole package.
+//
+// The mode comes from the same row as the hash, and not from the store file's
+// own stat, so that this and push - which links from pack.FileInfoFromStore over
+// the same recorded rows - describe a file identically. The two are compared
+// against each other across a command boundary, through the manifest a link
+// writes and the next one reads, and a mode that disagreed would mark every file
+// changed. Statting the store agrees only for as long as the store's copy holds
+// exactly the permissions the file was published with, which entries written
+// before copyFile chmod'd past the umask do not.
 //
 // A file the manifest does not cover keeps an empty hash and is simply always
 // rewritten, which is also why a manifest that cannot be read is logged rather
@@ -396,12 +405,17 @@ func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pac
 		return files, nil
 	}
 
-	hashes := make(map[string]string, len(entries))
+	recorded := make(map[string]*db.FileEntry, len(entries))
 	for _, e := range entries {
-		hashes[e.RelativePath] = e.ContentHash
+		recorded[e.RelativePath] = e
 	}
 	for _, f := range files {
-		f.ContentHash = hashes[f.RelPath]
+		e, ok := recorded[f.RelPath]
+		if !ok {
+			continue
+		}
+		f.ContentHash = e.ContentHash
+		f.Mode = e.Mode
 	}
 	return files, nil
 }
