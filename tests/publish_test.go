@@ -398,10 +398,7 @@ func TestPublishWithPushReportsChangedAndUnchangedCounts(t *testing.T) {
 	projectDir := env.newProject("pub-counted-project")
 	env.addPkg(projectDir, "pub-counted-pkg", false, false)
 
-	untouchedBefore, err := os.Stat(filepath.Join(projectDir, ".lnpm", "pub-counted-pkg", "lib", "a.js"))
-	if err != nil {
-		t.Fatalf("Failed to stat linked lib/a.js: %v", err)
-	}
+	untouchedBefore := fileIdentity(t, filepath.Join(projectDir, ".lnpm", "pub-counted-pkg", "lib", "a.js"))
 
 	env.chdir(pkgDir)
 	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
@@ -415,10 +412,7 @@ func TestPublishWithPushReportsChangedAndUnchangedCounts(t *testing.T) {
 		t.Errorf("Expected publish --push to report 1 changed of 3 files, got:\n%s", out)
 	}
 
-	untouchedAfter, err := os.Stat(filepath.Join(projectDir, ".lnpm", "pub-counted-pkg", "lib", "a.js"))
-	if err != nil {
-		t.Fatalf("Failed to stat linked lib/a.js after the push: %v", err)
-	}
+	untouchedAfter := fileIdentity(t, filepath.Join(projectDir, ".lnpm", "pub-counted-pkg", "lib", "a.js"))
 	if !os.SameFile(untouchedBefore, untouchedAfter) {
 		t.Error("lib/a.js is a different file after the push, so it was rewritten even though it did not change")
 	}

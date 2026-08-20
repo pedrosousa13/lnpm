@@ -907,6 +907,41 @@ func (te *TestEnvironment) writeFile(path, content string) {
 	}
 }
 
+// fileIdentity returns a FileInfo describing the file at path as it is now, so
+// that os.SameFile still answers about that file after path has been replaced.
+//
+// os.Stat is not enough, because os.SameFile is not everywhere the eager
+// comparison it looks like. On unix a FileInfo carries the inode from the moment
+// it was taken. On Windows the fast path of os.stat calls GetFileAttributesEx,
+// which returns no file index, so os.fileStat keeps the path instead
+// (saveInfoFromPath) and os.SameFile resolves it to a volume and file index only
+// when it is called (loadFileId, which opens the path afresh). A FileInfo
+// captured before a push would therefore describe whatever the push left at that
+// path, and a before/after comparison would report the same file however much
+// had changed - which makes the "this file was rewritten" half of the assertion
+// unfalsifiable and the "this file was not" half true for the wrong reason.
+//
+// Statting through an open file closes that gap on every platform: Windows takes
+// that FileInfo from GetFileInformationByHandle, which fills the volume and file
+// index in immediately and leaves nothing for os.SameFile to resolve later, and
+// unix does an fstat on the same descriptor. Either way the identity is the one
+// the file had when it was read.
+func fileIdentity(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Failed to open %s: %v", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatalf("Failed to stat %s: %v", path, err)
+	}
+	return info
+}
+
 // writePackageJSON writes a package.json into projectDir from the given map.
 func (te *TestEnvironment) writePackageJSON(projectDir string, content map[string]interface{}) {
 	te.t.Helper()

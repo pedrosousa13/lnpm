@@ -284,18 +284,14 @@ func TestPushReportsCoherentProjectCounts(t *testing.T) {
 	env.AssertLiveLink(liveProject, "count-lib", pkgDir)
 }
 
-// statLinkedFiles returns os.Stat of each relative path inside a linked
+// statLinkedFiles returns the identity of each relative path inside a linked
 // package, keyed by that path, for comparison with os.SameFile across a push.
 func statLinkedFiles(t *testing.T, projectDir, pkg string, rels ...string) map[string]os.FileInfo {
 	t.Helper()
 
 	stats := make(map[string]os.FileInfo, len(rels))
 	for _, rel := range rels {
-		info, err := os.Stat(filepath.Join(projectDir, ".lnpm", pkg, filepath.FromSlash(rel)))
-		if err != nil {
-			t.Fatalf("Failed to stat linked %s: %v", rel, err)
-		}
-		stats[rel] = info
+		stats[rel] = fileIdentity(t, filepath.Join(projectDir, ".lnpm", pkg, filepath.FromSlash(rel)))
 	}
 	return stats
 }

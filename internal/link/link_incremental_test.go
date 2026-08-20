@@ -29,18 +29,50 @@ func writeHashedStoreFiles(t *testing.T, storePath string, contents map[string]s
 	return files
 }
 
-// statLinked returns os.Stat of each relPath inside a linked package, keyed by
-// the relative path, for comparison with os.SameFile across a relink.
+// fileIdentity returns a FileInfo describing the file at path as it is now, so
+// that os.SameFile still answers about that file after path has been replaced.
+//
+// os.Stat is not enough, because os.SameFile is not everywhere the eager
+// comparison it looks like. On unix a FileInfo carries the inode from the moment
+// it was taken. On Windows the fast path of os.stat calls GetFileAttributesEx,
+// which returns no file index, so os.fileStat keeps the path instead
+// (saveInfoFromPath) and os.SameFile resolves it to a volume and file index only
+// when it is called (loadFileId, which opens the path afresh). A FileInfo
+// captured before a relink would therefore describe whatever the relink left at
+// that path, and a before/after comparison would report the same file however
+// much had changed - which makes the "this file was rewritten" half of the
+// assertion unfalsifiable and the "this file was not" half true for the wrong
+// reason.
+//
+// Statting through an open file closes that gap on every platform: Windows takes
+// that FileInfo from GetFileInformationByHandle, which fills the volume and file
+// index in immediately and leaves nothing for os.SameFile to resolve later, and
+// unix does an fstat on the same descriptor. Either way the identity is the one
+// the file had when it was read.
+func fileIdentity(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("failed to open %s: %v", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatalf("failed to stat %s: %v", path, err)
+	}
+	return info
+}
+
+// statLinked returns the identity of each relPath inside a linked package, keyed
+// by the relative path, for comparison with os.SameFile across a relink.
 func statLinked(t *testing.T, lnpmPath string, relPaths ...string) map[string]os.FileInfo {
 	t.Helper()
 
 	stats := make(map[string]os.FileInfo, len(relPaths))
 	for _, rel := range relPaths {
-		info, err := os.Stat(filepath.Join(lnpmPath, filepath.FromSlash(rel)))
-		if err != nil {
-			t.Fatalf("failed to stat linked %s: %v", rel, err)
-		}
-		stats[rel] = info
+		stats[rel] = fileIdentity(t, filepath.Join(lnpmPath, filepath.FromSlash(rel)))
 	}
 	return stats
 }
@@ -133,10 +165,7 @@ func TestLink_UnchangedPackageIsNotRewritten(t *testing.T) {
 	}
 
 	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
-	dirBefore, err := os.Stat(lnpmPath)
-	if err != nil {
-		t.Fatalf("failed to stat linked package: %v", err)
-	}
+	dirBefore := fileIdentity(t, lnpmPath)
 	before := statLinked(t, lnpmPath, "package.json", "dist/index.js", "dist/utils.js")
 
 	res, err := linker.Link("my-package", storePath, files)
@@ -147,10 +176,7 @@ func TestLink_UnchangedPackageIsNotRewritten(t *testing.T) {
 		t.Errorf("Link() reported %d changed / %d unchanged, want 0 / 3", res.Changed, res.Unchanged)
 	}
 
-	dirAfter, err := os.Stat(lnpmPath)
-	if err != nil {
-		t.Fatalf("failed to stat linked package after relink: %v", err)
-	}
+	dirAfter := fileIdentity(t, lnpmPath)
 	if !os.SameFile(dirBefore, dirAfter) {
 		t.Error(".lnpm/my-package is a different directory after relinking an unchanged package, so it was rebuilt and swapped in")
 	}
