@@ -123,6 +123,29 @@ func TestDetectYarnWorkspace(t *testing.T) {
 	}
 }
 
+// A member the user asked to publish that will not parse must stop the whole
+// run: publishing the rest would report success having published less than
+// `--all` asked for.
+func TestPublishAllUnparseableMemberFailsAndPublishesNothing(t *testing.T) {
+	env := setupTest(t)
+
+	wsDir := env.CopyFixture("npm-workspace")
+	broken := filepath.Join(wsDir, "packages", "package-b", "package.json")
+	env.writeFile(broken, `{"name":"@npm-test/package-b",}`)
+
+	env.chdir(wsDir)
+	err := cli.RunPublish(false, true, false, true)
+	if err == nil {
+		t.Fatal("Expected publish --all to fail for the unparseable member, got nil")
+	}
+	if !strings.Contains(err.Error(), broken) {
+		t.Errorf("Expected the error to name %s, got: %v", broken, err)
+	}
+
+	env.AssertPackageInDatabase("@npm-test/package-a", false)
+	env.AssertPackageInDatabase("@npm-test/package-b", false)
+}
+
 func TestNoWorkspace(t *testing.T) {
 	ws, err := workspace.Detect("/tmp")
 	if err != nil {

@@ -238,7 +238,20 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 	return filtered, nil
 }
 
-// ListPackages returns all packages in the workspace with their metadata
+// ListPackages returns all packages in the workspace with their metadata.
+//
+// A member that will not read, will not parse, or names no package fails the
+// whole listing. This is the "glob legitimately matches a non-package
+// directory" case that docs/adr/0001 leaves open, except that it is not that
+// case: expandGlobs already dropped every directory without a package.json
+// before it reached w.Packages, so a failure here is a broken member of a
+// workspace the caller asked for - a permission problem, a config typo, or a
+// file deleted underneath us - and not a directory that merely is not a
+// package. Skipping it publishes less than `--all` asked for and still reports
+// success.
+//
+// An unreadable member and an unparseable one are deliberately not
+// distinguished; both name the offending file and wrap the underlying error.
 func (w *Workspace) ListPackages() ([]Package, error) {
 	var packages []Package
 
@@ -246,7 +259,7 @@ func (w *Workspace) ListPackages() ([]Package, error) {
 		pkgJSON := filepath.Join(pkgPath, "package.json")
 		data, err := os.ReadFile(pkgJSON)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("failed to read workspace package %s: %w", pkgJSON, err)
 		}
 
 		var pkg struct {
@@ -254,7 +267,13 @@ func (w *Workspace) ListPackages() ([]Package, error) {
 			Version string `json:"version"`
 		}
 		if err := json.Unmarshal(data, &pkg); err != nil {
-			continue
+			return nil, fmt.Errorf("failed to parse workspace package %s: %w", pkgJSON, err)
+		}
+
+		// A nameless package cannot be published or resolved against, and
+		// returning it with an empty name carries the breakage downstream.
+		if pkg.Name == "" {
+			return nil, fmt.Errorf("workspace package %s has no name field", pkgJSON)
 		}
 
 		packages = append(packages, Package{
