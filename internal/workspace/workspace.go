@@ -271,9 +271,12 @@ func (w *Workspace) ListPackages() ([]Package, error) {
 		}
 
 		// A nameless package cannot be published or resolved against, and
-		// returning it with an empty name carries the breakage downstream.
+		// returning it with an empty name carries the breakage downstream. The
+		// name is absent, explicitly "", or the whole document is a JSON null,
+		// which encoding/json unmarshals as a no-op; the message covers all
+		// three rather than claiming the key is missing.
 		if pkg.Name == "" {
-			return nil, fmt.Errorf("workspace package %s has no name field", pkgJSON)
+			return nil, fmt.Errorf("workspace package %s has an empty or missing name", pkgJSON)
 		}
 
 		packages = append(packages, Package{

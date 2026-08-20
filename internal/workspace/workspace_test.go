@@ -305,25 +305,42 @@ func TestListPackagesUnreadableMemberFails(t *testing.T) {
 	}
 }
 
+// Three different manifests reach the nameless branch, and the message has to
+// be true of all of them. A JSON null is the surprising one: encoding/json
+// treats unmarshalling it as a no-op rather than an error, so the document
+// parses and leaves the zero value behind.
 func TestListPackagesNamelessMemberFails(t *testing.T) {
-	root := t.TempDir()
-	pkgA := writePackage(t, root, "packages/package-a")
-	pkgB := writePackage(t, root, "packages/package-b")
+	for _, tc := range []struct{ name, manifest string }{
+		{"missing name key", `{"version":"1.0.0"}`},
+		{"empty name", `{"name":"","version":"1.0.0"}`},
+		{"null document", `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			pkgA := writePackage(t, root, "packages/package-a")
+			pkgB := writePackage(t, root, "packages/package-b")
 
-	nameless := filepath.Join(pkgB, "package.json")
-	if err := os.WriteFile(nameless, []byte(`{"version":"1.0.0"}`), 0644); err != nil {
-		t.Fatalf("Failed to write nameless package.json: %v", err)
-	}
+			nameless := filepath.Join(pkgB, "package.json")
+			if err := os.WriteFile(nameless, []byte(tc.manifest), 0644); err != nil {
+				t.Fatalf("Failed to write nameless package.json: %v", err)
+			}
 
-	ws := &Workspace{Root: root, Type: "npm", Packages: []string{pkgA, pkgB}}
-	packages, err := ws.ListPackages()
-	if err == nil {
-		t.Fatalf("Expected an error for the nameless member, got nil and packages %v", packages)
-	}
-	if !strings.Contains(err.Error(), nameless) {
-		t.Errorf("Expected the error to name %s, got: %v", nameless, err)
-	}
-	if len(packages) != 0 {
-		t.Errorf("Expected no packages alongside the error, got %v", packages)
+			ws := &Workspace{Root: root, Type: "npm", Packages: []string{pkgA, pkgB}}
+			packages, err := ws.ListPackages()
+			if err == nil {
+				t.Fatalf("Expected an error for the nameless member, got nil and packages %v", packages)
+			}
+			if !strings.Contains(err.Error(), nameless) {
+				t.Errorf("Expected the error to name %s, got: %v", nameless, err)
+			}
+			// The message must describe every one of these manifests, so it
+			// cannot claim the name field is simply absent.
+			if !strings.Contains(err.Error(), "empty or missing name") {
+				t.Errorf("Expected the error to call the name empty or missing, got: %v", err)
+			}
+			if len(packages) != 0 {
+				t.Errorf("Expected no packages alongside the error, got %v", packages)
+			}
+		})
 	}
 }
