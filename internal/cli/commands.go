@@ -229,7 +229,7 @@ This command:
   1. Restores original package.json dependencies
   2. Removes node_modules symlinks
   3. Deletes .lnpm/ directory
-  4. Deletes lnpm.lock file
+  4. Saves lnpm.lock as lnpm.lock.retreat, for 'lnpm restore'
 
 Use this before publishing to npm or when done with local development.
 
@@ -243,18 +243,47 @@ Examples:
 	},
 }
 
+// restoreCmd re-links the packages a previous retreat unlinked
+var restoreCmd = &cobra.Command{
+	Use:   "restore",
+	Short: "Re-link the packages removed by 'lnpm retreat'",
+	Long: `Re-link every package recorded in the snapshot 'lnpm retreat --force' left
+behind, so local development can carry on after publishing to npm.
+
+Packages added again since the retreat are kept as they are, and packages the
+snapshot never saw are left alone. Nothing is unlinked.
+
+Everything comes back as a store copy (file:.lnpm/<pkg>), because the snapshot
+does not record which packages were added with --link. Run 'lnpm add --link
+<pkg>' again for the ones that should point back at their live source.
+
+A package whose recorded version is no longer the one in the store is reported
+and skipped; the snapshot is kept so restore can be re-run after publishing it.
+
+Examples:
+  lnpm restore   # Undo the last 'lnpm retreat --force'`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return RunRestore()
+	},
+}
+
 // checkCmd scans package.json for leftover lnpm references
 var checkCmd = &cobra.Command{
 	Use:   "check",
-	Short: "Check package.json for leftover lnpm references",
-	Long: `Scan the current project's package.json for lnpm references
-(file:.lnpm/ or link:.lnpm/) left behind by 'lnpm add'.
+	Short: "Check the project for lnpm leftovers an npm publish would ship",
+	Long: `Report what lnpm has left in the current project that an 'npm publish'
+from here would carry into the tarball.
 
-Exits non-zero if any are found, so it can be used as a pre-publish guard
+Two things qualify: lnpm references (file:.lnpm/ or link:.lnpm/) in
+package.json, left behind by 'lnpm add'; and lnpm.lock.retreat, the snapshot
+'lnpm retreat' leaves for 'lnpm restore', when neither the package.json "files"
+field nor .npmignore nor .gitignore would keep it out.
+
+Exits non-zero if anything is found, so it can be used as a pre-publish guard
 in scripts or CI before running 'npm publish'.
 
 Examples:
-  lnpm check   # Fails if any lnpm reference remains in package.json`,
+  lnpm check   # Fails if lnpm has left anything publishable behind`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunCheck()
 	},
@@ -263,6 +292,9 @@ Examples:
 func init() {
 	// Register retreat command
 	rootCmd.AddCommand(retreatCmd)
+
+	// Register restore command
+	rootCmd.AddCommand(restoreCmd)
 
 	// Register check command
 	rootCmd.AddCommand(checkCmd)

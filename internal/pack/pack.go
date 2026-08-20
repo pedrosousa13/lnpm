@@ -14,6 +14,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/panjf2000/ants/v2"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // PackageJSON represents the relevant fields from package.json
@@ -74,6 +75,12 @@ var defaultExcludes = []string{
 	".lnpm",
 	".lnpm/**",
 	"lnpm.lock",
+	// The snapshot `lnpm retreat` leaves in place of the lock file. The
+	// documented publish flow is retreat, then publish, so it is sitting in the
+	// package root at exactly this moment, and it records an absolute source
+	// path per linked package. The patterns here are literal, not prefixes, so
+	// "lnpm.lock" above does not cover it.
+	lockfile.RetreatFileName,
 	"yalc.lock",
 	"*.log",
 	"*.orig",
@@ -544,6 +551,23 @@ type FileEntryData struct {
 // ReadPackageJSON reads and returns just the package.json without scanning files
 func ReadPackageJSON(dir string) (*PackageJSON, error) {
 	return readPackageJSON(dir)
+}
+
+// ExcludedByProjectRules reports whether the package at dir keeps relPath out of
+// a published tarball through rules of its own: the package.json "files" field
+// passed as filesField, and the root .npmignore - falling back to a root
+// .gitignore when there is none, as npm does.
+//
+// It deliberately does not consult defaultExcludes. Those are lnpm's additions
+// to npm's rules, and this answers what a tool that reads only the project's own
+// rules would ship - which is what `npm publish` is. `lnpm check` uses it to ask
+// whether a file lnpm left in the project root is about to be published by
+// something other than lnpm.
+func ExcludedByProjectRules(dir string, filesField []string, relPath string) bool {
+	if len(filesField) > 0 && !isIncluded(relPath, filesField) && !isDefaultInclude(relPath) {
+		return true
+	}
+	return isExcluded(relPath, loadIgnorePatterns(dir))
 }
 
 // filterGitFiles removes any files related to .git directories

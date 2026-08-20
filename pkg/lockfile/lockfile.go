@@ -25,29 +25,68 @@ type Package struct {
 }
 
 const (
-	lockFileName   = "lnpm.lock"
-	currentVersion = 1
+	lockFileName = "lnpm.lock"
+	// RetreatFileName is the snapshot `lnpm retreat` leaves behind in place of
+	// the lock file it removes, so `lnpm restore` can put the links back. It is
+	// exported because it is lnpm's own state sitting in a project root, which
+	// anything that decides what belongs to a project - packing a publish, above
+	// all - has to be able to recognise without spelling the name again.
+	RetreatFileName = lockFileName + ".retreat"
+	currentVersion  = 1
 )
+
+// Path returns the lock file path for a project directory.
+func Path(projectPath string) string {
+	return filepath.Join(projectPath, lockFileName)
+}
+
+// RetreatPath returns the path of the retreat snapshot for a project directory.
+func RetreatPath(projectPath string) string {
+	return filepath.Join(projectPath, RetreatFileName)
+}
 
 // Load reads a lock file from a project directory
 func Load(projectPath string) (*LockFile, error) {
-	path := filepath.Join(projectPath, lockFileName)
+	lock, err := read(Path(projectPath))
+	if err != nil {
+		return nil, err
+	}
+	if lock == nil {
+		// A missing lock file reads as an empty one.
+		return &LockFile{
+			Version:  currentVersion,
+			Packages: make(map[string]Package),
+		}, nil
+	}
+	return lock, nil
+}
 
+// LoadRetreat reads the retreat snapshot from a project directory. It returns
+// nil when there is no snapshot, which callers must tell apart from a snapshot
+// holding no packages: the first means no retreat has run, the second a retreat
+// that had nothing to record.
+func LoadRetreat(projectPath string) (*LockFile, error) {
+	return read(RetreatPath(projectPath))
+}
+
+// read parses the lock file at path, returning nil when the file does not exist.
+//
+// The errors name the file they came from rather than calling it "the lock
+// file": the snapshot shares this reader, and a message that named the format
+// instead of the file would send a user whose snapshot is corrupt to inspect a
+// lock file that is perfectly fine.
+func read(path string) (*LockFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Return empty lock file
-			return &LockFile{
-				Version:  currentVersion,
-				Packages: make(map[string]Package),
-			}, nil
+			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read lock file: %w", err)
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
 	var lock LockFile
 	if err := yaml.Unmarshal(data, &lock); err != nil {
-		return nil, fmt.Errorf("failed to parse lock file: %w", err)
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 
 	// Ensure packages map exists
@@ -55,21 +94,93 @@ func Load(projectPath string) (*LockFile, error) {
 		lock.Packages = make(map[string]Package)
 	}
 
+	// A file with no "version:" key unmarshals as version 0, which is not a
+	// format anything ever wrote. Normalising here rather than at the call sites
+	// keeps a file that is read and written back - a merging retreat writes the
+	// snapshot it just read - from persisting that 0 as if it meant something.
+	if lock.Version == 0 {
+		lock.Version = currentVersion
+	}
+
 	return &lock, nil
 }
 
 // Save writes the lock file to a project directory
 func (l *LockFile) Save(projectPath string) error {
-	path := filepath.Join(projectPath, lockFileName)
+	return l.write(Path(projectPath))
+}
 
+// SaveRetreat writes the lock file as the retreat snapshot of a project
+// directory. `lnpm retreat` needs it when a snapshot from an earlier retreat is
+// still unconsumed: the two have to be merged and written out, which a rename of
+// the lock file cannot do.
+func (l *LockFile) SaveRetreat(projectPath string) error {
+	return l.write(RetreatPath(projectPath))
+}
+
+// write marshals the lock file to path, through a temp file in the same
+// directory and a rename onto path.
+//
+// The indirection is what makes a failed write harmless. A truncating write in
+// place is fine for lnpm.lock, whose contents can be rebuilt, but the retreat
+// snapshot shares this writer and cannot: a merging retreat writes the snapshot
+// it just read straight back over itself, so a write that failed after the open
+// had truncated would destroy the only record of what an earlier retreat
+// unlinked - the very file the merge exists to protect.
+func (l *LockFile) write(path string) error {
 	data, err := yaml.Marshal(l)
 	if err != nil {
 		return fmt.Errorf("failed to marshal lock file: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write lock file: %w", err)
+	// A rename hands the destination the temp file's own mode, so the mode of
+	// the file being replaced has to be carried over deliberately. 0644 is the
+	// mode a first write creates.
+	//
+	// A rename also replaces the destination whatever its mode, so a read-only
+	// file - which the open of a direct write would have refused - has to be
+	// refused here instead. .gitignore's writer turned atomic the same way and
+	// carries the same guard.
+	mode := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+		if mode&0200 == 0 {
+			return fmt.Errorf("failed to write %s: it is read-only (mode %o)", path, mode)
+		}
 	}
+
+	staged, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+
+	// Cleared once the rename has consumed the staging file, so this cleanup can
+	// never delete the file it just wrote into place.
+	stagedPath := staged.Name()
+	defer func() {
+		if stagedPath != "" {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+
+	if _, err := staged.Write(data); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	// chmod explicitly rather than relying on the process umask: os.CreateTemp
+	// makes the file 0600, which is not what a lock file has ever been.
+	if err := staged.Chmod(mode); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+
+	if err := os.Rename(stagedPath, path); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	stagedPath = ""
 
 	return nil
 }
