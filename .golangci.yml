@@ -39,21 +39,3 @@ linters:
       # against, and because narrowing it is a separate piece of work. errcheck
       # remains active for every call that does not match the names above.
       - std-error-handling
-
-    rules:
-      # ST1005 ("error strings should not end with punctuation") reached this
-      # repo only because v2 merged stylecheck into the default-enabled
-      # staticcheck. It flags one message, duplicated verbatim at two call
-      # sites (internal/cli/add.go:90 and :276): a multi-sentence user-facing
-      # string that needs rewording, and ideally de-duplicating, rather than a
-      # mechanical trailing-period strip.
-      #
-      # This rule suppresses ST1005 for internal/cli/add.go as a whole, not
-      # just those two lines, so a new punctuation-terminated error string
-      # added to this file would also go unreported. Only ST1005 is affected —
-      # every other staticcheck check still applies here.
-      # Follow-up: reword the message, de-duplicate it, and drop this rule.
-      - path: internal/cli/add\.go
-        linters:
-          - staticcheck
-        text: "ST1005:"
