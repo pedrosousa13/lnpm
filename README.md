@@ -196,7 +196,15 @@ lnpm restore
 `lnpm restore` links it all back. Packages added again in the meantime are kept
 as they are; nothing is unlinked. Packages restored this way are store copies
 (`file:.lnpm/<pkg>`) — re-run `lnpm add --link <pkg>` for the ones you want
-pointed back at their live source.
+pointed back at their live source. `lnpm.lock.retreat` is lnpm's own state: it
+is never published, and a second `lnpm retreat --force` merges into it rather
+than replacing it, so an unfinished restore is not lost.
+
+The snapshot records no `--dev` or `--pure` flag, so a package that had no
+`package.json` entry before the retreat cannot get the same treatment back.
+Restore writes it into `dependencies` and says so. For a `--pure` package that
+entry is spurious — `--pure` exists to keep a package out of `package.json` —
+so delete it after the restore.
 
 ### Shell Completions
 
@@ -401,7 +409,7 @@ lnpm decides which files to publish in Go — it does not shell out to the `npm`
 - Respects `package.json` `files` field
 - Honors a root `.npmignore`, falling back to a root `.gitignore` (ignore files in subdirectories are not read)
 - Supports gitignore pattern syntax — root anchoring (`/dist`), directory patterns (`dist/`) and negation (`*.txt` followed by `!keep.txt`), with the last matching pattern deciding
-- Applies a built-in exclusion list — VCS metadata and ignore files (`.git`, `.hg`, `.svn`, `CVS`, `.gitignore`, `.gitattributes`, `.npmignore`, `.npmrc`), `node_modules`, OS cruft (`.DS_Store`, `Thumbs.db`), editor and merge backups (`*.swp`, `*.swo`, `*~`, `*.orig`), lnpm and yalc state (`.lnpm/`, `.yalc/`, `lnpm.lock`, `yalc.lock`), `*.log`, `*.tgz`, and exactly `.env` and `.env.*` — that a `!` pattern cannot re-include. The patterns are literal, not prefixes: `.envrc` matches neither `.env` nor `.env.*`, so it is published
+- Applies a built-in exclusion list — VCS metadata and ignore files (`.git`, `.hg`, `.svn`, `CVS`, `.gitignore`, `.gitattributes`, `.npmignore`, `.npmrc`), `node_modules`, OS cruft (`.DS_Store`, `Thumbs.db`), editor and merge backups (`*.swp`, `*.swo`, `*~`, `*.orig`), lnpm and yalc state (`.lnpm/`, `.yalc/`, `lnpm.lock`, `lnpm.lock.retreat`, `yalc.lock`), `*.log`, `*.tgz`, and exactly `.env` and `.env.*` — that a `!` pattern cannot re-include. The patterns are literal, not prefixes: `.envrc` matches neither `.env` nor `.env.*`, so it is published
 - **Additional safety**: Explicit `.git` filtering prevents any VCS files from being linked
 - **Symlinks are skipped, never followed** — a symlink inside a package can't pull files from outside it (e.g. `~/.ssh`) into the store
 - Package names are restricted to a plain name (`my-pkg`) or a single scope (`@org/my-pkg`), because the name is joined into the store path. Everything else is rejected: a second `/`, a single `/` whose first segment is not a scope, `.` or `..` segments, absolute paths, backslashes and NUL bytes

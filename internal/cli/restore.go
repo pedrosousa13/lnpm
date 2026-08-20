@@ -41,14 +41,32 @@ func RunRestore() error {
 		return fmt.Errorf("no package.json found in current directory")
 	}
 
-	snapshotName := filepath.Base(lockfile.RetreatPath(cwd))
+	snapshotName := lockfile.RetreatFileName
 
+	// The error already names the file it failed on, so it is returned as it
+	// came: wrapping it here would give the snapshot two names in one message.
 	snapshot, err := lockfile.LoadRetreat(cwd)
 	if err != nil {
-		return fmt.Errorf("could not read %s: %w", snapshotName, err)
+		return err
 	}
-	if snapshot == nil || len(snapshot.List()) == 0 {
-		fmt.Printf("Nothing to restore: no packages recorded by a previous 'lnpm retreat'\n")
+	if snapshot == nil {
+		fmt.Printf("Nothing to restore: no snapshot from a previous 'lnpm retreat'\n")
+		return nil
+	}
+
+	// Sorted so the report reads the same way on every run; List() walks a map.
+	names := snapshot.List()
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		// A snapshot is not the same thing as no snapshot: this one is a retreat
+		// that found a lock file with nothing in it. There is nothing to put
+		// back, but the file is spent, and leaving it would stop every later
+		// restore on it and make every later retreat look like a second one.
+		if err := os.Remove(lockfile.RetreatPath(cwd)); err != nil && !os.IsNotExist(err) {
+			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), snapshotName, err)
+		}
+		fmt.Printf("Nothing to restore: the last 'lnpm retreat' recorded no packages\n")
 		return nil
 	}
 
@@ -80,22 +98,22 @@ func RunRestore() error {
 
 	linker := link.New(cwd)
 
-	// Sorted so the report reads the same way on every run; lock.List() walks a
-	// map.
-	names := snapshot.List()
-	sort.Strings(names)
-
 	failed := 0
 	restored := 0
+	attempted := 0
 	for _, name := range names {
 		entry, _ := snapshot.Get(name)
 
-		// A package added again since the retreat is already linked, and the
-		// user's newer add is the one to keep.
+		// A package already in the lock file was added again by the user since
+		// the retreat, and their newer add is the one to keep. Restore's own
+		// half-finished work cannot be mistaken for it: a lock entry is written
+		// only once the package.json write it describes has landed, so a package
+		// a previous restore could not finish leaves nothing here.
 		if lock.Has(name) {
 			fmt.Printf("  %s %s was added again since the retreat; keeping that link\n", iconOK(), name)
 			continue
 		}
+		attempted++
 
 		// The store keeps the latest published version per package, so the
 		// version the snapshot recorded may since have been superseded. Report
@@ -137,9 +155,35 @@ func RunRestore() error {
 			continue
 		}
 
-		// ORDERING CONSTRAINT: the same one add documents. The specifier lives
-		// only in package.json and the write below overwrites it, so the lock
-		// entry that carries it has to be on disk first.
+		// Nothing is recorded for this package until package.json holds the
+		// reference: on a failure here it still holds whatever retreat left, and
+		// the snapshot - kept, because this counts as a failure - still records
+		// the original version, so the re-run has everything it needs.
+		if err := writeLnpmReference(pkgJSONPath, name, false, false); err != nil {
+			fmt.Printf("  %s %s: failed to update package.json: %v\n", iconFail(), name, err)
+			failed++
+			continue
+		}
+
+		if !dependencyFieldKnown(deps.src, name) {
+			fmt.Printf("  %s %s was not in package.json before the retreat, so its field is unknown; restoring it into %s\n",
+				iconWarn(), name, deps.field)
+			fmt.Printf("      If it was added with --pure, delete that entry: --pure keeps a package out of package.json\n")
+		}
+
+		// ORDERING CONSTRAINT, and it is the reverse of the one add documents.
+		// add saves the lock entry before rewriting package.json because the
+		// specifier the entry carries lives nowhere else, so a failed rewrite
+		// would strand it. Restore holds a second copy of it: the snapshot,
+		// which it keeps whenever anything fails, records the same original
+		// version. So the entry can wait for the write - and it must, because an
+		// entry written ahead of the write is indistinguishable, on the re-run
+		// restore itself advises, from a package the user re-added, and would
+		// have that re-run skip the very package it was run to finish.
+		//
+		// Saved per package rather than once at the end for the same reason: an
+		// entry batched to the end would be missing for every package whose
+		// reference is already in package.json when a later one fails hard.
 		lock.Add(name, lockfile.Package{
 			Version:         pkg.Version,
 			Hash:            pkg.ContentHash,
@@ -149,20 +193,6 @@ func RunRestore() error {
 		})
 		if err := lock.Save(cwd); err != nil {
 			return fmt.Errorf("failed to save lock file: %w", err)
-		}
-
-		if !dependencyFieldKnown(deps.src, name) {
-			fmt.Printf("  %s %s was not in package.json before the retreat, so its field is unknown; restoring it into %s\n",
-				iconWarn(), name, deps.field)
-		}
-
-		// The lock entry stays on a failure here: package.json is untouched, so
-		// it still holds whatever retreat left, and the entry records that as the
-		// original version - which is what a later remove or retreat needs.
-		if err := writeLnpmReference(pkgJSONPath, name, false, false); err != nil {
-			fmt.Printf("  %s %s: failed to update package.json: %v\n", iconFail(), name, err)
-			failed++
-			continue
 		}
 
 		recordRestoredLink(database, cwd, pkg, linkType)
@@ -180,7 +210,10 @@ func RunRestore() error {
 	fmt.Println()
 	if failed > 0 {
 		fmt.Printf("  %s %s kept; re-run 'lnpm restore' once the packages above are available\n", iconTip(), snapshotName)
-		return fmt.Errorf("%d of %d package(s) failed to restore", failed, len(names))
+		// Counted against what was attempted, not against the snapshot: a
+		// package skipped because the user re-added it was never restore's to
+		// fail at, and counting it understates the share of the run that did.
+		return fmt.Errorf("%d of %d package(s) failed to restore", failed, attempted)
 	}
 
 	fmt.Printf("%s Restore complete!\n", iconOK())
@@ -225,15 +258,14 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 // field a package belongs in. When it does not - the package was added with
 // --dev or --pure without ever having an entry, and retreat dropped what add had
 // written - restore has to guess, and says so.
+//
+// HasDep only fails on a package.json that is not a JSON object, which the read
+// this call follows has already parsed as one, so the error cannot arrive here.
+// It is folded into "the field is not known" rather than given a branch of its
+// own: the answer would be a guess either way, and the caller says so.
 func dependencyFieldKnown(pkgJSON []byte, name string) bool {
 	for _, field := range []string{"dependencies", "devDependencies"} {
-		has, err := pkgjson.HasDep(pkgJSON, field, name)
-		if err != nil {
-			// Unparseable package.json is reported by the read that follows;
-			// claiming the field is known keeps this from adding noise to it.
-			return true
-		}
-		if has {
+		if has, err := pkgjson.HasDep(pkgJSON, field, name); err == nil && has {
 			return true
 		}
 	}
