@@ -27,7 +27,9 @@ func RunRetreat(force bool, runInstall bool) error {
 	// dependencies, so removing .lnpm/ and lnpm.lock would leave the project
 	// half-retreated.
 	if err != nil {
-		return fmt.Errorf("could not read lnpm.lock: %w\n\nHint: Fix or remove lnpm.lock, then re-run 'lnpm retreat' to clean up the rest", err)
+		// The wrapped error names the file it failed on, so repeating the name
+		// here would give one artifact two spellings in one message.
+		return fmt.Errorf("%w\n\nHint: Fix or remove lnpm.lock, then re-run 'lnpm retreat' to clean up the rest", err)
 	}
 	if len(lock.List()) == 0 {
 		// Check for .lnpm directory
@@ -64,7 +66,7 @@ func RunRetreat(force bool, runInstall bool) error {
 		}
 
 		fmt.Println("  - Delete .lnpm/ directory")
-		fmt.Println("  - Delete lnpm.lock")
+		fmt.Printf("  - Save lnpm.lock as %s, for 'lnpm restore'\n", lockfile.RetreatFileName)
 		return nil
 	}
 
@@ -138,15 +140,7 @@ func RunRetreat(force bool, runInstall bool) error {
 		}
 	}
 
-	// Move lnpm.lock aside rather than deleting it. The rename takes it out of
-	// the project the same way a delete would - nothing resolves lnpm.lock any
-	// more - while keeping the record of what was linked, which is the only
-	// thing 'lnpm restore' can rebuild the links from.
-	if err := os.Rename(lockfile.Path(cwd), lockfile.RetreatPath(cwd)); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("  %s Failed to remove lnpm.lock: %v\n", iconWarn(), err)
-	} else {
-		fmt.Printf("  %s Removed lnpm.lock (saved for 'lnpm restore')\n", iconOK())
-	}
+	stashLockForRestore(cwd, lock)
 
 	// Run package manager install if requested
 	if runInstall {
@@ -171,4 +165,63 @@ func RunRetreat(force bool, runInstall bool) error {
 	}
 
 	return nil
+}
+
+// stashLockForRestore moves lnpm.lock aside rather than deleting it. The move
+// takes it out of the project the same way a delete would - nothing resolves
+// lnpm.lock any more - while keeping the record of what was linked, which is the
+// only thing 'lnpm restore' can rebuild the links from. lock is that record, as
+// this retreat found it.
+//
+// A snapshot from an earlier retreat may still be sitting there unconsumed,
+// because a restore reported failures and kept it, or because none was ever run.
+// The lock file being stashed then describes only what has been linked since,
+// and moving it over the snapshot would drop every package the earlier retreat
+// unlinked and the restore never got to. So the two are merged instead, this
+// retreat's entries winning any name they share: they are the newer record, and
+// the specifiers they carry are the ones just written back into package.json.
+func stashLockForRestore(cwd string, lock *lockfile.LockFile) {
+	if _, err := os.Stat(lockfile.Path(cwd)); err != nil {
+		// No lock file means there is nothing to save and nothing to say. Any
+		// other stat failure is worth a word, since the file may still be there.
+		if !os.IsNotExist(err) {
+			fmt.Printf("  %s Could not check lnpm.lock: %v\n", iconWarn(), err)
+		}
+		return
+	}
+
+	prior, err := lockfile.LoadRetreat(cwd)
+	if err != nil {
+		// Merging into a snapshot that cannot be read is not possible, and
+		// overwriting it would destroy a record only the user can now recover.
+		// Leave both files alone and say what to do about it.
+		fmt.Printf("  %s Could not read %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
+		fmt.Printf("  %s Kept lnpm.lock: fix or remove %s, then re-run 'lnpm retreat'\n", iconWarn(), lockfile.RetreatFileName)
+		return
+	}
+
+	if prior == nil {
+		if err := os.Rename(lockfile.Path(cwd), lockfile.RetreatPath(cwd)); err != nil {
+			fmt.Printf("  %s Failed to save lnpm.lock as %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
+			fmt.Printf("  %s lnpm.lock is still in place; 'lnpm restore' has nothing to work from\n", iconWarn())
+			return
+		}
+		fmt.Printf("  %s Removed lnpm.lock (saved as %s for 'lnpm restore')\n", iconOK(), lockfile.RetreatFileName)
+		return
+	}
+
+	for _, name := range lock.List() {
+		entry, _ := lock.Get(name)
+		prior.Add(name, entry)
+	}
+	if err := prior.SaveRetreat(cwd); err != nil {
+		fmt.Printf("  %s Failed to save lnpm.lock into %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
+		fmt.Printf("  %s lnpm.lock is still in place; 'lnpm restore' has nothing to work from\n", iconWarn())
+		return
+	}
+	if err := os.Remove(lockfile.Path(cwd)); err != nil {
+		fmt.Printf("  %s Failed to remove lnpm.lock: %v\n", iconWarn(), err)
+		return
+	}
+	fmt.Printf("  %s Removed lnpm.lock (merged into %s for 'lnpm restore')\n", iconOK(), lockfile.RetreatFileName)
 }

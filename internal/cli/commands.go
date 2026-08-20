@@ -229,7 +229,7 @@ This command:
   1. Restores original package.json dependencies
   2. Removes node_modules symlinks
   3. Deletes .lnpm/ directory
-  4. Deletes lnpm.lock file
+  4. Saves lnpm.lock as lnpm.lock.retreat, for 'lnpm restore'
 
 Use this before publishing to npm or when done with local development.
 
@@ -252,6 +252,10 @@ behind, so local development can carry on after publishing to npm.
 
 Packages added again since the retreat are kept as they are, and packages the
 snapshot never saw are left alone. Nothing is unlinked.
+
+Everything comes back as a store copy (file:.lnpm/<pkg>), because the snapshot
+does not record which packages were added with --link. Run 'lnpm add --link
+<pkg>' again for the ones that should point back at their live source.
 
 A package whose recorded version is no longer the one in the store is reported
 and skipped; the snapshot is kept so restore can be re-run after publishing it.

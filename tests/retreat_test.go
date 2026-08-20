@@ -60,19 +60,96 @@ func TestRetreatVariants(t *testing.T) {
 	}
 }
 
-// TestRetreatNoForceFlag tests that retreat without --force changes nothing.
+// TestRetreatNoForceFlag tests that retreat without --force changes nothing, and
+// that the preview describes what --force would actually do. Retreat no longer
+// deletes the lock file, it saves it for 'lnpm restore', so a preview still
+// promising a delete would be talking the user out of the one artifact restore
+// needs.
 func TestRetreatNoForceFlag(t *testing.T) {
 	env := setupTest(t)
 
 	_, projectDir := env.publishAndAdd("force-pkg")
 
-	if err := cli.RunRetreat(false, false); err != nil {
-		t.Fatalf("Retreat without force failed: %v", err)
+	out := captureStdout(t, func() {
+		if err := cli.RunRetreat(false, false); err != nil {
+			t.Fatalf("Retreat without force failed: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "Delete lnpm.lock") {
+		t.Errorf("Expected the preview not to promise a deleted lock file, got:\n%s", out)
+	}
+	if !strings.Contains(out, "lnpm.lock.retreat") {
+		t.Errorf("Expected the preview to name the snapshot it saves, got:\n%s", out)
 	}
 
 	env.AssertSymlinkExists(projectDir, "force-pkg")
 	env.AssertLockfileExists(projectDir, true)
 	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), true)
+}
+
+// TestRetreatMergesIntoAnUnconsumedSnapshot covers the second retreat that
+// follows a restore which could not finish, or an add made after a retreat: the
+// lock file being saved holds only part of what the outstanding snapshot does,
+// and renaming it over the snapshot would drop the rest for good.
+//
+// Restore itself tells the user to expect this sequence, so the packages the
+// first retreat unlinked have to survive the second one.
+func TestRetreatMergesIntoAnUnconsumedSnapshot(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("merge-snapshot-old")
+	env.simplePkg("merge-snapshot-new")
+	projectDir := env.newProject("merge-snapshot-project")
+	env.addPkg(projectDir, "merge-snapshot-old", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	// The snapshot is still on disk - nothing has restored it - when a new
+	// package is added and the project is retreated a second time.
+	env.AssertFileExists(lockfile.RetreatPath(projectDir), true)
+	env.addPkg(projectDir, "merge-snapshot-new", false, false)
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat a second time: %v", err)
+	}
+
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("Expected a retreat snapshot after the second retreat, got none")
+	}
+	for _, name := range []string{"merge-snapshot-old", "merge-snapshot-new"} {
+		if !snapshot.Has(name) {
+			t.Errorf("Expected %s to survive the second retreat, snapshot holds %v", name, snapshot.List())
+		}
+	}
+}
+
+// TestRetreatWithoutALockFileSavesNothing covers the report for a project that
+// has a stray .lnpm/ but no lock file: retreat has nothing to save, so it must
+// not claim it saved anything for restore.
+func TestRetreatWithoutALockFileSavesNothing(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("no-lock-retreat-project")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".lnpm"), 0755); err != nil {
+		t.Fatalf("Failed to create .lnpm/: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := cli.RunRetreat(true, false); err != nil {
+			t.Fatalf("Failed to retreat: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "lnpm.lock") {
+		t.Errorf("Expected no claim about the lock file when there was none, got:\n%s", out)
+	}
+	env.AssertFileExists(lockfile.RetreatPath(projectDir), false)
 }
 
 // TestRetreatNoLinks tests retreating a project with no links is a safe no-op.
