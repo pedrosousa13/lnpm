@@ -69,11 +69,20 @@ func (te *TestEnvironment) Cleanup() {
 	_ = os.Chdir(te.OriginalDir)
 }
 
+// FixturePath returns the absolute path of a fixture, for the fixtures that are
+// read in place rather than copied - a single file, say, which CopyFixture
+// cannot serve because it copies a directory tree.
+func (te *TestEnvironment) FixturePath(parts ...string) string {
+	te.t.Helper()
+
+	return filepath.Join(append([]string{te.OriginalDir, "fixtures"}, parts...)...)
+}
+
 // CopyFixture copies a fixture directory to a temp location
 func (te *TestEnvironment) CopyFixture(name string) string {
 	te.t.Helper()
 
-	src := filepath.Join(te.OriginalDir, "fixtures", name)
+	src := te.FixturePath(name)
 	dst := filepath.Join(te.TempDir, name)
 
 	if err := copyDir(src, dst); err != nil {

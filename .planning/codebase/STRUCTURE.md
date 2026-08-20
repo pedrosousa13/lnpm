@@ -130,8 +130,9 @@ lnpm/
 
 **tests/fixtures:**
 - Purpose: Test workspace examples
-- Contains: Sample npm/yarn/pnpm workspaces for testing
-- Subdirectories: `npm-workspace/`, `npm-workspace-negation/`, `yarn-workspace/`, `pnpm-workspace/`, `turborepo/`, `nx/`
+- Contains: Sample npm/yarn/pnpm workspaces for testing, plus a packed npm tarball
+- Subdirectories: `npm-workspace/`, `npm-workspace-negation/`, `yarn-workspace/`, `pnpm-workspace/`, `turborepo/`, `nx/`, `tarballs/`
+- `tarballs/`: a real `.tgz` for `TestSymlinkSurvivesNpmInstall` to install by path, so the test drives a genuine `npm install` without reaching the registry; see `tarballs/README.md`
 
 ## Key File Locations
 
@@ -231,7 +232,7 @@ lnpm/
 
 **tests/fixtures:**
 - Purpose: Test workspace examples
-- Generated: No (manually curated)
+- Generated: No (manually curated), with one exception: `tarballs/lnpm-test-dep-1.0.0.tgz` is produced by `npm pack` from the hand-written sources committed beside it
 - Committed: Yes
 
 **Generated test binaries:**

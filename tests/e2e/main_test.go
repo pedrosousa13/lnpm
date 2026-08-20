@@ -26,7 +26,8 @@ var (
 
 	// nodeAvailable reports whether a node runtime was found on PATH. When
 	// false, every test t.Skip()s rather than failing — node is required for
-	// real resolution but its absence must never fail the suite.
+	// real resolution but its absence must not fail a local run. In CI its
+	// absence is fatal instead; see TestMain.
 	nodeAvailable bool
 )
 
@@ -35,6 +36,13 @@ var (
 // needs the node_modules symlink, which lnpm creates directly).
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("node"); err != nil {
+		// Skipping is friendly on a developer machine without node, but in CI
+		// it turns the whole suite green by skipping it: a broken node setup
+		// would then look exactly like a passing run. CI must fail instead.
+		if os.Getenv("CI") == "true" {
+			fmt.Println("e2e: node is required in CI but was not found on PATH")
+			os.Exit(1)
+		}
 		nodeAvailable = false
 		fmt.Println("e2e: node not found on PATH; e2e tests will be skipped")
 	} else {

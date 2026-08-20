@@ -1,0 +1,8 @@
+{
+  "name": "lnpm-test-dep",
+  "version": "1.0.0",
+  "description": "Throwaway local dependency used by lnpm tests; never published.",
+  "main": "index.js",
+  "license": "MIT",
+  "private": false
+}

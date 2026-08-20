@@ -286,9 +286,6 @@ func TestPublishSymlinks(t *testing.T) {
 
 // TestPublishReadOnlyFiles tests publishing read-only files succeeds.
 func TestPublishReadOnlyFiles(t *testing.T) {
-	if os.Getenv("CI") == "true" {
-		t.Skip("Skipping read-only test in CI")
-	}
 	env := setupTest(t)
 
 	pkgDir := env.CreateTestPackage("readonly-pkg", "1.0.0", map[string]string{
