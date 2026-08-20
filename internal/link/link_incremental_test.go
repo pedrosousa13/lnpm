@@ -161,6 +161,49 @@ func TestLink_UnchangedPackageIsNotRewritten(t *testing.T) {
 	}
 }
 
+// TestLink_RestoresAFileDeletedFromUnderIt keeps relinking a repair. A user who
+// has lost part of .lnpm/{package} - a build script that cleaned too much, a
+// half-finished delete - reaches for the command that put it there, and before
+// there was anything to skip, relinking always rebuilt the package and so always
+// fixed it. Trusting the manifest without looking would end that: it says the
+// file was linked, which is true, and says nothing about it still being there.
+func TestLink_RestoresAFileDeletedFromUnderIt(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "my-package")
+	files := writeHashedStoreFiles(t, storePath, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+		"dist/utils.js": "module.exports = 2;\n",
+	})
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	if err := os.Remove(filepath.Join(lnpmPath, "dist", "utils.js")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(lnpmPath, "dist", "utils.js"))
+	if err != nil {
+		t.Fatalf("relinking did not restore the deleted dist/utils.js: %v", err)
+	}
+	if string(got) != "module.exports = 2;\n" {
+		t.Errorf("restored dist/utils.js = %q, want the store's content", string(got))
+	}
+}
+
 // TestLink_DropsFilesRemovedFromThePackage is acceptance criterion 3. It holds
 // because the relink builds a fresh directory and swaps it in, so a file the new
 // package does not list simply never enters it. The test pins that the reuse

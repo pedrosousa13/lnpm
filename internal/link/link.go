@@ -97,13 +97,13 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	}
 	reusable := reusableFiles(prior, files)
 
-	// Nothing to do at all: every file is already there, and the package it is
-	// already holding contains nothing else. Skipping the swap is the point -
-	// the directory the consumer is building against is not touched, so no file
-	// changes identity and none is rewritten. The node_modules link is still
-	// checked, since a caller may be relinking precisely because that went
-	// missing.
-	if len(reusable) == len(files) && len(prior) == len(files) && len(files) > 0 {
+	// Nothing to do at all: every file the package lists is already there, the
+	// package already linked holds nothing else, and all of it is still on disk.
+	// Skipping the swap is the point - the directory the consumer is building
+	// against is not touched, so no file changes identity and none is rewritten.
+	// The node_modules link is still checked, since a caller may be relinking
+	// precisely because that went missing.
+	if len(reusable) == len(files) && len(prior) == len(files) && len(files) > 0 && allPresent(lnpmPath, files) {
 		debug.Logf("link: %s is already up to date (%d files)", packageName, len(files))
 		if err := l.createNodeModulesSymlink(packageName); err != nil {
 			return Result{}, err
@@ -177,15 +177,16 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 				// the store - is not in play. Preserving identity across a
 				// relink is the behaviour every mode wants.
 				if reusable[f.RelPath] {
-					if err := os.Link(filepath.Join(lnpmPath, f.RelPath), dstPath); err == nil {
+					err := os.Link(filepath.Join(lnpmPath, f.RelPath), dstPath)
+					if err == nil {
 						atomic.AddInt32(&reusedCount, 1)
 						continue
-					} else {
-						// Reuse is only ever an optimisation - a filesystem
-						// that will not hard link, or a file that has since
-						// gone - so fall through and materialise it as usual.
-						debug.Logf("link: cannot reuse %s, materialising it: %v", f.RelPath, err)
 					}
+					// Reuse is only ever an optimisation - a filesystem that
+					// will not hard link, or a file that has gone since the
+					// check above - so fall through and materialise it as
+					// usual rather than failing the link over it.
+					debug.Logf("link: cannot reuse %s, materialising it: %v", f.RelPath, err)
 				}
 
 				linked := false

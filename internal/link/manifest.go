@@ -125,6 +125,22 @@ func reusableFiles(prior map[string]linkedFile, files []*pack.FileInfo) map[stri
 	return reusable
 }
 
+// allPresent reports whether every file is still where the last link put it.
+//
+// The manifest records what was linked, not what survived. Relinking has always
+// been the way to repair a .lnpm/{package} something else has damaged, so the
+// shortcut that skips a relink entirely has to look before it takes it. One
+// lstat per file is the cheapest question there is - no content is read - and it
+// is only asked once everything else already says there is nothing to do.
+func allPresent(lnpmPath string, files []*pack.FileInfo) bool {
+	for _, f := range files {
+		if _, err := os.Lstat(filepath.Join(lnpmPath, f.RelPath)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // shipsManifestName reports whether the package itself contains a file at the
 // path the manifest occupies. It does, very occasionally, happen that a name
 // collides; when it does the package's file wins and the relink simply goes
