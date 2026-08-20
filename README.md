@@ -15,6 +15,8 @@
 - **All package managers** — npm, yarn, pnpm, and bun
 - **Full visibility** — Know exactly what's linked where
 
+> **Note:** `lnpm status` shows a machine-wide view: every published package in the store and every active link across all projects, not just the current project's links.
+
 ## Installation
 
 ### Quick Install (Linux/macOS)
