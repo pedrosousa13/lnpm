@@ -726,6 +726,15 @@ func TestLink_APackageCannotDescribeItsOwnRelink(t *testing.T) {
 		t.Fatal(err)
 	}
 	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	// .lnpm up front, so the forged manifest below names the location the same
+	// way a read of it will: manifestPath resolves the links along the parent,
+	// which it can only do once the parent is there. Without this the forgery
+	// would be refused for naming the wrong place - on macOS, where the temp
+	// directory reaches /private/var through a link - rather than for being a
+	// forgery, which is what this test is about.
+	if err := os.MkdirAll(filepath.Dir(lnpmPath), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// v2 first, so v1 can ship a manifest naming its hashes.
 	v2 := filepath.Join(tmpDir, "store", "v2")
@@ -780,5 +789,62 @@ func TestLink_APackageCannotDescribeItsOwnRelink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(lnpmPath, manifestName)); err != nil {
 		t.Errorf("the linked package carries no %s after the relink: %v", manifestName, err)
+	}
+}
+
+// TestLink_ReusesWhenTheProjectIsReachedByAnotherSpellingOfItsPath pins the
+// manifest's self-location check to the directory rather than to the string a
+// caller happened to name it by.
+//
+// The commands do not agree on that string. add, pull, remove and restore build
+// their linker from the working directory; push and publish build theirs from
+// the project path the database recorded, which is stored through
+// db.normalizePath and so has its symlinks resolved. Every spelling names the
+// same directory, and a relink that rejects the manifest because the previous
+// command spelled the path differently rewrites the whole package - which is
+// what add-then-push did on Windows, where the working directory keeps an 8.3
+// short name that the database's normalization expands.
+func TestLink_ReusesWhenTheProjectIsReachedByAnotherSpellingOfItsPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	projectPath := filepath.Join(realDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A symlinked parent is this platform's version of the same thing: two
+	// paths, one directory, and only one of them what EvalSymlinks returns.
+	aliasDir := filepath.Join(tmpDir, "alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Skipf("cannot create a symlink to reach the project by a second path: %v", err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "my-package")
+	files := writeHashedStoreFiles(t, storePath, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+		"dist/utils.js": "module.exports = 2;\n",
+	})
+
+	if _, err := New(projectPath).Link("my-package", storePath, files); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	before := statLinked(t, lnpmPath, "package.json", "dist/index.js", "dist/utils.js")
+
+	res, err := New(filepath.Join(aliasDir, "project")).Link("my-package", storePath, files)
+	if err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+	if res.Changed != 0 || res.Unchanged != 3 {
+		t.Errorf("Link() through a second spelling of the project path reported %d changed / %d unchanged, want 0 / 3: the manifest the first link wrote describes this directory", res.Changed, res.Unchanged)
+	}
+
+	after := statLinked(t, lnpmPath, "package.json", "dist/index.js", "dist/utils.js")
+	for rel, was := range before {
+		if !os.SameFile(was, after[rel]) {
+			t.Errorf("%s is a different file after relinking through a second spelling of the project path, so it was rewritten", rel)
+		}
 	}
 }

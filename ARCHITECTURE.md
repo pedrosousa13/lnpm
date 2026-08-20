@@ -404,6 +404,17 @@ reading every file, which is the cost this exists to remove, and in hardlink mod
 an in-place edit has already written through the shared inode into the store
 entry itself: `lnpm gc` and a re-publish are what fix that.
 
+The location it records is the directory as the filesystem knows it — absolute,
+with the links along the way resolved — rather than the path the command that
+wrote it happened to be given. Commands do not agree on that path: `add`, `pull`,
+`remove` and `restore` build their linker from the working directory, while
+`push` and `publish` build theirs from the project path the database recorded,
+which is stored with its symlinks already resolved. Every spelling names the same
+directory, and a relink that rejected the manifest because the previous command
+spelled the path differently would rewrite the whole package — which is what
+add-then-push did on Windows, where the working directory keeps the 8.3 short
+names (`C:\Users\RUNNER~1\…`) that the database's normalization expands.
+
 The name is reserved, exactly as `.lnpm-complete` is reserved by the store. The
 store keeps its marker out of what `GetFiles` hands to consumers because the
 marker belongs to the store and not to the package; the same holds a level down,

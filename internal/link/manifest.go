@@ -65,15 +65,36 @@ type linkManifest struct {
 }
 
 // manifestPath is the location a manifest written for lnpmPath records as its
-// own. Absolute, so a caller that reaches the same project by a relative path
-// still reads its own manifest; the raw path when that cannot be resolved, which
+// own. It names the directory rather than the string a caller happened to reach
+// it by: absolute, so a relative path still reads its own manifest, and with the
+// links along the way resolved, so do two callers that spell the same directory
+// differently.
+//
+// They routinely do. add, pull, remove and restore build their linker from the
+// working directory; push and publish build theirs from the project path the
+// database recorded, which is stored through db.normalizePath and so already has
+// its symlinks resolved. On unix the working directory comes back from getcwd(3)
+// resolved too and the two agree by accident, but on Windows it keeps whatever
+// 8.3 short name it was given - C:\Users\RUNNER~1\... against the database's
+// C:\Users\runneradmin\... - and every add-then-push relink rejected its own
+// manifest and rewrote the whole package.
+//
+// The parent is what gets resolved, not lnpmPath itself. Link creates it before
+// writing the manifest and readManifest has just stat'd inside it, so it exists
+// at both ends where .lnpm/{package} need not; and .lnpm/{package} is itself a
+// link when the package was added with --link, which this must name rather than
+// follow into the package's source. The unresolved path when that fails, which
 // at worst costs a full relink.
 func manifestPath(lnpmPath string) string {
 	abs, err := filepath.Abs(lnpmPath)
 	if err != nil {
-		return filepath.Clean(lnpmPath)
+		abs = filepath.Clean(lnpmPath)
 	}
-	return abs
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return abs
+	}
+	return filepath.Join(parent, filepath.Base(abs))
 }
 
 // readManifest returns what the last link recorded at lnpmPath, or nil when
