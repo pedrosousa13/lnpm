@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
@@ -11,13 +12,40 @@ import (
 
 var updateResult <-chan *update.Result
 
-var version = "dev"
+// Build stamps, mirroring the ldflags targets in cmd/lnpm. The placeholder
+// values mark a binary that was never stamped at build time.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
-// SetVersion sets the CLI version (called from main)
-func SetVersion(v string) {
-	version = v
-	rootCmd.Version = v
-	rootCmd.SetVersionTemplate(fmt.Sprintf("lnpm version %s\n", v))
+// SetVersion sets the CLI version and build stamps (called from main)
+func SetVersion(v, c, d string) {
+	version, commit, date = v, c, d
+	applyVersion()
+}
+
+// applyVersion pushes the current build stamps onto the root command. Both
+// init and SetVersion go through here so the two can never report differently.
+func applyVersion() {
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate(versionTemplate(version, commit, date))
+}
+
+// versionTemplate renders the --version output. Commit and date are omitted
+// when the binary carries no build stamp, rather than printing placeholders
+// that answer nobody's question about which commit a binary came from.
+func versionTemplate(ver, sha, builtAt string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "lnpm version %s\n", ver)
+	if sha != "" && sha != "none" {
+		fmt.Fprintf(&b, "commit: %s\n", sha)
+	}
+	if builtAt != "" && builtAt != "unknown" {
+		fmt.Fprintf(&b, "built:  %s\n", builtAt)
+	}
+	return b.String()
 }
 
 var rootCmd = &cobra.Command{
@@ -64,7 +92,7 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.SetVersionTemplate(fmt.Sprintf("lnpm version %s\n", version))
+	applyVersion()
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Enable debug logging")
 
 	// Add subcommands
