@@ -243,6 +243,26 @@ Examples:
 	},
 }
 
+// restoreCmd re-links the packages a previous retreat unlinked
+var restoreCmd = &cobra.Command{
+	Use:   "restore",
+	Short: "Re-link the packages removed by 'lnpm retreat'",
+	Long: `Re-link every package recorded in the snapshot 'lnpm retreat --force' left
+behind, so local development can carry on after publishing to npm.
+
+Packages added again since the retreat are kept as they are, and packages the
+snapshot never saw are left alone. Nothing is unlinked.
+
+A package whose recorded version is no longer the one in the store is reported
+and skipped; the snapshot is kept so restore can be re-run after publishing it.
+
+Examples:
+  lnpm restore   # Undo the last 'lnpm retreat --force'`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return RunRestore()
+	},
+}
+
 // checkCmd scans package.json for leftover lnpm references
 var checkCmd = &cobra.Command{
 	Use:   "check",
@@ -263,6 +283,9 @@ Examples:
 func init() {
 	// Register retreat command
 	rootCmd.AddCommand(retreatCmd)
+
+	// Register restore command
+	rootCmd.AddCommand(restoreCmd)
 
 	// Register check command
 	rootCmd.AddCommand(checkCmd)

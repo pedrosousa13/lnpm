@@ -85,6 +85,7 @@ lnpm push
 | `lnpm doctor` | Diagnose issues |
 | `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`, `--yes`) |
 | `lnpm retreat` | Remove all lnpm changes |
+| `lnpm restore` | Re-link the packages `lnpm retreat` removed |
 | `lnpm config` | View/edit configuration |
 | `lnpm update` | Update lnpm to the latest version |
 | `lnpm completion` | Generate shell completions |
@@ -183,6 +184,19 @@ npm publish
 `lnpm check` scans `package.json` for leftover `file:.lnpm/` or `link:.lnpm/`
 references and exits non-zero if any remain — drop it in a `prepublishOnly`
 script or CI step to avoid accidentally publishing local links to npm.
+
+### After Publishing to npm
+
+```bash
+# Re-link everything the retreat removed
+lnpm restore
+```
+
+`lnpm retreat --force` saves what it unlinked to `lnpm.lock.retreat`, and
+`lnpm restore` links it all back. Packages added again in the meantime are kept
+as they are; nothing is unlinked. Packages restored this way are store copies
+(`file:.lnpm/<pkg>`) — re-run `lnpm add --link <pkg>` for the ones you want
+pointed back at their live source.
 
 ### Shell Completions
 
