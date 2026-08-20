@@ -11,6 +11,20 @@ import (
 // FICLONE ioctl for copy-on-write cloning on Btrfs, XFS, OCFS2
 const FICLONE = 0x40049409
 
+// ficlone issues the FICLONE ioctl. The third ioctl arg is the SOURCE fd passed
+// BY VALUE (ioctl(dest_fd, FICLONE, src_fd)) — not a pointer to it.
+//
+// It is a variable so that tests can drive the steps that run after a
+// successful clone. A filesystem either supports cloning or it does not, so on
+// one that does not — ext4, the usual dev and CI host — the chmod and Sync
+// steps below are unreachable, and with them the cleanup of a clone that was
+// made and then had to be disowned. The ioctl-failure branch needs no stub: on
+// such a filesystem it is the branch that always runs.
+var ficlone = func(dstFd, srcFd uintptr) syscall.Errno {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, dstFd, uintptr(FICLONE), srcFd)
+	return errno
+}
+
 // tryReflink attempts to create a copy-on-write clone using the FICLONE ioctl.
 // Returns true if successful, false if not supported.
 func tryReflink(src, dst string) bool {
@@ -31,41 +45,38 @@ func tryReflink(src, dst string) bool {
 	if err != nil {
 		return false
 	}
-	defer dstFile.Close()
-
-	// Try FICLONE ioctl. The third ioctl arg is the SOURCE fd passed BY VALUE
-	// (ioctl(dest_fd, FICLONE, src_fd)) — not a pointer to it.
-	srcFd := srcFile.Fd()
-	dstFd := dstFile.Fd()
-
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		dstFd,
-		uintptr(FICLONE),
-		srcFd,
-	)
-
-	if errno == 0 {
-		// FICLONE clones data blocks only, never permissions, and the
-		// destination was created with a mode the umask masked. Chmod is not
-		// masked, so the clone ends up with the source's exact bits. If it
-		// fails, clean up so the caller falls back to a copy rather than
-		// keeping a clone with the wrong mode.
-		if err := dstFile.Chmod(srcInfo.Mode()); err != nil {
-			dstFile.Close()
+	// From here on the destination exists on disk, so every failure below owns
+	// it. One deferred cleanup serves them all: it closes dstFile exactly once,
+	// on every return path, and unlinks the destination unless the clone ran to
+	// completion. Leaving a half-made destination behind would break the
+	// caller's fallback, which reacts to a false return by trying os.Link at
+	// the same path (EEXIST) or a copy (silently overwriting the remains).
+	success := false
+	defer func() {
+		_ = dstFile.Close()
+		if !success {
 			_ = os.Remove(dst)
-			return false
 		}
-		if err := dstFile.Sync(); err != nil {
-			return false
-		}
-		return true
+	}()
+
+	if errno := ficlone(dstFile.Fd(), srcFile.Fd()); errno != 0 {
+		return false
 	}
 
-	// Clean up on failure
-	dstFile.Close()
-	_ = os.Remove(dst)
-	return false
+	// FICLONE clones data blocks only, never permissions, and the destination
+	// was created with a mode the umask masked. Chmod is not masked, so the
+	// clone ends up with the source's exact bits. If it fails, the cleanup
+	// makes the caller fall back to a copy rather than keeping a clone with the
+	// wrong mode.
+	if err := dstFile.Chmod(srcInfo.Mode()); err != nil {
+		return false
+	}
+	if err := dstFile.Sync(); err != nil {
+		return false
+	}
+
+	success = true
+	return true
 }
 
 // Reflink creates a copy-on-write clone of src at dst, returning an error if
