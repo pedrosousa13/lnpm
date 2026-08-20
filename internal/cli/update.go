@@ -88,9 +88,13 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 	// Install latest version
 	fmt.Printf("Installing %s...\n", result.LatestVersion)
 
-	// Detect installation method and update accordingly
-	if wasInstalledViaGo() {
-		return installLatestViaGo()
+	// Detect installation method and update accordingly. A binary whose path
+	// cannot be resolved is not treated as go-installed: installLatestViaBinary
+	// resolves it again and reports the failure to the user.
+	if binPath, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(binPath); err == nil && wasInstalledViaGo(resolved) {
+			return installLatestViaGo()
+		}
 	}
 
 	return installLatestViaBinary(result.LatestVersion)
@@ -103,22 +107,17 @@ func getLatestVersion(currentVersion string) (*update.Result, error) {
 	return update.CheckFresh(currentVersion)
 }
 
-// wasInstalledViaGo checks if lnpm was installed via 'go install'
-// by checking if the binary is in GOPATH/bin or GOBIN
-func wasInstalledViaGo() bool {
-	binPath, err := os.Executable()
-	if err != nil {
-		return false
-	}
-
-	binPath, err = filepath.EvalSymlinks(binPath)
-	if err != nil {
-		return false
-	}
-
+// wasInstalledViaGo reports whether the binary at binPath was installed via
+// 'go install', by checking whether it sits in any of the three directories
+// 'go install' writes to: GOBIN, GOPATH/bin, or - when neither variable is set,
+// which is the usual case - the default $HOME/go/bin.
+//
+// It takes the path rather than reading os.Executable() itself so the
+// directory-matching rules below can be tested without a real installed binary.
+func wasInstalledViaGo(binPath string) bool {
 	// Check if in GOBIN
 	if gobin := os.Getenv("GOBIN"); gobin != "" {
-		if strings.HasPrefix(binPath, gobin) {
+		if isInBinDir(binPath, gobin) {
 			return true
 		}
 	}
@@ -126,7 +125,7 @@ func wasInstalledViaGo() bool {
 	// Check if in GOPATH/bin
 	if gopath := os.Getenv("GOPATH"); gopath != "" {
 		gopathBin := filepath.Join(gopath, "bin")
-		if strings.HasPrefix(binPath, gopathBin) {
+		if isInBinDir(binPath, gopathBin) {
 			return true
 		}
 	}
@@ -134,13 +133,41 @@ func wasInstalledViaGo() bool {
 	// Check default GOPATH location ($HOME/go/bin)
 	if home, err := os.UserHomeDir(); err == nil {
 		defaultGoBin := filepath.Join(home, "go", "bin")
-		if strings.HasPrefix(binPath, defaultGoBin) {
+		if isInBinDir(binPath, defaultGoBin) {
 			return true
 		}
 	}
 
 	// Not in a Go bin directory, assume installed via install script
 	return false
+}
+
+// isInBinDir reports whether binPath names a file sitting directly inside
+// binDir.
+//
+// Comparing the containing directory is what a prefix match cannot do: the
+// string <gopath>/bin is a prefix of the sibling directory <gopath>/bin-other,
+// so prefix matching claims binaries there as go-installed. 'go install' only
+// ever writes straight into the bin directory, so exact directory equality is
+// also the rule that matches what is being asked.
+//
+// binDir is cleaned because it can come from the environment with a trailing
+// separator, which filepath.Dir never produces. On Windows the comparison folds
+// case, because its paths are case-insensitive and GOBIN or GOPATH may well
+// differ in case from the path os.Executable() reports.
+//
+// macOS raises the same question - a default APFS volume is case-insensitive
+// too, so the same mismatch is possible there - and is deliberately left
+// comparing exactly. Folding there would change which update method a darwin
+// binary gets, which is outside what this check was fixed for, and the prefix
+// match it replaced did not fold either.
+func isInBinDir(binPath, binDir string) bool {
+	dir := filepath.Dir(binPath)
+	binDir = filepath.Clean(binDir)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(dir, binDir)
+	}
+	return dir == binDir
 }
 
 // installLatestViaGo uses 'go install' to update
@@ -183,26 +210,39 @@ func installLatestViaBinary(version string) error {
 
 	debug.Logf("update: current binary at %s", binPath)
 
-	// Build download URL for current OS/arch
-	filename, url := buildDownloadURL(version)
-
-	debug.Logf("update: downloading from %s", url)
-	fmt.Printf("  Downloading from %s\n", url)
-
-	// Download and verify the new binary
-	newBin, err := downloadBinary(version, url, filename)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(newBin) }()
-
-	if err := replaceBinary(newBin, binPath); err != nil {
+	if err := downloadAndInstall(version, binPath); err != nil {
 		return err
 	}
 
 	fmt.Printf("✓ Successfully updated to latest version\n")
 	fmt.Printf("  Binary location: %s\n", binPath)
 	return nil
+}
+
+// downloadAndInstall fetches the release for version and swaps it in at
+// binPath, leaving nothing of the download behind.
+//
+// This is a separate function from installLatestViaBinary for the same reason
+// replaceBinary is: installLatestViaBinary resolves its target through
+// os.Executable(), which is process-global and cannot be injected, so the
+// download-and-clean-up contract could not otherwise be tested.
+func downloadAndInstall(version, binPath string) error {
+	// Build download URL for current OS/arch
+	filename, url := buildDownloadURL(version)
+
+	debug.Logf("update: downloading from %s", url)
+	fmt.Printf("  Downloading from %s\n", url)
+
+	// Download and verify the new binary. Removing the whole temp directory
+	// rather than just the extracted binary is what takes the downloaded
+	// archive - several megabytes, next to the binary - with it.
+	newBin, tmpDir, err := downloadBinary(version, url, filename)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	return replaceBinary(newBin, binPath)
 }
 
 // replaceBinary swaps newBin in for the binary at binPath, keeping a backup so
@@ -325,31 +365,35 @@ func buildDownloadURL(version string) (string, string) {
 }
 
 // downloadBinary downloads the release archive, verifies its SHA-256 against
-// the release checksums.txt, then extracts and returns the binary path.
-func downloadBinary(version, url, filename string) (string, error) {
+// the release checksums.txt, then extracts it and returns the binary path.
+//
+// It also returns the temp directory holding both the archive and the extracted
+// binary, so the caller can remove the whole thing. Every failure path here
+// removes that directory itself, so the returned tmpDir only ever needs
+// cleaning up by the caller after a successful return.
+func downloadBinary(version, url, filename string) (binaryPath, tmpDir string, err error) {
 	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "lnpm-update-")
+	tmpDir, err = os.MkdirTemp("", "lnpm-update-")
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp directory: %w", err)
+		return "", "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
 	// Download archive
 	filePath := filepath.Join(tmpDir, filename)
 	if err := downloadToFile(url, filePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("download failed: %w", err)
+		return "", tmpDir, fmt.Errorf("download failed: %w", err)
 	}
 
 	// Verify checksum BEFORE extracting or installing — a tampered or
 	// corrupted asset must never reach the running binary.
 	if err := verifyChecksum(version, filename, filePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("checksum verification failed: %w", err)
+		return "", tmpDir, fmt.Errorf("checksum verification failed: %w", err)
 	}
 	fmt.Println("  ✓ Checksum verified")
 
 	// Extract binary
-	var binaryPath string
 	if strings.HasSuffix(filename, ".zip") {
 		binaryPath, err = extractZip(filePath, tmpDir)
 	} else {
@@ -358,10 +402,10 @@ func downloadBinary(version, url, filename string) (string, error) {
 
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return "", err
+		return "", tmpDir, err
 	}
 
-	return binaryPath, nil
+	return binaryPath, tmpDir, nil
 }
 
 // downloadToFile downloads url into dst using the timeout-bounded client.

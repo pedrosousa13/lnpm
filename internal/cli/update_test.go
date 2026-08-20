@@ -1,9 +1,11 @@
 package cli
 
-// Note: the binary swap itself (RunUpdate / installLatestViaBinary) is not
-// covered here. It rewrites os.Executable() in place, which is process-global
-// and not safely reversible inside a test run; it is exercised manually on
-// each release instead.
+// Note: the download-verify-extract-swap sequence is covered here, but only
+// through downloadAndInstall, which takes the binary to replace as an argument.
+// The two functions above it - RunUpdate and installLatestViaBinary - resolve
+// that binary through os.Executable(), which is process-global and would mean a
+// test rewriting the test binary itself, so their own bodies stay uncovered and
+// are exercised manually on each release.
 
 import (
 	"archive/tar"
@@ -362,26 +364,34 @@ func TestDownloadToFileNotFound(t *testing.T) {
 	}
 }
 
-// startReleaseServer points releaseBaseURL at a local test server serving the
-// given checksums.txt body for the duration of the test.
+// serveRelease points releaseBaseURL at a local test server running h for the
+// duration of the test.
 //
 // Don't use t.Parallel() in callers - this helper swaps the process-wide
 // releaseBaseURL var.
-func startReleaseServer(t *testing.T, checksums string) {
+func serveRelease(t *testing.T, h http.HandlerFunc) {
 	t.Helper()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/checksums.txt") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_, _ = w.Write([]byte(checksums))
-	}))
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
 	prev := releaseBaseURL
 	releaseBaseURL = srv.URL
 	t.Cleanup(func() { releaseBaseURL = prev })
+}
+
+// startReleaseServer serves a release that publishes the given checksums.txt
+// body and nothing else, so any request for an archive 404s.
+func startReleaseServer(t *testing.T, checksums string) {
+	t.Helper()
+
+	serveRelease(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(checksums))
+	})
 }
 
 // writeArchiveFixture writes content to a temp file and returns its path plus
@@ -433,6 +443,90 @@ func TestVerifyChecksumNotListed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no checksum listed") {
 		t.Errorf("error = %q, want it to mention no checksum was listed", err)
+	}
+}
+
+// setGoEnv points the three Go bin locations wasInstalledViaGo consults at
+// test-controlled directories, so the result never depends on the machine's own
+// Go layout. os.UserHomeDir reads HOME everywhere except Windows, where it
+// reads USERPROFILE.
+func setGoEnv(t *testing.T, gobin, gopath, home string) {
+	t.Helper()
+
+	t.Setenv("GOBIN", gobin)
+	t.Setenv("GOPATH", gopath)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+// A binary in a directory whose name merely starts with a Go bin directory's
+// name - <gopath>/bin-other next to <gopath>/bin - is not go-installed, and
+// updating it with 'go install' would install to a different directory than the
+// one it actually lives in.
+func TestWasInstalledViaGo(t *testing.T) {
+	root := t.TempDir()
+	gobin := filepath.Join(root, "gobin")
+	gopath := filepath.Join(root, "gopath")
+	home := filepath.Join(root, "home")
+
+	tests := []struct {
+		name    string
+		binPath string
+		want    bool
+	}{
+		{"directly in GOBIN", filepath.Join(gobin, "lnpm"), true},
+		{"in a sibling of GOBIN", filepath.Join(root, "gobin-other", "lnpm"), false},
+		{"directly in GOPATH/bin", filepath.Join(gopath, "bin", "lnpm"), true},
+		{"in a sibling of GOPATH/bin", filepath.Join(gopath, "bin-other", "lnpm"), false},
+		{"nested below GOPATH/bin", filepath.Join(gopath, "bin", "nested", "lnpm"), false},
+		{"directly in the default home go bin", filepath.Join(home, "go", "bin", "lnpm"), true},
+		{"in a sibling of the default home go bin", filepath.Join(home, "go", "bin-other", "lnpm"), false},
+		{"outside every Go bin directory", filepath.Join(root, "usr", "local", "bin", "lnpm"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setGoEnv(t, gobin, gopath, home)
+
+			if got := wasInstalledViaGo(tt.binPath); got != tt.want {
+				t.Errorf("wasInstalledViaGo(%q) = %v, want %v", tt.binPath, got, tt.want)
+			}
+		})
+	}
+}
+
+// GOBIN comes from the environment and may carry a trailing separator, while
+// the running binary's directory never does.
+func TestWasInstalledViaGoAcceptsATrailingSeparatorInGOBIN(t *testing.T) {
+	root := t.TempDir()
+	gobin := filepath.Join(root, "gobin")
+	setGoEnv(t, gobin+string(filepath.Separator), filepath.Join(root, "gopath"), filepath.Join(root, "home"))
+
+	binPath := filepath.Join(gobin, "lnpm")
+	if !wasInstalledViaGo(binPath) {
+		t.Errorf("wasInstalledViaGo(%q) = false with GOBIN %q, want true", binPath, gobin+string(filepath.Separator))
+	}
+}
+
+// Windows paths are case-insensitive, so a GOBIN that differs from the running
+// binary's directory only in case still names the same directory there and must
+// be treated as a match. Elsewhere the comparison stays exact - a deliberate
+// choice rather than a claim about the filesystem, since a default macOS volume
+// is case-insensitive too; see isInBinDir for why darwin is left alone.
+//
+// Note this assertion is vacuous on Linux and macOS, where want is false and
+// any non-folding implementation satisfies it. The folding branch is only
+// really exercised by CI's test-windows job, so a green local run on any other
+// platform says nothing about it.
+func TestWasInstalledViaGoFoldsCaseOnlyOnWindows(t *testing.T) {
+	root := t.TempDir()
+	gobin := filepath.Join(root, "GoBin")
+	setGoEnv(t, gobin, filepath.Join(root, "gopath"), filepath.Join(root, "home"))
+
+	binPath := filepath.Join(strings.ToLower(gobin), "lnpm")
+	want := runtime.GOOS == "windows"
+	if got := wasInstalledViaGo(binPath); got != want {
+		t.Errorf("wasInstalledViaGo(%q) = %v with GOBIN %q, want %v on %s", binPath, got, gobin, want, runtime.GOOS)
 	}
 }
 
@@ -524,4 +618,211 @@ func TestReplaceBinaryRestoresTheOriginalWhenTheInstallFails(t *testing.T) {
 	if _, err := os.Stat(dst + ".bak"); !os.IsNotExist(err) {
 		t.Errorf("backup %q still exists after a failed install (stat err %v)", dst+".bak", err)
 	}
+}
+
+// archiveChecksums returns a checksums.txt body listing archive's real SHA-256
+// under filename, computed independently of production code.
+func archiveChecksums(filename string, archive []byte) string {
+	sum := sha256.Sum256(archive)
+	return fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), filename)
+}
+
+// startReleaseArchiveServer serves a whole release: the archive bytes at any
+// path ending in filename, plus the given checksums.txt body. Pass
+// archiveChecksums(filename, archive) for a release that verifies, or any other
+// body to make verification fail.
+//
+// It sits alongside startReleaseServer rather than replacing it because that
+// one serves a release with no archive published at all, which is what makes a
+// download fail; the releaseBaseURL plumbing both need lives in serveRelease.
+func startReleaseArchiveServer(t *testing.T, filename string, archive []byte, checksums string) {
+	t.Helper()
+
+	serveRelease(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/checksums.txt"):
+			_, _ = w.Write([]byte(checksums))
+		case strings.HasSuffix(r.URL.Path, "/"+filename):
+			_, _ = w.Write(archive)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
+// setTempDir points os.MkdirTemp's default location at dir, so a test can see
+// everything the updater leaves behind. Unix reads TMPDIR; Windows reads TMP,
+// then TEMP.
+func setTempDir(t *testing.T, dir string) {
+	t.Helper()
+
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+}
+
+// releaseFixture builds an archive in this platform's release format holding a
+// single lnpm binary, and returns the release filename alongside its bytes.
+func releaseFixture(t *testing.T, version, content string) (string, []byte) {
+	t.Helper()
+
+	filename, _ := buildDownloadURL(version)
+
+	var path string
+	if strings.HasSuffix(filename, ".zip") {
+		path = writeZip(t, []archiveEntry{{"lnpm.exe", content}})
+	} else {
+		path = writeTarGz(t, []archiveEntry{{"lnpm", content}})
+	}
+
+	archive, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filename, archive
+}
+
+// originalBinary is what newUpdateTarget puts at the binary to be replaced, so
+// a failed update can be checked for having left it alone.
+const originalBinary = "old-binary"
+
+// newUpdateTarget allocates a directory for the updater to download into and a
+// binary for it to replace, then redirects os.MkdirTemp at that directory.
+//
+// Both are allocated before the redirect so neither ends up inside the
+// directory that is later scanned for leftovers - which also means a test
+// needing an archive fixture must build it before calling this.
+func newUpdateTarget(t *testing.T) (systemTemp, dst string) {
+	t.Helper()
+
+	systemTemp = t.TempDir()
+	_, dst = writeInstallFixture(t, "unused", originalBinary)
+	setTempDir(t, systemTemp)
+	return systemTemp, dst
+}
+
+// assertNoUpdateTempDirs fails the test if any updater temp directory is left
+// under systemTemp, naming what it still holds.
+func assertNoUpdateTempDirs(t *testing.T, systemTemp string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(systemTemp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "lnpm-update-") {
+			continue
+		}
+		left, err := os.ReadDir(filepath.Join(systemTemp, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, l := range left {
+			names = append(names, l.Name())
+		}
+		t.Errorf("temp directory %q survived, holding %v", e.Name(), names)
+	}
+}
+
+// assertFailedUpdateCleanedUp checks that a failed update took its temp
+// directory with it and left the user's binary untouched.
+func assertFailedUpdateCleanedUp(t *testing.T, systemTemp, dst string) {
+	t.Helper()
+
+	assertNoUpdateTempDirs(t, systemTemp)
+
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading the binary after a failed update: %v", err)
+	}
+	if string(data) != originalBinary {
+		t.Errorf("binary = %q after a failed update, want the original %q", data, originalBinary)
+	}
+}
+
+// A successful update used to remove only the extracted binary, leaving the
+// temp directory and the multi-megabyte archive inside it on disk forever.
+func TestDownloadAndInstallRemovesTheDownloadTempDir(t *testing.T) {
+	const version = "1.2.3"
+	filename, archive := releaseFixture(t, version, "new-binary")
+	startReleaseArchiveServer(t, filename, archive, archiveChecksums(filename, archive))
+	systemTemp, dst := newUpdateTarget(t)
+
+	if err := downloadAndInstall(version, dst); err != nil {
+		t.Fatalf("downloadAndInstall returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading the installed binary: %v", err)
+	}
+	if string(data) != "new-binary" {
+		t.Errorf("installed binary = %q, want %q", data, "new-binary")
+	}
+
+	assertNoUpdateTempDirs(t, systemTemp)
+}
+
+// A download that never produces an archive must not leave its temp directory
+// behind either.
+func TestDownloadAndInstallRemovesTheTempDirWhenTheDownloadFails(t *testing.T) {
+	const version = "1.2.3"
+	// A release with a checksums.txt but no archive published: the archive
+	// request 404s.
+	startReleaseServer(t, "")
+	systemTemp, dst := newUpdateTarget(t)
+
+	err := downloadAndInstall(version, dst)
+	if err == nil {
+		t.Fatal("downloadAndInstall returned nil when the archive could not be downloaded, want an error")
+	}
+	if !strings.Contains(err.Error(), "download failed") {
+		t.Errorf("error = %q, want it to mention the download failed", err)
+	}
+
+	assertFailedUpdateCleanedUp(t, systemTemp, dst)
+}
+
+// An archive that fails verification is left on disk until the temp directory
+// goes, so a tampered download must not survive the update that rejected it.
+func TestDownloadAndInstallRemovesTheTempDirWhenTheChecksumIsWrong(t *testing.T) {
+	const version = "1.2.3"
+	filename, archive := releaseFixture(t, version, "new-binary")
+	// A checksums.txt listing a sum this archive does not have, as a tampered
+	// or corrupted release asset would produce.
+	tampered := fmt.Sprintf("%s  %s\n", strings.Repeat("ab", 32), filename)
+	startReleaseArchiveServer(t, filename, archive, tampered)
+	systemTemp, dst := newUpdateTarget(t)
+
+	err := downloadAndInstall(version, dst)
+	if err == nil {
+		t.Fatal("downloadAndInstall returned nil for an archive whose checksum does not match, want an error")
+	}
+	if !strings.Contains(err.Error(), "checksum verification failed") {
+		t.Errorf("error = %q, want it to mention checksum verification failed", err)
+	}
+
+	assertFailedUpdateCleanedUp(t, systemTemp, dst)
+}
+
+// The last failure path: the archive downloads and verifies, and only then
+// turns out to be unreadable.
+func TestDownloadAndInstallRemovesTheTempDirWhenExtractionFails(t *testing.T) {
+	const version = "1.2.3"
+	filename, _ := buildDownloadURL(version)
+	// Bytes that are neither a gzipped tar nor a zip, published under their own
+	// real checksum so verification passes and extraction is what fails.
+	archive := []byte("not an archive")
+	startReleaseArchiveServer(t, filename, archive, archiveChecksums(filename, archive))
+	systemTemp, dst := newUpdateTarget(t)
+
+	// The message is left to the archive reader and differs between the tar.gz
+	// and zip formats, so only the failure itself is asserted.
+	if err := downloadAndInstall(version, dst); err == nil {
+		t.Fatal("downloadAndInstall returned nil for an archive that cannot be read, want an error")
+	}
+
+	assertFailedUpdateCleanedUp(t, systemTemp, dst)
 }
