@@ -46,6 +46,16 @@ func tryReflink(src, dst string) bool {
 	)
 
 	if errno == 0 {
+		// FICLONE clones data blocks only, never permissions, and the
+		// destination was created with a mode the umask masked. Chmod is not
+		// masked, so the clone ends up with the source's exact bits. If it
+		// fails, clean up so the caller falls back to a copy rather than
+		// keeping a clone with the wrong mode.
+		if err := dstFile.Chmod(srcInfo.Mode()); err != nil {
+			dstFile.Close()
+			_ = os.Remove(dst)
+			return false
+		}
 		if err := dstFile.Sync(); err != nil {
 			return false
 		}

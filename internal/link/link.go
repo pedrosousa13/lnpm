@@ -618,5 +618,13 @@ func copyFile(src, dst string) error {
 		}
 	}
 
+	// OpenFile's mode argument is masked by the process umask, so the copy would
+	// not carry the source's exact permission bits: a 0755 bin script would land
+	// at 0700 under umask 0077 and fail to execute from node_modules/.bin. Chmod
+	// is not masked, so set them explicitly.
+	if err := dstFile.Chmod(srcInfo.Mode()); err != nil {
+		return err
+	}
+
 	return dstFile.Sync()
 }
