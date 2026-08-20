@@ -23,6 +23,11 @@ import (
 // retreat and the restore wins over the snapshot's entry for the same name, and
 // packages the snapshot never saw are left alone. Nothing is unlinked.
 //
+// Each name leaves the snapshot as it is dealt with, so what is on disk at any
+// point is the work still outstanding. A run that fails on some package keeps
+// the snapshot for the re-run it advises, and the re-run then sees only what is
+// genuinely left.
+//
 // Two parts of the pre-retreat state cannot be rebuilt from the snapshot,
 // because the lock file records neither. The first is whether a package was
 // added with --link: everything is restored as a store copy, which is what the
@@ -106,11 +111,14 @@ func RunRestore() error {
 
 		// A package already in the lock file was added again by the user since
 		// the retreat, and their newer add is the one to keep. Restore's own
-		// half-finished work cannot be mistaken for it: a lock entry is written
-		// only once the package.json write it describes has landed, so a package
-		// a previous restore could not finish leaves nothing here.
+		// work cannot be mistaken for it. A package a previous run finished is
+		// no longer in the snapshot, so it never reaches this loop; a package a
+		// previous run could not finish left no lock entry, because an entry is
+		// written only once the package.json write it describes has landed. So a
+		// name that is in the snapshot and in the lock file is the user's doing.
 		if lock.Has(name) {
 			fmt.Printf("  %s %s was added again since the retreat; keeping that link\n", iconOK(), name)
+			consumeSnapshotEntry(snapshot, cwd, name)
 			continue
 		}
 		attempted++
@@ -174,12 +182,13 @@ func RunRestore() error {
 		// ORDERING CONSTRAINT, and it is the reverse of the one add documents.
 		// add saves the lock entry before rewriting package.json because the
 		// specifier the entry carries lives nowhere else, so a failed rewrite
-		// would strand it. Restore holds a second copy of it: the snapshot,
-		// which it keeps whenever anything fails, records the same original
-		// version. So the entry can wait for the write - and it must, because an
-		// entry written ahead of the write is indistinguishable, on the re-run
-		// restore itself advises, from a package the user re-added, and would
-		// have that re-run skip the very package it was run to finish.
+		// would strand it. Restore holds a second copy of it: the snapshot's
+		// entry, which records the same original version and is not dropped
+		// until the write has landed. So the entry can wait for the write - and
+		// it must, because an entry written ahead of the write is
+		// indistinguishable, on the re-run restore itself advises, from a
+		// package the user re-added, and would have that re-run skip the very
+		// package it was run to finish.
 		//
 		// Saved per package rather than once at the end for the same reason: an
 		// entry batched to the end would be missing for every package whose
@@ -194,6 +203,7 @@ func RunRestore() error {
 		if err := lock.Save(cwd); err != nil {
 			return fmt.Errorf("failed to save lock file: %w", err)
 		}
+		consumeSnapshotEntry(snapshot, cwd, name)
 
 		recordRestoredLink(database, cwd, pkg, linkType)
 
@@ -201,6 +211,10 @@ func RunRestore() error {
 		restored++
 	}
 
+	// Nothing failed means every name was consumed above, so the file on disk is
+	// an empty snapshot. Removing it says the same thing and says it to every
+	// later retreat too, which reads a snapshot that is merely empty as an
+	// earlier retreat to merge into.
 	if failed == 0 {
 		if err := os.Remove(lockfile.RetreatPath(cwd)); err != nil && !os.IsNotExist(err) {
 			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), snapshotName, err)
@@ -209,7 +223,7 @@ func RunRestore() error {
 
 	fmt.Println()
 	if failed > 0 {
-		fmt.Printf("  %s %s kept; re-run 'lnpm restore' once the packages above are available\n", iconTip(), snapshotName)
+		fmt.Printf("  %s %s kept, holding only what is left; re-run 'lnpm restore' once the packages above are available\n", iconTip(), snapshotName)
 		// Counted against what was attempted, not against the snapshot: a
 		// package skipped because the user re-added it was never restore's to
 		// fail at, and counting it understates the share of the run that did.
@@ -221,6 +235,27 @@ func RunRestore() error {
 		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
 	}
 	return nil
+}
+
+// consumeSnapshotEntry drops name from the snapshot and writes what is left back
+// to disk, so the snapshot always describes the work still outstanding rather
+// than the work the retreat once handed over.
+//
+// It is what makes a re-run after a partial failure honest. The snapshot has to
+// survive a run that failed on any package, because the packages that failed
+// still need it; kept whole, it would also still name every package this run did
+// restore, and the re-run would find them in the lock file and report restore's
+// own work back to the user as packages they re-added. It would also let a
+// package the user has since removed be re-linked by the next restore.
+//
+// A failure to write is reported and not treated as a failed restore: the link
+// is on disk and the lock file records it, so the run's work stands, and the
+// cost is a stale line in a report the user may never see.
+func consumeSnapshotEntry(snapshot *lockfile.LockFile, cwd, name string) {
+	snapshot.Remove(name)
+	if err := snapshot.SaveRetreat(cwd); err != nil {
+		fmt.Printf("  %s Failed to update %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
+	}
 }
 
 // recordRestoredLink registers the project and its link to pkg, so `lnpm list`

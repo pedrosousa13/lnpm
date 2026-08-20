@@ -435,3 +435,103 @@ func dependencyFields(t *testing.T, projectDir string) (deps, devDeps map[string
 	}
 	return getMapValue(pkgJSON, "dependencies"), getMapValue(pkgJSON, "devDependencies")
 }
+
+// TestRestoreRerunDoesNotReportItsOwnWorkAsAReAdd covers the re-run restore
+// itself advises after a partial failure, in the multi-package project where the
+// first run got some of the way.
+//
+// The snapshot has to survive that run, because the package that failed still
+// needs it. Kept whole it would also still name the package the run restored,
+// and the re-run would find that name in the lock file - which is otherwise only
+// true of a package the user added again - and report restore's own work back to
+// them as theirs. The same stale entry would let a later restore re-link a
+// package the user has since removed on purpose.
+//
+// So each name leaves the snapshot as it is dealt with, and what is on disk is
+// the work still outstanding.
+func TestRestoreRerunDoesNotReportItsOwnWorkAsAReAdd(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("prune-ok-pkg")
+	staleDir := env.simplePkg("prune-stale-pkg")
+	projectDir := env.newProject("prune-restore-project")
+	env.addPkg(projectDir, "prune-ok-pkg", false, false)
+	env.addPkg(projectDir, "prune-stale-pkg", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	// Republishing strands the version the snapshot recorded, so the first run
+	// restores one package and fails on the other.
+	env.republish(staleDir, "prune-stale-pkg", "2.0.0", "module.exports = 'v2';")
+	env.chdir(projectDir)
+
+	var err error
+	captureStdout(t, func() { err = cli.RunRestore() })
+	if err == nil {
+		t.Fatal("Expected the first run to exit non-zero, got nil")
+	}
+	env.AssertSymlinkExists(projectDir, "prune-ok-pkg")
+
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("Expected the snapshot to survive a run that failed, got none")
+	}
+	if snapshot.Has("prune-ok-pkg") {
+		t.Errorf("Expected the restored package to be gone from the snapshot, it holds %v", snapshot.List())
+	}
+	if !snapshot.Has("prune-stale-pkg") {
+		t.Errorf("Expected the package that failed to stay in the snapshot, it holds %v", snapshot.List())
+	}
+
+	out := captureStdout(t, func() { _ = cli.RunRestore() })
+
+	if strings.Contains(out, "prune-ok-pkg was added again since the retreat") {
+		t.Errorf("Expected the re-run not to report the first run's own work as a re-add, got:\n%s", out)
+	}
+	env.AssertSymlinkExists(projectDir, "prune-ok-pkg")
+	env.AssertPackageJSON(projectDir, "prune-ok-pkg", "file:.lnpm/prune-ok-pkg")
+}
+
+// TestRestoreDropsAReAddedPackageFromTheSnapshot is the other name restore is
+// finished with the moment it has read it. A package the user added again is
+// left alone, and there is nothing further the snapshot's entry for it can ever
+// do - except be restored over a later 'lnpm remove' of that same package, or
+// have the skip reported again on every re-run.
+func TestRestoreDropsAReAddedPackageFromTheSnapshot(t *testing.T) {
+	env := setupTest(t)
+
+	readdedDir := env.simplePkg("skip-readded-pkg")
+	staleDir := env.simplePkg("skip-stale-pkg")
+	projectDir := env.newProject("skip-restore-project")
+	env.addPkg(projectDir, "skip-readded-pkg", false, false)
+	env.addPkg(projectDir, "skip-stale-pkg", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+
+	// One package is added again by the user, so restore skips it; another is
+	// stranded, so the run fails and the snapshot is kept.
+	env.republish(readdedDir, "skip-readded-pkg", "2.0.0", "module.exports = 'v2';")
+	env.addPkg(projectDir, "skip-readded-pkg", false, false)
+	env.republish(staleDir, "skip-stale-pkg", "2.0.0", "module.exports = 'v2';")
+	env.chdir(projectDir)
+
+	captureStdout(t, func() { _ = cli.RunRestore() })
+
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil {
+		t.Fatalf("Failed to load the retreat snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("Expected the snapshot to survive a run that failed, got none")
+	}
+	if snapshot.Has("skip-readded-pkg") {
+		t.Errorf("Expected the re-added package to be gone from the snapshot, it holds %v", snapshot.List())
+	}
+}
