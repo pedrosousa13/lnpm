@@ -69,12 +69,16 @@ func RunPostAdd(projectPath string, runInstall bool) error {
 	}
 
 	cfg := config.Get()
+	if cfg.Hooks.SkipPostAdd {
+		debug.Log("hooks: skipping post-add (disabled via config)")
+		return nil
+	}
 
 	// Use custom hook if configured
 	if cfg.Hooks.PostAdd != "" {
 		fmt.Println("Running post-add hook...")
 		debug.Logf("hooks: running post_add: %s", cfg.Hooks.PostAdd)
-		return runScript(projectPath, cfg.Hooks.PostAdd)
+		return runScriptFn(projectPath, cfg.Hooks.PostAdd)
 	}
 
 	// Default: run package manager install
@@ -84,7 +88,7 @@ func RunPostAdd(projectPath string, runInstall bool) error {
 	fmt.Printf("Running %s to resolve dependencies...\n", installCmd)
 	debug.Logf("hooks: running install: %s", installCmd)
 
-	return runScript(projectPath, installCmd)
+	return runScriptFn(projectPath, installCmd)
 }
 
 // RunCustom runs a custom hook command
@@ -127,6 +131,12 @@ func runNpmScript(dir string, scriptName string) error {
 
 	return nil
 }
+
+// runScriptFn is runScript behind a variable so a test can check which command
+// RunPostAdd decided on without running it: that path ends in a real
+// package-manager install, which a test must never start. Only RunPostAdd goes
+// through it. Production code never reassigns it.
+var runScriptFn = runScript
 
 // runScript executes a shell command in the specified directory
 func runScript(dir string, cmdStr string) error {
