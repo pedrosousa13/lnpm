@@ -176,6 +176,23 @@ func (db *DB) Close() error {
 	return db.db.Close()
 }
 
+// LockHeld reports whether the exclusive file lock bolt.Open took is still
+// held. bbolt takes it for the whole life of the handle and drops it only in
+// Close, which also clears the path this reads, so an open handle means no
+// other lnpm process can be writing to the store.
+//
+// This exists for callers whose safety rests on that rather than on their own
+// bookkeeping — gc's sweep for temp directories left by an interrupted publish
+// or relink — so they can assert the invariant instead of assuming it, and fail
+// loudly if a later change moves them outside the window where it holds.
+// It takes no lock of its own. db.mu would guard nothing here, because Close
+// does not take it either — so holding it would suggest a synchronisation that
+// does not exist. The callers that matter run on the goroutine that would do the
+// closing.
+func (db *DB) LockHeld() bool {
+	return db.db.Path() != ""
+}
+
 // ResetForTesting resets the singleton instance for testing
 // This should only be used in tests
 func ResetForTesting() {

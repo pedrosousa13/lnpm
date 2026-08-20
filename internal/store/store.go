@@ -16,6 +16,19 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/pack"
 )
 
+// tempInfix separates a temp directory's hash from the random tail os.MkdirTemp
+// appends, and newTempDir below is the only place a temp directory name is
+// built. The sweep in reap.go matches against the same constant and recognises
+// what this function creates by calling it, so the write path and the sweep
+// cannot drift into disagreeing about the name.
+const tempInfix = ".tmp-"
+
+// newTempDir creates the directory the write path populates for hash, as a
+// sibling of the entry it will be renamed to.
+func newTempDir(parent, hash string) (string, error) {
+	return os.MkdirTemp(parent, "."+hash+tempInfix)
+}
+
 // shortHash returns the first 8 characters of a hash for display
 func shortHash(hash string) string {
 	if len(hash) > 8 {
@@ -99,7 +112,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		return "", fmt.Errorf("failed to create store directory: %w", err)
 	}
-	destPath, err := os.MkdirTemp(parent, "."+hash+".tmp-")
+	destPath, err := newTempDir(parent, hash)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp store directory: %w", err)
 	}

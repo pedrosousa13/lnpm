@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
@@ -48,17 +50,22 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	// Find packages to remove
 	var packagesToRemove []*db.Package
 	var linksToRemove []linkToRemove
+	// Project directories still on disk, deduplicated: the temp-directory sweep
+	// reads each one once, however many packages are linked into it.
+	projectPaths := make(map[string]struct{})
 
 	for _, pkg := range packages {
 		links, _ := database.GetLinksForPackage(pkg.ID)
 
 		// Check for orphaned links
-		for _, link := range links {
-			proj, _ := database.GetProjectByID(link.ProjectID)
+		// Named lnk, not link, so it does not shadow the link package the
+		// temp-directory sweep below calls into.
+		for _, lnk := range links {
+			proj, _ := database.GetProjectByID(lnk.ProjectID)
 			if proj == nil {
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID: pkg.ID,
-					projectID: link.ProjectID,
+					projectID: lnk.ProjectID,
 					reason:    "project not found in database",
 				})
 				continue
@@ -67,10 +74,12 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 			if _, err := os.Stat(proj.Path); os.IsNotExist(err) {
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID:   pkg.ID,
-					projectID:   link.ProjectID,
+					projectID:   lnk.ProjectID,
 					projectPath: proj.Path,
 					reason:      "project directory no longer exists",
 				})
+			} else {
+				projectPaths[proj.Path] = struct{}{}
 			}
 		}
 
@@ -121,44 +130,205 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		fmt.Println()
 
 		if !dryRun {
-			if !confirm("Permanently delete these package(s) from the store?", yes) {
-				fmt.Println("Aborted.")
-				return nil
+			if confirm("Permanently delete these package(s) from the store?", yes) {
+				removePackages(database, storeRoot, packagesToRemove)
+			} else {
+				// Declining skips deleting packages and nothing else. The
+				// temp-directory sweep below asks its own question, about a
+				// different kind of thing, and coupling the two would mean a
+				// user who says no here never learns those directories exist —
+				// which is most of what makes them a problem, since no other
+				// command mentions them.
+				fmt.Println("Skipped deleting packages.")
 			}
-			removed := 0
-			var freed int64
-			for _, pkg := range packagesToRemove {
-				// Remove from store, but only if the recorded path is actually
-				// inside the store root (guards against a poisoned DB entry).
-				if pkg.StorePath != "" {
-					if isWithinStore(storeRoot, pkg.StorePath) {
-						// The entry is invalidated before its tree is removed,
-						// so an interrupted removal leaves something the store
-						// reports as absent rather than a truncated package.
-						if err := store.RemoveEntry(pkg.StorePath); err != nil {
-							// Keep the database row: it is the only record of
-							// the entry left to delete, and gc can be re-run.
-							fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), pkg.Name, err)
-							continue
-						}
-					} else {
-						fmt.Printf("  ⚠ Skipping %s: store path %q is outside the store root\n", pkg.Name, pkg.StorePath)
-					}
-				}
-				// Remove from database
-				_ = database.DeletePackage(pkg.ID)
-				removed++
-				freed += pkg.TotalSize
-			}
-			fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), removed, formatSize(freed))
 		}
 	}
 
-	if len(packagesToRemove) == 0 && len(linksToRemove) == 0 {
+	// Reclaim the temp directories an interrupted publish or relink left behind.
+	//
+	// This runs here, inside the window where the database handle is still open,
+	// and that ordering is the entire safety argument rather than an incidental
+	// detail. bolt.Open takes an exclusive OS file lock on the database file and
+	// holds it until Close, and every path that creates one of these directories
+	// — publish, add, push — opens the database before it touches the store or a
+	// project. So while gc holds the handle no other lnpm process can be
+	// mid-write, and a temp directory seen here has no live writer by
+	// construction. That is why no age threshold, pid file or lock file is
+	// needed: the invariant already exists and the OS already enforces it.
+	//
+	// Moving this after a Close would void the guarantee in silence, and let the
+	// sweep delete the temp directory of a relink that started in the meantime —
+	// exactly the half-written package #137 removed. reapTempDirs re-checks the
+	// lock so such a reordering fails loudly instead.
+	sortedProjects := make([]string, 0, len(projectPaths))
+	for path := range projectPaths {
+		sortedProjects = append(sortedProjects, path)
+	}
+	sort.Strings(sortedProjects)
+	tempDirsFound, err := reapTempDirs(database, s, sortedProjects, dryRun, yes)
+	if err != nil {
+		return err
+	}
+
+	if len(packagesToRemove) == 0 && len(linksToRemove) == 0 && tempDirsFound == 0 {
 		fmt.Printf("%s Nothing to clean up\n", iconOK())
 	}
 
 	return nil
+}
+
+// removePackages deletes each package's store entry and then its database row.
+// It is a function rather than an inline block so gc can decline it and still go
+// on to sweep temp directories, which is a separate decision.
+func removePackages(database *db.DB, storeRoot string, packagesToRemove []*db.Package) {
+	removed := 0
+	var freed int64
+	for _, pkg := range packagesToRemove {
+		// Remove from store, but only if the recorded path is actually
+		// inside the store root (guards against a poisoned DB entry).
+		if pkg.StorePath != "" {
+			if isWithinStore(storeRoot, pkg.StorePath) {
+				// The entry is invalidated before its tree is removed,
+				// so an interrupted removal leaves something the store
+				// reports as absent rather than a truncated package.
+				if err := store.RemoveEntry(pkg.StorePath); err != nil {
+					// Keep the database row: it is the only record of
+					// the entry left to delete, and gc can be re-run.
+					fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), pkg.Name, err)
+					continue
+				}
+			} else {
+				fmt.Printf("  ⚠ Skipping %s: store path %q is outside the store root\n", pkg.Name, pkg.StorePath)
+			}
+		}
+		// Remove from database
+		_ = database.DeletePackage(pkg.ID)
+		removed++
+		freed += pkg.TotalSize
+	}
+	fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), removed, formatSize(freed))
+}
+
+// tempDirToReap is one temp directory the sweep found, flattened from the two
+// surfaces so gc reports them in one list.
+type tempDirToReap struct {
+	path string
+	size int64
+	// note says what the directory held. Reporting that is the point of the
+	// sweep: these directories are invisible to every other command, so gc is
+	// the only place a user can learn real content is sitting there.
+	note string
+}
+
+// tempDirNote describes what a project-side temp entry held.
+//
+// Retired means an interrupted swap renamed the *previous* .lnpm/{package}
+// aside, so it holds what was linked before rather than something half-written.
+// What that is depends on which write path made it: Link populates a directory,
+// so a retired directory is a complete copy of the package; LinkSource makes a
+// link to a source directory, so a retired link is a link and holds no copy of
+// anything. Saying "complete copy of the previous package" about a zero-byte
+// link would be plainly false, and a false statement in the one place these
+// directories are ever reported is worse than no statement.
+func tempDirNote(retired, isLink bool) string {
+	switch {
+	case retired && isLink:
+		return "link to the previously linked source directory"
+	case retired:
+		return "complete copy of the previous package"
+	case isLink:
+		return "link to a source directory, from an interrupted relink"
+	default:
+		return "incomplete"
+	}
+}
+
+// reapTempDirs reclaims the temp directories an interrupted publish or relink
+// left in the store and in the given projects, and reports how many it found.
+// It reports what it found rather than what it removed so a dry run, which finds
+// them and removes nothing, still counts as having something to clean up.
+//
+// It must be called while database is open. See the comment at its call site for
+// why that ordering, and not an age threshold, is what makes the sweep safe.
+func reapTempDirs(database *db.DB, s *store.Store, projectPaths []string, dryRun, yes bool) (int, error) {
+	if !database.LockHeld() {
+		// Refuse rather than sweep: without the database lock another process
+		// may be populating one of these directories right now.
+		return 0, fmt.Errorf("refusing to reclaim temp directories: the database lock is not held")
+	}
+
+	var found []tempDirToReap
+	unreadable := 0
+
+	// Both finders count the directories they could not read instead of failing.
+	// Per ADR-0001 the direction is what decides: skipping one narrows what the
+	// sweep reclaims and leaves the bytes for the next run, where aborting would
+	// abandon every other project as well. gc is the command a user reaches for
+	// when something is already wrong, so it has to keep working on what it can
+	// still read — but the count is reported rather than only logged, because
+	// these directories being invisible is half of what the sweep exists to fix.
+	storeTemps, storeUnreadable := s.FindTempDirs()
+	unreadable += storeUnreadable
+	for _, t := range storeTemps {
+		found = append(found, tempDirToReap{
+			path: t.Path,
+			size: t.Size,
+			note: tempDirNote(false, false),
+		})
+	}
+
+	for _, projectPath := range projectPaths {
+		entries, projectUnreadable := link.FindTempEntries(projectPath)
+		unreadable += projectUnreadable
+		for _, e := range entries {
+			found = append(found, tempDirToReap{
+				path: e.Path,
+				size: e.Size,
+				note: tempDirNote(e.Retired, e.Link),
+			})
+		}
+	}
+
+	if unreadable > 0 {
+		fmt.Printf("%s Could not scan %d director(ies) for temp directories; re-run gc once they are readable\n", iconWarn(), unreadable)
+	}
+
+	if len(found) == 0 {
+		return 0, nil
+	}
+	total := len(found)
+
+	fmt.Printf("Found %d temp director(ies) left by an interrupted publish or relink:\n", len(found))
+	var totalSize int64
+	for _, t := range found {
+		fmt.Printf("  - %s (%s, %s)\n", t.path, formatSize(t.size), t.note)
+		totalSize += t.size
+	}
+	fmt.Printf("Total size: %s\n", formatSize(totalSize))
+	fmt.Println()
+
+	if dryRun {
+		return total, nil
+	}
+	if !confirm("Permanently delete these temp director(ies)?", yes) {
+		fmt.Println("Skipped reclaiming temp directories.")
+		return total, nil
+	}
+
+	removed := 0
+	var freed int64
+	for _, t := range found {
+		// RemoveAll does not follow links, so a leftover from LinkSource loses
+		// the link and not the source directory it points at.
+		if err := os.RemoveAll(t.path); err != nil {
+			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), t.path, err)
+			continue
+		}
+		removed++
+		freed += t.size
+	}
+	fmt.Printf("%s Reclaimed %d temp director(ies), freed %s\n", iconOK(), removed, formatSize(freed))
+	return total, nil
 }
 
 type linkToRemove struct {
