@@ -50,7 +50,7 @@ func pickVersion(stamped string, info *debug.BuildInfo, ok bool) string {
 }
 
 func main() {
-	cli.SetVersion(resolveVersion())
+	cli.SetVersion(resolveVersion(), Commit, Date)
 	if err := cli.Execute(); err != nil {
 		os.Exit(1)
 	}
