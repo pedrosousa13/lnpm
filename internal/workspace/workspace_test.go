@@ -183,6 +183,30 @@ func TestDetectPNPMWorkspaceMalformedPatternReturnsError(t *testing.T) {
 	}
 }
 
+func TestDetectPNPMWorkspaceExcludesNegatedPackage(t *testing.T) {
+	root := t.TempDir()
+	pkgA := writePackage(t, root, "packages/package-a")
+	writePackage(t, root, "packages/package-b")
+
+	yaml := "packages:\n  - 'packages/*'\n  - '!packages/package-b'\n"
+	if err := os.WriteFile(filepath.Join(root, "pnpm-workspace.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("Failed to write pnpm-workspace.yaml: %v", err)
+	}
+
+	ws, err := Detect(root)
+	if err != nil {
+		t.Fatalf("Failed to detect workspace: %v", err)
+	}
+	if ws == nil {
+		t.Fatal("Expected workspace, got nil")
+	}
+	if ws.Type != "pnpm" {
+		t.Errorf("Expected pnpm, got %s", ws.Type)
+	}
+
+	assertPackages(t, ws.Packages, []string{pkgA})
+}
+
 // --- ListPackages -----------------------------------------------------------
 //
 // Every path in w.Packages had a package.json when expandGlobs filtered on it,
@@ -302,28 +326,4 @@ func TestListPackagesNamelessMemberFails(t *testing.T) {
 	if len(packages) != 0 {
 		t.Errorf("Expected no packages alongside the error, got %v", packages)
 	}
-}
-
-func TestDetectPNPMWorkspaceExcludesNegatedPackage(t *testing.T) {
-	root := t.TempDir()
-	pkgA := writePackage(t, root, "packages/package-a")
-	writePackage(t, root, "packages/package-b")
-
-	yaml := "packages:\n  - 'packages/*'\n  - '!packages/package-b'\n"
-	if err := os.WriteFile(filepath.Join(root, "pnpm-workspace.yaml"), []byte(yaml), 0644); err != nil {
-		t.Fatalf("Failed to write pnpm-workspace.yaml: %v", err)
-	}
-
-	ws, err := Detect(root)
-	if err != nil {
-		t.Fatalf("Failed to detect workspace: %v", err)
-	}
-	if ws == nil {
-		t.Fatal("Expected workspace, got nil")
-	}
-	if ws.Type != "pnpm" {
-		t.Errorf("Expected pnpm, got %s", ws.Type)
-	}
-
-	assertPackages(t, ws.Packages, []string{pkgA})
 }
