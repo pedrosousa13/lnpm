@@ -8,6 +8,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // TestRunDoctorChecksConfiguredStorePath pins that doctor inspects the store
@@ -99,6 +100,63 @@ func newDoctorStoreConfig(t *testing.T) string {
 	t.Cleanup(config.ResetForTesting)
 
 	return dir
+}
+
+// TestRunDoctorReportsPendingBackfill covers both halves of doctor's job for
+// the completeness-marker backfill: it says whether the store has been
+// backfilled, and it does not do the backfilling. doctor reports and names the
+// command that fixes each problem; repairing is somebody else's job.
+func TestRunDoctorReportsPendingBackfill(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	out := captureDoctorStdout(t)
+
+	if !strings.Contains(out, "completeness marker") {
+		t.Errorf("RunDoctor did not report the pending completeness-marker backfill, output was:\n%s", out)
+	}
+
+	done, err := store.BackfillDone()
+	if err != nil {
+		t.Fatalf("backfill status: %v", err)
+	}
+	if done {
+		t.Error("RunDoctor performed the backfill; doctor must report without writing")
+	}
+}
+
+// TestRunDoctorSkipsBackfillCheckWithoutStore pins that the backfill report
+// stays behind its prerequisite. With no store on the machine there is nothing
+// to backfill, and the command doctor would name as the fix cannot run either,
+// so warning about it is noise pointing nowhere.
+func TestRunDoctorSkipsBackfillCheckWithoutStore(t *testing.T) {
+	newDoctorStoreConfig(t) // the configured store is deliberately not created
+
+	out := captureDoctorStdout(t)
+
+	if strings.Contains(out, "completeness marker") {
+		t.Errorf("RunDoctor reported on the backfill for a store that does not exist, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorReportsCompletedBackfill is the same check read the other way
+// round: a store that has been backfilled must not be reported as pending.
+func TestRunDoctorReportsCompletedBackfill(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if _, err := store.New(); err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	out := captureDoctorStdout(t)
+
+	if strings.Contains(out, "not been backfilled") {
+		t.Errorf("RunDoctor reported a backfilled store as pending, output was:\n%s", out)
+	}
 }
 
 // captureDoctorStdout runs RunDoctor and returns what it printed. RunDoctor

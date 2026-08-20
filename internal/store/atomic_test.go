@@ -93,6 +93,9 @@ func TestStoreFinalizeKeepsExistingEntry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(finalPath, "index.js"), []byte("sentinel"), 0644); err != nil {
 		t.Fatalf("seed final file: %v", err)
 	}
+	if err := writeMarker(finalPath, "feedface"); err != nil {
+		t.Fatalf("seed final marker: %v", err)
+	}
 
 	// Our own fully built temp dir, about to lose the race to rename into place.
 	destPath, err := os.MkdirTemp(filepath.Dir(finalPath), ".feedface.tmp-")
@@ -129,21 +132,43 @@ func TestStoreConcurrentSameHash(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 
+	// Every caller's returned path is checked, not just the winner's entry: a
+	// loser handed back a path that is not a complete package is the failure
+	// this test exists to catch, and checking the entry once cannot see it.
 	var wg sync.WaitGroup
+	paths := make([]string, 8)
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			src, files := makeSource(t, 4)
-			if _, err := s.Store("race-pkg", "cafebabe", files, src); err != nil {
+			path, err := s.Store("race-pkg", "cafebabe", files, src)
+			if err != nil {
 				t.Errorf("concurrent store: %v", err)
+				return
 			}
+			paths[i] = path
 		}()
 	}
 	wg.Wait()
 
 	if !s.Exists("race-pkg", "cafebabe") {
 		t.Fatal("package should exist after concurrent stores")
+	}
+	for i, path := range paths {
+		if path == "" {
+			continue // the store call already failed the test
+		}
+		if !hasMarker(path) {
+			t.Errorf("caller %d was handed %s, which is not a complete package", i, path)
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			t.Fatalf("read returned path: %v", err)
+		}
+		if len(entries) != 2 { // dist/ plus the marker
+			t.Errorf("caller %d was handed %s, which holds %d entries, want dist/ and the marker", i, path, len(entries))
+		}
 	}
 	got, err := s.GetFiles("race-pkg", "cafebabe")
 	if err != nil {

@@ -41,6 +41,12 @@ func New() (*Store, error) {
 		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
+	// Entries written before completeness markers existed carry none, and are
+	// marked once here rather than being grandfathered.
+	if err := backfillMarkers(storePath); err != nil {
+		return nil, err
+	}
+
 	return &Store{basePath: storePath}, nil
 }
 
@@ -59,11 +65,12 @@ func (s *Store) PackagePath(name, hash string) string {
 	return filepath.Join(s.basePath, name, hash)
 }
 
-// Exists checks if a package with the given hash exists
+// Exists reports whether a complete package with the given hash is in the
+// store. A directory alone is not enough: a deletion interrupted partway
+// leaves one behind, and linking it into a consumer would install a truncated
+// package. The entry must carry its completeness marker.
 func (s *Store) Exists(name, hash string) bool {
-	path := s.PackagePath(name, hash)
-	_, err := os.Stat(path)
-	return err == nil
+	return hasMarker(s.PackagePath(name, hash))
 }
 
 // Store populates the store with the package's files, using reflink (CoW clone)
@@ -86,8 +93,8 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	}
 
 	// Write into a temp dir first, then atomically rename into place. This way
-	// an interrupted store never leaves a partial package that Exists() (a
-	// directory-existence check) would later treat as complete.
+	// an interrupted store never leaves a partial package at finalPath: the
+	// entry appears in one step, already carrying its completeness marker.
 	parent := filepath.Dir(finalPath)
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		return "", fmt.Errorf("failed to create store directory: %w", err)
@@ -245,6 +252,13 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 		return "", fmt.Errorf("failed to strip lifecycle scripts: %w", err)
 	}
 
+	// Mark the entry complete as the last file written inside the temp dir, so
+	// it commits together with the content in the rename below. Written after
+	// the rename it would leave a window in which a committed entry is unmarked.
+	if err := writeMarker(destPath, hash); err != nil {
+		return "", err
+	}
+
 	// Atomically move the completed package into place.
 	renamed, err := s.finalize(name, hash, destPath, finalPath)
 	if err != nil {
@@ -259,15 +273,16 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 // finalPath. It reports whether the rename consumed destPath, so the caller
 // knows whether the deferred temp-dir cleanup still has work to do.
 //
-// It never deletes finalPath. finalPath is keyed by the content hash, so an
-// occupied destination means another goroutine or process already committed
-// this exact content, and that entry is complete by construction.
+// It never deletes finalPath. finalPath is keyed by the content hash, so a
+// marked entry at the destination holds this exact content, committed by
+// another goroutine or process.
 func (s *Store) finalize(name, hash, destPath, finalPath string) (bool, error) {
 	if err := os.Rename(destPath, finalPath); err != nil {
 		// A concurrent publish of the same hash may have already created it.
-		// Deliberately Exists(name, hash) rather than a bare stat of finalPath,
-		// even though the two are equivalent today: any future completeness
-		// check belongs in Exists, and this call site should inherit it.
+		// Exists(name, hash) rather than a bare stat of finalPath, which is
+		// the weaker question of the two: a destination that exists without a
+		// marker is a partial entry, and blessing a failed rename onto one as
+		// success is precisely what must not happen here.
 		if s.Exists(name, hash) {
 			return false, nil // temp dir cleaned up by deferred guard
 		}
@@ -293,6 +308,12 @@ func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
 		relPath, err := filepath.Rel(storePath, path)
 		if err != nil {
 			return err
+		}
+
+		// The completeness marker belongs to the store, not to the package:
+		// what this returns is copied into consumer projects.
+		if filepath.ToSlash(relPath) == markerName {
+			return nil
 		}
 
 		files = append(files, &pack.FileInfo{

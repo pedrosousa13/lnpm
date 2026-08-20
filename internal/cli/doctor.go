@@ -7,6 +7,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // RunDoctor executes the doctor command
@@ -19,6 +20,7 @@ func RunDoctor() error {
 
 	// Check 1: Store directory exists and is writable
 	fmt.Print("Checking store directory... ")
+	storeUsable := false
 	storePath, err := config.GetStorePath()
 	if err != nil {
 		fmt.Println("✗ ERROR")
@@ -43,6 +45,7 @@ func RunDoctor() error {
 		} else {
 			_ = os.Remove(testFile)
 			fmt.Println("✓ OK")
+			storeUsable = true
 		}
 	}
 
@@ -114,6 +117,29 @@ func RunDoctor() error {
 			fmt.Printf("✗ %d package(s) with missing files\n", missingFiles)
 			fmt.Println("  Fix: Re-publish affected packages")
 			issues++
+		} else {
+			fmt.Println("✓ OK")
+		}
+	}
+
+	// Check 6: One-time backfill of completeness markers into entries written
+	// before markers existed. Reported only: the backfill runs when a command
+	// opens the store, and doctor never repairs what it finds. Skipped when
+	// Check 1 found no usable store — with no store there is nothing to
+	// backfill, and with an unwritable one the command named as the fix could
+	// not run either, so Check 1's own finding is the one worth acting on.
+	if storeUsable {
+		fmt.Print("Checking store completeness markers... ")
+		done, err := store.BackfillDone()
+		if err != nil {
+			fmt.Println("✗ ERROR")
+			fmt.Printf("  Failed to read the backfill status: %v\n", err)
+			issues++
+		} else if !done {
+			fmt.Println("⚠ PENDING")
+			fmt.Println("  Store entries have not been backfilled with completeness markers yet")
+			fmt.Println("  Fix: Run 'lnpm gc --dry-run' (or any command that opens the store)")
+			warnings++
 		} else {
 			fmt.Println("✓ OK")
 		}

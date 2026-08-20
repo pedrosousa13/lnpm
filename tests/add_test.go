@@ -50,6 +50,23 @@ func TestAddVariants(t *testing.T) {
 	}
 }
 
+// TestAddDoesNotLinkStoreMarker pins that the store's completeness marker
+// stays in the store. It is written inside every entry, and what is linked
+// into a consumer is enumerated from that same directory, so an added package
+// would carry the store's bookkeeping file into the project.
+func TestAddDoesNotLinkStoreMarker(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("marker-pkg")
+	projectDir := env.newProject("marker-project")
+	env.addPkg(projectDir, "marker-pkg", false, false)
+
+	marker := filepath.Join(projectDir, ".lnpm", "marker-pkg", ".lnpm-complete")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("linked package carries the store marker %s (stat err = %v)", marker, err)
+	}
+}
+
 // TestAddPreservesDevDependencyLocation tests that adding without --dev preserves
 // a package's existing devDependencies location rather than moving it to deps.
 func TestAddPreservesDevDependencyLocation(t *testing.T) {
