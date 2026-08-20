@@ -26,9 +26,12 @@ type Package struct {
 
 const (
 	lockFileName = "lnpm.lock"
-	// retreatFileName is the snapshot `lnpm retreat` leaves behind in place of
-	// the lock file it removes, so `lnpm restore` can put the links back.
-	retreatFileName = lockFileName + ".retreat"
+	// RetreatFileName is the snapshot `lnpm retreat` leaves behind in place of
+	// the lock file it removes, so `lnpm restore` can put the links back. It is
+	// exported because it is lnpm's own state sitting in a project root, which
+	// anything that decides what belongs to a project - packing a publish, above
+	// all - has to be able to recognise without spelling the name again.
+	RetreatFileName = lockFileName + ".retreat"
 	currentVersion  = 1
 )
 
@@ -39,7 +42,7 @@ func Path(projectPath string) string {
 
 // RetreatPath returns the path of the retreat snapshot for a project directory.
 func RetreatPath(projectPath string) string {
-	return filepath.Join(projectPath, retreatFileName)
+	return filepath.Join(projectPath, RetreatFileName)
 }
 
 // Load reads a lock file from a project directory
@@ -67,18 +70,23 @@ func LoadRetreat(projectPath string) (*LockFile, error) {
 }
 
 // read parses the lock file at path, returning nil when the file does not exist.
+//
+// The errors name the file they came from rather than calling it "the lock
+// file": the snapshot shares this reader, and a message that named the format
+// instead of the file would send a user whose snapshot is corrupt to inspect a
+// lock file that is perfectly fine.
 func read(path string) (*LockFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read lock file: %w", err)
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
 	var lock LockFile
 	if err := yaml.Unmarshal(data, &lock); err != nil {
-		return nil, fmt.Errorf("failed to parse lock file: %w", err)
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 
 	// Ensure packages map exists
@@ -91,15 +99,26 @@ func read(path string) (*LockFile, error) {
 
 // Save writes the lock file to a project directory
 func (l *LockFile) Save(projectPath string) error {
-	path := Path(projectPath)
+	return l.write(Path(projectPath))
+}
 
+// SaveRetreat writes the lock file as the retreat snapshot of a project
+// directory. `lnpm retreat` needs it when a snapshot from an earlier retreat is
+// still unconsumed: the two have to be merged and written out, which a rename of
+// the lock file cannot do.
+func (l *LockFile) SaveRetreat(projectPath string) error {
+	return l.write(RetreatPath(projectPath))
+}
+
+// write marshals the lock file to path.
+func (l *LockFile) write(path string) error {
 	data, err := yaml.Marshal(l)
 	if err != nil {
 		return fmt.Errorf("failed to marshal lock file: %w", err)
 	}
 
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write lock file: %w", err)
+		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
 
 	return nil

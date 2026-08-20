@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // TestPublishVariants table-drives the publishes whose only meaningful assertion
@@ -337,4 +338,49 @@ func TestPublishPreservesFileMetadata(t *testing.T) {
 	if !foundExec {
 		t.Error("Executable permission not preserved in database")
 	}
+}
+
+// TestPublishExcludesTheRetreatSnapshot walks the exact sequence the README
+// documents - retreat --force, then publish - and pins that the snapshot retreat
+// leaves behind is treated as lnpm's own state, the way lnpm.lock always was.
+//
+// The snapshot records every linked package's absolute source path on the
+// developer's machine, so shipping it would widen what a publish discloses. It
+// sits in the package root at precisely the moment publish runs, which is what
+// makes the default exclusion the only thing standing between it and the
+// registry.
+func TestPublishExcludesTheRetreatSnapshot(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("snapshot-leak-dep")
+
+	pkgDir := env.CreateTestPackage("snapshot-leak-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'snapshot-leak-pkg';",
+	})
+	env.addPkg(pkgDir, "snapshot-leak-dep", false, false)
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+	env.AssertFileExists(lockfile.RetreatPath(pkgDir), true)
+
+	env.chdir(pkgDir)
+	if err := cli.RunPublish(false, false, false, false); err != nil {
+		t.Fatalf("Failed to publish: %v", err)
+	}
+
+	pkg, err := env.Database.GetPackageByName("snapshot-leak-pkg")
+	if err != nil || pkg == nil {
+		t.Fatalf("Failed to get package: %v", err)
+	}
+	files, err := env.Database.GetFilesForPackage(pkg.ID)
+	if err != nil {
+		t.Fatalf("Failed to get files: %v", err)
+	}
+	snapshotName := filepath.Base(lockfile.RetreatPath(pkgDir))
+	for _, f := range files {
+		if f.RelativePath == snapshotName {
+			t.Errorf("Expected %s to be excluded from the published files, but it was packed", snapshotName)
+		}
+	}
+	env.AssertFileExists(filepath.Join(pkg.StorePath, snapshotName), false)
 }

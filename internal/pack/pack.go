@@ -14,6 +14,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/panjf2000/ants/v2"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // PackageJSON represents the relevant fields from package.json
@@ -74,6 +75,12 @@ var defaultExcludes = []string{
 	".lnpm",
 	".lnpm/**",
 	"lnpm.lock",
+	// The snapshot `lnpm retreat` leaves in place of the lock file. The
+	// documented publish flow is retreat, then publish, so it is sitting in the
+	// package root at exactly this moment, and it records an absolute source
+	// path per linked package. The patterns here are literal, not prefixes, so
+	// "lnpm.lock" above does not cover it.
+	lockfile.RetreatFileName,
 	"yalc.lock",
 	"*.log",
 	"*.orig",
