@@ -94,6 +94,14 @@ func read(path string) (*LockFile, error) {
 		lock.Packages = make(map[string]Package)
 	}
 
+	// A file with no "version:" key unmarshals as version 0, which is not a
+	// format anything ever wrote. Normalising here rather than at the call sites
+	// keeps a file that is read and written back - a merging retreat writes the
+	// snapshot it just read - from persisting that 0 as if it meant something.
+	if lock.Version == 0 {
+		lock.Version = currentVersion
+	}
+
 	return &lock, nil
 }
 
@@ -110,16 +118,69 @@ func (l *LockFile) SaveRetreat(projectPath string) error {
 	return l.write(RetreatPath(projectPath))
 }
 
-// write marshals the lock file to path.
+// write marshals the lock file to path, through a temp file in the same
+// directory and a rename onto path.
+//
+// The indirection is what makes a failed write harmless. A truncating write in
+// place is fine for lnpm.lock, whose contents can be rebuilt, but the retreat
+// snapshot shares this writer and cannot: a merging retreat writes the snapshot
+// it just read straight back over itself, so a write that failed after the open
+// had truncated would destroy the only record of what an earlier retreat
+// unlinked - the very file the merge exists to protect.
 func (l *LockFile) write(path string) error {
 	data, err := yaml.Marshal(l)
 	if err != nil {
 		return fmt.Errorf("failed to marshal lock file: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// A rename hands the destination the temp file's own mode, so the mode of
+	// the file being replaced has to be carried over deliberately. 0644 is the
+	// mode a first write creates.
+	//
+	// A rename also replaces the destination whatever its mode, so a read-only
+	// file - which the open of a direct write would have refused - has to be
+	// refused here instead. .gitignore's writer turned atomic the same way and
+	// carries the same guard.
+	mode := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+		if mode&0200 == 0 {
+			return fmt.Errorf("failed to write %s: it is read-only (mode %o)", path, mode)
+		}
+	}
+
+	staged, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
+
+	// Cleared once the rename has consumed the staging file, so this cleanup can
+	// never delete the file it just wrote into place.
+	stagedPath := staged.Name()
+	defer func() {
+		if stagedPath != "" {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+
+	if _, err := staged.Write(data); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	// chmod explicitly rather than relying on the process umask: os.CreateTemp
+	// makes the file 0600, which is not what a lock file has ever been.
+	if err := staged.Chmod(mode); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+
+	if err := os.Rename(stagedPath, path); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	stagedPath = ""
 
 	return nil
 }
