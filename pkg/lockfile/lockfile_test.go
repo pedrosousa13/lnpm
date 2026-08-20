@@ -303,6 +303,41 @@ func TestSaveRetreatWritesTheSnapshotBesideTheLockFile(t *testing.T) {
 	}
 }
 
+// fileIdentity returns a FileInfo describing the file at path as it is now, so
+// that os.SameFile still answers about that file after path has been replaced.
+//
+// os.Stat is not enough, because os.SameFile is not everywhere the eager
+// comparison it looks like. On unix a FileInfo carries the inode from the moment
+// it was taken. On Windows the fast path of os.stat calls GetFileAttributesEx,
+// which returns no file index, so os.fileStat keeps the path instead
+// (saveInfoFromPath) and os.SameFile resolves it to a volume and file index only
+// when it is called (loadFileId, which opens the path afresh). A FileInfo
+// captured before the snapshot was replaced would therefore describe the
+// replacement, and the comparison below would report the same file whether the
+// write was a rename or a truncation - which is the distinction it exists to
+// make.
+//
+// Statting through an open file closes that gap on every platform: Windows takes
+// that FileInfo from GetFileInformationByHandle, which fills the volume and file
+// index in immediately and leaves nothing for os.SameFile to resolve later, and
+// unix does an fstat on the same descriptor. Either way the identity is the one
+// the file had when it was read.
+func fileIdentity(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open(%s) error: %v", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatalf("Stat(%s) error: %v", path, err)
+	}
+	return info
+}
+
 // TestSaveRetreatReplacesTheSnapshotRatherThanTruncatingIt pins the one property
 // that keeps a failed write from destroying an unconsumed snapshot: the file is
 // replaced, not opened and truncated.
@@ -324,19 +359,13 @@ func TestSaveRetreatReplacesTheSnapshotRatherThanTruncatingIt(t *testing.T) {
 	if err := lock.SaveRetreat(tmpDir); err != nil {
 		t.Fatalf("SaveRetreat() error: %v", err)
 	}
-	before, err := os.Stat(RetreatPath(tmpDir))
-	if err != nil {
-		t.Fatalf("Stat() error: %v", err)
-	}
+	before := fileIdentity(t, RetreatPath(tmpDir))
 
 	lock.Add("second-package", Package{Version: "1.0.0"})
 	if err := lock.SaveRetreat(tmpDir); err != nil {
 		t.Fatalf("SaveRetreat() error: %v", err)
 	}
-	after, err := os.Stat(RetreatPath(tmpDir))
-	if err != nil {
-		t.Fatalf("Stat() error: %v", err)
-	}
+	after := fileIdentity(t, RetreatPath(tmpDir))
 
 	if os.SameFile(before, after) {
 		t.Error("SaveRetreat() rewrote the snapshot in place; want a temp file renamed onto it, so a failed write cannot truncate the snapshot it is merging into")
