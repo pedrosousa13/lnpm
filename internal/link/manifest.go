@@ -106,11 +106,18 @@ func writeManifest(dir string, files []*pack.FileInfo) {
 // already what the new link wants, so it can be carried over instead of
 // materialised again.
 //
-// An empty ContentHash is never reusable. Not every caller knows its files'
-// hashes - a link driven straight off a walk of the store does not - and
+// present is what scanLinked found on disk, and a path missing from it is never
+// reusable however well the manifest describes it. The manifest records what was
+// linked, not what survived: relinking has always been the way to repair a
+// .lnpm/{package} something else has damaged, and reuse is a hard link, which
+// would carry a file that is no longer a regular file straight into the
+// replacement.
+//
+// An empty ContentHash is never reusable either. Not every caller knows its
+// files' hashes - a link driven straight off a walk of the store does not - and
 // treating "no hash recorded" as "matches the other file with no hash recorded"
 // would carry over stale content.
-func reusableFiles(prior map[string]linkedFile, files []*pack.FileInfo) map[string]bool {
+func reusableFiles(prior map[string]linkedFile, present map[string]bool, files []*pack.FileInfo) map[string]bool {
 	if prior == nil {
 		return nil
 	}
@@ -118,27 +125,60 @@ func reusableFiles(prior map[string]linkedFile, files []*pack.FileInfo) map[stri
 	reusable := make(map[string]bool, len(files))
 	for _, f := range files {
 		was, ok := prior[f.RelPath]
-		if ok && f.ContentHash != "" && was.Hash == f.ContentHash && was.Mode == f.Mode {
+		if ok && present[f.RelPath] && f.ContentHash != "" && was.Hash == f.ContentHash && was.Mode == f.Mode {
 			reusable[f.RelPath] = true
 		}
 	}
 	return reusable
 }
 
-// allPresent reports whether every file is still where the last link put it.
+// scanLinked reports what a linked package directory actually holds: the regular
+// files under it, keyed by slash-separated relative path, and a count of
+// everything else it met.
 //
-// The manifest records what was linked, not what survived. Relinking has always
-// been the way to repair a .lnpm/{package} something else has damaged, so the
-// shortcut that skips a relink entirely has to look before it takes it. One
-// lstat per file is the cheapest question there is - no content is read - and it
-// is only asked once everything else already says there is nothing to do.
-func allPresent(lnpmPath string, files []*pack.FileInfo) bool {
-	for _, f := range files {
-		if _, err := os.Lstat(filepath.Join(lnpmPath, f.RelPath)); err != nil {
-			return false
+// That count is anything a link cannot have put there - an entry that is not a
+// regular file, a directory holding nothing, a directory that could not be read.
+// A link materialises regular files and creates only the directories those files
+// need, so any of those means the tree has been changed from outside, and the
+// shortcut that skips a relink entirely must not be taken over it.
+//
+// One walk answers both questions the shortcut needs - is every file still there,
+// and is anything there that should not be - where an lstat per file answers only
+// the first. Reading a directory returns its entries' types along with their
+// names, so neither answer costs a stat of its own.
+func scanLinked(lnpmPath string) (map[string]bool, int) {
+	found := make(map[string]bool)
+	unexpected := 0
+
+	var walk func(dir, rel string)
+	walk = func(dir, rel string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			unexpected++
+			return
+		}
+		if len(entries) == 0 && rel != "" {
+			unexpected++
+			return
+		}
+		for _, e := range entries {
+			childRel := e.Name()
+			if rel != "" {
+				childRel = rel + "/" + e.Name()
+			}
+			switch {
+			case e.IsDir():
+				walk(filepath.Join(dir, e.Name()), childRel)
+			case e.Type().IsRegular():
+				found[childRel] = true
+			default:
+				unexpected++
+			}
 		}
 	}
-	return true
+	walk(lnpmPath, "")
+
+	return found, unexpected
 }
 
 // shipsManifestName reports whether the package itself contains a file at the

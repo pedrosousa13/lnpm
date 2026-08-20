@@ -204,6 +204,107 @@ func TestLink_RestoresAFileDeletedFromUnderIt(t *testing.T) {
 	}
 }
 
+// TestLink_RemovesAStrayLeftInTheLinkedPackage keeps relinking a full repair on
+// the side the manifest cannot see. Every question the shortcut asks is about a
+// file the manifest names, so a file the manifest does not name - dropped in by
+// a build script, or orphaned by a link made before manifests existed - would
+// answer none of them and survive, where before this every relink swapped in a
+// tree built from the package alone and so removed it.
+func TestLink_RemovesAStrayLeftInTheLinkedPackage(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "my-package")
+	files := writeHashedStoreFiles(t, storePath, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+	})
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	stray := filepath.Join(lnpmPath, "dist", "stray.js")
+	if err := os.WriteFile(stray, []byte("module.exports = 'stray';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Errorf("dist/stray.js survived a relink of a package that does not list it (stat err = %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(lnpmPath, "dist", "index.js")); err != nil {
+		t.Errorf("dist/index.js did not survive the relink: %v", err)
+	}
+}
+
+// TestLink_RepairsALinkedFileReplacedByASymlink covers the other thing an lstat
+// per file cannot tell apart from a healthy link. os.Link does not follow
+// symlinks, so a linked file something has replaced with a symlink would be
+// carried over as that symlink and survive the swap, and the consumer would go
+// on resolving the package's file to whatever it points at.
+func TestLink_RepairsALinkedFileReplacedByASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - creating a symlink needs a privilege the test process may not hold")
+	}
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "my-package")
+	files := writeHashedStoreFiles(t, storePath, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+	})
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	elsewhere := filepath.Join(tmpDir, "elsewhere.js")
+	if err := os.WriteFile(elsewhere, []byte("module.exports = 'elsewhere';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linkedFile := filepath.Join(projectPath, ".lnpm", "my-package", "dist", "index.js")
+	if err := os.Remove(linkedFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, linkedFile); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+
+	info, err := os.Lstat(linkedFile)
+	if err != nil {
+		t.Fatalf("failed to stat relinked dist/index.js: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("relinked dist/index.js is still a symlink, so the relink carried the replacement forward instead of repairing it")
+	}
+	got, err := os.ReadFile(linkedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "module.exports = 1;\n" {
+		t.Errorf("relinked dist/index.js = %q, want the store's content", string(got))
+	}
+}
+
 // TestLink_DropsFilesRemovedFromThePackage is acceptance criterion 3. It holds
 // because the relink builds a fresh directory and swaps it in, so a file the new
 // package does not list simply never enters it. The test pins that the reuse

@@ -68,6 +68,16 @@ func New(projectPath string) *Linker {
 // data moved, so the cost of a relink follows the size of the change rather than
 // the size of the package. When nothing differs at all there is nothing to swap
 // and the package is left exactly as it is.
+//
+// Relinking repairs a deletion, not a modification. What is on disk is compared
+// against the manifest by name, not by content: a file that has gone, or that is
+// no longer a regular file, is materialised again out of the store, and a stray
+// the package does not list is dropped, but a file whose bytes have been edited
+// in place is left as it is and carried forward. Reading every file to find that
+// out is precisely the cost this exists to remove, and in hardlink mode an
+// in-place edit has already written through the shared inode into the store
+// entry itself, so no relink ever repaired it: `lnpm gc` and a re-publish are
+// what fix that.
 func (l *Linker) Link(packageName string, storePath string, files []*pack.FileInfo) (Result, error) {
 	debug.Logf("link: linking %s from %s (%d files)", packageName, storePath, len(files))
 
@@ -88,22 +98,33 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// behind permanently.
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
 
-	// What the last link into this project left behind, and which of the files
-	// now being linked it already holds.
+	// What the last link into this project left behind, what of that is still on
+	// disk, and which of the files now being linked it already holds.
 	keepManifest := !shipsManifestName(files)
 	var prior map[string]linkedFile
+	var present map[string]bool
+	var unexpected int
 	if keepManifest {
 		prior = readManifest(lnpmPath)
 	}
-	reusable := reusableFiles(prior, files)
+	if prior != nil {
+		present, unexpected = scanLinked(lnpmPath)
+	}
+	reusable := reusableFiles(prior, present, files)
 
-	// Nothing to do at all: every file the package lists is already there, the
-	// package already linked holds nothing else, and all of it is still on disk.
+	// Nothing to do at all: every file the package lists is already there and
+	// unchanged, and the directory holds nothing besides those files and the
+	// manifest describing them - which is the one more entry the count allows
+	// for. That second half is what keeps a relink a full repair: a stray the
+	// package does not list answers none of the manifest's questions, and before
+	// there was anything to skip, every relink swapped in a tree built from the
+	// package alone and so removed it.
+	//
 	// Skipping the swap is the point - the directory the consumer is building
 	// against is not touched, so no file changes identity and none is rewritten.
 	// The node_modules link is still checked, since a caller may be relinking
 	// precisely because that went missing.
-	if len(reusable) == len(files) && len(prior) == len(files) && len(files) > 0 && allPresent(lnpmPath, files) {
+	if len(files) > 0 && len(reusable) == len(files) && unexpected == 0 && len(present) == len(files)+1 {
 		debug.Logf("link: %s is already up to date (%d files)", packageName, len(files))
 		if err := l.createNodeModulesSymlink(packageName); err != nil {
 			return Result{}, err
