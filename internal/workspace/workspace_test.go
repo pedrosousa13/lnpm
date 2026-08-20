@@ -1,6 +1,9 @@
 package workspace
 
 import (
+	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -274,6 +277,12 @@ func TestListPackagesUnparseableMemberFails(t *testing.T) {
 	if !strings.Contains(err.Error(), broken) {
 		t.Errorf("Expected the error to name %s, got: %v", broken, err)
 	}
+	// The doc comment promises the underlying error is wrapped, not just
+	// described, so a caller can still reach the syntax error underneath.
+	var syntax *json.SyntaxError
+	if !errors.As(err, &syntax) {
+		t.Errorf("Expected the error to wrap a *json.SyntaxError, got: %v", err)
+	}
 	if len(packages) != 0 {
 		t.Errorf("Expected no packages alongside the error, got %v", packages)
 	}
@@ -299,6 +308,9 @@ func TestListPackagesUnreadableMemberFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), unreadable) {
 		t.Errorf("Expected the error to name %s, got: %v", unreadable, err)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("Expected the error to wrap a permission error, got: %v", err)
 	}
 	if len(packages) != 0 {
 		t.Errorf("Expected no packages alongside the error, got %v", packages)
