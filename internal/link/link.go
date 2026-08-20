@@ -241,7 +241,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// aside rather than deleted first, so .lnpm/{package} is missing for a
 	// single rename instead of for as long as a whole package tree takes to
 	// delete, and a failed swap can be rolled back.
-	retiredPath := tempPath + ".old"
+	retiredPath := tempPath + retiredSuffix
 	hadPrevious := false
 	if _, err := os.Lstat(lnpmPath); err == nil {
 		if err := os.Rename(lnpmPath, retiredPath); err != nil {
@@ -338,7 +338,7 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 
 	// Lstat, not Stat, so an existing live link whose source has since moved is
 	// still seen and still renamed aside rather than left in place.
-	retiredPath := tempPath + ".old"
+	retiredPath := tempPath + retiredSuffix
 	hadPrevious := false
 	if _, err := os.Lstat(lnpmPath); err == nil {
 		if err := os.Rename(lnpmPath, retiredPath); err != nil {
@@ -590,6 +590,15 @@ func (l *Linker) ListLinked() ([]string, error) {
 	return packages, nil
 }
 
+// tempPrefix is what every name newTempDir and newTempLink produce begins with,
+// and retiredSuffix is what Link's swap appends to move the previous package
+// aside. They are constants so the sweep in reap.go matches exactly what these
+// two constructors create, rather than a hand-copied guess at it.
+const (
+	tempPrefix    = ".tmp-"
+	retiredSuffix = ".old"
+)
+
 // newTempDir creates a uniquely named directory inside parent and returns its
 // path. The name is dot-prefixed so ListLinked skips it and so the retired-path
 // scheme in Link stays inside the same namespace.
@@ -601,7 +610,7 @@ func (l *Linker) ListLinked() ([]string, error) {
 // since Chmod ignores the umask and would force 0755 unconditionally.
 func newTempDir(parent string) (string, error) {
 	for attempt := 0; attempt < 1000; attempt++ {
-		path := filepath.Join(parent, fmt.Sprintf(".tmp-%x", rand.Uint64()))
+		path := filepath.Join(parent, fmt.Sprintf("%s%x", tempPrefix, rand.Uint64()))
 		err := os.Mkdir(path, 0755)
 		if err == nil {
 			return path, nil
@@ -624,7 +633,7 @@ var createDirSymlinkFn = createDirSymlink
 // skips it and the retired-path scheme stays inside the same namespace.
 func newTempLink(parent, target string) (string, error) {
 	for attempt := 0; attempt < 1000; attempt++ {
-		path := filepath.Join(parent, fmt.Sprintf(".tmp-%x", rand.Uint64()))
+		path := filepath.Join(parent, fmt.Sprintf("%s%x", tempPrefix, rand.Uint64()))
 		err := createDirSymlinkFn(target, path)
 		if err == nil {
 			return path, nil

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // newGCStore points lnpm at a fresh store and database, and returns the store
@@ -18,6 +20,17 @@ func newGCStore(t *testing.T) (string, *db.DB) {
 	t.Setenv("LNPM_STORE", base)
 	db.ResetForTesting()
 	t.Cleanup(db.ResetForTesting)
+
+	// gc deletes things. Prove the override took effect before any of these
+	// tests reaches a RemoveAll, rather than trusting that it did: a test that
+	// silently ran against the real store would destroy a real user's packages.
+	resolved, err := config.GetStorePath()
+	if err != nil {
+		t.Fatalf("resolve store path: %v", err)
+	}
+	if resolved != base {
+		t.Fatalf("store path is %s, not the temp directory %s - refusing to run gc", resolved, base)
+	}
 
 	database, err := db.GetDB()
 	if err != nil {
@@ -81,5 +94,442 @@ func TestRunGCReportsEntryRemovalFailure(t *testing.T) {
 	}
 	if len(packages) != 1 {
 		t.Errorf("RunGC dropped the database row for an entry it failed to remove, %d package(s) left", len(packages))
+	}
+}
+
+// seedTempDir creates dir with one file in it, standing in for a temp directory
+// an interrupted publish or relink left behind.
+func seedTempDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("seed %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.js"), []byte("payload"), 0644); err != nil {
+		t.Fatalf("seed %s: %v", dir, err)
+	}
+}
+
+// seedLinkedProject registers a project in the database with one package linked
+// into it, so gc sweeps the project the way it does in production, and returns
+// the project directory as the database records it.
+//
+// It returns the database's path and not the one handed to it, because those two
+// are not always the same string. InsertProject stores normalizePath's result,
+// which is filepath.EvalSymlinks, and on Windows EvalSymlinks expands an 8.3
+// short name: a temp directory that arrives as C:\Users\RUNNER~1\... is recorded
+// as C:\Users\runneradmin\... . gc reads project paths back out of the database,
+// so that longer spelling is what it prints. Seeding files under the returned
+// path keeps the test's idea of where things are and gc's idea in the same form.
+func seedLinkedProject(t *testing.T, database *db.DB, storeRoot string) string {
+	t.Helper()
+
+	project := t.TempDir()
+	proj := &db.Project{Path: project, Name: "consumer"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	pkg := &db.Package{
+		Name:        "linked-pkg",
+		Version:     "1.0.0",
+		ContentHash: "0123456789abcdef",
+		StorePath:   filepath.Join(storeRoot, "linked-pkg", "0123456789abcdef"),
+	}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+	if err := database.InsertLink(&db.Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+	// InsertProject rewrites proj.Path in place with the normalized form.
+	return proj.Path
+}
+
+// resolvePath returns path with any 8.3 short name or symlink along it expanded,
+// so two spellings of one location compare equal.
+//
+// The store side and the project side of gc's report reach it by different
+// routes and are not normalized alike: a project path is stored through
+// db.normalizePath, which calls filepath.EvalSymlinks, while the store path is
+// whatever LNPM_STORE holds, returned by config.GetStorePath untouched. On
+// Windows those two produce different spellings of the same directory. Resolving
+// both sides of a comparison is what makes the assertion independent of which
+// route a path took, rather than correct only as long as today's routes stay put.
+//
+// EvalSymlinks needs the path to exist, and these assertions run after gc has
+// removed the directories, so this walks up to the deepest ancestor that is still
+// there and rejoins the rest. On Unix it is an ordinary symlink resolution.
+func resolvePath(path string) string {
+	rest := ""
+	for cur := filepath.Clean(path); ; {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(path)
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}
+
+// reportedTempDirs parses gc's temp-directory report into a map from each listed
+// directory, resolved, to the note saying what it held.
+//
+// It matches whole paths rather than looking for one as a substring of the
+// output. That is deliberately stricter: a substring test cannot tell the entry
+// it wants from a longer path that merely contains it, and a basename test could
+// not tell .lnpm/.tmp-c0ffee from .lnpm/@org/.tmp-c0ffee at all.
+//
+// The report lines are "  - <path> (<size>, <note>)". formatSize never emits a
+// comma, so the first ", " after the size separates the two.
+func reportedTempDirs(t *testing.T, out string) map[string]string {
+	t.Helper()
+
+	reported := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		body, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "  - ")
+		if !ok {
+			continue
+		}
+		open := strings.LastIndex(body, " (")
+		if open < 0 || !strings.HasSuffix(body, ")") {
+			continue
+		}
+		path := body[:open]
+		details := body[open+2 : len(body)-1]
+		comma := strings.Index(details, ", ")
+		if comma < 0 {
+			// An orphaned-package or orphaned-link line, not a temp directory.
+			continue
+		}
+		reported[resolvePath(path)] = details[comma+2:]
+	}
+	return reported
+}
+
+// assertReclaimReported fails unless gc listed path with the expected note.
+func assertReclaimReported(t *testing.T, out, path, wantNote string) {
+	t.Helper()
+
+	reported := reportedTempDirs(t, out)
+	note, ok := reported[resolvePath(path)]
+	if !ok {
+		t.Errorf("gc did not report %s; it reported %v\nfull output:\n%s", path, reported, out)
+		return
+	}
+	if note != wantNote {
+		t.Errorf("gc reported %s as %q, want %q", path, note, wantNote)
+	}
+}
+
+// TestRunGCReclaimsOrphanedTempDirs covers all three shapes at once: the store's
+// in-progress directory, the project's in-progress directory (inside a scope
+// directory, which a one-level sweep would miss), and the retired directory an
+// interrupted swap leaves holding a complete copy of the previous package.
+//
+// It also seeds a package whose name begins with a dot. ListLinked hides every
+// dot-prefixed entry, so a sweep written against that filter rather than against
+// the temp-name convention would delete a real package here.
+func TestRunGCReclaimsOrphanedTempDirs(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	storeTemp := filepath.Join(storeRoot, "linked-pkg", ".0123456789abcdef.tmp-4242")
+	projectTemp := filepath.Join(project, ".lnpm", ".tmp-deadbeef")
+	scopedTemp := filepath.Join(project, ".lnpm", "@org", ".tmp-c0ffee")
+	retiredTemp := filepath.Join(project, ".lnpm", "@org", ".tmp-c0ffee.old")
+	for _, dir := range []string{storeTemp, projectTemp, scopedTemp, retiredTemp} {
+		seedTempDir(t, dir)
+	}
+
+	keep := []string{
+		filepath.Join(project, ".lnpm", "ordinary-pkg"),
+		filepath.Join(project, ".lnpm", ".hidden-pkg"),
+		filepath.Join(project, ".lnpm", "@org", "scoped-pkg"),
+	}
+	for _, dir := range keep {
+		seedTempDir(t, dir)
+	}
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", false, true); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	for _, dir := range []string{storeTemp, projectTemp, scopedTemp, retiredTemp} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("RunGC left %s behind (stat err = %v)", dir, err)
+		}
+	}
+	for _, dir := range keep {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("RunGC removed %s, which is a package and not a temp directory: %v", dir, err)
+		}
+	}
+	// The scope directory must survive a temp directory inside it being taken.
+	if _, err := os.Stat(filepath.Join(project, ".lnpm", "@org")); err != nil {
+		t.Errorf("RunGC removed the scope directory: %v", err)
+	}
+
+	// gc has to say what it reclaimed: these directories are invisible to every
+	// other command, so silence here means the user never learns they existed.
+	assertReclaimReported(t, out, storeTemp, "incomplete")
+	assertReclaimReported(t, out, projectTemp, "incomplete")
+	assertReclaimReported(t, out, scopedTemp, "incomplete")
+	assertReclaimReported(t, out, retiredTemp, "complete copy of the previous package")
+	if len(reportedTempDirs(t, out)) != 4 {
+		t.Errorf("RunGC reported %v, want exactly the four seeded temp directories", reportedTempDirs(t, out))
+	}
+	if strings.Contains(out, "Nothing to clean up") {
+		t.Errorf("RunGC reported nothing to clean up while reclaiming temp directories, output was:\n%s", out)
+	}
+}
+
+// TestRunGCReportsARetiredDirectoryAsACompletePackage pins the distinction that
+// makes the retired shape worth reporting separately: it is not wasted space,
+// it is a complete copy of the package that was linked before the interrupted
+// relink, and the user has no other way to discover it.
+func TestRunGCReportsARetiredDirectoryAsACompletePackage(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	inProgress := filepath.Join(project, ".lnpm", ".tmp-11aa")
+	retired := filepath.Join(project, ".lnpm", ".tmp-22bb.old")
+	seedTempDir(t, inProgress)
+	seedTempDir(t, retired)
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", false, true); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	assertReclaimReported(t, out, retired, "complete copy of the previous package")
+	assertReclaimReported(t, out, inProgress, "incomplete")
+}
+
+// TestRunGCDryRunKeepsOrphanedTempDirs pins that the sweep goes through the same
+// dry-run flow as the rest of gc. The pre-existing --fix-links path deletes
+// orphaned link records before the confirmation guard; this must not repeat it.
+func TestRunGCDryRunKeepsOrphanedTempDirs(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	orphan := filepath.Join(project, ".lnpm", ".tmp-abcdef")
+	seedTempDir(t, orphan)
+
+	out := captureStdout(t, func() {
+		if err := RunGC(true, "", false, true); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	if _, err := os.Stat(orphan); err != nil {
+		t.Errorf("a dry run removed %s: %v", orphan, err)
+	}
+	assertReclaimReported(t, out, orphan, "incomplete")
+	if strings.Contains(out, "Nothing to clean up") {
+		t.Errorf("a dry run reported nothing to clean up after listing a temp directory, output was:\n%s", out)
+	}
+}
+
+// TestRunGCDeclinedKeepsOrphanedTempDirs pins that reclaiming is confirmed
+// before it happens, like every other destructive step in gc.
+func TestRunGCDeclinedKeepsOrphanedTempDirs(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	orphan := filepath.Join(project, ".lnpm", ".tmp-abcdef")
+	seedTempDir(t, orphan)
+
+	// yes=false with a non-interactive stdin is how confirm reports a refusal,
+	// so this is the "the user did not agree" case.
+	captureStdout(t, func() {
+		if err := RunGC(false, "", false, false); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	if _, err := os.Stat(orphan); err != nil {
+		t.Errorf("RunGC removed %s without confirmation: %v", orphan, err)
+	}
+}
+
+// TestReapTempDirsRequiresTheDatabaseLock pins the ordering the whole safety
+// argument rests on. The sweep is safe only because gc holds the exclusive
+// database lock across it: every path that creates one of these directories
+// opens the database first, so while the lock is held no temp directory can
+// have a live writer. A future change that closes the database before sweeping
+// would void that silently and let the sweep delete a live relink's temp
+// directory mid-write — the corruption #137 removed. It must fail loudly
+// instead, which is what this asserts.
+func TestReapTempDirsRequiresTheDatabaseLock(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	orphan := filepath.Join(project, ".lnpm", ".tmp-abcdef")
+	seedTempDir(t, orphan)
+	storeTemp := filepath.Join(storeRoot, "linked-pkg", ".0123456789abcdef.tmp-1")
+	seedTempDir(t, storeTemp)
+
+	if database.LockHeld() != true {
+		t.Fatalf("LockHeld() = false on an open database")
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	if database.LockHeld() != false {
+		t.Errorf("LockHeld() = true after Close")
+	}
+
+	s, err := store.New()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	var sweepErr error
+	captureStdout(t, func() {
+		_, sweepErr = reapTempDirs(database, s, []string{project}, false, true)
+	})
+	if sweepErr == nil {
+		t.Fatalf("reapTempDirs swept with the database lock released")
+	}
+	if !strings.Contains(sweepErr.Error(), "database lock") {
+		t.Errorf("reapTempDirs error = %v, want it to name the database lock", sweepErr)
+	}
+	for _, dir := range []string{orphan, storeTemp} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("reapTempDirs removed %s with the lock released: %v", dir, err)
+		}
+	}
+}
+
+// TestRunGCReportsTempDirsWhenPackageDeletionIsDeclined pins that the two
+// prompts are independent decisions. Declining to delete orphaned packages used
+// to return before the sweep ran, so a user who said no there never learned temp
+// directories existed — and no other command would ever have told them.
+func TestRunGCReportsTempDirsWhenPackageDeletionIsDeclined(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	// An orphaned package, so the package prompt is reached and declined.
+	orphanEntry := filepath.Join(storeRoot, "orphan-pkg", "aabbccddeeff0011")
+	seedTempDir(t, orphanEntry)
+	if err := database.InsertPackage(&db.Package{
+		Name:        "orphan-pkg",
+		Version:     "1.0.0",
+		ContentHash: "aabbccddeeff0011",
+		StorePath:   orphanEntry,
+	}); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+
+	tempDir := filepath.Join(project, ".lnpm", ".tmp-abcdef")
+	seedTempDir(t, tempDir)
+
+	// yes=false with a non-interactive stdin is how confirm reports a refusal,
+	// so both prompts are declined here.
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", false, false); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	if _, ok := reportedTempDirs(t, out)[resolvePath(tempDir)]; !ok {
+		t.Errorf("declining the package prompt suppressed the temp directory report, output was:\n%s", out)
+	}
+	// Both declines must still be honoured.
+	if _, err := os.Stat(tempDir); err != nil {
+		t.Errorf("RunGC removed %s without confirmation: %v", tempDir, err)
+	}
+	if _, err := os.Stat(orphanEntry); err != nil {
+		t.Errorf("RunGC removed %s without confirmation: %v", orphanEntry, err)
+	}
+}
+
+// TestRunGCReportsARetiredLinkAsALink pins that the retired label tracks what
+// the entry actually holds. LinkSource retires a link, which holds no copy of
+// anything, so calling it a complete copy of the previous package would be false.
+func TestRunGCReportsARetiredLinkAsALink(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	project := seedLinkedProject(t, database, storeRoot)
+
+	lnpm := filepath.Join(project, ".lnpm")
+	if err := os.MkdirAll(lnpm, 0755); err != nil {
+		t.Fatalf("create .lnpm: %v", err)
+	}
+	retiredLink := filepath.Join(lnpm, ".tmp-5566.old")
+	if err := os.Symlink(t.TempDir(), retiredLink); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", false, true); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	assertReclaimReported(t, out, retiredLink, "link to the previously linked source directory")
+}
+
+// TestRunGCReportsAPathThatNormalisationRewrote reproduces, on any platform, the
+// divergence that broke the Windows job: the store path and a project path reach
+// gc's report by different routes and only one of them is normalized. A project
+// path is stored through db.normalizePath, which calls filepath.EvalSymlinks,
+// while the store path is whatever LNPM_STORE holds and is never resolved. On
+// Windows the two spellings were an 8.3 short name and its long form; a
+// symlinked project directory produces the same mismatch everywhere.
+//
+// Without this, the only evidence that the assertions tolerate both spellings is
+// a green Windows job, which is a slow and remote way to find out.
+func TestRunGCReportsAPathThatNormalisationRewrote(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real-project")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	alias := filepath.Join(base, "alias-project")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	// Registered under the alias; the database records the resolved spelling, and
+	// that is the one gc will print.
+	proj := &db.Project{Path: alias, Name: "consumer"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if proj.Path == alias {
+		t.Skipf("this platform did not rewrite %s, so there is no divergence to test", alias)
+	}
+	pkg := &db.Package{
+		Name:        "linked-pkg",
+		Version:     "1.0.0",
+		ContentHash: "0123456789abcdef",
+		StorePath:   filepath.Join(storeRoot, "linked-pkg", "0123456789abcdef"),
+	}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+	if err := database.InsertLink(&db.Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+
+	// Seeded under the alias, reported under the resolved path.
+	orphan := filepath.Join(alias, ".lnpm", ".tmp-abcdef")
+	seedTempDir(t, orphan)
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", false, true); err != nil {
+			t.Errorf("RunGC() error = %v", err)
+		}
+	})
+
+	assertReclaimReported(t, out, orphan, "incomplete")
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("RunGC left %s behind (stat err = %v)", orphan, err)
 	}
 }

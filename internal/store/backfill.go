@@ -105,31 +105,9 @@ func BackfillDone() (bool, error) {
 // failure, so the caller can mark what it did find and leave the backfill
 // pending for the rest.
 func listEntries(storeRoot string) (entries []string, unreadable int) {
-	names, err := readDirs(storeRoot)
-	if err != nil {
-		debug.Logf("store: cannot scan %s for entries: %v", storeRoot, err)
-		return nil, 1
-	}
+	dirs, unreadable := packageDirs(storeRoot)
 
-	var packageDirs []string
-	for _, name := range names {
-		dir := filepath.Join(storeRoot, name)
-		if !strings.HasPrefix(name, "@") {
-			packageDirs = append(packageDirs, dir)
-			continue
-		}
-		scoped, err := readDirs(dir)
-		if err != nil {
-			debug.Logf("store: cannot scan scope %s: %v", dir, err)
-			unreadable++
-			continue
-		}
-		for _, s := range scoped {
-			packageDirs = append(packageDirs, filepath.Join(dir, s))
-		}
-	}
-
-	for _, dir := range packageDirs {
+	for _, dir := range dirs {
 		hashes, err := readDirs(dir)
 		if err != nil {
 			debug.Logf("store: cannot scan package %s: %v", dir, err)
@@ -141,6 +119,36 @@ func listEntries(storeRoot string) (entries []string, unreadable int) {
 		}
 	}
 	return entries, unreadable
+}
+
+// packageDirs returns the directory holding the entries of every package in the
+// store, and how many directories could not be read. A package's entries live
+// at <store>/<name>/<hash>, with one extra level for scoped names, so these are
+// the directories <hash> entries and the write path's temp directories sit in.
+func packageDirs(storeRoot string) (dirs []string, unreadable int) {
+	names, err := readDirs(storeRoot)
+	if err != nil {
+		debug.Logf("store: cannot scan %s for entries: %v", storeRoot, err)
+		return nil, 1
+	}
+
+	for _, name := range names {
+		dir := filepath.Join(storeRoot, name)
+		if !strings.HasPrefix(name, "@") {
+			dirs = append(dirs, dir)
+			continue
+		}
+		scoped, err := readDirs(dir)
+		if err != nil {
+			debug.Logf("store: cannot scan scope %s: %v", dir, err)
+			unreadable++
+			continue
+		}
+		for _, s := range scoped {
+			dirs = append(dirs, filepath.Join(dir, s))
+		}
+	}
+	return dirs, unreadable
 }
 
 // readDirs returns the names of dir's subdirectories, skipping dot-prefixed ones.
