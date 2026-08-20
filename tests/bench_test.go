@@ -353,3 +353,73 @@ func BenchmarkLnpmPushMultipleProjects(b *testing.B) {
 		}
 	}
 }
+
+// benchPushSetup publishes a package of fileCount files, adds it to a fresh
+// project, and leaves the cwd inside the package directory ready to push.
+func benchPushSetup(b *testing.B, name string, fileCount int) string {
+	b.Helper()
+
+	storeDir := b.TempDir()
+	b.Setenv("LNPM_STORE", storeDir)
+	db.ResetForTesting()
+
+	pkgDir := createBenchPackage(b, name, fileCount)
+	if err := os.Chdir(pkgDir); err != nil {
+		b.Fatalf("Failed to chdir: %v", err)
+	}
+	if err := cli.RunPublish(false, false, true, true); err != nil {
+		b.Fatalf("Publish failed: %v", err)
+	}
+
+	projectDir := filepath.Join(b.TempDir(), "project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		b.Fatalf("Failed to create project: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "package.json"),
+		[]byte(fmt.Sprintf(`{"name":"%s-project","version":"1.0.0"}`, name)), 0644); err != nil {
+		b.Fatalf("Failed to write package.json: %v", err)
+	}
+	if err := os.Chdir(projectDir); err != nil {
+		b.Fatalf("Failed to chdir: %v", err)
+	}
+	if err := cli.RunAdd(name, false, false, false); err != nil {
+		b.Fatalf("Add failed: %v", err)
+	}
+
+	if err := os.Chdir(pkgDir); err != nil {
+		b.Fatalf("Failed to chdir: %v", err)
+	}
+	return pkgDir
+}
+
+// BenchmarkLnpmPushLargeIncremental is the case the incremental relink exists
+// for: a package with many files where one of them changed. Only that file
+// should reach the linked project, so the relink's share of the push should
+// track the size of the edit rather than the size of the package.
+func BenchmarkLnpmPushLargeIncremental(b *testing.B) {
+	pkgDir := benchPushSetup(b, "bench-incremental", 2000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		content := fmt.Sprintf("module.exports = { iteration: %d };", i)
+		if err := os.WriteFile(filepath.Join(pkgDir, "file-0.js"), []byte(content), 0644); err != nil {
+			b.Fatalf("Failed to modify file: %v", err)
+		}
+		if err := cli.RunPush(true); err != nil {
+			b.Fatalf("Push failed: %v", err)
+		}
+	}
+}
+
+// BenchmarkLnpmPushLargeUnchanged pushes a large package nothing has changed
+// in, which is the case that should cost the linked project nothing at all.
+func BenchmarkLnpmPushLargeUnchanged(b *testing.B) {
+	benchPushSetup(b, "bench-unchanged", 2000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := cli.RunPush(true); err != nil {
+			b.Fatalf("Push failed: %v", err)
+		}
+	}
+}

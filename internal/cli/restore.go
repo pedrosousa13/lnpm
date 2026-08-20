@@ -156,7 +156,7 @@ func RunRestore() error {
 			originalVersion = entry.OriginalVersion
 		}
 
-		linkType, err := linkPackage(linker, s, pkg, false)
+		linkRes, err := linkPackage(database, linker, s, pkg, false)
 		if err != nil {
 			fmt.Printf("  %s %s: %v\n", iconFail(), name, err)
 			failed++
@@ -205,7 +205,7 @@ func RunRestore() error {
 		}
 		consumeSnapshotEntry(snapshot, cwd, name)
 
-		recordRestoredLink(database, cwd, pkg, linkType)
+		recordRestoredLink(database, cwd, pkg, linkRes.Type)
 
 		fmt.Printf("%s Restored %s@%s\n", iconOK(), name, pkg.Version)
 		restored++

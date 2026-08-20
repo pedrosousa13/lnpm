@@ -384,3 +384,37 @@ func TestPublishExcludesTheRetreatSnapshot(t *testing.T) {
 	}
 	env.AssertFileExists(filepath.Join(pkg.StorePath, snapshotName), false)
 }
+
+// TestPublishWithPushReportsChangedAndUnchangedCounts covers acceptance
+// criterion 5 on `publish --push`'s relink loop, which is a separate one from
+// `push`'s and reports separately.
+func TestPublishWithPushReportsChangedAndUnchangedCounts(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("pub-counted-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+		"lib/a.js": "exports.a = 1;",
+	})
+	projectDir := env.newProject("pub-counted-project")
+	env.addPkg(projectDir, "pub-counted-pkg", false, false)
+
+	untouchedBefore := fileIdentity(t, filepath.Join(projectDir, ".lnpm", "pub-counted-pkg", "lib", "a.js"))
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+	out := captureStdout(t, func() {
+		if err := cli.RunPublish(true, false, false, false); err != nil {
+			t.Fatalf("Failed to publish with push: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "(1 changed, 2 unchanged)") {
+		t.Errorf("Expected publish --push to report 1 changed of 3 files, got:\n%s", out)
+	}
+
+	untouchedAfter := fileIdentity(t, filepath.Join(projectDir, ".lnpm", "pub-counted-pkg", "lib", "a.js"))
+	if !os.SameFile(untouchedBefore, untouchedAfter) {
+		t.Error("lib/a.js is a different file after the push, so it was rewritten even though it did not change")
+	}
+	env.AssertLinkedFileContent(projectDir, "pub-counted-pkg", "index.js", "module.exports = 'v2';")
+}

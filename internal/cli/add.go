@@ -11,9 +11,11 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -113,14 +115,14 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 			result.pkg = pkg
 
-			linkType, err := linkPackage(linker, s, pkg, useLink)
+			linkRes, err := linkPackage(database, linker, s, pkg, useLink)
 			if err != nil {
 				result.err = err
 				results <- result
 				return
 			}
 
-			result.linkType = linkType
+			result.linkType = linkRes.Type
 			results <- result
 		}(spec)
 	}
@@ -356,28 +358,108 @@ func linkTypeLabel(t link.LinkType) string {
 	return string(t)
 }
 
+// storeFilesForLink returns the files of pkg's store entry, each carrying the
+// content hash and permissions the database recorded for it.
+//
+// Walking the store is what says which files the entry holds; the database is
+// what says what is in them. Link needs both: it compares those hashes against
+// the ones it last linked into the project to decide which files it can leave
+// alone, and a caller that hands it files with no hashes makes every relink
+// rewrite the whole package.
+//
+// The mode comes from the same row as the hash, and not from the store file's
+// own stat, so that this and push - which links from pack.FileInfoFromStore over
+// the same recorded rows - describe a file identically. The two are compared
+// against each other across a command boundary, through the manifest a link
+// writes and the next one reads, and a mode that disagreed would mark every file
+// changed. Statting the store agrees only for as long as the store's copy holds
+// exactly the permissions the file was published with, which entries written
+// before copyFile chmod'd past the umask do not.
+//
+// A file the manifest does not cover keeps an empty hash and is simply always
+// rewritten, which is also why a manifest that cannot be read is logged rather
+// than returned: it costs the next relink its shortcut and nothing else.
+//
+// A manifest that describes some other generation of the package is refused
+// outright rather than used for the paths it happens to share. The package row
+// and its file rows are written in one transaction now, so a mismatch is no
+// longer reachable, but a database written before that was true can still hold
+// one - and stamping a superseded generation's hashes onto the current store
+// entry would mark a genuinely changed file reusable and carry stale content
+// into the project. Recomputing the package content hash from the file rows
+// costs no I/O and answers exactly that question, and falling back to hashless
+// files costs one full relink.
+func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pack.FileInfo, error) {
+	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := database.GetFilesForPackage(pkg.ID)
+	if err != nil {
+		debug.Logf("cli: no file manifest for %s, relinking it in full: %v", pkg.Name, err)
+		return files, nil
+	}
+	if got := fileManifestHash(entries); got != pkg.ContentHash {
+		debug.Logf("cli: file manifest for %s describes %s, not the recorded %s; relinking it in full", pkg.Name, got, pkg.ContentHash)
+		return files, nil
+	}
+
+	recorded := make(map[string]*db.FileEntry, len(entries))
+	for _, e := range entries {
+		recorded[e.RelativePath] = e
+	}
+	for _, f := range files {
+		e, ok := recorded[f.RelPath]
+		if !ok {
+			continue
+		}
+		f.ContentHash = e.ContentHash
+		f.Mode = e.Mode
+	}
+	return files, nil
+}
+
+// fileManifestHash is the package content hash the recorded file rows describe.
+//
+// It is pack.HashFiles over the same three fields publish and push hash to
+// produce the package row's content hash - path, content hash, permissions - so
+// a manifest that belongs to the package row reproduces it exactly and one that
+// belongs to another generation does not.
+func fileManifestHash(entries []*db.FileEntry) string {
+	infos := make([]*pack.FileInfo, len(entries))
+	for i, e := range entries {
+		infos[i] = &pack.FileInfo{
+			RelPath:     e.RelativePath,
+			ContentHash: e.ContentHash,
+			Mode:        e.Mode,
+		}
+	}
+	return pack.HashFiles(infos)
+}
+
 // linkPackage points the project at pkg. With useLink the project resolves to
 // pkg's live source directory, so later source edits reach it with no further
 // command; otherwise the published snapshot is materialised out of the store.
-func linkPackage(linker *link.Linker, s *store.Store, pkg *db.Package, useLink bool) (link.LinkType, error) {
+func linkPackage(database *db.DB, linker *link.Linker, s *store.Store, pkg *db.Package, useLink bool) (link.Result, error) {
 	if useLink {
 		linkType, err := linker.LinkSource(pkg.Name, pkg.SourcePath)
 		if err != nil {
-			return "", fmt.Errorf("failed to link package source: %w", err)
+			return link.Result{}, fmt.Errorf("failed to link package source: %w", err)
 		}
-		return linkType, nil
+		return link.Result{Type: linkType}, nil
 	}
 
-	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+	files, err := storeFilesForLink(database, s, pkg)
 	if err != nil {
-		return "", fmt.Errorf("failed to get package files: %w", err)
+		return link.Result{}, fmt.Errorf("failed to get package files: %w", err)
 	}
 
-	linkType, err := linker.Link(pkg.Name, pkg.StorePath, files)
+	res, err := linker.Link(pkg.Name, pkg.StorePath, files)
 	if err != nil {
-		return "", fmt.Errorf("failed to link package: %w", err)
+		return link.Result{}, fmt.Errorf("failed to link package: %w", err)
 	}
-	return linkType, nil
+	return res, nil
 }
 
 // runAddSingle adds a single package (internal implementation)
@@ -430,10 +512,11 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 
 	// Link the package
 	linker := link.New(cwd)
-	linkType, err := linkPackage(linker, s, pkg, useLink)
+	linkRes, err := linkPackage(database, linker, s, pkg, useLink)
 	if err != nil {
 		return err
 	}
+	linkType := linkRes.Type
 
 	// Update .gitignore if enabled
 	cfg := config.Get()

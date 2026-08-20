@@ -53,6 +53,9 @@
 project/
 ├── .lnpm/                       # Local package cache (hard linked)
 │   └── {package-name}/
+│       ├── .lnpm-linked         # What the last link put here (see below)
+│       ├── package.json
+│       ├── dist/
 │       └── ...
 ├── lnpm.lock                    # Lock file (YAML)
 ├── node_modules/
@@ -291,7 +294,13 @@ lnpm add my-package --link
 **Process:**
 1. Find package in store (latest or specified version)
 2. Create a temporary directory alongside `.lnpm/{package}/`
-3. Hard link all files from store into it, then rename it to `.lnpm/{package}/`
+3. Hard link all files from store into it, write the `.lnpm-linked` manifest,
+   then rename it to `.lnpm/{package}/`
+
+   A first `add` into a project has nothing to compare against and so links the
+   whole package. Re-running it against a package already linked there takes the
+   incremental path described under `lnpm push`.
+
 4. Create symlink `node_modules/{package}` → `.lnpm/{package}`
 5. Update `lnpm.lock`, recording the current `package.json` specifier as the
    original version
@@ -358,7 +367,14 @@ lnpm push --skip-hooks
    - Skip it if it is live-linked (`.lnpm/{package}` is a link, not a
      directory): it already resolves to the source directory being pushed, and
      relinking would swap its live link for a snapshot copy
-   - Create new hard links in a temporary directory alongside `.lnpm/{package}/`
+   - Compare the package against `.lnpm/{package}/.lnpm-linked`. If every file
+     is unchanged and the directory holds nothing else, there is nothing to do:
+     the directory is left exactly as it is, no file changes identity, and only
+     the `node_modules` symlink is checked
+   - Otherwise create a temporary directory alongside `.lnpm/{package}/` and
+     fill it: an unchanged file is hard linked across from the package already
+     in place, one syscall and no data moved; a changed one is materialised out
+     of the store
    - Rename it over `.lnpm/{package}/`, then delete the old directory
    - Preserve `node_modules` symlink
 
@@ -366,6 +382,58 @@ lnpm push --skip-hooks
    until the new one is fully built, so a consumer building against
    `node_modules/{package}` never sees an empty or half-written package, and a
    failed or interrupted push leaves the previous package in place.
+
+   A push therefore costs each project the size of the change rather than the
+   size of the package, and reports both: `3 changed, 1997 unchanged`.
+
+#### The link manifest (`.lnpm-linked`)
+
+Every materialised `.lnpm/{package}/` carries a `.lnpm-linked` file recording
+what the link put there: the path, content hash and permissions of each file,
+the link type the link achieved, and the directory's own location. It is the
+counterpart of the store's `.lnpm-complete` marker and is written the same way —
+last, inside the temporary directory — so it commits with the content it
+describes and can never outlive a swap that did not happen or survive one that
+did.
+
+A relink reads it to decide what it can leave alone. It is compared by name, not
+by content, so relinking still repairs a file deleted from under it or replaced
+by something that is not a regular file, and still drops a stray the package does
+not list — but it does not detect a file edited in place. Finding that out means
+reading every file, which is the cost this exists to remove, and in hardlink mode
+an in-place edit has already written through the shared inode into the store
+entry itself: `lnpm gc` and a re-publish are what fix that.
+
+The location it records is the directory as the filesystem knows it — absolute,
+with the links along the way resolved — rather than the path the command that
+wrote it happened to be given. Commands do not agree on that path: `add`, `pull`,
+`remove` and `restore` build their linker from the working directory, while
+`push` and `publish` build theirs from the project path the database recorded,
+which is stored with its symlinks already resolved. Every spelling names the same
+directory, and a relink that rejected the manifest because the previous command
+spelled the path differently would rewrite the whole package — which is what
+add-then-push did on Windows, where the working directory keeps the 8.3 short
+names (`C:\Users\RUNNER~1\…`) that the database's normalization expands.
+
+The name is reserved, exactly as `.lnpm-complete` is reserved by the store. The
+store keeps its marker out of what `GetFiles` hands to consumers because the
+marker belongs to the store and not to the package; the same holds a level down,
+so a package that ships a file called `.lnpm-linked` at its root will **not** find
+it in `.lnpm/{package}` — the file is dropped from the set being linked. Nothing
+else about the package changes.
+
+Reserving it rather than yielding it is what makes the collision impossible
+rather than merely detectable. One path cannot hold two files, and a
+`.lnpm-linked` that is sometimes the record of a link and sometimes package
+content that looks like one leaves nothing on the way back in able to tell them
+apart — a version shipping a manifest that named the next version's hashes could
+then describe its own successor's relink.
+
+The recorded location is a separate, smaller thing: a manifest describes one
+directory, and is only acted on in the directory it names. Copying a project's
+`.lnpm/` into another checkout is the case that happens in practice — the
+manifest travels with it, still describing files by hash — and the mismatch costs
+one full relink, after which the manifest names its new home.
 
 ### `lnpm pull [package...]`
 
@@ -390,8 +458,9 @@ lnpm pull my-package other-pkg
    relinking it would silently swap the live link for a snapshot copy
 3. For each remaining package, look it up in the store; skip it when the lock
    entry already matches the store's version and content hash
-4. Hard link the store's current files into a temporary directory and rename it
-   over `.lnpm/{package}/`, exactly as `add` does
+4. Relink it from the store, exactly as `add` and `push` do — including the
+   incremental path, so a `pull` that finds only a few files changed rewrites
+   only those
 5. Update the entry in `lnpm.lock`, preserving the original `package.json`
    specifier recorded by `add`
 

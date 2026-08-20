@@ -12,7 +12,13 @@ import (
 // TestStore_DoesNotShareInodeWithSource verifies the store owns its own bytes:
 // a stored file must never be a hard link to the developer's source file.
 // os.SameFile is the portable identity check (inode on unix, volume + file
-// index on Windows), so this assertion holds on every platform.
+// index on Windows), so this assertion holds on every platform. It compares two
+// paths that both exist at the moment of the call, which is the shape os.SameFile
+// answers directly. Comparing a path against its own earlier self is the shape
+// that does not: on Windows os.Stat records no file index and os.SameFile
+// resolves the stored path when it is called, so a FileInfo taken before a
+// replacement describes the replacement. See fileIdentity in internal/link and
+// tests for what those comparisons have to do instead.
 func TestStore_DoesNotShareInodeWithSource(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", tmpDir)

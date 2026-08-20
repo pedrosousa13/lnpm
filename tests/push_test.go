@@ -283,3 +283,86 @@ func TestPushReportsCoherentProjectCounts(t *testing.T) {
 	env.AssertLinkedFileContent(copyProject, "count-lib", "index.js", "module.exports = 'v2';")
 	env.AssertLiveLink(liveProject, "count-lib", pkgDir)
 }
+
+// statLinkedFiles returns the identity of each relative path inside a linked
+// package, keyed by that path, for comparison with os.SameFile across a push.
+func statLinkedFiles(t *testing.T, projectDir, pkg string, rels ...string) map[string]os.FileInfo {
+	t.Helper()
+
+	stats := make(map[string]os.FileInfo, len(rels))
+	for _, rel := range rels {
+		stats[rel] = fileIdentity(t, filepath.Join(projectDir, ".lnpm", pkg, filepath.FromSlash(rel)))
+	}
+	return stats
+}
+
+// TestPushOnlyRewritesTheFilesThatChanged is acceptance criterion 2 end to end:
+// a push that changes one file leaves every other file in .lnpm/<pkg> exactly
+// as it was, identity included, rather than rebuilding the whole package.
+func TestPushOnlyRewritesTheFilesThatChanged(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("incremental-pkg", "1.0.0", map[string]string{
+		"index.js":  "module.exports = 'v1';",
+		"lib/a.js":  "exports.a = 1;",
+		"lib/b.js":  "exports.b = 2;",
+		"README.md": "# incremental-pkg\n",
+	})
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "incremental-pkg", false, false)
+
+	untouched := []string{"package.json", "index.js", "lib/a.js", "README.md"}
+	before := statLinkedFiles(t, projectDir, "incremental-pkg", append(untouched, "lib/b.js")...)
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "lib", "b.js"), "exports.b = 99;")
+	if err := cli.RunPush(false); err != nil {
+		t.Fatalf("Failed to push: %v", err)
+	}
+
+	after := statLinkedFiles(t, projectDir, "incremental-pkg", append(untouched, "lib/b.js")...)
+	for _, rel := range untouched {
+		if !os.SameFile(before[rel], after[rel]) {
+			t.Errorf("%s is a different file after the push, so it was rewritten even though it did not change", rel)
+		}
+	}
+	if os.SameFile(before["lib/b.js"], after["lib/b.js"]) {
+		t.Error("lib/b.js kept its identity across the push, so the edit was never written")
+	}
+	env.AssertLinkedFileContent(projectDir, "incremental-pkg", filepath.Join("lib", "b.js"), "exports.b = 99;")
+}
+
+// TestPushReportsChangedAndUnchangedCounts is acceptance criterion 5: the push
+// summary says how much of the package it actually rewrote.
+func TestPushReportsChangedAndUnchangedCounts(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("counted-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+		"lib/a.js": "exports.a = 1;",
+		"lib/b.js": "exports.b = 2;",
+	})
+	projectDir := env.newProject("test-project")
+	env.addPkg(projectDir, "counted-pkg", false, false)
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "lib", "b.js"), "exports.b = 99;")
+	out := captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("RunPush: %v", err)
+		}
+	})
+	if !strings.Contains(out, "(1 changed, 3 unchanged)") {
+		t.Errorf("Expected the push to report 1 changed of 4 files, got:\n%s", out)
+	}
+
+	// A push with nothing to carry across says so rather than staying silent.
+	out = captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("RunPush: %v", err)
+		}
+	})
+	if !strings.Contains(out, "(0 changed, 4 unchanged)") {
+		t.Errorf("Expected an unchanged push to report 0 changed of 4 files, got:\n%s", out)
+	}
+}

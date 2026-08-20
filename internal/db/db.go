@@ -251,62 +251,96 @@ func (db *DB) nextID(tx *bolt.Tx) (int64, error) {
 
 // --- Package operations ---
 
-// InsertPackage inserts or updates a package
+// InsertPackage inserts or updates a package.
+//
+// A package whose file manifest is being written at the same time must go
+// through InsertPackageWithFiles instead: the two rows describe one generation
+// of one package, and committing them separately lets a failure between them
+// leave a package row naming content its file rows do not describe.
 func (db *DB) InsertPackage(pkg *Package) error {
 	debug.Logf("db: insert package %s@%s", pkg.Name, pkg.Version)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	return db.db.Update(func(tx *bolt.Tx) error {
-		packages := tx.Bucket(bucketPackages)
-		byName := tx.Bucket(bucketPackagesByName)
+		return db.insertPackageTx(tx, pkg)
+	})
+}
 
-		// Check if package with same name exists (update case)
-		if existingIDBytes := byName.Get([]byte(pkg.Name)); existingIDBytes != nil {
-			existingID := btoi(existingIDBytes)
-			if data := packages.Get(itob(existingID)); data != nil {
-				var existing Package
-				if err := json.Unmarshal(data, &existing); err == nil {
-					// Update existing package
-					existing.Version = pkg.Version
-					existing.ContentHash = pkg.ContentHash
-					existing.SourcePath = pkg.SourcePath
-					existing.StorePath = pkg.StorePath
-					existing.FilesCount = pkg.FilesCount
-					existing.TotalSize = pkg.TotalSize
-					existing.UpdatedAt = time.Now()
-					pkg.ID = existing.ID
+// InsertPackageWithFiles records a package and the files it contains in a single
+// transaction, so the two either both land or neither does.
+//
+// This is not tidiness. A relink decides which files it can leave alone by
+// comparing the hashes in the file rows against the ones it last linked into the
+// project, so a package row that names a new generation while the file rows
+// still describe the previous one is enough to mark a genuinely changed file
+// reusable and carry stale content into a consumer's project. Bolt gives one
+// transaction per write, and one transaction is what makes that state
+// unreachable.
+func (db *DB) InsertPackageWithFiles(pkg *Package, files []*FileEntry) error {
+	debug.Logf("db: insert package %s@%s with %d files", pkg.Name, pkg.Version, len(files))
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
-					data, err := json.Marshal(&existing)
-					if err != nil {
-						return err
-					}
-					return packages.Put(itob(existing.ID), data)
+	return db.db.Update(func(tx *bolt.Tx) error {
+		if err := db.insertPackageTx(tx, pkg); err != nil {
+			return err
+		}
+		return db.insertFilesTx(tx, pkg.ID, files)
+	})
+}
+
+// insertPackageTx is InsertPackage's body, taking the transaction from its
+// caller so it can share one with insertFilesTx.
+func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package) error {
+	packages := tx.Bucket(bucketPackages)
+	byName := tx.Bucket(bucketPackagesByName)
+
+	// Check if package with same name exists (update case)
+	if existingIDBytes := byName.Get([]byte(pkg.Name)); existingIDBytes != nil {
+		existingID := btoi(existingIDBytes)
+		if data := packages.Get(itob(existingID)); data != nil {
+			var existing Package
+			if err := json.Unmarshal(data, &existing); err == nil {
+				// Update existing package
+				existing.Version = pkg.Version
+				existing.ContentHash = pkg.ContentHash
+				existing.SourcePath = pkg.SourcePath
+				existing.StorePath = pkg.StorePath
+				existing.FilesCount = pkg.FilesCount
+				existing.TotalSize = pkg.TotalSize
+				existing.UpdatedAt = time.Now()
+				pkg.ID = existing.ID
+
+				data, err := json.Marshal(&existing)
+				if err != nil {
+					return err
 				}
+				return packages.Put(itob(existing.ID), data)
 			}
 		}
+	}
 
-		// Insert new package
-		id, err := db.nextID(tx)
-		if err != nil {
-			return err
-		}
-		pkg.ID = id
-		pkg.CreatedAt = time.Now()
-		pkg.UpdatedAt = time.Now()
+	// Insert new package
+	id, err := db.nextID(tx)
+	if err != nil {
+		return err
+	}
+	pkg.ID = id
+	pkg.CreatedAt = time.Now()
+	pkg.UpdatedAt = time.Now()
 
-		data, err := json.Marshal(pkg)
-		if err != nil {
-			return err
-		}
+	data, err := json.Marshal(pkg)
+	if err != nil {
+		return err
+	}
 
-		if err := packages.Put(itob(id), data); err != nil {
-			return err
-		}
+	if err := packages.Put(itob(id), data); err != nil {
+		return err
+	}
 
-		// Index by name
-		return byName.Put([]byte(pkg.Name), itob(id))
-	})
+	// Index by name
+	return byName.Put([]byte(pkg.Name), itob(id))
 }
 
 // GetPackageByName returns the latest package with the given name
@@ -837,39 +871,48 @@ func (db *DB) GetProjectsForPackage(packageID int64) ([]*Project, error) {
 
 // --- File operations ---
 
-// InsertFiles inserts file entries for a package
+// InsertFiles inserts file entries for a package.
+//
+// A package being written at the same time must go through
+// InsertPackageWithFiles instead, for the reason given there.
 func (db *DB) InsertFiles(packageID int64, files []*FileEntry) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	return db.db.Batch(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketFiles)
-
-		// Assign IDs - pre-allocate to avoid multiple ID generations
-		startID, err := db.nextID(tx)
-		if err != nil {
-			return err
-		}
-
-		// Batch assign IDs
-		for i, f := range files {
-			f.ID = startID + int64(i)
-			f.PackageID = packageID
-		}
-
-		// Update next ID counter once for all files
-		meta := tx.Bucket(bucketMeta)
-		if err := meta.Put([]byte("next_id"), itob(startID+int64(len(files)))); err != nil {
-			return err
-		}
-
-		data, err := json.Marshal(files)
-		if err != nil {
-			return err
-		}
-
-		return b.Put(itob(packageID), data)
+		return db.insertFilesTx(tx, packageID, files)
 	})
+}
+
+// insertFilesTx is InsertFiles' body, taking the transaction from its caller so
+// it can share one with insertPackageTx.
+func (db *DB) insertFilesTx(tx *bolt.Tx, packageID int64, files []*FileEntry) error {
+	b := tx.Bucket(bucketFiles)
+
+	// Assign IDs - pre-allocate to avoid multiple ID generations
+	startID, err := db.nextID(tx)
+	if err != nil {
+		return err
+	}
+
+	// Batch assign IDs
+	for i, f := range files {
+		f.ID = startID + int64(i)
+		f.PackageID = packageID
+	}
+
+	// Update next ID counter once for all files
+	meta := tx.Bucket(bucketMeta)
+	if err := meta.Put([]byte("next_id"), itob(startID+int64(len(files)))); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(files)
+	if err != nil {
+		return err
+	}
+
+	return b.Put(itob(packageID), data)
 }
 
 // GetFilesForPackage returns all files for a package

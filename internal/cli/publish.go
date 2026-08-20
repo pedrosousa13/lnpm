@@ -230,15 +230,13 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 		TotalSize:   totalSize,
 	}
 
-	if err := database.InsertPackage(pkg); err != nil {
-		return fmt.Errorf("failed to record package: %w", err)
-	}
-
-	// Store file manifest
+	// The package row and its file manifest go in together. A relink reads the
+	// file rows to decide which files it can leave alone, so a package row that
+	// named this generation while the file rows still described the previous one
+	// would let a changed file be carried over unchanged.
 	fileEntries := make([]*db.FileEntry, len(files))
 	for i, f := range files {
 		fileEntries[i] = &db.FileEntry{
-			PackageID:    pkg.ID,
 			RelativePath: f.RelPath,
 			ContentHash:  f.ContentHash,
 			Size:         f.Size,
@@ -246,8 +244,8 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 			ModTime:      f.ModTime,
 		}
 	}
-	if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
-		return fmt.Errorf("failed to record files: %w", err)
+	if err := database.InsertPackageWithFiles(pkg, fileEntries); err != nil {
+		return fmt.Errorf("failed to record package: %w", err)
 	}
 
 	fmt.Printf("%s Published %s@%s\n", iconOK(), pkgJSON.Name, pkgJSON.Version)
@@ -286,6 +284,7 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 	type result struct {
 		path    string
 		skipped bool
+		link    link.Result
 		err     error
 	}
 	results := make(chan result, len(projects))
@@ -295,8 +294,8 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 		wg.Add(1)
 		go func(p *db.Project) {
 			defer wg.Done()
-			skipped, err := pushToProject(p, pkg, s)
-			results <- result{path: p.Path, skipped: skipped, err: err}
+			linkRes, skipped, err := pushToProject(database, p, pkg, s)
+			results <- result{path: p.Path, skipped: skipped, link: linkRes, err: err}
 		}(proj)
 	}
 
@@ -317,7 +316,7 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
 			skippedCount++
 		default:
-			fmt.Printf("  %s %s\n", iconOK(), res.path)
+			fmt.Printf("  %s %s (%d changed, %d unchanged)\n", iconOK(), res.path, res.link.Changed, res.link.Unchanged)
 			successCount++
 		}
 	}
@@ -336,8 +335,9 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 }
 
 // pushToProject pushes a package update to a single project, reporting whether
-// the project was skipped rather than relinked.
-func pushToProject(proj *db.Project, pkg *db.Package, s *store.Store) (skipped bool, err error) {
+// the project was skipped rather than relinked and, when it was relinked, how
+// much of the package the relink actually had to rewrite.
+func pushToProject(database *db.DB, proj *db.Project, pkg *db.Package, s *store.Store) (res link.Result, skipped bool, err error) {
 	// A project that added this package with --link already resolves to the
 	// source directory just published. Relinking it from the store would replace
 	// its live link with a snapshot copy and silently end the live updates it
@@ -345,18 +345,18 @@ func pushToProject(proj *db.Project, pkg *db.Package, s *store.Store) (skipped b
 	// `publish --push`.
 	linker := link.New(proj.Path)
 	if linker.IsLiveLinked(pkg.Name) {
-		return true, nil
+		return link.Result{}, true, nil
 	}
 
 	// Get files from store
-	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
+	files, err := storeFilesForLink(database, s, pkg)
 	if err != nil {
-		return false, err
+		return link.Result{}, false, err
 	}
 
 	// Re-link the package
-	_, err = linker.Link(pkg.Name, pkg.StorePath, files)
-	return false, err
+	res, err = linker.Link(pkg.Name, pkg.StorePath, files)
+	return res, false, err
 }
 
 // shortHash returns the first 8 characters of a hash
