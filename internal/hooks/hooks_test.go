@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pedrosousa13/lnpm/internal/config"
 )
 
 // orderLogName is the file each test lifecycle script appends its own name to.
@@ -169,11 +171,58 @@ func TestRunPrepare(t *testing.T) {
 	}
 }
 
+// useHooksConfig points config.Get at a temp config file holding hooks for the
+// rest of the test. The loaded config is memoized package-wide, so it is
+// cleared both now and on cleanup: otherwise this test would either read
+// whatever config another test loaded first, or pin its own on every test after
+// it.
+func useHooksConfig(t *testing.T, hooks config.HooksConfig) {
+	t.Helper()
+
+	t.Setenv("LNPM_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+	if err := config.SaveConfig(&config.Config{Hooks: hooks}); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+}
+
+// ranScript is one command a hook handed to runScriptFn, and the directory it
+// asked for it to run in.
+type ranScript struct {
+	dir string
+	cmd string
+}
+
+// recordScripts replaces runScriptFn for the rest of the test with one that
+// records what it is handed and runs none of it, so a post-add test can check
+// what would have run without starting a real package-manager install. The
+// returned function reports the recorded scripts, in order.
+//
+// Don't use t.Parallel() in callers - this helper swaps the process-wide
+// runScriptFn var, so a caller must also not run alongside a test that does.
+func recordScripts(t *testing.T) func() []ranScript {
+	t.Helper()
+
+	var ran []ranScript
+	prev := runScriptFn
+	runScriptFn = func(dir string, cmdStr string) error {
+		ran = append(ran, ranScript{dir: dir, cmd: cmdStr})
+		return nil
+	}
+	t.Cleanup(func() { runScriptFn = prev })
+
+	return func() []ranScript { return ran }
+}
+
 func TestRunPostAdd(t *testing.T) {
 	tests := []struct {
 		name       string
+		hooks      config.HooksConfig
 		runInstall bool
-		createNPM  bool // create package-lock.json to trigger npm
+		createNPM  bool     // create package-lock.json to trigger npm
+		wantRan    []string // commands that should run (nil if none)
 	}{
 		{
 			name:       "skips when runInstall=false",
@@ -183,6 +232,40 @@ func TestRunPostAdd(t *testing.T) {
 			name:       "skips npm detection when runInstall=false",
 			createNPM:  true,
 			runInstall: false, // don't run install
+		},
+		{
+			name:       "runs the package manager install when runInstall=true",
+			createNPM:  true,
+			runInstall: true,
+			wantRan:    []string{"npm install --legacy-peer-deps"},
+		},
+		{
+			name:       "runs the custom post_add hook when runInstall=true",
+			hooks:      config.HooksConfig{PostAdd: "echo added"},
+			runInstall: true,
+			wantRan:    []string{"echo added"},
+		},
+		{
+			name:       "skip_post_add suppresses the package manager install",
+			hooks:      config.HooksConfig{SkipPostAdd: true},
+			createNPM:  true,
+			runInstall: true,
+		},
+		{
+			name:       "skip_post_add suppresses the custom post_add hook",
+			hooks:      config.HooksConfig{PostAdd: "echo added", SkipPostAdd: true},
+			runInstall: true,
+		},
+		{
+			name:       "runInstall=false still skips the custom post_add hook",
+			hooks:      config.HooksConfig{PostAdd: "echo added"},
+			runInstall: false,
+		},
+		{
+			name:       "runInstall=false skips regardless of skip_post_add",
+			hooks:      config.HooksConfig{PostAdd: "echo added", SkipPostAdd: true},
+			createNPM:  true,
+			runInstall: false,
 		},
 	}
 
@@ -198,11 +281,25 @@ func TestRunPostAdd(t *testing.T) {
 				}
 			}
 
-			err := RunPostAdd(tmpDir, tt.runInstall)
+			useHooksConfig(t, tt.hooks)
+			ran := recordScripts(t)
 
-			// When runInstall=false, should not error (skips install)
-			if !tt.runInstall && err != nil {
-				t.Errorf("unexpected error when runInstall=false: %v", err)
+			if err := RunPostAdd(tmpDir, tt.runInstall); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+
+			// Every hook runs in the project directory it was given, so check
+			// that alongside the commands themselves.
+			var cmds []string
+			for _, r := range ran() {
+				cmds = append(cmds, r.cmd)
+				if r.dir != tmpDir {
+					t.Errorf("%q ran in %q, want the project path %q", r.cmd, r.dir, tmpDir)
+				}
+			}
+
+			if !slices.Equal(cmds, tt.wantRan) {
+				t.Errorf("commands ran %v, want %v", cmds, tt.wantRan)
 			}
 		})
 	}
