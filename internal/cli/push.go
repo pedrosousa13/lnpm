@@ -112,7 +112,6 @@ func RunPush(skipHooks bool) error {
 	}
 
 	// Update package in database
-	hashChanged := pkg.ContentHash != newHash
 	pkg.Version = pkgJSON.Version
 	pkg.ContentHash = newHash
 	pkg.SourcePath = cwd
@@ -120,26 +119,23 @@ func RunPush(skipHooks bool) error {
 	pkg.FilesCount = len(files)
 	pkg.TotalSize = totalSize
 
-	if err := database.InsertPackage(pkg); err != nil {
-		return fmt.Errorf("failed to update package: %w", err)
+	// The package row and its file manifest go in together, for the reason
+	// finishPublish gives. The manifest is rewritten whether or not the content
+	// hash moved: skipping it when nothing changed would save one bucket write
+	// and make "the file rows always describe the package row" conditional,
+	// which is the property a relink's file-level decisions rest on.
+	fileEntries := make([]*db.FileEntry, len(files))
+	for i, f := range files {
+		fileEntries[i] = &db.FileEntry{
+			RelativePath: f.RelPath,
+			ContentHash:  f.ContentHash,
+			Size:         f.Size,
+			Mode:         f.Mode,
+			ModTime:      f.ModTime,
+		}
 	}
-
-	// Only update file manifest if content hash changed
-	if hashChanged {
-		fileEntries := make([]*db.FileEntry, len(files))
-		for i, f := range files {
-			fileEntries[i] = &db.FileEntry{
-				PackageID:    pkg.ID,
-				RelativePath: f.RelPath,
-				ContentHash:  f.ContentHash,
-				Size:         f.Size,
-				Mode:         f.Mode,
-				ModTime:      f.ModTime,
-			}
-		}
-		if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
-			return fmt.Errorf("failed to update files: %w", err)
-		}
+	if err := database.InsertPackageWithFiles(pkg, fileEntries); err != nil {
+		return fmt.Errorf("failed to update package: %w", err)
 	}
 
 	// Get linked projects

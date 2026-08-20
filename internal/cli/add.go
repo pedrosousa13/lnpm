@@ -370,6 +370,16 @@ func linkTypeLabel(t link.LinkType) string {
 // A file the manifest does not cover keeps an empty hash and is simply always
 // rewritten, which is also why a manifest that cannot be read is logged rather
 // than returned: it costs the next relink its shortcut and nothing else.
+//
+// A manifest that describes some other generation of the package is refused
+// outright rather than used for the paths it happens to share. The package row
+// and its file rows are written in one transaction now, so a mismatch is no
+// longer reachable, but a database written before that was true can still hold
+// one - and stamping a superseded generation's hashes onto the current store
+// entry would mark a genuinely changed file reusable and carry stale content
+// into the project. Recomputing the package content hash from the file rows
+// costs no I/O and answers exactly that question, and falling back to hashless
+// files costs one full relink.
 func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pack.FileInfo, error) {
 	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
 	if err != nil {
@@ -381,6 +391,10 @@ func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pac
 		debug.Logf("cli: no file manifest for %s, relinking it in full: %v", pkg.Name, err)
 		return files, nil
 	}
+	if got := fileManifestHash(entries); got != pkg.ContentHash {
+		debug.Logf("cli: file manifest for %s describes %s, not the recorded %s; relinking it in full", pkg.Name, got, pkg.ContentHash)
+		return files, nil
+	}
 
 	hashes := make(map[string]string, len(entries))
 	for _, e := range entries {
@@ -390,6 +404,24 @@ func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pac
 		f.ContentHash = hashes[f.RelPath]
 	}
 	return files, nil
+}
+
+// fileManifestHash is the package content hash the recorded file rows describe.
+//
+// It is pack.HashFiles over the same three fields publish and push hash to
+// produce the package row's content hash - path, content hash, permissions - so
+// a manifest that belongs to the package row reproduces it exactly and one that
+// belongs to another generation does not.
+func fileManifestHash(entries []*db.FileEntry) string {
+	infos := make([]*pack.FileInfo, len(entries))
+	for i, e := range entries {
+		infos[i] = &pack.FileInfo{
+			RelPath:     e.RelativePath,
+			ContentHash: e.ContentHash,
+			Mode:        e.Mode,
+		}
+	}
+	return pack.HashFiles(infos)
 }
 
 // linkPackage points the project at pkg. With useLink the project resolves to

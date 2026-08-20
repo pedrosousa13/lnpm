@@ -230,15 +230,13 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 		TotalSize:   totalSize,
 	}
 
-	if err := database.InsertPackage(pkg); err != nil {
-		return fmt.Errorf("failed to record package: %w", err)
-	}
-
-	// Store file manifest
+	// The package row and its file manifest go in together. A relink reads the
+	// file rows to decide which files it can leave alone, so a package row that
+	// named this generation while the file rows still described the previous one
+	// would let a changed file be carried over unchanged.
 	fileEntries := make([]*db.FileEntry, len(files))
 	for i, f := range files {
 		fileEntries[i] = &db.FileEntry{
-			PackageID:    pkg.ID,
 			RelativePath: f.RelPath,
 			ContentHash:  f.ContentHash,
 			Size:         f.Size,
@@ -246,8 +244,8 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 			ModTime:      f.ModTime,
 		}
 	}
-	if err := database.InsertFiles(pkg.ID, fileEntries); err != nil {
-		return fmt.Errorf("failed to record files: %w", err)
+	if err := database.InsertPackageWithFiles(pkg, fileEntries); err != nil {
+		return fmt.Errorf("failed to record package: %w", err)
 	}
 
 	fmt.Printf("%s Published %s@%s\n", iconOK(), pkgJSON.Name, pkgJSON.Version)
