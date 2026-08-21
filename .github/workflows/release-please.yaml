@@ -61,6 +61,17 @@ jobs:
         with:
           version: v2.12.2
 
+      - name: Write release signing key
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "RELEASE_SIGNING_KEY is not set; refusing to publish an unsigned release" >&2
+            exit 1
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/release-signing-key.pem"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -69,6 +80,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SIGNING_KEY_PATH: ${{ runner.temp }}/release-signing-key.pem
 
   # release-please builds the release body from the merged release PR's body,
   # which it computed from commit subjects when it opened the PR. Upgrade notes
