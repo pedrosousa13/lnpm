@@ -109,12 +109,28 @@ type Project struct {
 
 // Link represents a link between a package and a project
 type Link struct {
-	ID        int64     `json:"id"`
-	PackageID int64     `json:"package_id"`
-	ProjectID int64     `json:"project_id"`
-	LinkType  string    `json:"link_type"`
+	ID        int64  `json:"id"`
+	PackageID int64  `json:"package_id"`
+	ProjectID int64  `json:"project_id"`
+	LinkType  string `json:"link_type"`
+	// Tag is the channel the project follows. When that tag is moved to
+	// another version - by a publish, or by tagging a version already in the
+	// store - this link is carried across to it, so the project keeps
+	// consuming the package it asked for rather than the release it happened
+	// to be pinned to. Empty means DefaultTag, which is what every link
+	// written before tags existed meant.
+	Tag       string    `json:"tag,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// tag returns the channel a link follows, reading an unset tag as the default
+// one. Links written before tags existed carry none.
+func (l *Link) tag() string {
+	if l.Tag == "" {
+		return DefaultTag
+	}
+	return l.Tag
 }
 
 // FileEntry represents a file in a package
@@ -379,34 +395,31 @@ func (db *DB) InsertPackageWithFilesTagged(pkg *Package, files []*FileEntry, tag
 // caller so it can share one with insertFilesTx.
 func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package, tag string) error {
 	packages := tx.Bucket(bucketPackages)
-	byName := tx.Bucket(bucketPackagesByName)
 
-	// Check if package with same name exists (update case)
-	if existingIDBytes := byName.Get([]byte(pkg.Name)); existingIDBytes != nil {
-		existingID := btoi(existingIDBytes)
-		if data := packages.Get(itob(existingID)); data != nil {
-			var existing Package
-			if err := json.Unmarshal(data, &existing); err == nil {
-				// Update existing package
-				existing.Version = pkg.Version
-				existing.ContentHash = pkg.ContentHash
-				existing.SourcePath = pkg.SourcePath
-				existing.StorePath = pkg.StorePath
-				existing.FilesCount = pkg.FilesCount
-				existing.TotalSize = pkg.TotalSize
-				existing.UpdatedAt = time.Now()
-				pkg.ID = existing.ID
+	// A record is addressed by name and content hash. Publishing the same
+	// content again describes the same version, and updates it in place;
+	// publishing different content adds a version beside the ones already
+	// there instead of displacing them, which is what lets two tags name
+	// genuinely different content. Which version a name resolves to is decided
+	// by the tag, below, and not by which record was written last.
+	if existing := findPackageByHashTx(tx, pkg.Name, pkg.ContentHash); existing != nil {
+		existing.Version = pkg.Version
+		existing.SourcePath = pkg.SourcePath
+		existing.StorePath = pkg.StorePath
+		existing.FilesCount = pkg.FilesCount
+		existing.TotalSize = pkg.TotalSize
+		existing.UpdatedAt = time.Now()
+		pkg.ID = existing.ID
+		pkg.CreatedAt = existing.CreatedAt
 
-				data, err := json.Marshal(&existing)
-				if err != nil {
-					return err
-				}
-				if err := packages.Put(itob(existing.ID), data); err != nil {
-					return err
-				}
-				return setTagTx(tx, pkg.Name, tag, pkg.ContentHash, pkg.ID)
-			}
+		data, err := json.Marshal(existing)
+		if err != nil {
+			return err
 		}
+		if err := packages.Put(itob(existing.ID), data); err != nil {
+			return err
+		}
+		return setTagTx(tx, pkg.Name, tag, pkg.ContentHash, pkg.ID)
 	}
 
 	// Insert new package
@@ -427,34 +440,157 @@ func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package, tag string) error {
 		return err
 	}
 
-	// Index by name
-	if err := byName.Put([]byte(pkg.Name), itob(id)); err != nil {
-		return err
-	}
-
 	return setTagTx(tx, pkg.Name, tag, pkg.ContentHash, pkg.ID)
 }
 
 // --- Tag operations ---
 
 // setTagTx points name's tag at hash, which belongs to the record with the given
-// id.
+// id, and carries the projects that follow that tag across to it.
 //
 // Setting the default tag also moves the name index, because the two say the
 // same thing: bucketPackagesByName names the version tagged DefaultTag. Letting
 // them disagree would give GetPackageByName and ResolveTag different answers to
 // the same question.
+//
+// A package's first version is given the default tag as well as the one asked
+// for. Every command but a tag-aware add reaches a package through the name
+// index, so a package published only under some other tag would sit in the store
+// and on disk while push, remove, restore and status could not see it at all.
 func setTagTx(tx *bolt.Tx, name, tag, hash string, id int64) error {
 	if tag == "" {
 		tag = DefaultTag
 	}
-	if err := tx.Bucket(bucketTags).Put(tagKey(name, tag), []byte(hash)); err != nil {
+
+	tags := tx.Bucket(bucketTags)
+	byName := tx.Bucket(bucketPackagesByName)
+
+	// Whatever the tag named before this, so the projects following it can be
+	// carried across. Read before the Put that overwrites it.
+	var previous *Package
+	if prevHash := tags.Get(tagKey(name, tag)); prevHash != nil && string(prevHash) != hash {
+		previous = findPackageByHashTx(tx, name, string(prevHash))
+	}
+
+	if err := tags.Put(tagKey(name, tag), []byte(hash)); err != nil {
 		return err
 	}
+
 	if tag == DefaultTag {
-		return tx.Bucket(bucketPackagesByName).Put([]byte(name), itob(id))
+		if err := byName.Put([]byte(name), itob(id)); err != nil {
+			return err
+		}
+	} else if byName.Get([]byte(name)) == nil {
+		if err := setTagTx(tx, name, DefaultTag, hash, id); err != nil {
+			return err
+		}
 	}
-	return nil
+
+	if previous == nil || previous.ID == id {
+		return nil
+	}
+	return moveLinksTx(tx, previous.ID, id, tag)
+}
+
+// moveLinksTx repoints the links that follow tag from one version of a package
+// to another.
+//
+// A link says a project consumes a package, and every command that reads one -
+// push, publish --push, remove, retreat, status - finds it by looking the
+// package up by name. Leaving a link on the version a tag has moved off would
+// make those projects unreachable from the name they were linked under, so a
+// push would report no consumers and a remove would find nothing to unlink.
+//
+// Only the links following the tag that moved are carried across: a project that
+// asked for beta must not be dragged onto latest because the two tags happened
+// to name the same version. A project that already has a link on the
+// destination keeps that one and loses the duplicate, because everything that
+// reads links treats one row per project and package as given.
+func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
+	links := tx.Bucket(bucketLinks)
+	byPackage := tx.Bucket(bucketLinksByPackage)
+	byProject := tx.Bucket(bucketLinksByProject)
+
+	fromIDs := indexIDs(byPackage, itob(fromID))
+	if len(fromIDs) == 0 {
+		return nil
+	}
+
+	toIDs := indexIDs(byPackage, itob(toID))
+	onDestination := make(map[int64]bool, len(toIDs))
+	for _, id := range toIDs {
+		if data := links.Get(itob(id)); data != nil {
+			var l Link
+			if json.Unmarshal(data, &l) == nil {
+				onDestination[l.ProjectID] = true
+			}
+		}
+	}
+
+	stay := make([]int64, 0, len(fromIDs))
+	for _, id := range fromIDs {
+		data := links.Get(itob(id))
+		if data == nil {
+			continue // Index entry naming no link row: drop it
+		}
+		var l Link
+		if err := json.Unmarshal(data, &l); err != nil || l.tag() != tag {
+			stay = append(stay, id)
+			continue
+		}
+
+		if onDestination[l.ProjectID] {
+			// The project already follows the destination version.
+			if err := links.Delete(itob(id)); err != nil {
+				return err
+			}
+			removeIDFromIndex(byProject, itob(l.ProjectID), id)
+			continue
+		}
+
+		l.PackageID = toID
+		l.UpdatedAt = time.Now()
+		moved, err := json.Marshal(&l)
+		if err != nil {
+			return err
+		}
+		if err := links.Put(itob(id), moved); err != nil {
+			return err
+		}
+		onDestination[l.ProjectID] = true
+		toIDs = append(toIDs, id)
+	}
+
+	if err := putIndexIDs(byPackage, itob(fromID), stay); err != nil {
+		return err
+	}
+	return putIndexIDs(byPackage, itob(toID), toIDs)
+}
+
+// indexIDs reads a link index entry, which holds a JSON array of link IDs.
+func indexIDs(b *bolt.Bucket, key []byte) []int64 {
+	data := b.Get(key)
+	if data == nil {
+		return nil
+	}
+	var ids []int64
+	if json.Unmarshal(data, &ids) != nil {
+		return nil
+	}
+	return ids
+}
+
+// putIndexIDs writes a link index entry, deleting the key when no IDs are left
+// so an empty index entry never outlives the links it named.
+func putIndexIDs(b *bolt.Bucket, key []byte, ids []int64) error {
+	if len(ids) == 0 {
+		return b.Delete(key)
+	}
+	data, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	return b.Put(key, data)
 }
 
 // SetTag points a tag at a version already in the store, without republishing
@@ -636,12 +772,20 @@ func (db *DB) DeletePackage(id int64) error {
 		byPackage := tx.Bucket(bucketLinksByPackage)
 		byProject := tx.Bucket(bucketLinksByProject)
 
-		// Get package name for index cleanup
+		// Clean up the indexes that name this version.
+		//
+		// The name index is cleared only when it names this very record: a
+		// package can have several versions now, and dropping the entry while
+		// collecting a superseded one would unpublish a package whose current
+		// version is still in the store.
 		data := packages.Get(itob(id))
 		if data != nil {
 			var pkg Package
 			if json.Unmarshal(data, &pkg) == nil {
-				_ = byName.Delete([]byte(pkg.Name))
+				if current := byName.Get([]byte(pkg.Name)); current != nil && btoi(current) == id {
+					_ = byName.Delete([]byte(pkg.Name))
+				}
+				deleteTagsForHashTx(tx, pkg.Name, pkg.ContentHash)
 			}
 		}
 
@@ -669,6 +813,29 @@ func (db *DB) DeletePackage(id int64) error {
 		_ = files.Delete(itob(id))
 		return nil
 	})
+}
+
+// deleteTagsForHashTx removes every tag of name that points at hash. A tag left
+// naming a deleted version resolves to nothing and, since tags are what keeps a
+// version from being collected, would go on protecting nothing.
+//
+// The keys are collected before any is deleted rather than deleted through the
+// cursor, so the iteration does not depend on how bolt handles a cursor whose
+// current key has just been removed.
+func deleteTagsForHashTx(tx *bolt.Tx, name, hash string) {
+	tags := tx.Bucket(bucketTags)
+	prefix := tagPrefix(name)
+
+	var stale [][]byte
+	c := tags.Cursor()
+	for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+		if string(v) == hash {
+			stale = append(stale, append([]byte(nil), k...))
+		}
+	}
+	for _, k := range stale {
+		_ = tags.Delete(k)
+	}
 }
 
 // removeIDFromIndex removes id from the []int64 stored at key in bucket b,

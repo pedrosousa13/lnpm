@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -204,7 +205,14 @@ func TestDatabaseConcurrentReadsWrites(t *testing.T) {
 	}
 }
 
-// TestDatabasePackageUpdatePreservesLinks tests that updating a package preserves links
+// TestDatabasePackageUpdatePreservesLinks tests that publishing a new version of
+// a package preserves the links to it.
+//
+// The link is asserted against whatever record the package name resolves to
+// rather than against the record it was created on. Those were the same thing
+// while a name had one record; now that a superseded version keeps its own
+// record, the link is carried across to the version the tag names, and the name
+// is how every command that reads links finds the package.
 func TestDatabasePackageUpdatePreservesLinks(t *testing.T) {
 	env := setupTest(t)
 
@@ -257,13 +265,20 @@ func TestDatabasePackageUpdatePreservesLinks(t *testing.T) {
 	}
 
 	// Verify link still exists
-	links, err := env.Database.GetLinksForPackage(pkg.ID)
+	current, err := env.Database.GetPackageByName("update-pkg")
+	if err != nil || current == nil {
+		t.Fatalf("Failed to look up update-pkg after the update: %v", err)
+	}
+	links, err := env.Database.GetLinksForPackage(current.ID)
 	if err != nil {
 		t.Fatalf("Failed to get links: %v", err)
 	}
 
 	if len(links) != 1 {
 		t.Errorf("Expected 1 link after update, got %d", len(links))
+	}
+	if links[0].ProjectID != existingProj.ID {
+		t.Errorf("Expected the link to project %d, got %d", existingProj.ID, links[0].ProjectID)
 	}
 }
 
@@ -614,6 +629,301 @@ func TestDatabaseGetProjectsForPackage(t *testing.T) {
 	if len(projects) != projectCount {
 		t.Errorf("Expected %d projects, got %d", projectCount, len(projects))
 	}
+}
+
+// --- Multiple versions of one package ----------------------------------------
+
+// insertProject inserts a project and returns it with its assigned ID.
+func insertProject(t *testing.T, d *db.DB, path string) *db.Project {
+	t.Helper()
+
+	if err := d.InsertProject(&db.Project{Path: path, Name: filepath.Base(path)}); err != nil {
+		t.Fatalf("insert project %s: %v", path, err)
+	}
+	proj, err := d.GetProjectByPath(path)
+	if err != nil || proj == nil {
+		t.Fatalf("project %s not found after insert: %v", path, err)
+	}
+	return proj
+}
+
+// linkedProjects returns the paths of the projects linked to a package version,
+// so a test can say which projects follow which version without unpacking link
+// rows itself.
+func linkedProjects(t *testing.T, d *db.DB, packageID int64) []string {
+	t.Helper()
+
+	projects, err := d.GetProjectsForPackage(packageID)
+	if err != nil {
+		t.Fatalf("projects for package %d: %v", packageID, err)
+	}
+	paths := make([]string, 0, len(projects))
+	for _, proj := range projects {
+		paths = append(paths, proj.Path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// TestDatabaseVersionsOfOneNameCoexist pins the schema change tags rest on:
+// publishing different content no longer displaces the record of what was
+// published before, so two versions of a package can be addressed at once.
+func TestDatabaseVersionsOfOneNameCoexist(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "multi-pkg", "h1")
+	v2 := insertTagPkg(t, env.Database, "multi-pkg", "h2")
+
+	if v1.ID == v2.ID {
+		t.Fatalf("the second version reused record %d instead of taking its own", v1.ID)
+	}
+
+	for _, hash := range []string{"h1", "h2"} {
+		found, err := env.Database.GetPackageByHash("multi-pkg", hash)
+		if err != nil {
+			t.Fatalf("get multi-pkg by hash %s: %v", hash, err)
+		}
+		if found == nil {
+			t.Errorf("version %s is no longer in the store", hash)
+		}
+	}
+
+	current, err := env.Database.GetPackageByName("multi-pkg")
+	if err != nil || current == nil {
+		t.Fatalf("GetPackageByName = %v, %v", current, err)
+	}
+	if current.ContentHash != "h2" {
+		t.Errorf("GetPackageByName resolves to %s, want the version published last", current.ContentHash)
+	}
+	assertTags(t, env.Database, "multi-pkg", map[string]string{db.DefaultTag: "h2"})
+}
+
+// TestDatabaseRepublishingTheSameContentUpdatesInPlace pins that a version is
+// addressed by its content hash and not by the order it was published in.
+// Publishing the same content twice describes one version, so it must not leave
+// two records naming one store entry — gc removes an entry by path, and the
+// second record would then name a directory that is no longer there.
+func TestDatabaseRepublishingTheSameContentUpdatesInPlace(t *testing.T) {
+	env := setupTest(t)
+
+	first := insertTagPkg(t, env.Database, "same-pkg", "h1")
+	second := insertTagPkg(t, env.Database, "same-pkg", "h1")
+
+	if first.ID != second.ID {
+		t.Errorf("republishing the same content took a new record (%d, then %d)", first.ID, second.ID)
+	}
+
+	packages, err := env.Database.ListPackages()
+	if err != nil {
+		t.Fatalf("list packages: %v", err)
+	}
+	count := 0
+	for _, pkg := range packages {
+		if pkg.Name == "same-pkg" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("the store holds %d records for same-pkg, want 1", count)
+	}
+}
+
+// TestDatabaseInsertUnderAnotherTagKeepsTheDefaultVersion is the retention the
+// whole feature rests on: publishing a beta must leave the version consumers are
+// pinned to exactly where it was.
+func TestDatabaseInsertUnderAnotherTagKeepsTheDefaultVersion(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "beta-pkg", "h1")
+
+	beta := &db.Package{
+		Name:        "beta-pkg",
+		Version:     "2.0.0-beta.1",
+		ContentHash: "h2",
+		StorePath:   "/store/beta-pkg/h2",
+	}
+	if err := env.Database.InsertPackageTagged(beta, "beta"); err != nil {
+		t.Fatalf("publish under the beta tag: %v", err)
+	}
+
+	current, err := env.Database.GetPackageByName("beta-pkg")
+	if err != nil || current == nil {
+		t.Fatalf("GetPackageByName = %v, %v", current, err)
+	}
+	if current.ContentHash != "h1" {
+		t.Errorf("publishing a beta moved the default version to %s", current.ContentHash)
+	}
+	assertTags(t, env.Database, "beta-pkg", map[string]string{db.DefaultTag: "h1", "beta": "h2"})
+
+	if found, _ := env.Database.GetPackageByHash("beta-pkg", "h2"); found == nil {
+		t.Error("the beta version was not recorded")
+	}
+}
+
+// TestDatabaseFirstVersionUnderAnotherTagIsAlsoTheDefault pins that a package's
+// first version is reachable by name whatever tag it was published under. Every
+// command but a tag-aware add resolves through the name index, so a package
+// published only as a beta would otherwise be in the store, on disk and
+// invisible to push, remove, restore and status alike.
+func TestDatabaseFirstVersionUnderAnotherTagIsAlsoTheDefault(t *testing.T) {
+	env := setupTest(t)
+
+	first := &db.Package{Name: "only-beta-pkg", Version: "0.1.0-beta.1", ContentHash: "h1"}
+	if err := env.Database.InsertPackageTagged(first, "beta"); err != nil {
+		t.Fatalf("publish under the beta tag: %v", err)
+	}
+
+	current, err := env.Database.GetPackageByName("only-beta-pkg")
+	if err != nil || current == nil {
+		t.Fatalf("GetPackageByName = %v, %v; want the only version there is", current, err)
+	}
+	assertTags(t, env.Database, "only-beta-pkg", map[string]string{db.DefaultTag: "h1", "beta": "h1"})
+}
+
+// TestDatabaseLinksFollowTheDefaultTag pins that a project keeps consuming the
+// package it linked when a new version is published. Links are how push,
+// publish --push, remove and status find a package's consumers, and all of them
+// reach a package by name — so a link left behind on a superseded record would
+// leave those projects unreachable.
+func TestDatabaseLinksFollowTheDefaultTag(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "follow-pkg", "h1")
+	proj := insertProject(t, env.Database, filepath.FromSlash("/projects/follower"))
+	if err := env.Database.InsertLink(&db.Link{PackageID: v1.ID, ProjectID: proj.ID, LinkType: "reflink"}); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+
+	v2 := insertTagPkg(t, env.Database, "follow-pkg", "h2")
+
+	if got := linkedProjects(t, env.Database, v1.ID); len(got) != 0 {
+		t.Errorf("the superseded version still has %v linked", got)
+	}
+	if got := linkedProjects(t, env.Database, v2.ID); len(got) != 1 || got[0] != proj.Path {
+		t.Errorf("the new version has %v linked, want just %s", got, proj.Path)
+	}
+	if links, _ := env.Database.GetLinksForProject(proj.ID); len(links) != 1 {
+		t.Errorf("the project holds %d links, want 1", len(links))
+	}
+}
+
+// TestDatabaseLinksForAnotherTagStayWithTheirVersion pins that only the projects
+// following the tag that moved are carried across. A project that asked for beta
+// must not be dragged onto latest because latest happened to point at the same
+// version at the time.
+func TestDatabaseLinksForAnotherTagStayWithTheirVersion(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "channel-pkg", "h1")
+	if err := env.Database.SetTag("channel-pkg", "beta", "h1"); err != nil {
+		t.Fatalf("set tag beta: %v", err)
+	}
+
+	stable := insertProject(t, env.Database, filepath.FromSlash("/projects/stable"))
+	tester := insertProject(t, env.Database, filepath.FromSlash("/projects/tester"))
+	if err := env.Database.InsertLink(&db.Link{PackageID: v1.ID, ProjectID: stable.ID, LinkType: "reflink"}); err != nil {
+		t.Fatalf("insert the stable link: %v", err)
+	}
+	if err := env.Database.InsertLink(&db.Link{PackageID: v1.ID, ProjectID: tester.ID, LinkType: "reflink", Tag: "beta"}); err != nil {
+		t.Fatalf("insert the beta link: %v", err)
+	}
+
+	v2 := insertTagPkg(t, env.Database, "channel-pkg", "h2")
+
+	if got := linkedProjects(t, env.Database, v2.ID); len(got) != 1 || got[0] != stable.Path {
+		t.Errorf("the new version has %v linked, want just %s", got, stable.Path)
+	}
+	if got := linkedProjects(t, env.Database, v1.ID); len(got) != 1 || got[0] != tester.Path {
+		t.Errorf("the beta version has %v linked, want just %s", got, tester.Path)
+	}
+}
+
+// TestDatabaseMovingATagMergesADuplicateLink pins that carrying links across
+// does not leave a project holding two links to one package. Everything that
+// reads links treats one row per project as given, and a second row would make
+// remove and gc report a link that nothing can clear.
+func TestDatabaseMovingATagMergesADuplicateLink(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "merge-pkg", "h1")
+	v2 := insertTagPkg(t, env.Database, "merge-pkg", "h2")
+	proj := insertProject(t, env.Database, filepath.FromSlash("/projects/merger"))
+
+	for _, id := range []int64{v1.ID, v2.ID} {
+		if err := env.Database.InsertLink(&db.Link{PackageID: id, ProjectID: proj.ID, LinkType: "reflink"}); err != nil {
+			t.Fatalf("insert link to record %d: %v", id, err)
+		}
+	}
+
+	// Move the default tag back to the first version, carrying its links.
+	if err := env.Database.SetTag("merge-pkg", db.DefaultTag, "h1"); err != nil {
+		t.Fatalf("move the default tag: %v", err)
+	}
+
+	links, err := env.Database.GetLinksForProject(proj.ID)
+	if err != nil {
+		t.Fatalf("links for the project: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("the project holds %d links to merge-pkg, want 1", len(links))
+	}
+	if links[0].PackageID != v1.ID {
+		t.Errorf("the surviving link names record %d, want the tagged version %d", links[0].PackageID, v1.ID)
+	}
+	if got := linkedProjects(t, env.Database, v2.ID); len(got) != 0 {
+		t.Errorf("the untagged version still has %v linked", got)
+	}
+}
+
+// TestDatabaseDeletingASupersededVersionKeepsTheNameLookup pins that collecting
+// an old version leaves the current one reachable. gc deletes versions one by
+// one, and a delete that cleared the name index would unpublish a package whose
+// files are still in the store.
+func TestDatabaseDeletingASupersededVersionKeepsTheNameLookup(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "superseded-pkg", "h1")
+	insertTagPkg(t, env.Database, "superseded-pkg", "h2")
+
+	if err := env.Database.DeletePackage(v1.ID); err != nil {
+		t.Fatalf("delete the superseded version: %v", err)
+	}
+
+	current, err := env.Database.GetPackageByName("superseded-pkg")
+	if err != nil || current == nil {
+		t.Fatalf("GetPackageByName = %v, %v; want the current version", current, err)
+	}
+	if current.ContentHash != "h2" {
+		t.Errorf("GetPackageByName resolves to %s, want h2", current.ContentHash)
+	}
+	assertTags(t, env.Database, "superseded-pkg", map[string]string{db.DefaultTag: "h2"})
+}
+
+// TestDatabaseDeletingAVersionDropsOnlyItsOwnTags pins that removing a version
+// takes the tags naming it and no others. A tag left pointing at a deleted
+// version resolves to nothing, and would go on protecting nothing from gc.
+func TestDatabaseDeletingAVersionDropsOnlyItsOwnTags(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "tagdel-pkg", "h1")
+	if err := env.Database.SetTag("tagdel-pkg", "beta", "h1"); err != nil {
+		t.Fatalf("set tag beta: %v", err)
+	}
+	v2 := insertTagPkg(t, env.Database, "tagdel-pkg", "h2")
+
+	if err := env.Database.DeletePackage(v2.ID); err != nil {
+		t.Fatalf("delete the current version: %v", err)
+	}
+
+	assertTags(t, env.Database, "tagdel-pkg", map[string]string{"beta": "h1"})
+	if pkg, _ := env.Database.GetPackageByName("tagdel-pkg"); pkg != nil {
+		t.Errorf("the name index still resolves to %s after its version was deleted", pkg.ContentHash)
+	}
+
+	if err := env.Database.DeletePackage(v1.ID); err != nil {
+		t.Fatalf("delete the beta version: %v", err)
+	}
+	assertTags(t, env.Database, "tagdel-pkg", map[string]string{})
 }
 
 // --- Tag operations ----------------------------------------------------------
