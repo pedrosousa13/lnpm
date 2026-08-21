@@ -139,8 +139,8 @@ type checkManifest struct {
 // unknown, and unknown is not the same as "no workspace here".
 //
 // Both errors add the location and leave the wrapped error to say what is
-// wrong with it, because workspace.Detect names the offending pattern and
-// ListPackages names the offending manifest.
+// wrong with it, because workspace.Detect names the offending pattern or the
+// config file it could not read, and ListPackages names the offending manifest.
 func checkManifests(cwd string, cwdPkgJSON map[string]interface{}) ([]checkManifest, bool, error) {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {

@@ -154,13 +154,47 @@ func TestPublishAllUnparseableMemberFailsAndPublishesNothing(t *testing.T) {
 	env.AssertPackageInDatabase("@npm-test/package-b", false)
 }
 
+// A workspace config in the directory `--all` was run from that will not parse
+// has to reach the user by name. "no workspace found. --all requires a monorepo
+// with workspaces configured" points at the command line when the problem is a
+// typo in the file the user is looking straight at.
+func TestPublishAllUnparseableWorkspaceConfigNamesTheFile(t *testing.T) {
+	env := setupTest(t)
+
+	wsDir := env.CopyFixture("npm-workspace")
+	env.writeFile(filepath.Join(wsDir, "package.json"), `{"name":"npm-workspace","workspaces":["packages/*",}`)
+
+	env.chdir(wsDir)
+	err := cli.RunPublish(false, true, false, true)
+	if err == nil {
+		t.Fatal("Expected publish --all to fail for the unparseable workspace config, got nil")
+	}
+	// The workspace-relative tail, not the absolute path: RunPublish builds its
+	// paths from os.Getwd, which resolves symlinks and 8.3 short names.
+	wantTail := filepath.Join("npm-workspace", "package.json")
+	if !strings.Contains(err.Error(), wantTail) {
+		t.Errorf("Expected the error to name %s, got: %v", wantTail, err)
+	}
+	if strings.Contains(err.Error(), "no workspace found") {
+		t.Errorf("Expected the error to report the broken config, not a missing workspace, got: %v", err)
+	}
+
+	env.AssertPackageInDatabase("@npm-test/package-a", false)
+	env.AssertPackageInDatabase("@npm-test/package-b", false)
+}
+
+// An empty directory of this test's own, not /tmp as this used to use: a
+// failure in the starting directory now aborts Detect, so pointing it at a
+// shared world-writable directory would make this test depend on whatever else
+// happens to have left a package.json or pnpm-workspace.yaml there.
 func TestNoWorkspace(t *testing.T) {
-	ws, err := workspace.Detect("/tmp")
+	dir := t.TempDir()
+	ws, err := workspace.Detect(dir)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	if ws != nil {
-		t.Error("Expected nil workspace for /tmp")
+		t.Errorf("Expected nil workspace for %s", dir)
 	}
 }
 
