@@ -441,3 +441,123 @@ func TestTagCarriesConsumersOfThatChannelOnly(t *testing.T) {
 		t.Errorf("The links follow %v, want one on beta and one on the default tag", tagsSeen)
 	}
 }
+
+// TestListStoreShowsWhichTagsNameEachVersion covers the fifth acceptance
+// criterion. With more than one version of a name live at once, the store
+// listing is the only place a user can see which of them a channel points at.
+func TestListStoreShowsWhichTagsNameEachVersion(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("listed-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "listed-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	out := captureStdout(t, func() {
+		if err := cli.RunList(true, "", false); err != nil {
+			t.Errorf("RunList(--store) error = %v", err)
+		}
+	})
+
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(line, "listed-lib@1.0.0"):
+			if !strings.Contains(line, db.DefaultTag) {
+				t.Errorf("The 1.0.0 line does not name the %s tag: %q", db.DefaultTag, line)
+			}
+			if strings.Contains(line, "beta") {
+				t.Errorf("The 1.0.0 line claims the beta tag: %q", line)
+			}
+		case strings.Contains(line, "listed-lib@2.0.0-beta.1"):
+			if !strings.Contains(line, "beta") {
+				t.Errorf("The 2.0.0-beta.1 line does not name the beta tag: %q", line)
+			}
+			if strings.Contains(line, db.DefaultTag) {
+				t.Errorf("The 2.0.0-beta.1 line claims the %s tag: %q", db.DefaultTag, line)
+			}
+		}
+	}
+
+	if !strings.Contains(out, "listed-lib@1.0.0") || !strings.Contains(out, "listed-lib@2.0.0-beta.1") {
+		t.Errorf("The store listing is missing one of the two live versions, output was:\n%s", out)
+	}
+}
+
+// TestListStoreLeavesAnUntaggedVersionUnmarked pins that the tag column says
+// nothing when there is nothing to say. A superseded version no tag names is
+// exactly what gc will collect, and marking it would be a claim about a channel
+// that does not exist.
+func TestListStoreLeavesAnUntaggedVersionUnmarked(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("superseded-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'old';",
+	})
+	env.republish(pkgDir, "superseded-lib", "2.0.0", "module.exports = 'new';")
+
+	out := captureStdout(t, func() {
+		if err := cli.RunList(true, "", false); err != nil {
+			t.Errorf("RunList(--store) error = %v", err)
+		}
+	})
+
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "superseded-lib@1.0.0") && strings.Contains(line, db.DefaultTag) {
+			t.Errorf("The superseded version is shown as tagged: %q", line)
+		}
+	}
+	assertNoRawGlyphs(t, out)
+}
+
+// TestDoctorDoesNotCallATagPinnedBuildOrphaned pins a report that only became
+// reachable once `publish --tag` existed. doctor counts a package with no links
+// as an orphan and advises running gc - but gc keeps anything a non-default tag
+// names, so on a tagged build the advice describes a run that would find
+// nothing. Warning about a build lnpm is deliberately keeping is worse than
+// saying nothing: it sends a user to a command that cannot act on it.
+func TestDoctorDoesNotCallATagPinnedBuildOrphaned(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("doctor-tagged-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "doctor-tagged-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	// Link the stable build so the only unlinked version left is the tagged one.
+	projectDir := env.newProject("doctor-tagged-project")
+	env.addPkg(projectDir, "doctor-tagged-lib", false, false)
+
+	out := captureStdout(t, func() {
+		if err := cli.RunDoctor(); err != nil {
+			t.Errorf("RunDoctor() error = %v", err)
+		}
+	})
+
+	if strings.Contains(out, "orphaned package(s)") {
+		t.Errorf("doctor called the tag-pinned build an orphan, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "All checks passed!") {
+		t.Errorf("doctor did not pass on a store whose only unlinked build is tagged, output was:\n%s", out)
+	}
+}
+
+// TestDoctorStillReportsAnUntaggedOrphan is the other half: dropping tag-pinned
+// builds from the count must not drop the ones gc really would collect.
+func TestDoctorStillReportsAnUntaggedOrphan(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("doctor-super-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'old';",
+	})
+	env.republish(pkgDir, "doctor-super-lib", "2.0.0", "module.exports = 'new';")
+
+	out := captureStdout(t, func() {
+		if err := cli.RunDoctor(); err != nil {
+			t.Errorf("RunDoctor() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "orphaned package(s)") {
+		t.Errorf("doctor did not report the untagged, unlinked versions, output was:\n%s", out)
+	}
+}

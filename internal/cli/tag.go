@@ -2,9 +2,33 @@ package cli
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
 )
+
+// tagsNaming renders every tag in tags that points at hash, as a trailing
+// " [beta, latest]", and nothing when none does.
+//
+// Sorted, because bolt hands back a map and an unordered listing would reshuffle
+// itself between runs of the same command over an unchanged store. The default
+// tag is included here, unlike in the running commentary the other helpers
+// produce: this listing exists to say which version each channel names, and
+// latest is the channel most readers came to find.
+func tagsNaming(tags map[string]string, hash string) string {
+	var naming []string
+	for tag, tagged := range tags {
+		if tagged == hash {
+			naming = append(naming, tag)
+		}
+	}
+	if len(naming) == 0 {
+		return ""
+	}
+	sort.Strings(naming)
+	return " [" + strings.Join(naming, ", ") + "]"
+}
 
 // RunTag manages a dist-tag on a package already in the store, without
 // republishing it.

@@ -124,9 +124,27 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 			return nil
 		}
 
+		// Tags of each name, read once per name however many of its versions the
+		// store holds. With more than one version live at a time this listing is
+		// the only place a user can see which of them a channel points at, so a
+		// name whose tags cannot be read fails the command rather than being
+		// printed as if it had none.
+		tagsByName := make(map[string]map[string]string)
+		for _, pkg := range packages {
+			if _, ok := tagsByName[pkg.Name]; ok {
+				continue
+			}
+			tags, err := database.TagsForPackage(pkg.Name)
+			if err != nil {
+				return fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
+			}
+			tagsByName[pkg.Name] = tags
+		}
+
 		fmt.Println("Packages in store:")
 		for _, pkg := range packages {
-			fmt.Printf("  %s@%s (%s)\n", pkg.Name, pkg.Version, shortHash(pkg.ContentHash))
+			fmt.Printf("  %s@%s (%s)%s\n", pkg.Name, pkg.Version, shortHash(pkg.ContentHash),
+				tagsNaming(tagsByName[pkg.Name], pkg.ContentHash))
 		}
 		return nil
 	}
