@@ -25,11 +25,11 @@ import (
 // `lnpm retreat` leaves behind, which records an absolute source path per
 // linked package.
 //
-// Inside a workspace the reference scan covers every member's manifest as well
-// as the one here, because a root manifest carries no dependencies worth
-// linking and a guard that passes from the repo root while a member still holds
-// a file:.lnpm/ reference is worse than no guard at all. The snapshot half stays
-// on the current directory: the snapshot is written where retreat ran.
+// Inside a workspace the reference scan covers the workspace root's manifest
+// and every member's as well as the one here, because a guard that passes from
+// the repo root while a member still holds a file:.lnpm/ reference is worse than
+// no guard at all. The snapshot half stays on the current directory: the
+// snapshot is written where retreat ran.
 func RunCheck() error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -47,17 +47,20 @@ func RunCheck() error {
 		return fmt.Errorf("failed to parse package.json: %w", err)
 	}
 
-	manifests, err := checkManifests(cwd, pkgJSON)
+	manifests, inWorkspace, err := checkManifests(cwd, pkgJSON)
 	if err != nil {
 		return err
 	}
 
 	// Collect "<field>: <pkg> => <ref>" for every lnpm reference found across
-	// the standard dependency maps of every manifest in scope, and note which
-	// packages they came from so the report can say so.
+	// the standard dependency maps of every manifest in scope, counting the
+	// manifests that carry one. The count is of manifests rather than of the
+	// labels on them: the workspace root is one of the manifests and is not a
+	// workspace package, and two members can carry the same name.
 	var found []string
-	guilty := make(map[string]bool)
+	dirty := 0
 	for _, manifest := range manifests {
+		before := len(found)
 		for _, field := range []string{"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"} {
 			deps, ok := manifest.pkgJSON[field].(map[string]interface{})
 			if !ok {
@@ -65,15 +68,18 @@ func RunCheck() error {
 			}
 			for name, v := range deps {
 				ref, ok := v.(string)
-				if ok && isLnpmReference(ref) {
-					if manifest.label == "" {
-						found = append(found, fmt.Sprintf("  %s.%s -> %s", field, name, ref))
-						continue
-					}
-					found = append(found, fmt.Sprintf("  %s: %s.%s -> %s", manifest.label, field, name, ref))
-					guilty[manifest.label] = true
+				if !ok || !isLnpmReference(ref) {
+					continue
 				}
+				if inWorkspace {
+					found = append(found, fmt.Sprintf("  %s: %s.%s -> %s", manifest.label, field, name, ref))
+					continue
+				}
+				found = append(found, fmt.Sprintf("  %s.%s -> %s", field, name, ref))
 			}
+		}
+		if len(found) > before {
+			dirty++
 		}
 	}
 
@@ -81,8 +87,8 @@ func RunCheck() error {
 
 	if len(found) > 0 {
 		sort.Strings(found)
-		if len(guilty) > 0 {
-			fmt.Printf("%s Found %d lnpm reference(s) in %d workspace package(s):\n", iconFail(), len(found), len(guilty))
+		if inWorkspace {
+			fmt.Printf("%s Found %d lnpm reference(s) in %d package.json file(s):\n", iconFail(), len(found), dirty)
 		} else {
 			fmt.Printf("%s Found %d lnpm reference(s) in package.json:\n", iconFail(), len(found))
 		}
@@ -90,8 +96,8 @@ func RunCheck() error {
 			fmt.Println(line)
 		}
 		fmt.Printf("\n  %s Run 'lnpm retreat --force' to restore original dependencies before publishing\n", iconTip())
-		if len(guilty) > 0 {
-			problems = append(problems, fmt.Sprintf("%d lnpm reference(s) found in %d workspace package(s)", len(found), len(guilty)))
+		if inWorkspace {
+			problems = append(problems, fmt.Sprintf("%d lnpm reference(s) found in %d package.json file(s)", len(found), dirty))
 		} else {
 			problems = append(problems, fmt.Sprintf("%d lnpm reference(s) found in package.json", len(found)))
 		}
@@ -113,9 +119,8 @@ func RunCheck() error {
 }
 
 // checkManifest is one package.json the reference scan applies to: the parsed
-// document, and a label naming the package it came from. An empty label means
-// the scan is looking at a lone project rather than a workspace, and the report
-// keeps the wording it has always had in that case.
+// document, and a label naming the package it came from. The label is set only
+// inside a workspace, where the report has more than one manifest to tell apart.
 type checkManifest struct {
 	label   string
 	pkgJSON map[string]interface{}
@@ -123,24 +128,31 @@ type checkManifest struct {
 
 // checkManifests returns every manifest the reference scan covers: the one in
 // the current directory, plus - when that directory sits in a workspace - the
-// workspace root's and every member's.
+// workspace root's and every member's. The second return value says which of
+// those two it was, so the report does not have to infer it from the labels.
 //
 // A workspace whose member list will not resolve is an error rather than a
 // reason to fall back to the current directory alone. Checking only the root
 // and reporting success is precisely the failure the workspace-wide scan exists
-// to remove, so an unresolvable workspace fails loudly instead.
-func checkManifests(cwd string, cwdPkgJSON map[string]interface{}) ([]checkManifest, error) {
+// to remove, so an unresolvable workspace fails loudly instead. That covers a
+// directory below a broken workspace too: a malformed pattern makes membership
+// unknown, and unknown is not the same as "no workspace here".
+//
+// Both errors add the location and leave the wrapped error to say what is
+// wrong with it, because workspace.Detect names the offending pattern and
+// ListPackages names the offending manifest.
+func checkManifests(cwd string, cwdPkgJSON map[string]interface{}) ([]checkManifest, bool, error) {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to detect workspace: %w", err)
+		return nil, false, fmt.Errorf("cannot resolve the workspace for %s: %w", cwd, err)
 	}
 	if ws == nil {
-		return []checkManifest{{pkgJSON: cwdPkgJSON}}, nil
+		return []checkManifest{{pkgJSON: cwdPkgJSON}}, false, nil
 	}
 
 	packages, err := ws.ListPackages()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list workspace packages: %w", err)
+		return nil, false, fmt.Errorf("cannot resolve the workspace at %s: %w", ws.Root, err)
 	}
 
 	// The current directory's manifest is already read and parsed; the rest are
@@ -162,12 +174,12 @@ func checkManifests(cwd string, cwdPkgJSON map[string]interface{}) ([]checkManif
 		manifestPath := filepath.Join(pkg.Path, "package.json")
 		data, err := os.ReadFile(manifestPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read workspace package %s: %w", manifestPath, err)
+			return nil, false, fmt.Errorf("failed to read %s: %w", manifestPath, err)
 		}
 
 		var pkgJSON map[string]interface{}
 		if err := json.Unmarshal(data, &pkgJSON); err != nil {
-			return nil, fmt.Errorf("failed to parse workspace package %s: %w", manifestPath, err)
+			return nil, false, fmt.Errorf("failed to parse %s: %w", manifestPath, err)
 		}
 
 		name := pkg.Name
@@ -180,14 +192,13 @@ func checkManifests(cwd string, cwdPkgJSON map[string]interface{}) ([]checkManif
 		})
 	}
 
-	return manifests, nil
+	return manifests, true, nil
 }
 
 // manifestLabel names a manifest in check's report. The package name is what a
 // reader can act on, and a manifest without one - a private workspace root
 // often has neither name nor version - falls back to its path relative to the
-// workspace root. The label is never empty, because an empty one is what tells
-// the report it is not looking at a workspace at all.
+// workspace root.
 func manifestLabel(name, root, path string) string {
 	if name != "" {
 		return name
@@ -210,9 +221,13 @@ func nameField(pkgJSON map[string]interface{}) string {
 // spellings of one directory compare equal. The working directory and a
 // workspace member path reach this function by different routes, and on Windows
 // a cwd can come back as an 8.3 short name while the member path is spelled
-// long; EvalSymlinks reconciles both, and also the case of each component. A
-// path it cannot resolve falls back to Clean, which at worst scans a manifest
-// twice rather than reporting a false difference.
+// long; EvalSymlinks reconciles both, and also the case of each component.
+//
+// Every path reaching here exists - the current directory was just read, and
+// expandGlobs kept only directories holding a package.json - so EvalSymlinks
+// resolves it, macOS /var to /private/var included, and the Clean fallback is
+// for a directory removed underneath us. A missed match there costs a manifest
+// scanned twice, never a wrong verdict.
 func canonicalPath(path string) string {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return resolved

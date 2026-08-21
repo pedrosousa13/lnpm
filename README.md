@@ -280,10 +280,12 @@ would carry into the tarball, and exits non-zero if there is any — drop it in 
 `lnpm.lock.retreat` snapshot described below, when nothing in the project would
 keep that snapshot out of the tarball.
 
-In a monorepo the reference scan covers every workspace package, not only the
-manifest where you ran it, and each finding names the package it came from. A
-workspace whose member list will not resolve fails the check rather than passing
-on the root manifest alone.
+In a monorepo the reference scan covers the workspace root's `package.json` and
+every workspace package's, not only the manifest where you ran it, and each
+finding names the package it came from. A workspace whose member list will not
+resolve — a malformed pattern in the `workspaces` field, a member manifest that
+will not read or parse, a member with no `name` — fails the check rather than
+passing on the manifest at hand alone.
 
 ### After Publishing to npm
 

@@ -203,19 +203,19 @@ func TestCheckPassesWhenTheSnapshotCannotBePublished(t *testing.T) {
 // package.json per member, and returns the root directory. rootPkgJSON is the
 // root manifest verbatim, so a test can give it a broken "workspaces" field;
 // members maps a root-relative directory to the manifest to write there.
-func monorepo(env *TestEnvironment, rootPkgJSON map[string]interface{}, members map[string]map[string]interface{}) string {
-	env.t.Helper()
+func monorepo(t *testing.T, env *TestEnvironment, rootPkgJSON map[string]interface{}, members map[string]map[string]interface{}) string {
+	t.Helper()
 
 	root := filepath.Join(env.TempDir, "monorepo")
 	if err := os.MkdirAll(root, 0755); err != nil {
-		env.t.Fatalf("Failed to create workspace root: %v", err)
+		t.Fatalf("Failed to create workspace root: %v", err)
 	}
 	env.writePackageJSON(root, rootPkgJSON)
 
 	for rel, manifest := range members {
 		dir := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			env.t.Fatalf("Failed to create workspace member %s: %v", rel, err)
+			t.Fatalf("Failed to create workspace member %s: %v", rel, err)
 		}
 		env.writePackageJSON(dir, manifest)
 	}
@@ -229,7 +229,7 @@ func monorepo(env *TestEnvironment, rootPkgJSON map[string]interface{}, members 
 func TestCheckFindsAWorkspaceMemberReference(t *testing.T) {
 	env := setupTest(t)
 
-	root := monorepo(env, map[string]interface{}{
+	root := monorepo(t, env, map[string]interface{}{
 		"name":       "monorepo-root",
 		"version":    "1.0.0",
 		"private":    true,
@@ -275,7 +275,7 @@ func TestCheckFindsAWorkspaceMemberReference(t *testing.T) {
 func TestCheckFindsAWorkspaceMemberLinkReference(t *testing.T) {
 	env := setupTest(t)
 
-	root := monorepo(env, map[string]interface{}{
+	root := monorepo(t, env, map[string]interface{}{
 		"name":       "monorepo-root",
 		"version":    "1.0.0",
 		"workspaces": []interface{}{"packages/*"},
@@ -305,7 +305,7 @@ func TestCheckFindsAWorkspaceMemberLinkReference(t *testing.T) {
 func TestCheckPassesOnACleanWorkspace(t *testing.T) {
 	env := setupTest(t)
 
-	root := monorepo(env, map[string]interface{}{
+	root := monorepo(t, env, map[string]interface{}{
 		"name":       "monorepo-root",
 		"version":    "1.0.0",
 		"workspaces": []interface{}{"packages/*"},
@@ -336,14 +336,14 @@ func TestCheckPassesOnACleanWorkspace(t *testing.T) {
 func TestCheckWorkspaceReportsAnUnresolvableMemberList(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(env *TestEnvironment) string
+		setup func(t *testing.T, env *TestEnvironment) string
 		want  string
 	}{
 		{
 			// ListPackages fails on a member whose manifest will not parse.
 			name: "a member manifest that will not parse",
-			setup: func(env *TestEnvironment) string {
-				root := monorepo(env, map[string]interface{}{
+			setup: func(t *testing.T, env *TestEnvironment) string {
+				root := monorepo(t, env, map[string]interface{}{
 					"name":       "monorepo-root",
 					"version":    "1.0.0",
 					"workspaces": []interface{}{"packages/*"},
@@ -358,8 +358,8 @@ func TestCheckWorkspaceReportsAnUnresolvableMemberList(t *testing.T) {
 		{
 			// Detect itself fails on a malformed workspace glob.
 			name: "a workspace pattern that will not parse",
-			setup: func(env *TestEnvironment) string {
-				return monorepo(env, map[string]interface{}{
+			setup: func(t *testing.T, env *TestEnvironment) string {
+				return monorepo(t, env, map[string]interface{}{
 					"name":       "monorepo-root",
 					"version":    "1.0.0",
 					"workspaces": []interface{}{"packages/["},
@@ -367,12 +367,31 @@ func TestCheckWorkspaceReportsAnUnresolvableMemberList(t *testing.T) {
 			},
 			want: "packages/[",
 		},
+		{
+			// ListPackages fails a member with no name, so check fails with it.
+			// A nameless member is broken for `lnpm publish --all` and for a
+			// single publish that resolves workspace: dependencies, and check
+			// has no way to tell it apart from a member whose manifest it
+			// cannot trust. The error has to name the manifest to be
+			// actionable, since the whole point is that it has no name.
+			name: "a member with no name",
+			setup: func(t *testing.T, env *TestEnvironment) string {
+				return monorepo(t, env, map[string]interface{}{
+					"name":       "monorepo-root",
+					"version":    "1.0.0",
+					"workspaces": []interface{}{"packages/*"},
+				}, map[string]map[string]interface{}{
+					"packages/nameless": {"version": "1.0.0"},
+				})
+			},
+			want: filepath.Join("packages", "nameless", "package.json"),
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupTest(t)
-			root := tc.setup(env)
+			root := tc.setup(t, env)
 			env.chdir(root)
 
 			var err error
@@ -387,6 +406,85 @@ func TestCheckWorkspaceReportsAnUnresolvableMemberList(t *testing.T) {
 				t.Errorf("Expected no success report when the workspace cannot be resolved, got:\n%s", out)
 			}
 		})
+	}
+}
+
+// TestCheckCountsManifestsNotWorkspacePackages pins the wording of a workspace
+// report whose only findings are in the root manifest. The root is one of the
+// manifests scanned and is not a workspace package, so a count of "workspace
+// package(s)" would be wrong; the count is of package.json files. The root here
+// is private and nameless, which also pins the path-relative label fallback.
+func TestCheckCountsManifestsNotWorkspacePackages(t *testing.T) {
+	env := setupTest(t)
+
+	root := monorepo(t, env, map[string]interface{}{
+		"private":    true,
+		"workspaces": []interface{}{"packages/*"},
+		"devDependencies": map[string]interface{}{
+			"my-tool": "file:.lnpm/my-tool",
+		},
+	}, map[string]map[string]interface{}{
+		"packages/app": {"name": "@mono/app", "version": "1.0.0"},
+	})
+	env.chdir(root)
+
+	var err error
+	out := captureStdout(t, func() { err = cli.RunCheck() })
+	if err == nil {
+		t.Fatal("Expected check to fail on the root manifest's lnpm reference, got nil")
+	}
+	if !strings.Contains(out, "in 1 package.json file(s)") {
+		t.Errorf("Expected the report to count package.json files, got:\n%s", out)
+	}
+	if strings.Contains(out, "workspace package(s)") {
+		t.Errorf("Expected the root not to be counted as a workspace package, got:\n%s", out)
+	}
+	if !strings.Contains(out, "workspace root: devDependencies.my-tool") {
+		t.Errorf("Expected the nameless root to be labelled by position, got:\n%s", out)
+	}
+}
+
+// TestCheckFailsBelowAWorkspaceItCannotResolve pins a deliberate decision. A
+// project with no workspace of its own, nested under an ancestor whose
+// workspaces field carries a malformed pattern, fails the check instead of
+// printing the ordinary report.
+//
+// The alternative was to treat a broken ancestor config as "no workspace here"
+// and check the project alone. That is the silent fallback AC 5 exists to
+// remove, one level up: whether this project is a member of that workspace is
+// exactly what the unparseable pattern makes unknowable, and answering
+// "not a member" is a guess. Every other caller of workspace.Detect already
+// aborts on a malformed pattern - docs/adr/0001 requires it - so check erring
+// here keeps it consistent with publish rather than singular. The error names
+// the pattern, so the fix is one edit away.
+func TestCheckFailsBelowAWorkspaceItCannotResolve(t *testing.T) {
+	env := setupTest(t)
+
+	root := monorepo(t, env, map[string]interface{}{
+		"name":       "monorepo-root",
+		"version":    "1.0.0",
+		"workspaces": []interface{}{"packages/["},
+	}, map[string]map[string]interface{}{
+		"nested/project": {
+			"name":    "nested-project",
+			"version": "1.0.0",
+			"dependencies": map[string]interface{}{
+				"left-pad": "^1.0.0",
+			},
+		},
+	})
+	env.chdir(filepath.Join(root, "nested", "project"))
+
+	var err error
+	out := captureStdout(t, func() { err = cli.RunCheck() })
+	if err == nil {
+		t.Fatalf("Expected check to fail below a workspace it cannot resolve, got nil (stdout:\n%s)", out)
+	}
+	if !strings.Contains(err.Error(), "packages/[") {
+		t.Errorf("Expected the error to name the malformed pattern, got: %v", err)
+	}
+	if strings.Contains(out, "Nothing lnpm left behind") {
+		t.Errorf("Expected no success report, got:\n%s", out)
 	}
 }
 
