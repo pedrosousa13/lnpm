@@ -370,6 +370,11 @@ package.json, left behind by 'lnpm add'; and lnpm.lock.retreat, the snapshot
 'lnpm retreat' leaves for 'lnpm restore', when neither the package.json "files"
 field nor .npmignore nor .gitignore would keep it out.
 
+In a workspace, the reference scan covers the workspace root's package.json and
+every member's as well as this one, and names the package each finding came
+from. A workspace whose member list will not resolve fails the check rather
+than passing on the manifest here alone.
+
 Exits non-zero if anything is found, so it can be used as a pre-publish guard
 in scripts or CI before running 'npm publish'.
 
