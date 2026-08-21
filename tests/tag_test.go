@@ -371,16 +371,16 @@ func TestTagDeleteRemovesTheTag(t *testing.T) {
 func TestTagDeleteRefusesTheDefaultTag(t *testing.T) {
 	env := setupTest(t)
 
-	env.simplePkg("keep-latest-lib")
+	env.simplePkg("refuse-delete-lib")
 
-	err := cli.RunTag("keep-latest-lib", db.DefaultTag, true)
+	err := cli.RunTag("refuse-delete-lib", db.DefaultTag, true)
 	if err == nil {
 		t.Fatal("Deleting the default tag succeeded, want a refusal")
 	}
 	if !strings.Contains(err.Error(), db.DefaultTag) {
 		t.Errorf("The refusal is %v, want it to name the %s tag", err, db.DefaultTag)
 	}
-	env.AssertPackageInDatabase("keep-latest-lib", true)
+	env.AssertPackageInDatabase("refuse-delete-lib", true)
 }
 
 // TestTagOnAnUnknownPackageFails pins that tagging something the store does not
@@ -458,17 +458,21 @@ func TestListStoreShowsWhichTagsNameEachVersion(t *testing.T) {
 		}
 	})
 
+	// Asserted against the rendered marker rather than the bare tag name. The
+	// beta build's version string is "2.0.0-beta.1", so a test that looked for
+	// "beta" anywhere on that line would pass whether the tag column printed
+	// anything or not - which is the whole of what this test is for.
 	for _, line := range strings.Split(out, "\n") {
 		switch {
 		case strings.Contains(line, "listed-lib@1.0.0"):
-			if !strings.Contains(line, db.DefaultTag) {
+			if !strings.Contains(line, "["+db.DefaultTag+"]") {
 				t.Errorf("The 1.0.0 line does not name the %s tag: %q", db.DefaultTag, line)
 			}
 			if strings.Contains(line, "beta") {
 				t.Errorf("The 1.0.0 line claims the beta tag: %q", line)
 			}
 		case strings.Contains(line, "listed-lib@2.0.0-beta.1"):
-			if !strings.Contains(line, "beta") {
+			if !strings.Contains(line, "[beta]") {
 				t.Errorf("The 2.0.0-beta.1 line does not name the beta tag: %q", line)
 			}
 			if strings.Contains(line, db.DefaultTag) {
@@ -500,8 +504,13 @@ func TestListStoreLeavesAnUntaggedVersionUnmarked(t *testing.T) {
 		}
 	})
 
+	// The listing has to hold the superseded version at all, or the loop below
+	// asserts nothing: a negative check over lines that are not there passes.
+	if !strings.Contains(out, "superseded-lib@1.0.0") {
+		t.Fatalf("The store listing is missing the superseded version, output was:\n%s", out)
+	}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "superseded-lib@1.0.0") && strings.Contains(line, db.DefaultTag) {
+		if strings.Contains(line, "superseded-lib@1.0.0") && strings.Contains(line, "[") {
 			t.Errorf("The superseded version is shown as tagged: %q", line)
 		}
 	}

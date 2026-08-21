@@ -1149,17 +1149,17 @@ func TestDatabaseDeleteTagRemovesOnlyThatTag(t *testing.T) {
 func TestDatabaseDeleteTagRefusesTheDefaultTag(t *testing.T) {
 	env := setupTest(t)
 
-	insertTagPkg(t, env.Database, "keep-latest-pkg", "h1")
+	insertTagPkg(t, env.Database, "refuse-delete-pkg", "h1")
 
-	err := env.Database.DeleteTag("keep-latest-pkg", db.DefaultTag)
+	err := env.Database.DeleteTag("refuse-delete-pkg", db.DefaultTag)
 	if err == nil {
 		t.Fatal("DeleteTag removed the default tag")
 	}
 	if !strings.Contains(err.Error(), db.DefaultTag) {
 		t.Errorf("DeleteTag error = %v, want it to name the %s tag", err, db.DefaultTag)
 	}
-	assertTags(t, env.Database, "keep-latest-pkg", map[string]string{db.DefaultTag: "h1"})
-	if pkg, _ := env.Database.GetPackageByName("keep-latest-pkg"); pkg == nil {
+	assertTags(t, env.Database, "refuse-delete-pkg", map[string]string{db.DefaultTag: "h1"})
+	if pkg, _ := env.Database.GetPackageByName("refuse-delete-pkg"); pkg == nil {
 		t.Error("the package is no longer reachable by name")
 	}
 }
