@@ -24,9 +24,31 @@ lnpm operates within these directories:
 - **Project**: Current working directory and its `.lnpm/` subdirectory
 - **node_modules**: Symlinks created in project's `node_modules/`
 
-Path traversal attacks are mitigated by:
-- Using `filepath.Join()` for all path construction
-- Validating package names don't contain path separators
+A package name is untrusted input: it comes from a `package.json` or an
+`lnpm.lock` that is checked into the repository, so whoever wrote the repository
+chose it. Against that, lnpm:
+
+- Validates the name before building a path from it, at each boundary that does
+  so — the store, the linker's `Link`/`LinkSource`/`Unlink`, packing, and
+  `retreat`'s pass over `lnpm.lock`. A name that is absolute, holds a `.` or
+  `..` segment, holds a backslash or a NUL, or has more than the one `/` a
+  scope allows, is rejected there.
+- Requires `.lnpm` — and, for a scoped package, `.lnpm/{scope}` — to be a real
+  directory, so a repository cannot commit either as a symlink and redirect
+  every write and delete underneath it.
+
+Note that `filepath.Join()` is not itself a defence: it cleans the path it
+builds, so `..` segments in a name survive into the result. The validation
+above is what stops them.
+
+Known limits, which this section deliberately does not claim otherwise about:
+
+- The checks are not atomic. A path validated as safe can be replaced between
+  the check and the use.
+- Entries under `node_modules/` are not guarded the way `.lnpm` is.
+- Read-only lookups — for example the link-status queries `pull` runs — do not
+  validate the name first. They only `Lstat`, so they read rather than write,
+  but they are not covered by the guarantee above.
 
 ### Database
 

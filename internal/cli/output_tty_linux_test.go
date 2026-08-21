@@ -183,15 +183,6 @@ func runRetreatOnTTY(t *testing.T) string {
 	})
 }
 
-// writeFile writes content to path, failing the test if it cannot.
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
-}
-
 // captureTTYStdout runs fn with os.Stdout pointed at the slave side of a
 // pseudo-terminal and returns what it printed. A pipe would not do: the icon
 // helpers ask whether stdout is a character device, so only a terminal

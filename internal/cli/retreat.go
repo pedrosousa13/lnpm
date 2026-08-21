@@ -8,6 +8,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -51,6 +52,16 @@ func RunRetreat(force bool, runInstall bool) error {
 		if len(linkedPkgs) > 0 {
 			fmt.Printf("  - Remove %d linked package(s)\n", len(linkedPkgs))
 			for _, name := range linkedPkgs {
+				// The preview exists to tell the developer what --force is about
+				// to do, and refusing an entry is part of that. Listing a key
+				// that is not a package name as though it were an ordinary
+				// dependency would describe a retreat that is not going to
+				// happen, at the one moment the developer is reading.
+				if err := pack.ValidatePackageName(name); err != nil {
+					fmt.Printf("    %s %s: not a valid package name, will be skipped (%v)\n", iconWarn(), name, err)
+					continue
+				}
+
 				pkg, _ := lock.Get(name)
 				originalVersion := pkg.OriginalVersion
 				// Ignore lnpm's own reference as original version (bug from older versions)
@@ -103,7 +114,35 @@ func RunRetreat(force bool, runInstall bool) error {
 
 	// Remove each linked package
 	linkedPkgs := lock.List()
+	refused := 0
 	for _, name := range linkedPkgs {
+		// lnpm.lock is a checked-in artifact, so its keys come from whoever
+		// wrote the repository rather than from lnpm. Everything below joins the
+		// key into a path or edits package.json under it, and the node_modules
+		// delete in particular escapes the project outright for a key like
+		// "../../nm-victim/id_rsa" - filepath.Join cleans as it joins, so the
+		// ".." segments survive into the path os.Remove is handed. Unlink, which
+		// does this same job for 'lnpm remove', has always validated first; the
+		// asymmetry was the bug.
+		//
+		// The entry is skipped whole rather than aborting the retreat. Retreat
+		// is the documented way out of lnpm, and a developer who has just been
+		// handed a tampered lock file is exactly the person who needs to leave:
+		// aborting would strand them with .lnpm/ and the file: references still
+		// in place. Skipping narrows what the command does, which is the safe
+		// direction under docs/adr/0001, and the summary below says the retreat
+		// was incomplete so the narrowing is never silent.
+		//
+		// The refused entry is still carried into lnpm.lock.retreat with the
+		// rest. It is a record, not an instruction, and 'lnpm restore' links
+		// through Link, which validates the name again.
+		if err := pack.ValidatePackageName(name); err != nil {
+			fmt.Printf("  %s Refused %s: not a valid package name, so nothing was removed for it (%v)\n", iconWarn(), name, err)
+			fmt.Printf("  %s lnpm did not write that entry; check lnpm.lock for tampering or corruption\n", iconWarn())
+			refused++
+			continue
+		}
+
 		pkg, _ := lock.Get(name)
 
 		fmt.Printf("  Removing %s...\n", name)
@@ -180,10 +219,24 @@ func RunRetreat(force bool, runInstall bool) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("%s Retreat complete!\n", iconOK())
+	// A retreat that refused part of its work is not a complete one, and saying
+	// so is the whole point of counting: package.json may still hold a
+	// file:.lnpm reference for every refused entry.
+	if refused > 0 {
+		fmt.Printf("%s Retreat incomplete: refused %d of %d lnpm.lock entr(ies), see above\n", iconWarn(), refused, len(linkedPkgs))
+	} else {
+		fmt.Printf("%s Retreat complete!\n", iconOK())
+	}
 
 	if !runInstall {
 		fmt.Printf("\n%s Run 'npm install' to restore original packages\n", iconTip())
+	}
+
+	// Non-zero exit, as remove does for the packages it could not remove: a
+	// script that retreats before publishing must not read a partial retreat as
+	// a clean one.
+	if refused > 0 {
+		return fmt.Errorf("%d of %d lnpm.lock entr(ies) were refused as invalid package names", refused, len(linkedPkgs))
 	}
 
 	return nil
