@@ -1,5 +1,72 @@
 # Changelog
 
+## [2.0.0](https://github.com/pedrosousa13/lnpm/compare/v1.12.0...v2.0.0) (2026-08-21)
+
+> **Upgrading from 1.9.x or older?** Those versions compare version numbers
+> byte-wise, so `lnpm update` reports `Already up to date` and will never offer
+> you this release. Reinstall manually with the install script or
+> `go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest`. 1.10.0 and later
+> upgrade normally. See [#297](https://github.com/pedrosousa13/lnpm/issues/297).
+>
+> This release also migrates the package database on first open and makes `gc`
+> collect superseded versions, so downgrading to 1.x after running it is not
+> supported.
+
+
+### Features
+
+* Add `lnpm pull` to sync linked packages from the store ([#264](https://github.com/pedrosousa13/lnpm/issues/264)) ([fc1c89f](https://github.com/pedrosousa13/lnpm/commit/fc1c89fec4b590f114c0b4bb30c748603b12def7))
+* **link:** relink only the files that changed since the last link ([#295](https://github.com/pedrosousa13/lnpm/issues/295)) ([b60c58c](https://github.com/pedrosousa13/lnpm/commit/b60c58c1316f32e1b9db3b862e0a42badba02552))
+* **list:** add version history and roll back with add &lt;pkg&gt;@&lt;hash&gt; ([#298](https://github.com/pedrosousa13/lnpm/issues/298)) ([53e73bc](https://github.com/pedrosousa13/lnpm/commit/53e73bc1630aa5ff4fdf2cd97ef7daa48d8f6b9e))
+* Point `add --link` at the package's live source directory ([#265](https://github.com/pedrosousa13/lnpm/issues/265)) ([c0fb6e1](https://github.com/pedrosousa13/lnpm/commit/c0fb6e1eae9f3a04ac87c332f8c2e55c153ddffa))
+* Resolve `workspace:` dependency specifiers when publishing ([#266](https://github.com/pedrosousa13/lnpm/issues/266)) ([718f4d7](https://github.com/pedrosousa13/lnpm/commit/718f4d74a502c8880a3b8eb1981292e23844d2ae))
+* **restore:** add `lnpm restore` to re-link packages after `retreat` ([#294](https://github.com/pedrosousa13/lnpm/issues/294)) ([472f1be](https://github.com/pedrosousa13/lnpm/commit/472f1be8374175e0eff31d3ba2a98d5928262ae6))
+
+### Bug Fixes
+
+* Abort destructive operations in non-interactive mode instead of auto-confirming ([#223](https://github.com/pedrosousa13/lnpm/issues/223)) ([361672f](https://github.com/pedrosousa13/lnpm/commit/361672fb18ed9a58d9d23b1c63be22dd2d0bbae9))
+* **add:** roll a package back when its package.json update fails in multi-add ([#244](https://github.com/pedrosousa13/lnpm/issues/244)) ([68039f3](https://github.com/pedrosousa13/lnpm/commit/68039f3fdf4fc4af7948a7ade24638456956caed))
+* **add:** save the lock file before rewriting package.json ([#243](https://github.com/pedrosousa13/lnpm/issues/243)) ([4c233f1](https://github.com/pedrosousa13/lnpm/commit/4c233f16130d551c41fc6b40e46bb2c5eff57e8e))
+* align build-time ldflags and surface commit and date in --version ([#281](https://github.com/pedrosousa13/lnpm/issues/281)) ([a8b72ac](https://github.com/pedrosousa13/lnpm/commit/a8b72ac99911c6a8669d1807c422b92a42cce066)), closes [#177](https://github.com/pedrosousa13/lnpm/issues/177)
+* chmod linked and cloned files so umask cannot strip mode bits ([#274](https://github.com/pedrosousa13/lnpm/issues/274)) ([54c11fe](https://github.com/pedrosousa13/lnpm/commit/54c11feaf0ddea3711e6fbe0f047466e8dfcb01f)), closes [#139](https://github.com/pedrosousa13/lnpm/issues/139)
+* Compare versions with a semver library instead of text ordering ([#216](https://github.com/pedrosousa13/lnpm/issues/216)) ([258156a](https://github.com/pedrosousa13/lnpm/commit/258156acde3b7c3e8f44a1fa088ef498962a2c5b))
+* fail doctor when it finds issues and print its markers through the icon helpers ([#277](https://github.com/pedrosousa13/lnpm/issues/277)) ([fba8385](https://github.com/pedrosousa13/lnpm/commit/fba838514b72d7f8f78c688478b02327515960d9)), closes [#162](https://github.com/pedrosousa13/lnpm/issues/162)
+* fall back to the user completion directory when the system one refuses the write ([#278](https://github.com/pedrosousa13/lnpm/issues/278)) ([c1439d8](https://github.com/pedrosousa13/lnpm/commit/c1439d8b192c36b433eaf58e39264089b3ba6a0b)), closes [#169](https://github.com/pedrosousa13/lnpm/issues/169)
+* Fix nil-pointer crash in retreat when lnpm.lock is corrupt ([#221](https://github.com/pedrosousa13/lnpm/issues/221)) ([70971e2](https://github.com/pedrosousa13/lnpm/commit/70971e21f8396d068249645b9b6b5fc8784fa113))
+* Fix versioned package spec being treated as a content hash in multi-package add ([#222](https://github.com/pedrosousa13/lnpm/issues/222)) ([c82ec62](https://github.com/pedrosousa13/lnpm/commit/c82ec628d3c5a07eb9b790bb664c5f8f6b621388))
+* **fsutil:** call clonefile with the right signature on macOS ([#229](https://github.com/pedrosousa13/lnpm/issues/229)) ([cfbfa9f](https://github.com/pedrosousa13/lnpm/commit/cfbfa9f7d40a56883d4a8c5264d46dd08654f2f2)), closes [#135](https://github.com/pedrosousa13/lnpm/issues/135)
+* **gc:** reclaim temp directories left by an interrupted publish or relink ([#289](https://github.com/pedrosousa13/lnpm/issues/289)) ([e021c81](https://github.com/pedrosousa13/lnpm/commit/e021c81a696b863065b2edad1d5e8ddb979a27dd)), closes [#233](https://github.com/pedrosousa13/lnpm/issues/233)
+* give store entries a completeness marker ([#273](https://github.com/pedrosousa13/lnpm/issues/273)) ([6650434](https://github.com/pedrosousa13/lnpm/commit/665043464c9ec2a93fd44332d3be56b07ee89323)), closes [#237](https://github.com/pedrosousa13/lnpm/issues/237)
+* keep GetDB's init error so every caller sees it ([#290](https://github.com/pedrosousa13/lnpm/issues/290)) ([c73954a](https://github.com/pedrosousa13/lnpm/commit/c73954a0c50610b5b5a4f3fba87dafe7baca1e47)), closes [#253](https://github.com/pedrosousa13/lnpm/issues/253)
+* **link:** populate a temp directory and rename-swap instead of clearing the live package ([#232](https://github.com/pedrosousa13/lnpm/issues/232)) ([b3f0a47](https://github.com/pedrosousa13/lnpm/commit/b3f0a479f2b422d4376d3c8902136566b869bd06)), closes [#137](https://github.com/pedrosousa13/lnpm/issues/137)
+* Make doctor honor the configured store_path when checking the store ([#249](https://github.com/pedrosousa13/lnpm/issues/249)) ([160ff22](https://github.com/pedrosousa13/lnpm/commit/160ff2287f1dd4fb473861be0f247b12059ca174))
+* make hooks.skip_post_add actually skip the post-add hook ([#280](https://github.com/pedrosousa13/lnpm/issues/280)) ([7079f81](https://github.com/pedrosousa13/lnpm/commit/7079f81a58d34cfe1878e06bc4c6021786304e63)), closes [#171](https://github.com/pedrosousa13/lnpm/issues/171)
+* Make publish --push fail when every linked-project push fails ([#248](https://github.com/pedrosousa13/lnpm/issues/248)) ([022933e](https://github.com/pedrosousa13/lnpm/commit/022933e24ba38f980b92857e8e29ae523ec70cf9))
+* Normalize root-anchored and directory patterns in the files whitelist ([#228](https://github.com/pedrosousa13/lnpm/issues/228)) ([ba1ea4d](https://github.com/pedrosousa13/lnpm/commit/ba1ea4da8b48e0cd177fd5e184adb1ec42d600f9))
+* Preserve package.json key order and formatting when editing dependencies ([#250](https://github.com/pedrosousa13/lnpm/issues/250)) ([bf67c59](https://github.com/pedrosousa13/lnpm/commit/bf67c594830efdfe96a45b8e913a9e99b80d2374))
+* remove the updater's temp directory and match Go bin dirs by path component ([#276](https://github.com/pedrosousa13/lnpm/issues/276)) ([b29b9da](https://github.com/pedrosousa13/lnpm/commit/b29b9da8a4b87e568271aea72a87829774c53c96)), closes [#147](https://github.com/pedrosousa13/lnpm/issues/147)
+* **remove:** keep the lock entry when remove fails to restore package.json ([#245](https://github.com/pedrosousa13/lnpm/issues/245)) ([c13b392](https://github.com/pedrosousa13/lnpm/commit/c13b392d24f3b6418c3e0bdf77ed768de2f0340a))
+* Report a real version for go install builds so they can self-update ([#217](https://github.com/pedrosousa13/lnpm/issues/217)) ([a3e9b48](https://github.com/pedrosousa13/lnpm/commit/a3e9b482d43d31367211615e64a4f5e5ace6e544))
+* report scoped packages by full name and clean up emptied scope directories ([#279](https://github.com/pedrosousa13/lnpm/issues/279)) ([ac2b4b9](https://github.com/pedrosousa13/lnpm/commit/ac2b4b99d60e2f1cbcc70453e81a9b794ae8aa89)), closes [#170](https://github.com/pedrosousa13/lnpm/issues/170) [#236](https://github.com/pedrosousa13/lnpm/issues/236)
+* Rewrite isExcluded to satisfy gitignore and npm ignore semantics ([#220](https://github.com/pedrosousa13/lnpm/issues/220)) ([793e18a](https://github.com/pedrosousa13/lnpm/commit/793e18a8cf5841e9c3d8722ebb5ce76f5c05bcc6))
+* Run all applicable publish lifecycle scripts, not just the first ([#251](https://github.com/pedrosousa13/lnpm/issues/251)) ([f8159ba](https://github.com/pedrosousa13/lnpm/commit/f8159babf127d19da3c06521e127e2f6d609b126))
+* Stop concurrent lnpm invocations from failing with a cryptic database timeout ([#254](https://github.com/pedrosousa13/lnpm/issues/254)) ([24cd438](https://github.com/pedrosousa13/lnpm/commit/24cd438da14d7a04d9a1cf824437f7c7359c543a))
+* stop hardlinking source files into the store ([#213](https://github.com/pedrosousa13/lnpm/issues/213)) ([624a3e3](https://github.com/pedrosousa13/lnpm/commit/624a3e3e857b3023984a38359e80a4b87082f291))
+* stop three tests from passing without checking their subject ([#282](https://github.com/pedrosousa13/lnpm/issues/282)) ([7ef8a02](https://github.com/pedrosousa13/lnpm/commit/7ef8a025a0d32d5c06752fe1afbcf473f0f623cd)), closes [#186](https://github.com/pedrosousa13/lnpm/issues/186)
+* **store:** never delete the destination before the atomic rename ([#238](https://github.com/pedrosousa13/lnpm/issues/238)) ([f6ebaf7](https://github.com/pedrosousa13/lnpm/commit/f6ebaf7b0bc0a009cbf8ab9ee220b5a7a516146d)), closes [#138](https://github.com/pedrosousa13/lnpm/issues/138)
+* stream copies with io.Copy and unlink half-made reflink clones ([#275](https://github.com/pedrosousa13/lnpm/issues/275)) ([9a41948](https://github.com/pedrosousa13/lnpm/commit/9a41948855bc4726a6414f84312e3aa5c0cc5ba5)), closes [#140](https://github.com/pedrosousa13/lnpm/issues/140)
+* treat a degenerate files entry as including everything ([#272](https://github.com/pedrosousa13/lnpm/issues/272)) ([a9f9a52](https://github.com/pedrosousa13/lnpm/commit/a9f9a52b5348017649b3041a842d29256aeccd6b)), closes [#227](https://github.com/pedrosousa13/lnpm/issues/227)
+* **update:** report update-check failures instead of "Already up to date" ([#239](https://github.com/pedrosousa13/lnpm/issues/239)) ([400cdf1](https://github.com/pedrosousa13/lnpm/commit/400cdf1eac3621412096e606a7b88d686bc3ce48)), closes [#144](https://github.com/pedrosousa13/lnpm/issues/144)
+* **update:** stage the updated binary next to the target to avoid cross-filesystem rename failures ([#240](https://github.com/pedrosousa13/lnpm/issues/240)) ([6b4e102](https://github.com/pedrosousa13/lnpm/commit/6b4e1020dba52825bbf44af2e4924bd96afd57d7))
+* Verify release checksums in the install scripts before running the binary ([#218](https://github.com/pedrosousa13/lnpm/issues/218)) ([be7f7d2](https://github.com/pedrosousa13/lnpm/commit/be7f7d254c04b15cad8953a8e16cbfe47bb265ba))
+* **workspace:** abort ListPackages on a member that will not read or parse ([#293](https://github.com/pedrosousa13/lnpm/issues/293)) ([cd1aca9](https://github.com/pedrosousa13/lnpm/commit/cd1aca9483aed5609c1dcea564b00c89f0ba0f82))
+* **workspace:** fail expansion when a workspace glob pattern will not parse ([#287](https://github.com/pedrosousa13/lnpm/issues/287)) ([16c83a3](https://github.com/pedrosousa13/lnpm/commit/16c83a379d3122c14a51bb53520123fb6413d60b)), closes [#241](https://github.com/pedrosousa13/lnpm/issues/241)
+* **workspace:** subtract negation patterns in publish --all instead of dropping them ([#242](https://github.com/pedrosousa13/lnpm/issues/242)) ([812d21d](https://github.com/pedrosousa13/lnpm/commit/812d21dba139fd9151ae6cbeac3907b5ca5a37b3))
+
+### Continuous Integration
+
+* check PR titles and document the 2.0.0 upgrade path ([#299](https://github.com/pedrosousa13/lnpm/issues/299)) ([89745e9](https://github.com/pedrosousa13/lnpm/commit/89745e96079487d592349b0aa56814b281448da8))
+
 ## [1.12.0](https://github.com/pedrosousa13/lnpm/compare/v1.11.0...v1.12.0) (2026-07-23)
 
 
