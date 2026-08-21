@@ -3,9 +3,8 @@ package cli
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
-
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/spf13/cobra"
 )
 
 // publishCmd publishes a package to the local store

@@ -130,13 +130,20 @@ func RunTag(packageName, tag string, del bool) error {
 	return nil
 }
 
+// isDefaultTag reports whether tag is the one every lookup by name resolves
+// through. An empty tag counts: that is how a link written before tags existed
+// reads, and what an unset --tag carries.
+func isDefaultTag(tag string) bool {
+	return tag == "" || tag == db.DefaultTag
+}
+
 // tagNote names a tag for output, and says nothing at all for the default one.
 //
 // The default tag is left unsaid because every publish moves it: spelling it out
 // would add a clause to every line lnpm has ever printed while saying only what
 // was already true. A tag is worth naming exactly when someone chose it.
 func tagNote(tag string) string {
-	if tag == "" || tag == db.DefaultTag {
+	if isDefaultTag(tag) {
 		return ""
 	}
 	return "tag: " + tag

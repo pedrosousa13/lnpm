@@ -96,7 +96,7 @@ func RunPull(packageNames []string) error {
 
 		tag := held.tag(name)
 		var pkg *db.Package
-		if tagNote(tag) != "" {
+		if !isDefaultTag(tag) {
 			pkg, err = database.ResolveTag(name, tag)
 			if err != nil {
 				failed = append(failed, fmt.Errorf("%s: failed to resolve tag %s: %w", name, tag, err))
