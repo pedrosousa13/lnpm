@@ -355,7 +355,7 @@ func reapTempDirs(database *db.DB, s *store.Store, projectPaths []string, dryRun
 	}
 
 	if unreadable > 0 {
-		fmt.Printf("%s Could not scan %d director(ies) for temp directories; re-run gc once they are readable\n", iconWarn(), unreadable)
+		fmt.Printf("%s Could not scan %d director(ies) for temp directories; check them and re-run gc\n", iconWarn(), unreadable)
 	}
 
 	if len(found) == 0 {

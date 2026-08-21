@@ -693,6 +693,52 @@ func TestLinkSourceRefusesASymlinkedScopeDirectory(t *testing.T) {
 	}
 }
 
+// TestLinkRefusesARegularFileWhereLnpmBelongs covers what asking for a directory
+// catches beyond a link. Everything that is not a directory is refused here
+// rather than three frames later, where the same project produced an ENOTDIR
+// from MkdirAll with no indication of what to do about it.
+//
+// The case this test cannot cover is the opposite one: a real directory
+// carrying a non-surrogate reparse tag - a OneDrive Files On-Demand placeholder,
+// ProjFS, container isolation - which Windows reports as ModeDir|ModeIrregular
+// and which must be allowed. It needs Windows and one of those filesystems, so
+// neither this suite nor a Linux runner can produce it. It is named in
+// requireRealDir's comment, which is where the reasoning belongs.
+func TestLinkRefusesARegularFileWhereLnpmBelongs(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	lnpmPath := filepath.Join(projectPath, ".lnpm")
+	if err := os.WriteFile(lnpmPath, []byte("not a directory"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath, files := storeFixture(t, tmpDir, map[string]string{
+		"package.json": `{"name":"my-package"}`,
+	})
+
+	_, err := New(projectPath).Link("my-package", storePath, files)
+	if err == nil {
+		t.Fatal("Link() with a regular file at .lnpm error = nil, want a refusal")
+	}
+	// The remedy is what says this came from the guard rather than from the
+	// MkdirAll further down, whose ENOTDIR also mentions .lnpm and "not a
+	// directory" but tells the user nothing about fixing it.
+	if !strings.Contains(err.Error(), "remove it and re-run") {
+		t.Errorf("Link() error = %v, want the guard's refusal naming a remedy", err)
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("Link() error = %v, want it to name .lnpm", err)
+	}
+
+	// Refused, not repaired: the guard must not delete what it found.
+	if got, err := os.ReadFile(lnpmPath); err != nil || string(got) != "not a directory" {
+		t.Errorf(".lnpm = %q (err %v) after a refused Link, want it left alone", string(got), err)
+	}
+}
+
 // TestUnlinkRefusesWhenTheLnpmDirectoryCannotBeInspected pins the direction the
 // guard fails in, which is what docs/adr/0001 is about: only "the entry is not
 // there" means there is nothing to refuse. Every other Lstat failure - a

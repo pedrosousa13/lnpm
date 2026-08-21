@@ -49,7 +49,7 @@ type TempEntry struct {
 // A .lnpm directory that does not exist is neither an entry nor a failure: a
 // project may never have linked anything. One that is a link rather than a
 // directory is counted as unreadable and not scanned at all, for the reason
-// refuseLinkedDir gives.
+// requireRealDir gives.
 func FindTempEntries(projectPath string) (entries []TempEntry, unreadable int) {
 	lnpmDir := filepath.Join(projectPath, ".lnpm")
 
@@ -59,7 +59,7 @@ func FindTempEntries(projectPath string) (entries []TempEntry, unreadable int) {
 	// read is the shape this function already has for a directory it must not
 	// act on: nothing is reclaimed here, the count says so, and the remaining
 	// projects are still swept.
-	if err := refuseLinkedDir(".lnpm directory", lnpmDir); err != nil {
+	if err := requireRealDir("project's .lnpm", lnpmDir); err != nil {
 		debug.Logf("link: not scanning %s for temp entries: %v", lnpmDir, err)
 		return nil, 1
 	}
