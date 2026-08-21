@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -612,6 +613,168 @@ func TestDatabaseGetProjectsForPackage(t *testing.T) {
 
 	if len(projects) != projectCount {
 		t.Errorf("Expected %d projects, got %d", projectCount, len(projects))
+	}
+}
+
+// --- Tag operations ----------------------------------------------------------
+
+// insertTagPkg inserts a package with the given name and content hash under the
+// default tag and returns it, so the tag tests read as tag assertions rather
+// than as struct literals.
+func insertTagPkg(t *testing.T, d *db.DB, name, hash string) *db.Package {
+	t.Helper()
+
+	pkg := &db.Package{
+		Name:        name,
+		Version:     "1.0.0",
+		ContentHash: hash,
+		SourcePath:  "/src/" + name,
+		StorePath:   "/store/" + name + "/" + hash,
+		FilesCount:  1,
+		TotalSize:   1,
+	}
+	if err := d.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert %s@%s: %v", name, hash, err)
+	}
+	return pkg
+}
+
+// assertTags checks the complete set of tags recorded for name. It compares the
+// whole map rather than one entry, because a tag write that also disturbs a tag
+// it was not asked about is exactly the failure worth catching.
+func assertTags(t *testing.T, d *db.DB, name string, want map[string]string) {
+	t.Helper()
+
+	got, err := d.TagsForPackage(name)
+	if err != nil {
+		t.Fatalf("tags for %s: %v", name, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("tags for %s = %v, want %v", name, got, want)
+	}
+	for tag, hash := range want {
+		if got[tag] != hash {
+			t.Errorf("tag %s of %s points at %q, want %q", tag, name, got[tag], hash)
+		}
+	}
+}
+
+// TestDatabaseInsertPackageSetsTheLatestTag pins that publishing records the
+// default tag, which is what every existing name-based lookup resolves through.
+func TestDatabaseInsertPackageSetsTheLatestTag(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "tagged-pkg", "h1")
+
+	assertTags(t, env.Database, "tagged-pkg", map[string]string{db.DefaultTag: "h1"})
+
+	resolved, err := env.Database.ResolveTag("tagged-pkg", db.DefaultTag)
+	if err != nil {
+		t.Fatalf("resolve latest: %v", err)
+	}
+	if resolved == nil || resolved.ContentHash != "h1" {
+		t.Fatalf("ResolveTag(latest) = %v, want the h1 version", resolved)
+	}
+}
+
+// TestDatabaseSetTagPointsAtAnExistingVersion covers setting a second tag on an
+// already published version without republishing it.
+func TestDatabaseSetTagPointsAtAnExistingVersion(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "set-pkg", "h1")
+
+	if err := env.Database.SetTag("set-pkg", "beta", "h1"); err != nil {
+		t.Fatalf("set tag beta: %v", err)
+	}
+
+	assertTags(t, env.Database, "set-pkg", map[string]string{db.DefaultTag: "h1", "beta": "h1"})
+
+	resolved, err := env.Database.ResolveTag("set-pkg", "beta")
+	if err != nil {
+		t.Fatalf("resolve beta: %v", err)
+	}
+	if resolved == nil || resolved.ContentHash != "h1" {
+		t.Fatalf("ResolveTag(beta) = %v, want the h1 version", resolved)
+	}
+}
+
+// TestDatabaseSetTagRejectsAnUnknownHash pins that a tag cannot be pointed at a
+// version the store does not hold. A dangling tag would resolve to nothing and,
+// once gc treats tags as reachability roots, would protect nothing either.
+func TestDatabaseSetTagRejectsAnUnknownHash(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "dangling-pkg", "h1")
+
+	if err := env.Database.SetTag("dangling-pkg", "beta", "nosuchhash"); err == nil {
+		t.Fatal("SetTag accepted a hash no version has")
+	}
+	assertTags(t, env.Database, "dangling-pkg", map[string]string{db.DefaultTag: "h1"})
+}
+
+// TestDatabaseDeleteTagRemovesOnlyThatTag pins that deleting one tag leaves the
+// others, and the version itself, alone.
+func TestDatabaseDeleteTagRemovesOnlyThatTag(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "del-pkg", "h1")
+	if err := env.Database.SetTag("del-pkg", "beta", "h1"); err != nil {
+		t.Fatalf("set tag beta: %v", err)
+	}
+
+	if err := env.Database.DeleteTag("del-pkg", "beta"); err != nil {
+		t.Fatalf("delete tag beta: %v", err)
+	}
+
+	assertTags(t, env.Database, "del-pkg", map[string]string{db.DefaultTag: "h1"})
+	resolved, err := env.Database.ResolveTag("del-pkg", "beta")
+	if err != nil {
+		t.Fatalf("resolve beta: %v", err)
+	}
+	if resolved != nil {
+		t.Errorf("ResolveTag(beta) = %v after deleting it, want nil", resolved)
+	}
+	if pkg, _ := env.Database.GetPackageByName("del-pkg"); pkg == nil {
+		t.Error("deleting a tag removed the package from the name index")
+	}
+}
+
+// TestDatabaseDeleteTagRefusesTheDefaultTag pins that the tag every name-based
+// lookup resolves through cannot be deleted. Removing it would leave the package
+// in the store and its files on disk while making it unreachable by name from
+// every command lnpm has.
+func TestDatabaseDeleteTagRefusesTheDefaultTag(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "keep-latest-pkg", "h1")
+
+	err := env.Database.DeleteTag("keep-latest-pkg", db.DefaultTag)
+	if err == nil {
+		t.Fatal("DeleteTag removed the default tag")
+	}
+	if !strings.Contains(err.Error(), db.DefaultTag) {
+		t.Errorf("DeleteTag error = %v, want it to name the %s tag", err, db.DefaultTag)
+	}
+	assertTags(t, env.Database, "keep-latest-pkg", map[string]string{db.DefaultTag: "h1"})
+	if pkg, _ := env.Database.GetPackageByName("keep-latest-pkg"); pkg == nil {
+		t.Error("the package is no longer reachable by name")
+	}
+}
+
+// TestDatabaseResolveUnknownTag pins that an unknown tag is not an error, so a
+// caller can tell "no such tag" from "the lookup failed".
+func TestDatabaseResolveUnknownTag(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "unknown-tag-pkg", "h1")
+
+	resolved, err := env.Database.ResolveTag("unknown-tag-pkg", "next")
+	if err != nil {
+		t.Fatalf("resolve an unset tag: %v", err)
+	}
+	if resolved != nil {
+		t.Errorf("ResolveTag(next) = %v, want nil", resolved)
 	}
 }
 

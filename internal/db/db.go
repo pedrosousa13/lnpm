@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -45,7 +46,36 @@ var (
 	bucketLinksByProject = []byte("links_by_project")
 	bucketFiles          = []byte("files")
 	bucketMeta           = []byte("meta")
+	bucketTags           = []byte("tags")
 )
+
+// DefaultTag is the tag a publish moves and the one every name-based lookup
+// resolves through: bucketPackagesByName always names the version it points at.
+const DefaultTag = "latest"
+
+// tagSeparator joins a package name and a tag into one bucket key. A package
+// name cannot contain a NUL byte, so the first one in a key always ends the
+// name — which is what lets the tags of one package be found by prefix.
+const tagSeparator = "\x00"
+
+func tagKey(name, tag string) []byte {
+	return []byte(name + tagSeparator + tag)
+}
+
+func tagPrefix(name string) []byte {
+	return []byte(name + tagSeparator)
+}
+
+// schemaVersion is the shape of the buckets this build writes. It is recorded in
+// bucketMeta so a database written by an older build can be brought forward on
+// open rather than silently read as if it were current.
+//
+//	1 — packages, one live record per name, no tags bucket.
+//	2 — a tags bucket, with the latest tag naming the record bucketPackagesByName
+//	    points at.
+const schemaVersion = 2
+
+var keySchemaVersion = []byte("schema_version")
 
 // DB wraps the bbolt database
 type DB struct {
@@ -151,13 +181,14 @@ func initDB() (*DB, error) {
 			bucketLinksByProject,
 			bucketFiles,
 			bucketMeta,
+			bucketTags,
 		}
 		for _, bucket := range buckets {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("failed to create bucket %s: %w", bucket, err)
 			}
 		}
-		return nil
+		return migrateTx(tx)
 	})
 	if err != nil {
 		_ = boltDB.Close()
@@ -165,6 +196,48 @@ func initDB() (*DB, error) {
 	}
 
 	return db, nil
+}
+
+// migrateTx brings a database written by an older build up to schemaVersion,
+// inside the transaction that created any buckets it was missing.
+//
+// Version 1 had no tags bucket: bucketPackagesByName was the only way to reach a
+// package, and the one record it named was by definition that package's latest.
+// So every name in that index gains a latest tag naming its record's content
+// hash, and nothing else changes. No record is rewritten and nothing is deleted,
+// which is what makes the pass safe to interrupt — bolt commits it whole or not
+// at all, and re-running it writes the same entries again.
+//
+// A database written by a newer build is left alone rather than rewritten
+// backwards. Guessing at a schema this build does not know would be guessing
+// about which files gc may delete.
+func migrateTx(tx *bolt.Tx) error {
+	meta := tx.Bucket(bucketMeta)
+	if v := meta.Get(keySchemaVersion); len(v) == 8 && btoi(v) >= schemaVersion {
+		return nil
+	}
+
+	packages := tx.Bucket(bucketPackages)
+	tags := tx.Bucket(bucketTags)
+
+	err := tx.Bucket(bucketPackagesByName).ForEach(func(name, idBytes []byte) error {
+		data := packages.Get(idBytes)
+		if data == nil {
+			// An index entry naming no record: there is no hash to tag, and
+			// inventing one would create a tag pointing at nothing.
+			return nil
+		}
+		var pkg Package
+		if err := json.Unmarshal(data, &pkg); err != nil {
+			return nil // Unreadable record, left exactly as it was found
+		}
+		return tags.Put(tagKey(string(name), DefaultTag), []byte(pkg.ContentHash))
+	})
+	if err != nil {
+		return fmt.Errorf("failed to record the %s tag of existing packages: %w", DefaultTag, err)
+	}
+
+	return meta.Put(keySchemaVersion, itob(schemaVersion))
 }
 
 // getStorePath returns the lnpm store path
@@ -258,12 +331,18 @@ func (db *DB) nextID(tx *bolt.Tx) (int64, error) {
 // of one package, and committing them separately lets a failure between them
 // leave a package row naming content its file rows do not describe.
 func (db *DB) InsertPackage(pkg *Package) error {
-	debug.Logf("db: insert package %s@%s", pkg.Name, pkg.Version)
+	return db.InsertPackageTagged(pkg, DefaultTag)
+}
+
+// InsertPackageTagged is InsertPackage, pointing tag at the package it records
+// instead of the default tag.
+func (db *DB) InsertPackageTagged(pkg *Package, tag string) error {
+	debug.Logf("db: insert package %s@%s (tag: %s)", pkg.Name, pkg.Version, tag)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	return db.db.Update(func(tx *bolt.Tx) error {
-		return db.insertPackageTx(tx, pkg)
+		return db.insertPackageTx(tx, pkg, tag)
 	})
 }
 
@@ -278,12 +357,18 @@ func (db *DB) InsertPackage(pkg *Package) error {
 // transaction per write, and one transaction is what makes that state
 // unreachable.
 func (db *DB) InsertPackageWithFiles(pkg *Package, files []*FileEntry) error {
-	debug.Logf("db: insert package %s@%s with %d files", pkg.Name, pkg.Version, len(files))
+	return db.InsertPackageWithFilesTagged(pkg, files, DefaultTag)
+}
+
+// InsertPackageWithFilesTagged is InsertPackageWithFiles, pointing tag at the
+// package it records instead of the default tag.
+func (db *DB) InsertPackageWithFilesTagged(pkg *Package, files []*FileEntry, tag string) error {
+	debug.Logf("db: insert package %s@%s with %d files (tag: %s)", pkg.Name, pkg.Version, len(files), tag)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	return db.db.Update(func(tx *bolt.Tx) error {
-		if err := db.insertPackageTx(tx, pkg); err != nil {
+		if err := db.insertPackageTx(tx, pkg, tag); err != nil {
 			return err
 		}
 		return db.insertFilesTx(tx, pkg.ID, files)
@@ -292,7 +377,7 @@ func (db *DB) InsertPackageWithFiles(pkg *Package, files []*FileEntry) error {
 
 // insertPackageTx is InsertPackage's body, taking the transaction from its
 // caller so it can share one with insertFilesTx.
-func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package) error {
+func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package, tag string) error {
 	packages := tx.Bucket(bucketPackages)
 	byName := tx.Bucket(bucketPackagesByName)
 
@@ -316,7 +401,10 @@ func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package) error {
 				if err != nil {
 					return err
 				}
-				return packages.Put(itob(existing.ID), data)
+				if err := packages.Put(itob(existing.ID), data); err != nil {
+					return err
+				}
+				return setTagTx(tx, pkg.Name, tag, pkg.ContentHash, pkg.ID)
 			}
 		}
 	}
@@ -340,7 +428,135 @@ func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package) error {
 	}
 
 	// Index by name
-	return byName.Put([]byte(pkg.Name), itob(id))
+	if err := byName.Put([]byte(pkg.Name), itob(id)); err != nil {
+		return err
+	}
+
+	return setTagTx(tx, pkg.Name, tag, pkg.ContentHash, pkg.ID)
+}
+
+// --- Tag operations ---
+
+// setTagTx points name's tag at hash, which belongs to the record with the given
+// id.
+//
+// Setting the default tag also moves the name index, because the two say the
+// same thing: bucketPackagesByName names the version tagged DefaultTag. Letting
+// them disagree would give GetPackageByName and ResolveTag different answers to
+// the same question.
+func setTagTx(tx *bolt.Tx, name, tag, hash string, id int64) error {
+	if tag == "" {
+		tag = DefaultTag
+	}
+	if err := tx.Bucket(bucketTags).Put(tagKey(name, tag), []byte(hash)); err != nil {
+		return err
+	}
+	if tag == DefaultTag {
+		return tx.Bucket(bucketPackagesByName).Put([]byte(name), itob(id))
+	}
+	return nil
+}
+
+// SetTag points a tag at a version already in the store, without republishing
+// it. The version is named by its content hash, and one that no record has is
+// refused: a tag pointing at nothing resolves to nothing, and once gc treats
+// tags as reachability roots it would also protect nothing.
+func (db *DB) SetTag(name, tag, hash string) error {
+	debug.Logf("db: set tag %s of %s to %s", tag, name, hash)
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	return db.db.Update(func(tx *bolt.Tx) error {
+		pkg := findPackageByHashTx(tx, name, hash)
+		if pkg == nil {
+			return fmt.Errorf("no version of %s with content hash %s is in the store", name, hash)
+		}
+		return setTagTx(tx, name, tag, hash, pkg.ID)
+	})
+}
+
+// DeleteTag removes a tag from a package, leaving the version it named in the
+// store.
+//
+// The default tag cannot be removed. It is what bucketPackagesByName mirrors, so
+// deleting it would leave the package published, its files on disk and its
+// record intact, while making it unreachable by name from every command lnpm
+// has.
+func (db *DB) DeleteTag(name, tag string) error {
+	if tag == "" {
+		tag = DefaultTag
+	}
+	if tag == DefaultTag {
+		return fmt.Errorf("cannot delete the %s tag of %s: it is the tag every lookup by name resolves through", DefaultTag, name)
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	return db.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketTags).Delete(tagKey(name, tag))
+	})
+}
+
+// TagsForPackage returns every tag set on name, as tag to content hash.
+func (db *DB) TagsForPackage(name string) (map[string]string, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	tags := make(map[string]string)
+	err := db.db.View(func(tx *bolt.Tx) error {
+		prefix := tagPrefix(name)
+		c := tx.Bucket(bucketTags).Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			tags[string(k[len(prefix):])] = string(v)
+		}
+		return nil
+	})
+
+	return tags, err
+}
+
+// ResolveTag returns the version a tag names, or nil when the tag is not set.
+// An empty tag means the default one.
+func (db *DB) ResolveTag(name, tag string) (*Package, error) {
+	if tag == "" {
+		tag = DefaultTag
+	}
+
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var pkg *Package
+	err := db.db.View(func(tx *bolt.Tx) error {
+		hash := tx.Bucket(bucketTags).Get(tagKey(name, tag))
+		if hash == nil {
+			return nil
+		}
+		pkg = findPackageByHashTx(tx, name, string(hash))
+		return nil
+	})
+
+	return pkg, err
+}
+
+// findPackageByHashTx returns the record for one version of a package, or nil if
+// the store holds no such version.
+func findPackageByHashTx(tx *bolt.Tx, name, hash string) *Package {
+	var found *Package
+	_ = tx.Bucket(bucketPackages).ForEach(func(k, v []byte) error {
+		if found != nil {
+			return nil
+		}
+		var pkg Package
+		if err := json.Unmarshal(v, &pkg); err != nil {
+			return nil // Skip invalid entries
+		}
+		if pkg.Name == name && pkg.ContentHash == hash {
+			found = &pkg
+		}
+		return nil
+	})
+	return found
 }
 
 // GetPackageByName returns the latest package with the given name
@@ -378,18 +594,8 @@ func (db *DB) GetPackageByHash(name, hash string) (*Package, error) {
 
 	var result *Package
 	err := db.db.View(func(tx *bolt.Tx) error {
-		packages := tx.Bucket(bucketPackages)
-
-		return packages.ForEach(func(k, v []byte) error {
-			var pkg Package
-			if err := json.Unmarshal(v, &pkg); err != nil {
-				return nil // Skip invalid entries
-			}
-			if pkg.Name == name && pkg.ContentHash == hash {
-				result = &pkg
-			}
-			return nil
-		})
+		result = findPackageByHashTx(tx, name, hash)
+		return nil
 	})
 
 	return result, err

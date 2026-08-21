@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,203 @@ func holdDatabaseLock(t *testing.T, storeDir string) *bolt.DB {
 	}
 	t.Cleanup(func() { _ = holder.Close() })
 	return holder
+}
+
+// writeSchemaV1Database writes a database in the shape the build before tags
+// wrote: no tags bucket, no schema version, and one record per package name in
+// bucketPackagesByName.
+//
+// The bucket names are spelled out rather than taken from the constants. What an
+// existing user's database holds is those literal names, so a rename that broke
+// every deployed store would have to fail here rather than travel silently into
+// both the fixture and the code under test.
+func writeSchemaV1Database(t *testing.T, storeDir string, packages ...*Package) {
+	t.Helper()
+
+	boltDB, err := bolt.Open(filepath.Join(storeDir, "lnpm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Failed to create the old database: %v", err)
+	}
+	defer func() { _ = boltDB.Close() }()
+
+	err = boltDB.Update(func(tx *bolt.Tx) error {
+		for _, name := range []string{
+			"packages", "packages_by_name", "projects", "projects_by_path",
+			"links", "links_by_package", "links_by_project", "files", "meta",
+		} {
+			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
+				return err
+			}
+		}
+		nextID := int64(1)
+		for _, pkg := range packages {
+			pkg.ID = nextID
+			nextID++
+			data, err := json.Marshal(pkg)
+			if err != nil {
+				return err
+			}
+			if err := tx.Bucket([]byte("packages")).Put(itob(pkg.ID), data); err != nil {
+				return err
+			}
+			if err := tx.Bucket([]byte("packages_by_name")).Put([]byte(pkg.Name), itob(pkg.ID)); err != nil {
+				return err
+			}
+		}
+		return tx.Bucket([]byte("meta")).Put([]byte("next_id"), itob(nextID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to seed the old database: %v", err)
+	}
+}
+
+// openStore points lnpm at storeDir and opens the database the way a command
+// would, so whatever initDB does on open is what the test exercises.
+func openStore(t *testing.T, storeDir string) *DB {
+	t.Helper()
+
+	ResetForTesting()
+	t.Setenv("LNPM_STORE", storeDir)
+	t.Cleanup(ResetForTesting)
+
+	database, err := GetDB()
+	if err != nil {
+		t.Fatalf("Failed to open the database: %v", err)
+	}
+	return database
+}
+
+// TestGetDB_UpgradesADatabaseWrittenWithoutTags pins the upgrade path for a
+// store an existing user already has. The record that name index pointed at was
+// that package's latest by definition, so opening the store has to say so —
+// otherwise the package is published, on disk and reachable by name, but no tag
+// reaches it, which is the state gc now collects.
+func TestGetDB_UpgradesADatabaseWrittenWithoutTags(t *testing.T) {
+	storeDir := t.TempDir()
+	writeSchemaV1Database(t, storeDir, &Package{
+		Name:        "legacy-pkg",
+		Version:     "1.2.3",
+		ContentHash: "legacyhash",
+		StorePath:   filepath.Join(storeDir, "store", "legacy-pkg", "legacyhash"),
+	})
+
+	database := openStore(t, storeDir)
+
+	pkg, err := database.GetPackageByName("legacy-pkg")
+	if err != nil || pkg == nil {
+		t.Fatalf("GetPackageByName after the upgrade = %v, %v; want the legacy package", pkg, err)
+	}
+	if pkg.ContentHash != "legacyhash" || pkg.Version != "1.2.3" {
+		t.Errorf("the upgrade rewrote the package record: %+v", pkg)
+	}
+
+	tags, err := database.TagsForPackage("legacy-pkg")
+	if err != nil {
+		t.Fatalf("TagsForPackage: %v", err)
+	}
+	if got := tags[DefaultTag]; got != "legacyhash" {
+		t.Errorf("the %s tag points at %q, want the hash the name index named", DefaultTag, got)
+	}
+	if len(tags) != 1 {
+		t.Errorf("the upgrade wrote %v, want only the %s tag", tags, DefaultTag)
+	}
+
+	resolved, err := database.ResolveTag("legacy-pkg", DefaultTag)
+	if err != nil || resolved == nil {
+		t.Fatalf("ResolveTag after the upgrade = %v, %v; want the legacy package", resolved, err)
+	}
+}
+
+// TestGetDB_UpgradeRecordsTheSchemaVersion pins the marker the upgrade leaves
+// behind, and that a second open leaves a tag that has moved since alone.
+//
+// The marker is what a later schema change will branch on, and it is what stops
+// the backfill re-reading every name on every command. It is asserted directly
+// because the backfill is idempotent on its own — bucketPackagesByName tracks
+// the latest tag, so re-running it writes what is already there — which means no
+// observable behaviour would betray a missing marker until the next migration
+// needed it, by which point it would be too late for the store that lost it.
+func TestGetDB_UpgradeRecordsTheSchemaVersion(t *testing.T) {
+	storeDir := t.TempDir()
+	writeSchemaV1Database(t, storeDir, &Package{
+		Name:        "legacy-pkg",
+		Version:     "1.0.0",
+		ContentHash: "hash-v1",
+	})
+
+	database := openStore(t, storeDir)
+	if err := database.InsertPackage(&Package{
+		Name:        "legacy-pkg",
+		Version:     "2.0.0",
+		ContentHash: "hash-v2",
+	}); err != nil {
+		t.Fatalf("publish a second version: %v", err)
+	}
+
+	// Re-open, as the next lnpm command would.
+	database = openStore(t, storeDir)
+
+	var recorded int64
+	if err := database.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(bucketMeta).Get(keySchemaVersion)
+		if len(v) == 8 {
+			recorded = btoi(v)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the schema version: %v", err)
+	}
+	if recorded != schemaVersion {
+		t.Errorf("the upgrade recorded schema version %d, want %d", recorded, schemaVersion)
+	}
+
+	tags, err := database.TagsForPackage("legacy-pkg")
+	if err != nil {
+		t.Fatalf("TagsForPackage: %v", err)
+	}
+	if tags[DefaultTag] != "hash-v2" {
+		t.Errorf("re-opening moved the %s tag to %q, want hash-v2", DefaultTag, tags[DefaultTag])
+	}
+}
+
+// TestGetDB_UpgradeToleratesADanglingNameIndex pins that a name index entry
+// naming a record that is not there does not stop the store opening. gc is the
+// command a user reaches for when the store is already damaged, and it cannot
+// run if opening the database fails.
+func TestGetDB_UpgradeToleratesADanglingNameIndex(t *testing.T) {
+	storeDir := t.TempDir()
+	writeSchemaV1Database(t, storeDir, &Package{
+		Name:        "good-pkg",
+		Version:     "1.0.0",
+		ContentHash: "goodhash",
+	})
+
+	boltDB, err := bolt.Open(filepath.Join(storeDir, "lnpm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Failed to re-open the old database: %v", err)
+	}
+	err = boltDB.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("packages_by_name")).Put([]byte("ghost-pkg"), itob(9999))
+	})
+	if err != nil {
+		t.Fatalf("Failed to seed the dangling index entry: %v", err)
+	}
+	if err := boltDB.Close(); err != nil {
+		t.Fatalf("Failed to close the old database: %v", err)
+	}
+
+	database := openStore(t, storeDir)
+
+	tags, err := database.TagsForPackage("ghost-pkg")
+	if err != nil {
+		t.Fatalf("TagsForPackage: %v", err)
+	}
+	if len(tags) != 0 {
+		t.Errorf("the upgrade tagged a name with no record: %v", tags)
+	}
+	if tags, _ := database.TagsForPackage("good-pkg"); tags[DefaultTag] != "goodhash" {
+		t.Errorf("the dangling entry stopped the rest of the upgrade: %v", tags)
+	}
 }
 
 // TestGetDB_LockHeldElsewhere_NamesTheOtherProcess checks that a database the
