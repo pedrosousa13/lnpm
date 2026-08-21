@@ -224,13 +224,21 @@ func initDB() (*DB, error) {
 // which is what makes the pass safe to interrupt — bolt commits it whole or not
 // at all, and re-running it writes the same entries again.
 //
-// A database written by a newer build is left alone rather than rewritten
-// backwards. Guessing at a schema this build does not know would be guessing
-// about which files gc may delete.
+// A database written by a newer build is refused, not migrated backwards and not
+// merely left alone. Guessing at a schema this build does not know would be
+// guessing about which files gc may delete - and declining to migrate while
+// letting the session carry on is exactly that guess, made silently: the very
+// next command would read the store through this build's rules. Refusing at open
+// is the only place the guess can be avoided rather than deferred.
 func migrateTx(tx *bolt.Tx) error {
 	meta := tx.Bucket(bucketMeta)
-	if v := meta.Get(keySchemaVersion); len(v) == 8 && btoi(v) >= schemaVersion {
-		return nil
+	if v := meta.Get(keySchemaVersion); len(v) == 8 {
+		switch recorded := btoi(v); {
+		case recorded > schemaVersion:
+			return fmt.Errorf("the store was written by a newer lnpm (schema version %d; this build understands %d): upgrade lnpm to use it", recorded, schemaVersion)
+		case recorded == schemaVersion:
+			return nil
+		}
 	}
 
 	packages := tx.Bucket(bucketPackages)

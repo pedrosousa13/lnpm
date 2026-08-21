@@ -235,6 +235,76 @@ func TestGetDB_UpgradeToleratesADanglingNameIndex(t *testing.T) {
 	}
 }
 
+// TestGetDB_RefusesADatabaseFromANewerBuild pins that a store written by a
+// build this one does not understand is refused at open rather than opened and
+// operated on.
+//
+// Declining to migrate it is not enough on its own. The session carries on, and
+// this build then applies its own rules to a database whose shape it is guessing
+// at - gc most of all, which decides what to delete from reachability roots that
+// a later schema may have moved.
+func TestGetDB_RefusesADatabaseFromANewerBuild(t *testing.T) {
+	storeDir := t.TempDir()
+	writeSchemaV1Database(t, storeDir, &Package{
+		Name:        "future-pkg",
+		Version:     "1.0.0",
+		ContentHash: "futurehash",
+	})
+	writeSchemaVersion(t, storeDir, schemaVersion+1)
+
+	ResetForTesting()
+	t.Setenv("LNPM_STORE", storeDir)
+	t.Cleanup(ResetForTesting)
+
+	database, err := GetDB()
+	if err == nil {
+		t.Fatal("GetDB opened a database written by a newer build, want a refusal")
+	}
+	if database != nil {
+		t.Errorf("GetDB returned a usable handle alongside the refusal: %v", database)
+	}
+	if !strings.Contains(err.Error(), "newer") {
+		t.Errorf("GetDB error = %v, want it to say the store is from a newer lnpm", err)
+	}
+}
+
+// TestGetDB_OpensADatabaseAtTheCurrentSchema is the other half: the refusal must
+// fire on a newer schema only, not on the one this build writes.
+func TestGetDB_OpensADatabaseAtTheCurrentSchema(t *testing.T) {
+	storeDir := t.TempDir()
+	writeSchemaV1Database(t, storeDir, &Package{
+		Name:        "current-pkg",
+		Version:     "1.0.0",
+		ContentHash: "currenthash",
+	})
+	writeSchemaVersion(t, storeDir, schemaVersion)
+
+	database := openStore(t, storeDir)
+	if pkg, err := database.GetPackageByName("current-pkg"); err != nil || pkg == nil {
+		t.Fatalf("GetPackageByName = %v, %v; want the package the store holds", pkg, err)
+	}
+}
+
+// writeSchemaVersion stamps a schema version onto an existing database, so a
+// test can present one this build did not write.
+func writeSchemaVersion(t *testing.T, storeDir string, version int64) {
+	t.Helper()
+
+	boltDB, err := bolt.Open(filepath.Join(storeDir, "lnpm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Failed to re-open the database: %v", err)
+	}
+	err = boltDB.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Put([]byte("schema_version"), itob(version))
+	})
+	if err != nil {
+		t.Fatalf("Failed to stamp schema version %d: %v", version, err)
+	}
+	if err := boltDB.Close(); err != nil {
+		t.Fatalf("Failed to close the database: %v", err)
+	}
+}
+
 // TestGetDB_LockHeldElsewhere_NamesTheOtherProcess checks that a database the
 // process cannot lock within the timeout is reported as a concurrency problem
 // rather than a bare "timeout".
