@@ -47,9 +47,22 @@ type TempEntry struct {
 // what this sweep exists to fix.
 //
 // A .lnpm directory that does not exist is neither an entry nor a failure: a
-// project may never have linked anything.
+// project may never have linked anything. One that is a link rather than a
+// directory is counted as unreadable and not scanned at all, for the reason
+// requireRealDir gives.
 func FindTempEntries(projectPath string) (entries []TempEntry, unreadable int) {
 	lnpmDir := filepath.Join(projectPath, ".lnpm")
+
+	// ReadDir follows a symlinked .lnpm, so without this the sweep would list -
+	// and gc would then offer to delete - temp entries belonging to whatever a
+	// checkout pointed .lnpm at. Counting it as one directory that could not be
+	// read is the shape this function already has for a directory it must not
+	// act on: nothing is reclaimed here, the count says so, and the remaining
+	// projects are still swept.
+	if err := requireRealDir("project's .lnpm", lnpmDir); err != nil {
+		debug.Logf("link: not scanning %s for temp entries: %v", lnpmDir, err)
+		return nil, 1
+	}
 
 	scopes, err := os.ReadDir(lnpmDir)
 	if err != nil {

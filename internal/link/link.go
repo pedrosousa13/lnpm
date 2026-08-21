@@ -102,6 +102,11 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return Result{}, err
 	}
+	// Before the reuse scan below, which reads .lnpm/{package} long before
+	// anything creates it: reading through a redirected path is part of the bug.
+	if err := l.requireRealLnpmDirs(packageName); err != nil {
+		return Result{}, err
+	}
 
 	// The manifest's name is reserved before anything else reads the file set,
 	// so nothing below has to consider a package's file competing for it.
@@ -417,6 +422,9 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return "", err
 	}
+	if err := l.requireRealLnpmDirs(packageName); err != nil {
+		return "", err
+	}
 
 	// An empty source path is rejected before it is resolved, because
 	// filepath.Abs("") returns the working directory and a working directory
@@ -504,6 +512,9 @@ func (l *Linker) Unlink(packageName string) error {
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return err
 	}
+	if err := l.requireRealLnpmDirs(packageName); err != nil {
+		return err
+	}
 
 	// Remove .lnpm/{package}
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
@@ -528,6 +539,77 @@ func (l *Linker) Unlink(packageName string) error {
 	// Clean up empty .lnpm directory if no packages left
 	removeDirIfEmpty(filepath.Join(l.projectPath, ".lnpm"))
 
+	return nil
+}
+
+// requireRealLnpmDirs refuses to work through a .lnpm - or, for a scoped
+// package, a .lnpm/{scope} - that is anything other than a directory in the
+// project.
+//
+// pack.ValidatePackageName guards the segments the package name contributes, but
+// nothing guarded their ancestors, and a repository can commit .lnpm itself as a
+// symlink at any directory it likes. .gitignore does not save anyone from that:
+// a tracked symlink is checked out regardless. Every path the linker builds
+// under it then lands wherever it points, so a link writes outside the project
+// and an unlink deletes outside it.
+//
+// Only the two entries the project owns are examined. Nothing above the project
+// is, so a project legitimately reached through a symlinked parent is left
+// alone.
+func (l *Linker) requireRealLnpmDirs(packageName string) error {
+	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
+	if err := requireRealDir("project's .lnpm", lnpmDir); err != nil {
+		return err
+	}
+
+	if scope, _, scoped := strings.Cut(packageName, "/"); scoped {
+		return requireRealDir("package scope", filepath.Join(lnpmDir, scope))
+	}
+
+	return nil
+}
+
+// requireRealDir returns an error unless path is a directory the caller may
+// safely build under: one that is really there, or not there at all.
+//
+// Lstat, then IsDir, is Go's own documented way to see a directory without
+// following a link into whatever it points at - os/types_windows.go names this
+// exact idiom in the comment on fileStat.mode. Asking positively for a directory
+// rather than negatively for link bits is what makes it right on Windows.
+// ModeDir is suppressed only for a name-surrogate reparse tag, which is what a
+// symlink and a junction are, so both still fail IsDir and are still refused.
+// ModeIrregular, however, is set for any *other* reparse tag with no such guard,
+// and a genuine directory carries one whenever it is a OneDrive Files On-Demand
+// placeholder, a ProjFS projection or a container-isolation entry: those read as
+// ModeDir|ModeIrregular and must be allowed, or lnpm refuses to work in a synced
+// folder. Testing the link bits refused them; IsDir does not. The same holds
+// under GODEBUG=winsymlink=0, where modePreGo1_23 returns early with ModeSymlink
+// for both surrogate tags and sets ModeIrregular only when no type bit is set.
+//
+// Everything else that is not a directory - a regular file, a fifo, a device -
+// is refused here too. None of it could have been linked into, and refusing up
+// front names the path and a remedy where MkdirAll's later ENOTDIR names
+// neither.
+//
+// A path that does not exist is not refused: .lnpm and its scope directories are
+// created on demand. Every other Lstat failure is, per docs/adr/0001 - a check
+// that cannot see the entry cannot report it as safe, and treating "I could not
+// look" as "it is fine" is the fail-open direction the ADR asks to be fixed.
+//
+// IsLiveLinked tests the link bits instead, and deliberately: it asks whether an
+// entry lnpm itself created is a live link, where a positive test for a link is
+// the right question and a directory is the answer it must reject.
+func requireRealDir(kind, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot inspect the %s at %s: %w", kind, path, err)
+	}
+	if !info.Mode().IsDir() {
+		return fmt.Errorf("the %s at %s is not a directory - remove it and re-run", kind, path)
+	}
 	return nil
 }
 
