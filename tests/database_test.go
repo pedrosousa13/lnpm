@@ -840,42 +840,12 @@ func TestDatabaseLinksForAnotherTagStayWithTheirVersion(t *testing.T) {
 	}
 }
 
-// TestDatabaseMovingATagMergesADuplicateLink pins that carrying links across
-// does not leave a project holding two links to one package. Everything that
-// reads links treats one row per project as given, and a second row would make
-// remove and gc report a link that nothing can clear.
-func TestDatabaseMovingATagMergesADuplicateLink(t *testing.T) {
-	env := setupTest(t)
-
-	v1 := insertTagPkg(t, env.Database, "merge-pkg", "h1")
-	v2 := insertTagPkg(t, env.Database, "merge-pkg", "h2")
-	proj := insertProject(t, env.Database, filepath.FromSlash("/projects/merger"))
-
-	for _, id := range []int64{v1.ID, v2.ID} {
-		if err := env.Database.InsertLink(&db.Link{PackageID: id, ProjectID: proj.ID, LinkType: "reflink"}); err != nil {
-			t.Fatalf("insert link to record %d: %v", id, err)
-		}
-	}
-
-	// Move the default tag back to the first version, carrying its links.
-	if err := env.Database.SetTag("merge-pkg", db.DefaultTag, "h1"); err != nil {
-		t.Fatalf("move the default tag: %v", err)
-	}
-
-	links, err := env.Database.GetLinksForProject(proj.ID)
-	if err != nil {
-		t.Fatalf("links for the project: %v", err)
-	}
-	if len(links) != 1 {
-		t.Fatalf("the project holds %d links to merge-pkg, want 1", len(links))
-	}
-	if links[0].PackageID != v1.ID {
-		t.Errorf("the surviving link names record %d, want the tagged version %d", links[0].PackageID, v1.ID)
-	}
-	if got := linkedProjects(t, env.Database, v2.ID); len(got) != 0 {
-		t.Errorf("the untagged version still has %v linked", got)
-	}
-}
+// Moving a tag onto a version a project already holds a link to merges the two
+// rows, and that is pinned by TestSetTag_MergesADuplicateLinkAProjectHolds in
+// internal/db. It lives there rather than here because the duplicate it needs
+// cannot be built through InsertLink any more: a second call for one project and
+// one package name replaces the first row instead of adding beside it, so a
+// fixture built out here would leave moveLinksTx nothing to merge.
 
 // TestDatabaseInsertLinkKeepsOneRowPerProjectAndName pins the invariant
 // moveLinksTx states and linksOfProject, remove and retreat all rely on: a

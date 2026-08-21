@@ -438,3 +438,132 @@ func TestGetDB_NonTimeoutFailure_DoesNotBlameAnotherProcess(t *testing.T) {
 		t.Errorf("Expected error not to blame another lnpm process, got: %v", err)
 	}
 }
+
+// writeLinkRow inserts a link row and its two index entries directly, bypassing
+// InsertLink.
+//
+// It exists because InsertLink now keeps one row per project and package name:
+// a second call for the same pair deletes the first row rather than adding
+// beside it, so the duplicate cannot be built through the public API any more.
+// A database written before that rule can still hold one, and moveLinksTx's
+// merge branch is the path that heals it, so the branch has to be reached with a
+// duplicate built the way such a database holds one.
+func writeLinkRow(t *testing.T, d *DB, link *Link) {
+	t.Helper()
+
+	err := d.db.Update(func(tx *bolt.Tx) error {
+		id, err := d.nextID(tx)
+		if err != nil {
+			return err
+		}
+		link.ID = id
+		link.CreatedAt = time.Now()
+		link.UpdatedAt = time.Now()
+
+		data, err := json.Marshal(link)
+		if err != nil {
+			return err
+		}
+		if err := tx.Bucket(bucketLinks).Put(itob(id), data); err != nil {
+			return err
+		}
+
+		for _, index := range []struct {
+			bucket *bolt.Bucket
+			key    []byte
+		}{
+			{tx.Bucket(bucketLinksByPackage), itob(link.PackageID)},
+			{tx.Bucket(bucketLinksByProject), itob(link.ProjectID)},
+		} {
+			if err := putIndexIDs(index.bucket, index.key, append(indexIDs(index.bucket, index.key), id)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to write a link row: %v", err)
+	}
+}
+
+// insertVersion records one version of a package under the default tag and
+// returns it with its assigned ID.
+func insertVersion(t *testing.T, d *DB, name, hash string) *Package {
+	t.Helper()
+
+	pkg := &Package{
+		Name:        name,
+		Version:     "1.0.0",
+		ContentHash: hash,
+		SourcePath:  "/src/" + name,
+		StorePath:   "/store/" + name + "/" + hash,
+		FilesCount:  1,
+		TotalSize:   1,
+	}
+	if err := d.InsertPackage(pkg); err != nil {
+		t.Fatalf("Failed to insert %s@%s: %v", name, hash, err)
+	}
+	return pkg
+}
+
+// TestSetTag_MergesADuplicateLinkAProjectHolds pins the healing path in
+// moveLinksTx: carrying links across a tag move must not leave a project holding
+// two rows for one package.
+//
+// Everything that reads links treats one row per project and package as given,
+// so a second row makes remove and gc report a link that nothing can clear. The
+// duplicate is written directly rather than through InsertLink, which now
+// prevents it - built through InsertLink the project would hold one row before
+// the tag ever moves, moveLinksTx would merely repoint it, and the branch this
+// test exists for would never be entered while every assertion still passed.
+func TestSetTag_MergesADuplicateLinkAProjectHolds(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	v1 := insertVersion(t, database, "merge-pkg", "h1")
+	v2 := insertVersion(t, database, "merge-pkg", "h2")
+
+	projectPath := filepath.FromSlash("/projects/merger")
+	if err := database.InsertProject(&Project{Path: projectPath, Name: "merger"}); err != nil {
+		t.Fatalf("Failed to insert the project: %v", err)
+	}
+	proj, err := database.GetProjectByPath(projectPath)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v", err)
+	}
+
+	writeLinkRow(t, database, &Link{PackageID: v1.ID, ProjectID: proj.ID, LinkType: "reflink"})
+	writeLinkRow(t, database, &Link{PackageID: v2.ID, ProjectID: proj.ID, LinkType: "reflink"})
+
+	before, err := database.GetLinksForProject(proj.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the project's links: %v", err)
+	}
+	if len(before) != 2 {
+		t.Fatalf("The fixture holds %d link rows, want the duplicate this test exists for", len(before))
+	}
+
+	// Moving the default tag back onto the first version carries the second
+	// version's link across, into a project that already holds one there.
+	if err := database.SetTag("merge-pkg", DefaultTag, "h1"); err != nil {
+		t.Fatalf("Failed to move the default tag: %v", err)
+	}
+
+	links, err := database.GetLinksForProject(proj.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the project's links: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("The project holds %d links to merge-pkg, want 1", len(links))
+	}
+	if links[0].PackageID != v1.ID {
+		t.Errorf("The surviving link names record %d, want the tagged version %d", links[0].PackageID, v1.ID)
+	}
+
+	projects, err := database.GetProjectsForPackage(v2.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the consumers of the version moved off: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Errorf("The version the tag moved off still has %d consumer(s)", len(projects))
+	}
+}
