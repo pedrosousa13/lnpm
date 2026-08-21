@@ -114,17 +114,69 @@ func TestRunRetreatRefusesATraversingLockEntry(t *testing.T) {
 	if !strings.Contains(out, hostile) {
 		t.Errorf("retreat did not name the refused entry %q, output was:\n%s", hostile, out)
 	}
-	if !strings.Contains(out, "not a valid package name") {
+	// ": %v" is how every other error in this package trails, so the refusal
+	// reads the same way as the rest of the command's output.
+	if !strings.Contains(out, "not a valid package name: ") {
 		t.Errorf("retreat did not say why the entry was refused, output was:\n%s", out)
 	}
 	if strings.Contains(out, "Retreat complete!") {
 		t.Errorf("retreat claimed to be complete after refusing an entry, output was:\n%s", out)
 	}
 
+	// rootCmd silences the usage dump but not the error, so cobra prints
+	// err.Error() straight after everything above. Repeating the summary
+	// verbatim there would read as a stutter.
+	if strings.Contains(out, err.Error()) {
+		t.Errorf("the returned error repeats the summary line verbatim; error was %q, output was:\n%s", err, out)
+	}
+
 	// The refusal has to cover everything the entry drives, not only the delete.
 	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
 	if !strings.Contains(pkgJSON, hostile) {
 		t.Errorf("retreat edited package.json for a refused entry, package.json is now:\n%s", pkgJSON)
+	}
+}
+
+// TestRunRetreatSaysWhatARefusedEntryLeftBehind covers the advice, which has to
+// survive the rest of the retreat running to completion around it. .lnpm/ is
+// gone and lnpm.lock has been renamed by the time the user reads any of this,
+// so telling them to go and look at lnpm.lock would name a file that is no
+// longer there - and the file: reference the refusal declined to touch is still
+// in package.json with nothing pointing it out.
+func TestRunRetreatSaysWhatARefusedEntryLeftBehind(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	const hostile = "../../nm-victim/id_rsa"
+	writeRetreatLock(t, project, map[string]string{hostile: "", "good-pkg": "^1.0.0"})
+
+	out := captureStdout(t, func() { _ = RunRetreat(true, false) })
+
+	// What the advice has to be true about.
+	if _, err := os.Stat(filepath.Join(project, "lnpm.lock")); !os.IsNotExist(err) {
+		t.Fatalf("lnpm.lock is still in place (%v); this test is about the case where it was stashed", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, lockfile.RetreatFileName)); err != nil {
+		t.Fatalf("%s was not written: %v", lockfile.RetreatFileName, err)
+	}
+
+	// The advice is read after the summary, so that is where it has to be, and
+	// scoping the assertions to it stops the earlier "saved as lnpm.lock.retreat"
+	// progress line from satisfying them by accident.
+	_, advice, ok := strings.Cut(out, "Retreat incomplete")
+	if !ok {
+		t.Fatalf("retreat did not report an incomplete retreat, output was:\n%s", out)
+	}
+	if !strings.Contains(advice, lockfile.RetreatFileName) {
+		t.Errorf("the advice did not point at %s, where the refused entry actually went, advice was:\n%s",
+			lockfile.RetreatFileName, advice)
+	}
+	if !strings.Contains(advice, "by hand") {
+		t.Errorf("the advice did not say the leftover package.json dependency has to be removed by hand, advice was:\n%s", advice)
+	}
+	if !strings.Contains(advice, hostile) {
+		t.Errorf("the advice did not name the dependency left in package.json, advice was:\n%s", advice)
+	}
+	if strings.Contains(advice, "good-pkg") {
+		t.Errorf("the advice named good-pkg, which was retreated normally, advice was:\n%s", advice)
 	}
 }
 

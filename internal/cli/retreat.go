@@ -58,7 +58,7 @@ func RunRetreat(force bool, runInstall bool) error {
 				// dependency would describe a retreat that is not going to
 				// happen, at the one moment the developer is reading.
 				if err := pack.ValidatePackageName(name); err != nil {
-					fmt.Printf("    %s %s: not a valid package name, will be skipped (%v)\n", iconWarn(), name, err)
+					fmt.Printf("    %s %s: will be skipped, not a valid package name: %v\n", iconWarn(), name, err)
 					continue
 				}
 
@@ -114,7 +114,7 @@ func RunRetreat(force bool, runInstall bool) error {
 
 	// Remove each linked package
 	linkedPkgs := lock.List()
-	refused := 0
+	var refused []string
 	for _, name := range linkedPkgs {
 		// lnpm.lock is a checked-in artifact, so its keys come from whoever
 		// wrote the repository rather than from lnpm. Everything below joins the
@@ -125,21 +125,21 @@ func RunRetreat(force bool, runInstall bool) error {
 		// does this same job for 'lnpm remove', has always validated first; the
 		// asymmetry was the bug.
 		//
-		// The entry is skipped whole rather than aborting the retreat. Retreat
-		// is the documented way out of lnpm, and a developer who has just been
-		// handed a tampered lock file is exactly the person who needs to leave:
-		// aborting would strand them with .lnpm/ and the file: references still
-		// in place. Skipping narrows what the command does, which is the safe
-		// direction under docs/adr/0001, and the summary below says the retreat
-		// was incomplete so the narrowing is never silent.
+		// The entry is skipped whole rather than aborting the retreat. Per
+		// ADR-0001 the direction is what decides: skipping narrows what this
+		// retreat does and leaves the entry where the user can see it, where
+		// aborting would strand a developer who has just been handed a tampered
+		// lock file with .lnpm/ and every file: reference still in place -
+		// retreat being the documented way out of lnpm, that developer is
+		// exactly the one who needs it to work. The summary below reports the
+		// count, so the narrowing is never silent.
 		//
 		// The refused entry is still carried into lnpm.lock.retreat with the
 		// rest. It is a record, not an instruction, and 'lnpm restore' links
 		// through Link, which validates the name again.
 		if err := pack.ValidatePackageName(name); err != nil {
-			fmt.Printf("  %s Refused %s: not a valid package name, so nothing was removed for it (%v)\n", iconWarn(), name, err)
-			fmt.Printf("  %s lnpm did not write that entry; check lnpm.lock for tampering or corruption\n", iconWarn())
-			refused++
+			fmt.Printf("  %s Refused %s: not a valid package name: %v\n", iconWarn(), name, err)
+			refused = append(refused, name)
 			continue
 		}
 
@@ -220,12 +220,13 @@ func RunRetreat(force bool, runInstall bool) error {
 
 	fmt.Println()
 	// A retreat that refused part of its work is not a complete one, and saying
-	// so is the whole point of counting: package.json may still hold a
-	// file:.lnpm reference for every refused entry.
-	if refused > 0 {
-		fmt.Printf("%s Retreat incomplete: refused %d of %d lnpm.lock entr(ies), see above\n", iconWarn(), refused, len(linkedPkgs))
-	} else {
+	// so is the whole point of counting: package.json still holds a file:.lnpm
+	// reference for every refused entry.
+	if len(refused) == 0 {
 		fmt.Printf("%s Retreat complete!\n", iconOK())
+	} else {
+		fmt.Printf("%s Retreat incomplete: refused %d of %d lnpm.lock entr(ies)\n", iconWarn(), len(refused), len(linkedPkgs))
+		reportRefused(cwd, refused)
 	}
 
 	if !runInstall {
@@ -234,12 +235,47 @@ func RunRetreat(force bool, runInstall bool) error {
 
 	// Non-zero exit, as remove does for the packages it could not remove: a
 	// script that retreats before publishing must not read a partial retreat as
-	// a clean one.
-	if refused > 0 {
-		return fmt.Errorf("%d of %d lnpm.lock entr(ies) were refused as invalid package names", refused, len(linkedPkgs))
+	// a clean one. The wording is deliberately not the summary line's: rootCmd
+	// silences the usage dump but not the error, so cobra prints this straight
+	// after it, and two spellings of one sentence read as a stutter. The summary
+	// counts what was refused; this names what is left.
+	if len(refused) > 0 {
+		return fmt.Errorf("package.json still references %d unretreated lnpm.lock entr(ies)", len(refused))
 	}
 
 	return nil
+}
+
+// reportRefused says what a refusal left behind and what to do about it. It runs
+// after the rest of the retreat, so it can name where things actually ended up
+// rather than where they were when the entry was refused.
+//
+// That ordering is the whole reason this is separate. The retreat carries on
+// past a refusal: .lnpm/ is deleted and lnpm.lock is moved to the snapshot. So a
+// refusal cannot tell the user to go and look at lnpm.lock - by the time they
+// read it, there is no lnpm.lock, and re-running retreat reports no links at
+// all. It has to name the snapshot instead.
+//
+// What is left behind is safe to leave, which is why naming it beats quietly
+// editing package.json under a name lnpm just refused to act on. lnpm never
+// wrote these entries: 'lnpm add' validates the name, so there was never a
+// .lnpm/{name} directory for them and no link to undo. The file: reference and
+// the lock key are both the tampering itself, not damage the retreat did, and
+// removing them is a decision for the person who owns the repository.
+func reportRefused(cwd string, refused []string) {
+	// Where the record went. The snapshot in the ordinary case; lnpm.lock still
+	// in place if stashing failed, which it reports for itself above.
+	record := lockfile.RetreatFileName
+	if _, err := os.Stat(lockfile.Path(cwd)); err == nil {
+		record = "lnpm.lock"
+	}
+
+	fmt.Printf("%s lnpm never wrote those entries, so there was nothing of its own to clean up for them\n", iconWarn())
+	fmt.Printf("%s Left in package.json, to remove by hand:\n", iconWarn())
+	for _, name := range refused {
+		fmt.Printf("    %q\n", name)
+	}
+	fmt.Printf("%s The entries themselves are in %s; inspect it for tampering or corruption\n", iconWarn(), record)
 }
 
 // stashLockForRestore moves lnpm.lock aside rather than deleting it. The move

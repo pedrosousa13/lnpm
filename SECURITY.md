@@ -28,11 +28,11 @@ A package name is untrusted input: it comes from a `package.json` or an
 `lnpm.lock` that is checked into the repository, so whoever wrote the repository
 chose it. Against that, lnpm:
 
-- Validates the name before building a path from it, at each boundary that does
-  so — the store, the linker's `Link`/`LinkSource`/`Unlink`, packing, and
-  `retreat`'s pass over `lnpm.lock`. A name that is absolute, holds a `.` or
-  `..` segment, holds a backslash or a NUL, or has more than the one `/` a
-  scope allows, is rejected there.
+- Validates the name before building a path it will **write to or delete**, at
+  each boundary that does so — `Store.Store`, the linker's
+  `Link`/`LinkSource`/`Unlink`, packing, and `retreat`'s pass over `lnpm.lock`.
+  A name that is absolute, holds a `.` or `..` segment, holds a backslash or a
+  NUL, or has more than the one `/` a scope allows, is rejected there.
 - Requires `.lnpm` — and, for a scoped package, `.lnpm/{scope}` — to be a real
   directory, so a repository cannot commit either as a symlink and redirect
   every write and delete underneath it.
@@ -46,9 +46,11 @@ Known limits, which this section deliberately does not claim otherwise about:
 - The checks are not atomic. A path validated as safe can be replaced between
   the check and the use.
 - Entries under `node_modules/` are not guarded the way `.lnpm` is.
-- Read-only lookups — for example the link-status queries `pull` runs — do not
-  validate the name first. They only `Lstat`, so they read rather than write,
-  but they are not covered by the guarantee above.
+- Read paths are not covered. `Store.GetFiles` walks the store path it builds
+  from a name, and the link-status queries `pull` runs only `Lstat` it, and
+  neither validates the name first. They read rather than write, so they cannot
+  destroy anything, but a name chosen by the repository can still steer where
+  they look.
 
 ### Database
 
