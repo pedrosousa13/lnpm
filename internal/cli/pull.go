@@ -62,7 +62,7 @@ func RunPull(packageNames []string) error {
 	// for beta would be relinked onto the stable release and have its lock
 	// rewritten to match - the carry-over onto latest that asking for a channel
 	// exists to prevent, reached through pull instead of through a moved tag.
-	followed, err := tagsFollowedByProject(database, cwd)
+	held, err := linksOfProject(database, cwd)
 	if err != nil {
 		return err
 	}
@@ -94,7 +94,7 @@ func RunPull(packageNames []string) error {
 			continue
 		}
 
-		tag := followed[name]
+		tag := held.tag(name)
 		var pkg *db.Package
 		if tagNote(tag) != "" {
 			pkg, err = database.ResolveTag(name, tag)

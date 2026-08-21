@@ -30,20 +30,34 @@ func tagsNaming(tags map[string]string, hash string) string {
 	return " [" + strings.Join(naming, ", ") + "]"
 }
 
-// tagsFollowedByProject reports which channel the project at path follows for
-// each package it has linked, as package name to tag. A name absent from the
-// result, or present with an empty tag, follows the default one.
+// projectLinks maps each package name a project consumes to the link row that
+// records it. An absent name is a package this project has no link for.
+type projectLinks map[string]*db.Link
+
+// tag returns the channel the project follows for name, reading an absent or
+// untagged link as the default one.
+func (p projectLinks) tag(name string) string {
+	if l, ok := p[name]; ok {
+		return l.Tag
+	}
+	return ""
+}
+
+// linksOfProject reads the links the project at path holds, keyed by package
+// name.
 //
-// The link row is the authority here rather than the lock file, because the lock
-// records what was linked and not what was asked for: two versions of a name can
-// be in the store at once now, and only the link says which channel the project
-// chose.
+// Looking a package up by name instead is what every command used to do, and it
+// stopped being enough once two versions of a name could be in the store at
+// once: the name index mirrors the default tag, so a name lookup answers with
+// the version tagged latest whatever version the project is actually on. The
+// link row is the only record of which one that is, and of which channel the
+// project asked for - the lock file says what was linked, not what was
+// requested.
 //
-// A project not in the database yet - a lock file written by an add whose
-// database write failed, say - is not an error. It has no links to read, so
-// every package it holds falls back to the default tag, which is what the
-// caller would have done anyway.
-func tagsFollowedByProject(database *db.DB, path string) (map[string]string, error) {
+// A project not in the database - a lock file written by an add whose database
+// write failed, say - is not an error. It holds no links, so every caller falls
+// back to what it would have done anyway.
+func linksOfProject(database *db.DB, path string) (projectLinks, error) {
 	proj, err := database.GetProjectByPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to look up this project: %w", err)
@@ -66,13 +80,13 @@ func tagsFollowedByProject(database *db.DB, path string) (map[string]string, err
 		nameByID[pkg.ID] = pkg.Name
 	}
 
-	followed := make(map[string]string, len(links))
+	held := make(projectLinks, len(links))
 	for _, l := range links {
 		if name, ok := nameByID[l.PackageID]; ok {
-			followed[name] = l.Tag
+			held[name] = l
 		}
 	}
-	return followed, nil
+	return held, nil
 }
 
 // RunTag manages a dist-tag on a package already in the store, without

@@ -626,3 +626,63 @@ func TestPullFollowsItsChannelForward(t *testing.T) {
 		}
 	})
 }
+
+// TestUnlinkingATaggedConsumerDeletesItsLinkRow pins that the commands which
+// tear a project down delete the link the project actually holds.
+//
+// Both find it by name, and the name index mirrors latest, so a project linked
+// to a tagged version had its files unlinked and its lock cleared while the link
+// row survived. What is left is not cosmetic: status and `list --projects` keep
+// naming a project that no longer consumes the package, `publish --tag --push`
+// tries to push into it, and gc counts the link as valid and so never collects
+// the version - the one build a tag was deliberately keeping is joined by one
+// nothing is keeping on purpose.
+//
+// Unreachable before add learned tags: every link was on the version latest
+// named, so looking it up by name always found it.
+func TestUnlinkingATaggedConsumerDeletesItsLinkRow(t *testing.T) {
+	cases := []struct {
+		name   string
+		unlink func(t *testing.T) error
+	}{
+		{"remove", func(t *testing.T) error { return cli.RunRemove("unlink-lib", false, true) }},
+		{"retreat", func(t *testing.T) error { return cli.RunRetreat(true, false) }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
+
+			pkgDir := env.publishPkg("unlink-lib", "1.0.0", map[string]string{
+				"index.js": "module.exports = 'stable';",
+			})
+			publishTagged(t, env, pkgDir, "unlink-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+			projectDir := env.newProject("unlink-project")
+			env.addPkg(projectDir, "unlink-lib@beta", false, false)
+
+			beta, err := env.Database.ResolveTag("unlink-lib", "beta")
+			if err != nil || beta == nil {
+				t.Fatalf("Failed to resolve the beta tag: %v", err)
+			}
+			if links, _ := env.Database.GetLinksForPackage(beta.ID); len(links) != 1 {
+				t.Fatalf("The beta build starts with %d link(s), want 1", len(links))
+			}
+
+			env.chdir(projectDir)
+			captureStdout(t, func() {
+				if err := tc.unlink(t); err != nil {
+					t.Errorf("Failed to unlink: %v", err)
+				}
+			})
+
+			links, err := env.Database.GetLinksForPackage(beta.ID)
+			if err != nil {
+				t.Fatalf("Failed to read the links of the beta build: %v", err)
+			}
+			if len(links) != 0 {
+				t.Errorf("The beta build kept %d link row(s) after %s", len(links), tc.name)
+			}
+		})
+	}
+}

@@ -80,10 +80,12 @@ func RunRetreat(force bool, runInstall bool) error {
 	// Get database for cleanup
 	database, _ := db.GetDB()
 
-	// Get current project
+	// Get current project, and the links it actually holds
 	var proj *db.Project
+	var held projectLinks
 	if database != nil {
 		proj, _ = database.GetProjectByPath(cwd)
+		held, _ = linksOfProject(database, cwd)
 	}
 
 	// Remove each linked package
@@ -118,11 +120,13 @@ func RunRetreat(force bool, runInstall bool) error {
 			}
 		}
 
-		// Remove link from database
+		// Remove link from database. The row this project holds, not the one a
+		// lookup by name would find: the name index mirrors the default tag, so
+		// for a project on a tagged version that lookup names a different record
+		// and the delete would silently match nothing.
 		if database != nil && proj != nil {
-			dbPkg, _ := database.GetPackageByName(name)
-			if dbPkg != nil {
-				_ = database.DeleteLink(dbPkg.ID, proj.ID)
+			if l, ok := held[name]; ok {
+				_ = database.DeleteLink(l.PackageID, proj.ID)
 			}
 		}
 	}

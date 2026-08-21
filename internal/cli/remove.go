@@ -58,6 +58,11 @@ func RunRemove(packageName string, all bool, yes bool) error {
 		return fmt.Errorf("failed to get project: %w", err)
 	}
 
+	held, err := linksOfProject(database, cwd)
+	if err != nil {
+		return err
+	}
+
 	linker := link.New(cwd)
 
 	// Remove each package
@@ -97,11 +102,13 @@ func RunRemove(packageName string, all bool, yes bool) error {
 		// Remove from lock file
 		lock.Remove(name)
 
-		// Remove link from database
+		// Remove link from database. The row this project holds, not the one a
+		// lookup by name would find: the name index mirrors the default tag, so
+		// for a project on a tagged version that lookup names a different record
+		// and the delete would silently match nothing.
 		if proj != nil {
-			pkg, _ := database.GetPackageByName(name)
-			if pkg != nil {
-				_ = database.DeleteLink(pkg.ID, proj.ID)
+			if l, ok := held[name]; ok {
+				_ = database.DeleteLink(l.PackageID, proj.ID)
 			}
 		}
 
