@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
@@ -137,8 +138,12 @@ func RunRestore() error {
 		// in the store, and a consumer on the default channel would be put back
 		// on a release it never linked.
 		//
-		// A snapshot written before the lock file recorded hashes has none, and
-		// falls back to the name it always resolved through.
+		// An entry with no hash falls back to the name, which resolves through
+		// the default tag. No lnpm ever wrote one: lockfile.Package has carried
+		// Hash since the file's first commit and every writer sets it, so this
+		// is defence against a hand-edited lock file and nothing else. The
+		// fallback restores whatever the default tag names today, which for a
+		// hand-edited entry is the best the entry supports.
 		var pkg *db.Package
 		if entry.Hash != "" {
 			pkg, err = database.GetPackageByHash(name, entry.Hash)
@@ -307,6 +312,14 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 	// asked for months ago, and a wrong one is worse than none - it would have
 	// later publishes carry the project down a channel it never chose.
 	// warnIfOffTheDefaultChannel says so out loud instead.
+	//
+	// pushTag reads the same tags and does infer from them, which is not a
+	// contradiction: it is asking a different question. Push asks which channel
+	// the build in front of it belongs to, about a tree its user is editing now,
+	// and a wrong answer is a release the next command can re-tag. Here the
+	// question is what a user chose before a retreat that may be weeks old, and
+	// a wrong answer is written into a link row that quietly steers every
+	// publish after it.
 	dbLink := &db.Link{
 		PackageID: pkg.ID,
 		ProjectID: existingProj.ID,
@@ -318,26 +331,51 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 }
 
 // warnIfOffTheDefaultChannel reports that a restored package is on a build the
-// default tag does not name, which means the project was following some other
-// channel before the retreat and is not following it now.
+// default tag does not name. The restored link follows that tag - the third
+// thing restore cannot rebuild from the snapshot, alongside whether a package
+// was added with --link and which dependency field it was in - so the project is
+// on one build and following another. Left unsaid it would surface later and
+// elsewhere: the files are right, so nothing looks wrong until the next `lnpm
+// pull` moves the project onto whatever the default tag names.
 //
-// This is the third thing restore cannot rebuild from the snapshot, alongside
-// whether a package was added with --link and which dependency field it was in.
-// Left unsaid it would surface later and elsewhere: the files are right, so
-// nothing looks wrong until the next `lnpm pull` reads the restored link as a
-// default-channel one and moves the project onto the stable release.
+// Two quite different things put a project there, and they take opposite advice,
+// so which one happened is worked out rather than hedged over.
 //
-// A failure to read the tag is not reported. The warning is advice about a state
-// restore has already left the project in, and turning a failed read into a
-// second warning about the first would say less than nothing.
+// A tag naming the restored build means the project was following that channel:
+// the snapshot cannot say so, but a build that a channel still names is one a
+// consumer plausibly asked for, and re-adding under the tag says it again.
+//
+// No tag naming it means the channel is not the story. The build was the default
+// one and the package has been published since, which hash-based restore turned
+// from a failure into this: the recorded build comes back exactly, and it is
+// simply behind. Sending that user after a dist-tag would have them hunt for a
+// channel their package never had; what they want is `lnpm pull`.
+//
+// A failure to read is not reported. The warning is advice about a state restore
+// has already left the project in, and turning a failed read into a second
+// warning about the first would say less than nothing.
 func warnIfOffTheDefaultChannel(database *db.DB, name string, pkg *db.Package) {
 	current, err := database.ResolveTag(name, db.DefaultTag)
 	if err != nil || (current != nil && current.ContentHash == pkg.ContentHash) {
 		return
 	}
-	fmt.Printf("  %s %s was restored on a build the %s tag does not name, so it now follows %s\n",
-		iconWarn(), name, db.DefaultTag, db.DefaultTag)
-	fmt.Printf("      If it was added under a dist-tag, run 'lnpm add %s@<tag>' to follow that channel again\n", name)
+
+	tags, err := database.TagsForPackage(name)
+	if err != nil {
+		return
+	}
+
+	// The default tag is not among these: it names other content, or nothing.
+	if naming := tagsNamingList(tags, pkg.ContentHash); len(naming) > 0 {
+		fmt.Printf("  %s %s was restored on the build tagged %s, but the restored link follows %s\n",
+			iconWarn(), name, strings.Join(naming, ", "), db.DefaultTag)
+		fmt.Printf("      If it was added under a dist-tag, run 'lnpm add %s@<tag>' to follow that channel again\n", name)
+		return
+	}
+
+	fmt.Printf("  %s %s has been published since the retreat, so the build restored is no longer the one %s names\n",
+		iconWarn(), name, db.DefaultTag)
+	fmt.Printf("      Run 'lnpm pull' to move onto the current release\n")
 }
 
 // dependencyFieldKnown reports whether package.json still says which dependency

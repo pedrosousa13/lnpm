@@ -1059,6 +1059,53 @@ func TestPushUnderATagMovesOnlyThatChannel(t *testing.T) {
 	}
 }
 
+// TestRestoreAfterARepublishSaysToPull covers what hash-based restore turned a
+// failure into. A package republished while the project was retreated used to
+// have the consumer reported as missing from the store; now the recorded build
+// is still there and comes back exactly.
+//
+// The project never followed a dist-tag, so telling it to go find one sends the
+// user after a channel that does not exist. What actually happened is that the
+// package moved on, and the answer to that is `lnpm pull`.
+func TestRestoreAfterARepublishSaysToPull(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("restore-republish-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'one';",
+	})
+
+	projectDir := env.newProject("restore-republish-project")
+	env.addPkg(projectDir, "restore-republish-lib", false, false)
+
+	env.chdir(projectDir)
+	captureStdout(t, func() {
+		if err := cli.RunRetreat(true, false); err != nil {
+			t.Fatalf("Failed to retreat: %v", err)
+		}
+	})
+
+	// The package moves on while the project is retreated.
+	env.republish(pkgDir, "restore-republish-lib", "1.1.0", "module.exports = 'two';")
+
+	env.chdir(projectDir)
+	var out string
+	var err error
+	out = captureStdout(t, func() { err = cli.RunRestore() })
+	if err != nil {
+		t.Fatalf("Failed to restore after a republish: %v\n%s", err, out)
+	}
+
+	env.AssertLinkedFileContent(projectDir, "restore-republish-lib", "index.js", "module.exports = 'one';")
+
+	if !strings.Contains(out, "lnpm pull") {
+		t.Errorf("restore did not advise a pull, output was:\n%s", out)
+	}
+	if strings.Contains(out, "@<tag>") {
+		t.Errorf("restore sent the user after a dist-tag the package never had, output was:\n%s", out)
+	}
+	assertNoRawGlyphs(t, out)
+}
+
 // TestRestorePutsBackTheBuildTheSnapshotRecorded pins that a retreat and a
 // restore leave a consumer on the channel it was on.
 //
@@ -1104,9 +1151,13 @@ func TestRestorePutsBackTheBuildTheSnapshotRecorded(t *testing.T) {
 	})
 
 	// The snapshot cannot say which channel the project followed, so the
-	// restored link follows the default one and restore has to say so.
-	if !strings.Contains(out, db.DefaultTag+" tag does not name") {
+	// restored link follows the default one and restore has to say so - naming
+	// the channel that still holds the build, which is the one to re-add under.
+	if !strings.Contains(out, "restored on the build tagged beta") {
 		t.Errorf("restore did not warn that the channel could not be restored, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "restore-tagged-lib@<tag>") {
+		t.Errorf("restore did not say how to follow the channel again, output was:\n%s", out)
 	}
 	assertNoRawGlyphs(t, out)
 }
