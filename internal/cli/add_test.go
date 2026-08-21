@@ -571,6 +571,33 @@ func TestResolveAddSpecReportsHowTheSpecResolved(t *testing.T) {
 	}
 }
 
+// TestResolveAddSpecRefusesATooShortHashPrefix pins the floor under the hash
+// step. `lnpm add mylib@2` is a user who means version 2; without a minimum it
+// is tried against content hashes, and one retained hash beginning with "2"
+// silently resolves it to that build - or, worse, several do and the user is
+// told their spec is an ambiguous hash prefix.
+//
+// Four characters is git's minimum for an abbreviated object name, which the
+// hash step is modelled on.
+func TestResolveAddSpecRefusesATooShortHashPrefix(t *testing.T) {
+	for _, requested := range []string{"2", "22", "222"} {
+		t.Run(requested, func(t *testing.T) {
+			_, database := newGCStore(t)
+
+			seedVersion(t, database, "shortprefix-pkg", "1.0.0", "2222222211111111")
+			seedVersion(t, database, "shortprefix-pkg", "3.0.0", "bbbbbbbb22222222")
+
+			pkg, _, _, err := resolveAddSpec(database, "shortprefix-pkg", requested)
+			if err == nil {
+				t.Fatalf("resolveAddSpec(%s) resolved %v, want a refusal: that is too short to be a hash", requested, pkg)
+			}
+			if !strings.Contains(err.Error(), "no version of shortprefix-pkg matches") {
+				t.Errorf("resolveAddSpec(%s) error = %v, want the dead end a version spec gets, not a hash-prefix verdict", requested, err)
+			}
+		})
+	}
+}
+
 // TestResolveAddSpecOnAnUnknownNameResolvesNothing pins that a name the store
 // has never held stays a nil package rather than becoming an error. The two add
 // paths word that one differently, and both wordings predate this change.

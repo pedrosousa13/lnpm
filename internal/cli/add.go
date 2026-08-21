@@ -674,6 +674,16 @@ const (
 	specHash    specKind = "hash"
 )
 
+// minHashPrefix is the shortest @suffix the hash step will consider, borrowed
+// from git's minimum for an abbreviated object name.
+//
+// Without a floor, `lnpm add mylib@2` - a user who means version 2 - is matched
+// against content hashes, and a single retained hash beginning with "2" resolves
+// it to that build. Nothing about the spec says the user meant a hash, so a
+// short suffix that matches no version has to reach the dead end that names the
+// retained versions rather than a verdict about hash prefixes.
+const minHashPrefix = 4
+
 // resolveAddSpec works out which version of name an add should link, which
 // channel the resulting link follows, and how the spec resolved.
 //
@@ -686,7 +696,8 @@ const (
 //  2. an exact version string, against every version the store has retained -
 //     not only the one the default tag names, which is all this could see while
 //     the store held one record per name;
-//  3. a content-hash prefix, against the same set.
+//  3. a content-hash prefix of at least minHashPrefix characters, against the
+//     same set.
 //
 // Steps 2 and 3 are what makes a rollback possible: `lnpm list <pkg> --versions`
 // prints a version and an eight-character short hash per row, and both have to
@@ -782,7 +793,14 @@ func matchVersion(versions []*db.Package, current *db.Package, name, requested s
 // requested, or nil when none does. A prefix several versions share is refused
 // with their full hashes, so the user can lengthen it rather than be handed
 // whichever record was walked first.
+//
+// Anything shorter than minHashPrefix is not treated as a hash at all, for the
+// reason given there.
 func matchHashPrefix(versions []*db.Package, name, requested string) (*db.Package, error) {
+	if len(requested) < minHashPrefix {
+		return nil, nil
+	}
+
 	var candidates []*db.Package
 	for _, v := range versions {
 		if strings.HasPrefix(v.ContentHash, requested) {
