@@ -255,10 +255,16 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 // its store entry go together. There is no separate "ever published" history to
 // consult and nothing here retains anything that gc would otherwise take.
 //
-// Every read is surfaced rather than skipped. A listing whose whole job is
-// telling a user which build to roll back to must not report a version as
-// untagged or unconsumed because a read failed: that is indistinguishable on
-// screen from the version being safe to leave behind.
+// Every read this makes is surfaced rather than skipped: a listing whose whole
+// job is telling a user which build to roll back to must not report a version as
+// untagged or unconsumed because a read failed, because that is
+// indistinguishable on screen from the version being safe to leave behind. The
+// history itself goes further and fails on a version record it cannot parse, for
+// the reason GetPackageVersions gives.
+//
+// One gap remains below that line: GetProjectsForPackage drops a link row it
+// cannot read, so a consumer can still go unnamed. Fixing it means changing a
+// lookup four other commands share, which is not this listing's to do.
 func RunListVersions(packageName string) error {
 	if packageName == "" {
 		return fmt.Errorf("--versions needs a package name: try 'lnpm list <package> --versions'")

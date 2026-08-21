@@ -1028,9 +1028,11 @@ func TestDatabaseGetPackageVersionsListsEveryRetainedVersion(t *testing.T) {
 // in ID order, which is close enough to be mistaken for correct and is not the
 // order a reader rolling back is looking for.
 //
-// The tie-break on ID matters as much as the timestamp: two inserts can land
-// inside one tick of a coarse clock, and without it the listing would be
-// arbitrary exactly when the two versions are hardest to tell apart.
+// This pins the timestamp half only. Every insert here goes through the normal
+// path, which stamps UpdatedAt from time.Now, so on any clock finer than the gap
+// between two inserts the three timestamps differ and the tie-break on ID is
+// never reached. The tie-break has its own test in internal/db, where a record's
+// timestamp can be written rather than stamped.
 func TestDatabaseGetPackageVersionsOrdersNewestFirst(t *testing.T) {
 	env := setupTest(t)
 

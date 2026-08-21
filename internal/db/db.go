@@ -795,6 +795,16 @@ func (db *DB) GetPackageByHash(name, hash string) (*Package, error) {
 // about 15ms — so without it the order would be arbitrary precisely when two
 // versions are hardest to tell apart, and would differ between runs over an
 // unchanged store.
+//
+// A record that will not unmarshal fails the whole lookup, unlike the listings
+// alongside it, which skip one. A version that disappears from a rollback
+// history is indistinguishable on screen from one gc collected, and the same
+// lookup answers `lnpm add <pkg>@<hash>`, so a skipped record would have the
+// user told the build they are rolling back to does not exist. GetPackageByName,
+// which the add path went through before this existed, already surfaces a record
+// it cannot parse. The cost is that the failure is not scoped to name: a damaged
+// record carries no readable name, so any one of them fails every history. That
+// is a damaged store rather than a state lnpm writes.
 func (db *DB) GetPackageVersions(name string) ([]*Package, error) {
 	debug.Logf("db: get versions of %s", name)
 	db.mu.RLock()
@@ -805,7 +815,7 @@ func (db *DB) GetPackageVersions(name string) ([]*Package, error) {
 		return tx.Bucket(bucketPackages).ForEach(func(k, v []byte) error {
 			var pkg Package
 			if err := json.Unmarshal(v, &pkg); err != nil {
-				return nil // Skip invalid entries
+				return fmt.Errorf("package record %d will not parse: %w", btoi(k), err)
 			}
 			if pkg.Name == name {
 				versions = append(versions, &pkg)

@@ -567,3 +567,104 @@ func TestSetTag_MergesADuplicateLinkAProjectHolds(t *testing.T) {
 		t.Errorf("The version the tag moved off still has %d consumer(s)", len(projects))
 	}
 }
+
+// --- Version history ---------------------------------------------------------
+
+// writePackageRow writes a package record straight into the bucket, without the
+// timestamps insertPackageTx stamps from time.Now.
+//
+// GetPackageVersions orders on UpdatedAt and breaks a tie on ID, and a tie is
+// the case the tie-break exists for: a coarse clock - Windows' is about 15ms -
+// hands two publishes the same instant. Nothing that goes through InsertPackage
+// can produce that on a Linux or macOS clock, so a test that wants it has to
+// write the timestamp itself.
+func writePackageRow(t *testing.T, d *DB, pkg *Package) {
+	t.Helper()
+
+	err := d.db.Update(func(tx *bolt.Tx) error {
+		id, err := d.nextID(tx)
+		if err != nil {
+			return err
+		}
+		pkg.ID = id
+		data, err := json.Marshal(pkg)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(bucketPackages).Put(itob(id), data)
+	})
+	if err != nil {
+		t.Fatalf("Failed to write a package row: %v", err)
+	}
+}
+
+// TestGetPackageVersions_BreaksATimestampTieOnID pins the second half of the
+// history's order.
+//
+// Two publishes can land inside one tick of a coarse clock, and without the
+// tie-break the order would be arbitrary precisely when two versions are hardest
+// to tell apart - and would differ between runs over an unchanged store. The
+// records here carry one timestamp because that is the only state in which the
+// tie-break is reached at all: an insert through the normal path stamps
+// time.Now, which on this platform separates them every time.
+func TestGetPackageVersions_BreaksATimestampTieOnID(t *testing.T) {
+	storeDir := t.TempDir()
+	database := openStore(t, storeDir)
+
+	published := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+	for _, hash := range []string{"h1", "h2", "h3"} {
+		writePackageRow(t, database, &Package{
+			Name:        "tied-pkg",
+			Version:     "1.0.0",
+			ContentHash: hash,
+			CreatedAt:   published,
+			UpdatedAt:   published,
+		})
+	}
+
+	versions, err := database.GetPackageVersions("tied-pkg")
+	if err != nil {
+		t.Fatalf("GetPackageVersions() error = %v", err)
+	}
+
+	var order []string
+	for _, v := range versions {
+		order = append(order, v.ContentHash)
+	}
+	if got := strings.Join(order, ","); got != "h3,h2,h1" {
+		t.Errorf("GetPackageVersions() ordered three versions sharing one timestamp %s, want the most recently written first", got)
+	}
+}
+
+// TestGetPackageVersions_SurfacesARecordThatWillNotUnmarshal pins that a version
+// whose bytes will not parse stops the history rather than disappearing from it.
+//
+// A listing whose whole job is telling a user which build to roll back to must
+// not drop a row for a read that failed: on screen that is indistinguishable
+// from gc having collected the build, and the same lookup answers `lnpm add
+// <pkg>@<hash>`, so the user would be told the build they are rolling back to
+// does not exist. GetPackageByName, which the add path went through before this
+// lookup existed, already surfaces a record it cannot parse.
+func TestGetPackageVersions_SurfacesARecordThatWillNotUnmarshal(t *testing.T) {
+	storeDir := t.TempDir()
+	database := openStore(t, storeDir)
+
+	if err := database.InsertPackage(&Package{
+		Name:        "damaged-pkg",
+		Version:     "1.0.0",
+		ContentHash: "h1",
+	}); err != nil {
+		t.Fatalf("Failed to seed a version: %v", err)
+	}
+
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketPackages).Put(itob(9999), []byte("{ not a package"))
+	})
+	if err != nil {
+		t.Fatalf("Failed to damage a record: %v", err)
+	}
+
+	if _, err := database.GetPackageVersions("damaged-pkg"); err == nil {
+		t.Error("GetPackageVersions() skipped a record it could not read; a version missing from a rollback listing reads as one gc collected")
+	}
+}
