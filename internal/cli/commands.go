@@ -123,9 +123,13 @@ the store, picking up anything published since they were added.
 With no arguments every package in lnpm.lock is refreshed.
 
 This command:
-  1. Finds each package's current version in the store
+  1. Finds the version the channel each package follows now names
   2. Refreshes .lnpm/{package}/
   3. Updates lnpm.lock
+
+A package added as <pkg>@<tag> follows that channel, so pull moves it to
+whatever the tag names and never onto ` + db.DefaultTag + `. Everything else follows
+` + db.DefaultTag + `, as it always has.
 
 package.json is never modified: its reference already points at .lnpm/{package}.
 
@@ -200,8 +204,15 @@ var gcCmd = &cobra.Command{
 	Short: "Garbage collect unused packages",
 	Long: `Remove unused packages from the store.
 
+A stored version goes when no link and no dist-tag reaches it. The ` + db.DefaultTag + `
+tag does not count: every publish moves it onto what it just wrote, so treating
+it as a reason to keep a version would leave gc nothing it could ever collect.
+A version a tag you set names is kept even with nothing linked to it, which is
+what a build published to a channel is waiting for. Removing one of those takes
+two steps: 'lnpm tag <pkg> <tag> --delete', then 'lnpm gc'.
+
 Examples:
-  lnpm gc              # Remove packages with no links
+  lnpm gc              # Remove versions no link and no tag reaches
   lnpm gc --dry-run    # Show what would be removed
   lnpm gc --older-than 30d   # Remove packages older than 30 days
   lnpm gc --fix-links  # Clean up orphaned link records

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
+	"github.com/pedrosousa13/lnpm/internal/db"
 )
 
 // TestGCRemovesOrphans table-drives garbage collection of orphaned (unlinked)
@@ -297,6 +298,34 @@ func TestGCKeepsAVersionATagPins(t *testing.T) {
 
 	// Nothing links the version latest names, and latest alone does not keep it.
 	env.AssertDirectoryExists(second.StorePath, false)
+
+	// So this run leaves the package reachable by its beta tag and by nothing
+	// else: collecting what latest named cleared the name index with it. ADR-0002
+	// discloses that a version can outlive its package's name, and this is the
+	// run that produces it - asserted here rather than left implied, because it
+	// is the one state db.go's two comments about the default tag say publishing
+	// never creates.
+	byName, err := env.Database.GetPackageByName("pinned-pkg")
+	if err != nil {
+		t.Fatalf("Failed to look pinned-pkg up by name: %v", err)
+	}
+	if byName != nil {
+		t.Errorf("pinned-pkg still resolves by name to %s, want nothing after its latest was collected", byName.ContentHash)
+	}
+	if tags[db.DefaultTag] != "" {
+		t.Errorf("the %s tag still names %q, want it gone with the version it named", db.DefaultTag, tags[db.DefaultTag])
+	}
+	resolved, err := env.Database.ResolveTag("pinned-pkg", "beta")
+	if err != nil || resolved == nil {
+		t.Fatalf("The beta tag no longer resolves: %v, %v", resolved, err)
+	}
+
+	// The next publish of the name puts the default tag back, which is the only
+	// thing that clears the state.
+	env.republish(pkgDir, "pinned-pkg", "3.0.0", "module.exports = 'v3';")
+	if pkg, _ := env.Database.GetPackageByName("pinned-pkg"); pkg == nil {
+		t.Error("republishing did not make pinned-pkg reachable by name again")
+	}
 }
 
 // TestGCNoPackages tests GC against an empty database is a safe no-op.

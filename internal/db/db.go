@@ -457,6 +457,14 @@ func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package, tag string) error {
 // for. Every command but a tag-aware add reaches a package through the name
 // index, so a package published only under some other tag would sit in the store
 // and on disk while push, remove, restore and status could not see it at all.
+//
+// That is a guarantee about what publishing does, not an invariant of the
+// database. gc can reach the state this avoids and does so deliberately: it
+// collects the version the default tag names when nothing links it, because that
+// tag is not a reachability root (ADR-0002), and DeletePackage then clears the
+// name index. What is left is a package reachable only by its other tags. The
+// next publish of that name restores the default tag, so the state is one gc can
+// produce and only a publish can clear.
 func setTagTx(tx *bolt.Tx, name, tag, hash string, id int64) error {
 	if tag == "" {
 		tag = DefaultTag
@@ -618,6 +626,14 @@ func (db *DB) SetTag(name, tag, hash string) error {
 // deleting it would leave the package published, its files on disk and its
 // record intact, while making it unreachable by name from every command lnpm
 // has.
+//
+// gc can leave a package in that state anyway, by collecting the version the
+// default tag names while another tag keeps an older one (ADR-0002). The refusal
+// here is not a claim that the state is unreachable, then. It is that reaching
+// it by deleting a tag would be a user asking for a package to stay published
+// and getting it hidden instead, where reaching it through gc is a version being
+// collected because nothing reached it - which is what gc is for, and which the
+// next publish of that name undoes.
 func (db *DB) DeleteTag(name, tag string) error {
 	if tag == "" {
 		tag = DefaultTag
