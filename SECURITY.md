@@ -44,11 +44,20 @@ Hard links share the same inode as the source file:
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities by:
+Please report security vulnerabilities privately. GitHub's private vulnerability
+reporting is the preferred channel:
+
+**[Report a vulnerability](https://github.com/pedrosousa13/lnpm/security/advisories/new)**
+
+You can also reach the same form from the repository's
+[Security tab](https://github.com/pedrosousa13/lnpm/security) via the
+**Report a vulnerability** button. The report is visible only to the maintainers
+until an advisory is published.
+
+When reporting:
 
 1. **DO NOT** open a public issue
-2. Email security concerns to the maintainers
-3. Include:
+2. Include:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
