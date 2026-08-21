@@ -80,7 +80,7 @@ lnpm push
 | `lnpm pull [pkg...]` | Sync linked packages with the store (all of them when no name is given) |
 | `lnpm push` | Push changes to all linked projects (`--tag` picks the channel) |
 | `lnpm status` | Show all published packages and active links across every project |
-| `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
+| `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers, `--versions` lists one package's history) |
 | `lnpm tag <pkg> <tag>` | Point a dist-tag at a published package (`--delete` removes one) |
 | `lnpm check` | Fail if lnpm has left anything an `npm publish` would ship (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
@@ -175,6 +175,33 @@ lnpm list --store                   # Shows which tags name each stored version
 It is also not a garbage-collection root: only a tag you set keeps a version
 alive, because `latest` moves onto everything a publish writes and treating it
 as a root would leave `lnpm gc` unable to reclaim anything.
+
+### Version History and Rollback
+
+Publishing keeps the version published before it, so a release that breaks one
+consumer can be undone for that consumer alone — no republishing an old source
+tree from a git checkout:
+
+```bash
+lnpm list mylib --versions
+# mylib versions:
+#   a1b2c3d4   1.3.0   published 2 hours ago   [latest]
+#   9f8e7d6c   1.2.0   published 3 days ago    (currently linked in myapp)
+
+cd ~/apps/myapp
+lnpm add mylib@9f8e7d6c   # Roll this project back to the build that worked
+```
+
+Either identifier the listing prints works. What follows the `@` is matched as a
+dist-tag first, then as an exact version against every retained version, then as
+a content-hash prefix — the eight characters the listing shows are enough, and
+more if that ever names two builds. A spec that names two builds is refused with
+their full hashes rather than resolved to one of them.
+
+The history is the set `lnpm gc` has not collected: a version stays for as long
+as a link or a tag you set reaches it. A version a project has rolled back to is
+linked, so `gc` keeps it — while the versions in between, which nothing reaches
+any more, are reclaimed.
 
 ### Monorepo Support
 

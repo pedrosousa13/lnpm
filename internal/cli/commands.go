@@ -58,16 +58,23 @@ project with no further command, and package.json uses link: instead of file:.
 That trades away the isolation the default gives you - the project then builds
 against files that have not been published, or even committed.
 
-What follows the @ in a spec is read as a dist-tag first and as an exact version
-only if no tag by that name is set, so 'lnpm add my-package@beta' links whatever
-build the beta channel currently names. A spec with no @ resolves to latest, as
-it always has. A tag cannot be combined with --link: that resolves to the
-package's source directory, which is not the build any tag names.
+What follows the @ in a spec is matched in three steps, most specific first: as a
+dist-tag, so 'lnpm add my-package@beta' links whatever build the beta channel
+currently names; then as an exact version, against every version the store has
+retained and not only the one latest names; then as a content-hash prefix. The
+last two are what roll a project back to a build a later release superseded - run
+'lnpm list <pkg> --versions' to see what is there. A spec matching two retained
+versions is refused with their hashes rather than resolved to one of them.
+
+A spec with no @ resolves to latest, as it always has. A tag cannot be combined
+with --link: that resolves to the package's source directory, which is not the
+build any tag names.
 
 Examples:
   lnpm add my-package            # Add latest version
   lnpm add pkg1 pkg2 pkg3        # Add multiple packages
   lnpm add my-package@1.0.0      # Add specific version
+  lnpm add my-package@a1b2c3d4   # Roll back to a specific published build
   lnpm add my-package@beta       # Add the build tagged beta
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
@@ -196,16 +203,27 @@ var listCmd = &cobra.Command{
 names every project consuming the package with the build each is on, whichever
 channel it followed to get there.
 
+--versions lists the history of one package: every version the store still
+holds, newest first, with its content hash, its version, when it was published,
+the dist-tags naming it and the projects on it. That is what 'lnpm add
+<pkg>@<hash>' can roll a project back to - the set 'lnpm gc' has not collected,
+since a version's record and its files go together.
+
 Examples:
   lnpm list                      # List packages in current project
   lnpm list --store              # List all packages in store
-  lnpm list my-package --projects   # List projects using my-package`,
+  lnpm list my-package --projects   # List projects using my-package
+  lnpm list my-package --versions   # List what my-package can be rolled back to`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showStore, _ := cmd.Flags().GetBool("store")
 		showProjects, _ := cmd.Flags().GetBool("projects")
+		showVersions, _ := cmd.Flags().GetBool("versions")
 		var packageName string
 		if len(args) > 0 {
 			packageName = args[0]
+		}
+		if showVersions {
+			return RunListVersions(packageName)
 		}
 		return RunList(showStore, packageName, showProjects)
 	},
@@ -399,6 +417,7 @@ func init() {
 	// list flags
 	listCmd.Flags().Bool("store", false, "List packages in store")
 	listCmd.Flags().Bool("projects", false, "List projects using a package")
+	listCmd.Flags().Bool("versions", false, "List every retained version of a package, newest first")
 
 	// gc flags
 	gcCmd.Flags().Bool("dry-run", false, "Show what would be removed")

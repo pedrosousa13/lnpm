@@ -154,7 +154,7 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 	}
 
 	if packageName != "" && !showProjects {
-		return fmt.Errorf("use --projects to list which projects use %q", packageName)
+		return fmt.Errorf("use --projects to list which projects use %q, or --versions to list what it can be rolled back to", packageName)
 	}
 
 	if packageName != "" && showProjects {
@@ -239,6 +239,85 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 	}
 
 	return nil
+}
+
+// RunListVersions lists every version of one package the store still holds:
+// its content hash, its version, when it was published, the tags naming it and
+// the projects on it.
+//
+// This is a separate listing rather than another shape for `--store` because it
+// answers a different question. `--store` and `status` say what is in the store;
+// this says what one package can be rolled back to, which is about the rows the
+// default tag has moved off - the ones every other listing shows without
+// distinguishing.
+//
+// The set is exactly what gc has not collected, because a version's record and
+// its store entry go together. There is no separate "ever published" history to
+// consult and nothing here retains anything that gc would otherwise take.
+//
+// Every read is surfaced rather than skipped. A listing whose whole job is
+// telling a user which build to roll back to must not report a version as
+// untagged or unconsumed because a read failed: that is indistinguishable on
+// screen from the version being safe to leave behind.
+func RunListVersions(packageName string) error {
+	if packageName == "" {
+		return fmt.Errorf("--versions needs a package name: try 'lnpm list <package> --versions'")
+	}
+
+	database, err := db.GetDB()
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+
+	versions, err := database.GetPackageVersions(packageName)
+	if err != nil {
+		return fmt.Errorf("failed to read the versions of %s: %w", packageName, err)
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("package %s not found", packageName)
+	}
+
+	tags, err := database.TagsForPackage(packageName)
+	if err != nil {
+		return fmt.Errorf("failed to read the tags of %s: %w", packageName, err)
+	}
+
+	fmt.Printf("%s versions:\n", packageName)
+	for _, version := range versions {
+		consumers, err := database.GetProjectsForPackage(version.ID)
+		if err != nil {
+			return fmt.Errorf("failed to get the projects on %s@%s: %w", packageName, version.Version, err)
+		}
+		fmt.Printf("  %-10s %-14s published %-20s%s%s\n",
+			shortHash(version.ContentHash),
+			truncate(version.Version, 14),
+			formatTimeAgo(version.UpdatedAt),
+			tagsNaming(tags, version.ContentHash),
+			consumersNaming(consumers),
+		)
+	}
+
+	return nil
+}
+
+// consumersNaming renders the projects on a version as a trailing "(currently
+// linked in myapp)", and nothing when none are.
+//
+// Projects are named rather than counted, and named by project name rather than
+// by path: this row exists so a maintainer deciding whether to roll a version
+// back can see who it would move, and a count does not answer that. Sorted,
+// because the links come back in whatever order the index holds them and an
+// unordered listing would reshuffle itself between runs over an unchanged store.
+func consumersNaming(projects []*db.Project) string {
+	if len(projects) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(projects))
+	for _, proj := range projects {
+		names = append(names, proj.Name)
+	}
+	sort.Strings(names)
+	return " (currently linked in " + strings.Join(names, ", ") + ")"
 }
 
 // truncate truncates a string to maxLen runes, appending "..." when shortened.

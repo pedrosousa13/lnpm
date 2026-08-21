@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -773,6 +774,56 @@ func (db *DB) GetPackageByHash(name, hash string) (*Package, error) {
 	})
 
 	return result, err
+}
+
+// GetPackageVersions returns every version of a package the store still holds,
+// most recently published first.
+//
+// GetPackageByName answers a different question: it resolves the name index,
+// which mirrors the default tag, so it names one row of a history that now has
+// several. This is the whole history — exactly the set gc has not collected,
+// because a version's record and its store entry go together.
+//
+// The order is UpdatedAt descending, and UpdatedAt rather than CreatedAt because
+// that is the timestamp the rest of lnpm calls a package's publish time:
+// `lnpm status` prints it under PUBLISHED and gc measures --older-than against
+// it. A listing that sorted or reported the other one would disagree with the
+// command that acts on it.
+//
+// The tie-break on ID is not decoration. Bolt stamps UpdatedAt from time.Now,
+// and two publishes can land inside one tick of a coarse clock — Windows' is
+// about 15ms — so without it the order would be arbitrary precisely when two
+// versions are hardest to tell apart, and would differ between runs over an
+// unchanged store.
+func (db *DB) GetPackageVersions(name string) ([]*Package, error) {
+	debug.Logf("db: get versions of %s", name)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var versions []*Package
+	err := db.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketPackages).ForEach(func(k, v []byte) error {
+			var pkg Package
+			if err := json.Unmarshal(v, &pkg); err != nil {
+				return nil // Skip invalid entries
+			}
+			if pkg.Name == name {
+				versions = append(versions, &pkg)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(versions, func(i, j int) bool {
+		if !versions[i].UpdatedAt.Equal(versions[j].UpdatedAt) {
+			return versions[i].UpdatedAt.After(versions[j].UpdatedAt)
+		}
+		return versions[i].ID > versions[j].ID
+	})
+	return versions, nil
 }
 
 // ListPackages returns all packages in the store

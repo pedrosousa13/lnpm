@@ -657,36 +657,137 @@ func parsePackageSpec(spec string) (name, version string) {
 // resolveAddSpec works out which version of name an add should link, and which
 // channel the resulting link follows.
 //
-// requested is whatever followed the @ in the spec, and a tag is tried before a
-// version: `pkg@beta` has to mean the build beta names, and only a spec that
-// matches no tag falls through to the exact-version check that has always been
-// there. A returned tag of "" means the link follows the default one, which is
-// how every link written before tags existed reads.
+// requested is whatever followed the @ in the spec, and it is matched in three
+// steps, most specific first:
+//
+//  1. a dist-tag, so `pkg@beta` links the build beta names. A tag is a name a
+//     person chose for this package, so it wins even when it is spelled like a
+//     version or a hash;
+//  2. an exact version string, against every version the store has retained -
+//     not only the one the default tag names, which is all this could see while
+//     the store held one record per name;
+//  3. a content-hash prefix, against the same set.
+//
+// Steps 2 and 3 are what makes a rollback possible: `lnpm list <pkg> --versions`
+// prints a version and an eight-character short hash per row, and both have to
+// be typeable back. Resolving only the hash would mean showing a user two
+// identifiers and accepting one of them.
+//
+// Widening step 2 past the default tag cannot change an answer that already
+// existed. A version spec used to resolve only when it matched what the default
+// tag names, and that record is still preferred when several carry the version -
+// which two publishes can produce, since package.json can be kept out of a pack.
+// Beyond that preference an ambiguous spec is refused, never guessed: this is
+// the command reached for when a release broke something, so choosing between
+// two builds on the user's behalf is the last thing it should do. A hash prefix
+// has no such preference, because a prefix is not a claim about which version
+// was meant - any prefix that names one version resolves, and one that names
+// several is sent back with the full hashes, as git does.
+//
+// A returned tag of "" means the link follows the default one, which is how
+// every link written before tags existed reads. A hash or a version resolves to
+// a build rather than to a channel, so it returns "" too.
 //
 // An unknown name is reported as a nil package rather than an error, because the
 // two add paths word that one differently and both wordings predate tags.
 func resolveAddSpec(database *db.DB, name, requested string) (*db.Package, string, error) {
-	if requested != "" {
-		tagged, err := database.ResolveTag(name, requested)
+	if requested == "" {
+		pkg, err := database.GetPackageByName(name)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to resolve tag %s of %s: %w", requested, name, err)
+			return nil, "", fmt.Errorf("failed to look up package: %w", err)
 		}
-		if tagged != nil {
-			return tagged, requested, nil
-		}
+		return pkg, "", nil
 	}
 
-	pkg, err := database.GetPackageByName(name)
+	tagged, err := database.ResolveTag(name, requested)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to resolve tag %s of %s: %w", requested, name, err)
+	}
+	if tagged != nil {
+		return tagged, requested, nil
+	}
+
+	versions, err := database.GetPackageVersions(name)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read the versions of %s: %w", name, err)
+	}
+	if len(versions) == 0 {
+		return nil, "", nil
+	}
+
+	current, err := database.GetPackageByName(name)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to look up package: %w", err)
 	}
-	if pkg == nil {
-		return nil, "", nil
+
+	if pkg, err := matchVersion(versions, current, name, requested); pkg != nil || err != nil {
+		return pkg, "", err
 	}
-	if requested != "" && pkg.Version != requested {
-		return nil, "", versionNotInStoreError(requested, name, pkg.Version)
+	if pkg, err := matchHashPrefix(versions, name, requested); pkg != nil || err != nil {
+		return pkg, "", err
 	}
-	return pkg, "", nil
+
+	return nil, "", versionNotInStoreError(requested, name, versions)
+}
+
+// matchVersion finds the retained version whose version string is exactly
+// requested, or nil when none is. current is the version the default tag names,
+// which breaks a tie in favour of the answer this lookup gave before it could
+// see past that tag.
+func matchVersion(versions []*db.Package, current *db.Package, name, requested string) (*db.Package, error) {
+	var candidates []*db.Package
+	for _, v := range versions {
+		if v.Version == requested {
+			if current != nil && v.ID == current.ID {
+				return v, nil
+			}
+			candidates = append(candidates, v)
+		}
+	}
+
+	switch len(candidates) {
+	case 0:
+		return nil, nil
+	case 1:
+		return candidates[0], nil
+	default:
+		return nil, fmt.Errorf("version %s of %s is ambiguous: %d retained versions carry it (%s); ask for one of them by hash",
+			requested, name, len(candidates), describeHashes(candidates))
+	}
+}
+
+// matchHashPrefix finds the retained version whose content hash starts with
+// requested, or nil when none does. A prefix several versions share is refused
+// with their full hashes, so the user can lengthen it rather than be handed
+// whichever record was walked first.
+func matchHashPrefix(versions []*db.Package, name, requested string) (*db.Package, error) {
+	var candidates []*db.Package
+	for _, v := range versions {
+		if strings.HasPrefix(v.ContentHash, requested) {
+			candidates = append(candidates, v)
+		}
+	}
+
+	switch len(candidates) {
+	case 0:
+		return nil, nil
+	case 1:
+		return candidates[0], nil
+	default:
+		return nil, fmt.Errorf("hash prefix %s of %s is ambiguous: it matches %d retained versions (%s); use more characters",
+			requested, name, len(candidates), describeHashes(candidates))
+	}
+}
+
+// describeHashes renders candidates as their full content hashes, which is what
+// a user has to type to tell them apart. The short hash a listing prints is by
+// definition not enough here: it is the thing that turned out to be ambiguous.
+func describeHashes(candidates []*db.Package) string {
+	hashes := make([]string, len(candidates))
+	for i, c := range candidates {
+		hashes[i] = c.ContentHash
+	}
+	return strings.Join(hashes, ", ")
 }
 
 // liveLinkTagError refuses a spec that names a dist-tag alongside --link.
@@ -706,22 +807,36 @@ func liveLinkTagError(name, tag string) error {
 	return fmt.Errorf("cannot add %s@%s with --link: --link resolves to the package's source directory, which is not the build any tag names (drop --link to get the %s build, or drop the tag to link the source)", name, tag, tag)
 }
 
-// versionNotInStoreError reports that the store holds a different version of
-// name than the one the user asked for, shared by the parallel and the
+// versionNotInStoreError reports that nothing the store retains for name
+// answers to what the user asked for, shared by the parallel and the
 // single-package add paths so both tell the user the same thing.
 //
-// The parameters are declared in the order the message reads them. All three
-// are plain strings, so a caller that swaps two still compiles and quietly
-// produces a message that lies about which version is which; keeping
-// declaration order and interpolation order identical is what makes such a
-// swap visible at the call site.
+// Every retained version is named, and that is the whole change from the message
+// this replaces. That one reported what the default tag points at as though it
+// were the only version there was - true while the store held one record per
+// name, and misleading the moment it stopped being, because the version the user
+// asked for may be sitting in the store one row down. This is exactly the moment
+// they need to be told what is there to roll back to.
 //
 // The remedy is a trailing parenthetical rather than a second sentence: the
 // parallel path wraps this error as "<spec>: %w", so the string has to compose
 // as a clause, and a terminal period would read badly there as well as trip
 // staticcheck's ST1005.
-func versionNotInStoreError(requested, name, stored string) error {
-	return fmt.Errorf("version %s of %s not found in store (latest published is %s; re-publish %s to update)", requested, name, stored, name)
+func versionNotInStoreError(requested, name string, retained []*db.Package) error {
+	return fmt.Errorf("no version of %s matches %s (retained: %s; run 'lnpm list %s --versions' for the full history)",
+		name, requested, describeVersions(retained), name)
+}
+
+// describeVersions renders retained versions as "1.3.0 (a1b2c3d4)", in the order
+// GetPackageVersions returns them, which is newest first. The short hash is the
+// one `lnpm list --versions` prints, so what the error shows is what the user
+// would type back.
+func describeVersions(retained []*db.Package) string {
+	described := make([]string, len(retained))
+	for i, v := range retained {
+		described[i] = fmt.Sprintf("%s (%s)", v.Version, shortHash(v.ContentHash))
+	}
+	return strings.Join(described, ", ")
 }
 
 // packageJSONDeps is what reading package.json tells us about a dependency
