@@ -314,7 +314,7 @@ func TestResolveAddSpecResolvesAContentHash(t *testing.T) {
 			old := seedVersion(t, database, "rollback-pkg", "1.0.0", "aaaaaaaa11111111")
 			seedVersion(t, database, "rollback-pkg", "2.0.0", "bbbbbbbb22222222")
 
-			pkg, tag, err := resolveAddSpec(database, "rollback-pkg", tc.requested)
+			pkg, tag, _, err := resolveAddSpec(database, "rollback-pkg", tc.requested)
 			if err != nil {
 				t.Fatalf("resolveAddSpec(%s) error = %v", tc.requested, err)
 			}
@@ -345,7 +345,7 @@ func TestResolveAddSpecResolvesASupersededVersion(t *testing.T) {
 	old := seedVersion(t, database, "superseded-spec-pkg", "1.0.0", "aaaaaaaa11111111")
 	seedVersion(t, database, "superseded-spec-pkg", "2.0.0", "bbbbbbbb22222222")
 
-	pkg, tag, err := resolveAddSpec(database, "superseded-spec-pkg", "1.0.0")
+	pkg, tag, _, err := resolveAddSpec(database, "superseded-spec-pkg", "1.0.0")
 	if err != nil {
 		t.Fatalf("resolveAddSpec(1.0.0) error = %v", err)
 	}
@@ -371,7 +371,7 @@ func TestResolveAddSpecPrefersTheVersionTheDefaultTagNames(t *testing.T) {
 	seedVersion(t, database, "collide-pkg", "1.0.0", "aaaaaaaa11111111")
 	current := seedVersion(t, database, "collide-pkg", "1.0.0", "bbbbbbbb22222222")
 
-	pkg, _, err := resolveAddSpec(database, "collide-pkg", "1.0.0")
+	pkg, _, _, err := resolveAddSpec(database, "collide-pkg", "1.0.0")
 	if err != nil {
 		t.Fatalf("resolveAddSpec(1.0.0) error = %v; this resolved before the history existed and must go on resolving", err)
 	}
@@ -391,7 +391,7 @@ func TestResolveAddSpecRefusesAnAmbiguousVersion(t *testing.T) {
 	seedVersion(t, database, "ambiguous-version-pkg", "1.0.0", "bbbbbbbb22222222")
 	seedVersion(t, database, "ambiguous-version-pkg", "2.0.0", "cccccccc33333333")
 
-	pkg, _, err := resolveAddSpec(database, "ambiguous-version-pkg", "1.0.0")
+	pkg, _, _, err := resolveAddSpec(database, "ambiguous-version-pkg", "1.0.0")
 	if err == nil {
 		t.Fatalf("resolveAddSpec(1.0.0) resolved %v, want a refusal: two retained versions carry 1.0.0", pkg)
 	}
@@ -412,7 +412,7 @@ func TestResolveAddSpecRefusesAnAmbiguousHashPrefix(t *testing.T) {
 	seedVersion(t, database, "ambiguous-hash-pkg", "1.0.0", "aaaaaaaa11111111")
 	seedVersion(t, database, "ambiguous-hash-pkg", "2.0.0", "aaaaaaaa22222222")
 
-	pkg, _, err := resolveAddSpec(database, "ambiguous-hash-pkg", "aaaaaaaa")
+	pkg, _, _, err := resolveAddSpec(database, "ambiguous-hash-pkg", "aaaaaaaa")
 	if err == nil {
 		t.Fatalf("resolveAddSpec(aaaaaaaa) resolved %v, want a refusal: the prefix matches two versions", pkg)
 	}
@@ -437,7 +437,7 @@ func TestResolveAddSpecPrefersATagOverAVersionAndAHash(t *testing.T) {
 		t.Fatalf("set the tag: %v", err)
 	}
 
-	pkg, tag, err := resolveAddSpec(database, "tagfirst-pkg", "1.0.0")
+	pkg, tag, _, err := resolveAddSpec(database, "tagfirst-pkg", "1.0.0")
 	if err != nil {
 		t.Fatalf("resolveAddSpec(1.0.0) error = %v", err)
 	}
@@ -462,7 +462,7 @@ func TestResolveAddSpecPrefersAVersionOverAHashPrefix(t *testing.T) {
 	named := seedVersion(t, database, "collide-order-pkg", "aaaaaaaa", "bbbbbbbb22222222")
 	seedVersion(t, database, "collide-order-pkg", "2.0.0", "aaaaaaaa11111111")
 
-	pkg, _, err := resolveAddSpec(database, "collide-order-pkg", "aaaaaaaa")
+	pkg, _, _, err := resolveAddSpec(database, "collide-order-pkg", "aaaaaaaa")
 	if err != nil {
 		t.Fatalf("resolveAddSpec(aaaaaaaa) error = %v", err)
 	}
@@ -482,7 +482,7 @@ func TestResolveAddSpecErrorNamesEveryRetainedVersion(t *testing.T) {
 	seedVersion(t, database, "deadend-pkg", "1.0.0", "aaaaaaaa11111111")
 	seedVersion(t, database, "deadend-pkg", "2.0.0", "bbbbbbbb22222222")
 
-	_, _, err := resolveAddSpec(database, "deadend-pkg", "9.9.9")
+	_, _, _, err := resolveAddSpec(database, "deadend-pkg", "9.9.9")
 	if err == nil {
 		t.Fatal("resolveAddSpec(9.9.9) succeeded, want a refusal: no version carries it")
 	}
@@ -499,7 +499,7 @@ func TestResolveAddSpecErrorNamesEveryRetainedVersion(t *testing.T) {
 func TestResolveAddSpecOnAnUnknownNameResolvesNothing(t *testing.T) {
 	_, database := newGCStore(t)
 
-	pkg, _, err := resolveAddSpec(database, "no-such-pkg", "1.0.0")
+	pkg, _, _, err := resolveAddSpec(database, "no-such-pkg", "1.0.0")
 	if err != nil {
 		t.Fatalf("resolveAddSpec on an unknown name error = %v, want the caller to word it", err)
 	}

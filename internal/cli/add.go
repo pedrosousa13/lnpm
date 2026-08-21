@@ -98,8 +98,8 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			name, version := parsePackageSpec(pkgSpec)
 
 			// Resolved exactly as the single-package path resolves it: a tag
-			// first, then the version latest names.
-			pkg, tag, lookupErr := resolveAddSpec(database, name, version)
+			// first, then an exact version, then a content-hash prefix.
+			pkg, tag, kind, lookupErr := resolveAddSpec(database, name, version)
 			if lookupErr != nil {
 				result.err = lookupErr
 				results <- result
@@ -114,8 +114,8 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			result.pkg = pkg
 			result.tag = tag
 
-			if useLink && !isDefaultTag(tag) {
-				result.err = liveLinkTagError(name, tag)
+			if useLink && kind != specDefault {
+				result.err = liveLinkSpecError(name, version, kind)
 				results <- result
 				return
 			}
@@ -491,9 +491,9 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Find the version in the store: a tag if the spec names one, otherwise the
-	// version latest points at, which a requested version must match.
-	pkg, tag, err := resolveAddSpec(database, name, version)
+	// Find the version in the store: a tag if the spec names one, then an exact
+	// version against the whole retained history, then a content-hash prefix.
+	pkg, tag, kind, err := resolveAddSpec(database, name, version)
 	if err != nil {
 		return err
 	}
@@ -501,8 +501,8 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
 	}
 
-	if useLink && !isDefaultTag(tag) {
-		return liveLinkTagError(name, tag)
+	if useLink && kind != specDefault {
+		return liveLinkSpecError(name, version, kind)
 	}
 
 	if useLink {
@@ -654,8 +654,28 @@ func parsePackageSpec(spec string) (name, version string) {
 	return spec, ""
 }
 
-// resolveAddSpec works out which version of name an add should link, and which
-// channel the resulting link follows.
+// specKind says how a spec's @suffix resolved.
+//
+// The returned tag cannot carry this. A tag comes back as itself, but a version
+// and a hash both come back with an empty tag, because they name a build rather
+// than a channel - and so does a bare name. Anything reading the tag string to
+// decide what the user asked for therefore cannot tell "nothing" from "this
+// exact build", which is the distinction --link turns on.
+//
+// The kinds are strings rather than iota constants so that the zero value is
+// none of them: a path that forgot to report a kind then reads as "not a bare
+// name", which is the refusing side of every guard below.
+type specKind string
+
+const (
+	specDefault specKind = "default" // no @suffix: the default channel
+	specTag     specKind = "tag"
+	specVersion specKind = "version"
+	specHash    specKind = "hash"
+)
+
+// resolveAddSpec works out which version of name an add should link, which
+// channel the resulting link follows, and how the spec resolved.
 //
 // requested is whatever followed the @ in the spec, and it is matched in three
 // steps, most specific first:
@@ -686,48 +706,50 @@ func parsePackageSpec(spec string) (name, version string) {
 //
 // A returned tag of "" means the link follows the default one, which is how
 // every link written before tags existed reads. A hash or a version resolves to
-// a build rather than to a channel, so it returns "" too.
+// a build rather than to a channel, so it returns "" too - which is why the
+// returned specKind, and not the tag, is what a caller reads to find out what
+// the user asked for.
 //
 // An unknown name is reported as a nil package rather than an error, because the
 // two add paths word that one differently and both wordings predate tags.
-func resolveAddSpec(database *db.DB, name, requested string) (*db.Package, string, error) {
+func resolveAddSpec(database *db.DB, name, requested string) (*db.Package, string, specKind, error) {
 	if requested == "" {
 		pkg, err := database.GetPackageByName(name)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to look up package: %w", err)
+			return nil, "", specDefault, fmt.Errorf("failed to look up package: %w", err)
 		}
-		return pkg, "", nil
+		return pkg, "", specDefault, nil
 	}
 
 	tagged, err := database.ResolveTag(name, requested)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve tag %s of %s: %w", requested, name, err)
+		return nil, "", specTag, fmt.Errorf("failed to resolve tag %s of %s: %w", requested, name, err)
 	}
 	if tagged != nil {
-		return tagged, requested, nil
+		return tagged, requested, specTag, nil
 	}
 
 	versions, err := database.GetPackageVersions(name)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to read the versions of %s: %w", name, err)
+		return nil, "", specVersion, fmt.Errorf("failed to read the versions of %s: %w", name, err)
 	}
 	if len(versions) == 0 {
-		return nil, "", nil
+		return nil, "", specVersion, nil
 	}
 
 	current, err := database.GetPackageByName(name)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to look up package: %w", err)
+		return nil, "", specVersion, fmt.Errorf("failed to look up package: %w", err)
 	}
 
 	if pkg, err := matchVersion(versions, current, name, requested); pkg != nil || err != nil {
-		return pkg, "", err
+		return pkg, "", specVersion, err
 	}
 	if pkg, err := matchHashPrefix(versions, name, requested); pkg != nil || err != nil {
-		return pkg, "", err
+		return pkg, "", specHash, err
 	}
 
-	return nil, "", versionNotInStoreError(requested, name, versions)
+	return nil, "", specVersion, versionNotInStoreError(requested, name, versions)
 }
 
 // matchVersion finds the retained version whose version string is exactly
@@ -790,21 +812,26 @@ func describeHashes(candidates []*db.Package) string {
 	return strings.Join(hashes, ", ")
 }
 
-// liveLinkTagError refuses a spec that names a dist-tag alongside --link.
+// liveLinkSpecError refuses a spec that names a build alongside --link.
 //
 // The two say different things about what to resolve to, and only one of them
-// can be honoured. A tag names a build in the store; --link points
-// .lnpm/<package> at the source directory the package was published from, which
-// holds whatever is in the working tree - unpublished, possibly uncommitted, and
-// not what any tag names. Doing both is impossible, and doing --link while
-// reporting the tag, which is what the summary line did, tells the user they are
-// on a channel when they are not.
+// can be honoured. A tag, a version and a hash each name a build in the store;
+// --link points .lnpm/<package> at the source directory the package was
+// published from, which holds whatever is in the working tree - unpublished,
+// possibly uncommitted, and not what any of the three names. Doing both is
+// impossible, and doing --link while reporting the spec, which is what the
+// summary line did, tells the user they are on a build they are not on. A hash
+// names a build more specifically than a tag does, so it is refused for the same
+// reason and more sharply.
 //
 // Refused rather than warned about because the two are a contradiction in the
 // request, not a risk in it: there is no version of this add that does what the
 // spec asks for, so the user has to decide which half to drop.
-func liveLinkTagError(name, tag string) error {
-	return fmt.Errorf("cannot add %s@%s with --link: --link resolves to the package's source directory, which is not the build any tag names (drop --link to get the %s build, or drop the tag to link the source)", name, tag, tag)
+func liveLinkSpecError(name, requested string, kind specKind) error {
+	if kind == specTag {
+		return fmt.Errorf("cannot add %s@%s with --link: --link resolves to the package's source directory, which is not the build any tag names (drop --link to get the %s build, or drop the tag to link the source)", name, requested, requested)
+	}
+	return fmt.Errorf("cannot add %s@%s with --link: --link resolves to the package's source directory, which holds the working tree and not the build %s names (drop --link to get that build, or drop the @%s to link the source)", name, requested, requested, requested)
 }
 
 // versionNotInStoreError reports that nothing the store retains for name

@@ -319,6 +319,64 @@ func TestAddBySupersededVersionLinksThatBuild(t *testing.T) {
 	env.AssertLinkedFileContent(projectDir, "version-rollback-lib", "index.js", "module.exports = 'working';")
 }
 
+// TestAddWithLinkRefusesAVersionOrAHash pins the one silent wrong resolution
+// widening the spec selector could introduce.
+//
+// --link points .lnpm/<pkg> at the source directory, which holds the working
+// tree; a version and a hash each name a build in the store. Before this
+// selector existed, both specs hard-failed with --link because neither resolved
+// at all. Now they resolve, and an add that honoured --link anyway would
+// live-link the working tree while printing the historical version number it
+// resolved to - the same contradiction --link with a dist-tag is refused for,
+// and sharper, because a hash names a build more specifically than a tag does.
+func TestAddWithLinkRefusesAVersionOrAHash(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// spec is built from the superseded build once it is published.
+		spec func(superseded *db.Package) string
+	}{
+		{"version", func(p *db.Package) string { return "live-build-lib@" + p.Version }},
+		{"hash", func(p *db.Package) string { return "live-build-lib@" + short(p.ContentHash) }},
+	} {
+		for _, path := range []string{"single", "parallel"} {
+			t.Run(tc.name+"/"+path, func(t *testing.T) {
+				env := setupTest(t)
+
+				pkgDir := env.publishPkg("live-build-lib", "1.0.0", map[string]string{
+					"index.js": "module.exports = 'working';",
+				})
+				superseded, err := env.Database.GetPackageByName("live-build-lib")
+				if err != nil || superseded == nil {
+					t.Fatalf("Failed to read the superseded version: %v", err)
+				}
+				env.republish(pkgDir, "live-build-lib", "2.0.0", "module.exports = 'broken';")
+				env.simplePkg("live-plain-lib")
+
+				projectDir := env.newProject("live-build-project")
+				env.chdir(projectDir)
+
+				specs := []string{tc.spec(superseded)}
+				if path == "parallel" {
+					specs = append(specs, "live-plain-lib")
+				}
+
+				captureStdout(t, func() {
+					err = cli.RunAddMultiple(specs, false, false, false, true)
+				})
+				if err == nil {
+					t.Fatalf("Adding %s with --link succeeded, want a refusal", specs[0])
+				}
+
+				// Nothing about the package is linked, whichever path ran: a
+				// live link here would resolve to the working tree while the
+				// summary named the superseded build.
+				env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm", "live-build-lib"), false)
+				env.AssertPackageJSONMissing(projectDir, "live-build-lib")
+			})
+		}
+	}
+}
+
 // TestAddByAnUnknownSpecNamesTheRetainedVersions pins the message at the dead
 // end. It used to report what `latest` names as though it were all the store
 // held, which is misleading now that the record the user is after may be sitting
