@@ -50,7 +50,7 @@ jobs:
           grep -h -v "^mode:" coverage-unit.out coverage-workspace.out >> coverage.out
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           file: coverage.out
 
