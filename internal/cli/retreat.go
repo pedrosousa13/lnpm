@@ -80,12 +80,25 @@ func RunRetreat(force bool, runInstall bool) error {
 	// Get database for cleanup
 	database, _ := db.GetDB()
 
-	// Get current project, and the links it actually holds
+	// Get current project, and the links it actually holds.
+	//
+	// A failed read is returned rather than read as "this project holds no
+	// links", which is what remove does with the same call for the same reason:
+	// the rows are how the link this project actually holds is found, and
+	// treating a failure as an empty set would leave every one of them behind
+	// while the retreat reported success. Nothing has been removed yet at this
+	// point, so returning here leaves the project untouched.
+	//
+	// A database that would not open at all is still tolerated, as it always was:
+	// then there are no rows to clean up and no read to fail.
 	var proj *db.Project
 	var held projectLinks
 	if database != nil {
 		proj, _ = database.GetProjectByPath(cwd)
-		held, _ = linksOfProject(database, cwd)
+		held, err = linksOfProject(database, cwd)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Remove each linked package

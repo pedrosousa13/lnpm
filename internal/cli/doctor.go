@@ -72,13 +72,24 @@ func RunDoctor() error {
 		packages, _ := database.ListPackages()
 		tagsByName := make(map[string]map[string]string)
 		orphanedCount := 0
+		// Tags are what tells an orphan from a build lnpm is keeping on purpose,
+		// so a name whose tags cannot be read makes the count meaningless rather
+		// than approximate: every version of that name would be counted as an
+		// orphan and the user sent to a gc that would keep them. Reported as an
+		// issue and the check abandoned, which is what doctor does with anything
+		// it cannot answer.
+		var tagsErr error
 		for _, pkg := range packages {
 			links, _ := database.GetLinksForPackage(pkg.ID)
 			if len(links) > 0 {
 				continue
 			}
 			if _, ok := tagsByName[pkg.Name]; !ok {
-				tags, _ := database.TagsForPackage(pkg.Name)
+				tags, err := database.TagsForPackage(pkg.Name)
+				if err != nil {
+					tagsErr = fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
+					break
+				}
 				tagsByName[pkg.Name] = tags
 			}
 			if pinnedByTag(tagsByName[pkg.Name], pkg.ContentHash) {
@@ -86,7 +97,11 @@ func RunDoctor() error {
 			}
 			orphanedCount++
 		}
-		if orphanedCount > 0 {
+		if tagsErr != nil {
+			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("  %v\n", tagsErr)
+			issues++
+		} else if orphanedCount > 0 {
 			fmt.Printf("%s %d orphaned package(s)\n", iconWarn(), orphanedCount)
 			fmt.Println("  Fix: Run 'lnpm gc' to remove unused packages")
 			warnings++

@@ -60,7 +60,14 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	projectPaths := make(map[string]struct{})
 
 	for _, pkg := range packages {
-		links, _ := database.GetLinksForPackage(pkg.ID)
+		// A failure to read the links stops the run, for the reason the tag read
+		// below stops it: this pass decides what gets deleted, and a read that
+		// failed is indistinguishable here from a version nothing links - so
+		// carrying on would delete a version gc cannot show is unreachable.
+		links, err := database.GetLinksForPackage(pkg.ID)
+		if err != nil {
+			return fmt.Errorf("failed to read the links of %s@%s: %w", pkg.Name, pkg.Version, err)
+		}
 
 		// Check for orphaned links
 		// Named lnk, not link, so it does not shadow the link package the
