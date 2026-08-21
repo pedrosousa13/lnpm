@@ -61,7 +61,8 @@ against files that have not been published, or even committed.
 What follows the @ in a spec is read as a dist-tag first and as an exact version
 only if no tag by that name is set, so 'lnpm add my-package@beta' links whatever
 build the beta channel currently names. A spec with no @ resolves to latest, as
-it always has.
+it always has. A tag cannot be combined with --link: that resolves to the
+package's source directory, which is not the build any tag names.
 
 Examples:
   lnpm add my-package            # Add latest version

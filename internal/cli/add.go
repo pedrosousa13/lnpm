@@ -114,6 +114,12 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			result.pkg = pkg
 			result.tag = tag
 
+			if useLink && !isDefaultTag(tag) {
+				result.err = liveLinkTagError(name, tag)
+				results <- result
+				return
+			}
+
 			linkRes, err := linkPackage(database, linker, s, pkg, useLink)
 			if err != nil {
 				result.err = err
@@ -495,6 +501,10 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
 	}
 
+	if useLink && !isDefaultTag(tag) {
+		return liveLinkTagError(name, tag)
+	}
+
 	if useLink {
 		fmt.Printf("Adding %s@%s (linked to source%s)...\n", pkg.Name, pkg.Version, tagClause(tag))
 	} else {
@@ -677,6 +687,23 @@ func resolveAddSpec(database *db.DB, name, requested string) (*db.Package, strin
 		return nil, "", versionNotInStoreError(requested, name, pkg.Version)
 	}
 	return pkg, "", nil
+}
+
+// liveLinkTagError refuses a spec that names a dist-tag alongside --link.
+//
+// The two say different things about what to resolve to, and only one of them
+// can be honoured. A tag names a build in the store; --link points
+// .lnpm/<package> at the source directory the package was published from, which
+// holds whatever is in the working tree - unpublished, possibly uncommitted, and
+// not what any tag names. Doing both is impossible, and doing --link while
+// reporting the tag, which is what the summary line did, tells the user they are
+// on a channel when they are not.
+//
+// Refused rather than warned about because the two are a contradiction in the
+// request, not a risk in it: there is no version of this add that does what the
+// spec asks for, so the user has to decide which half to drop.
+func liveLinkTagError(name, tag string) error {
+	return fmt.Errorf("cannot add %s@%s with --link: --link resolves to the package's source directory, which is not the build any tag names (drop --link to get the %s build, or drop the tag to link the source)", name, tag, tag)
 }
 
 // versionNotInStoreError reports that the store holds a different version of

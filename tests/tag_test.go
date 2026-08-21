@@ -817,6 +817,91 @@ func TestSwitchingAProjectBackOntoLatest(t *testing.T) {
 	}
 }
 
+// TestAddWithLinkRefusesADistTag pins that the two ways of saying what to
+// resolve to cannot be combined. --link points .lnpm/<pkg> at the source
+// directory, which holds the working tree; a tag names a build in the store. The
+// add used to honour --link and print "tag: beta" anyway, telling the user they
+// were on a channel while they were on uncommitted files.
+func TestAddWithLinkRefusesADistTag(t *testing.T) {
+	cases := []struct {
+		name  string
+		specs []string
+	}{
+		{name: "single", specs: []string{"live-tag-lib@beta"}},
+		{name: "parallel", specs: []string{"live-tag-lib@beta", "live-plain-lib"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
+
+			pkgDir := env.publishPkg("live-tag-lib", "1.0.0", map[string]string{
+				"index.js": "module.exports = 'stable';",
+			})
+			publishTagged(t, env, pkgDir, "live-tag-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+			env.simplePkg("live-plain-lib")
+
+			projectDir := env.newProject("live-tag-project")
+			env.chdir(projectDir)
+
+			var err error
+			captureStdout(t, func() {
+				err = cli.RunAddMultiple(tc.specs, false, false, false, true)
+			})
+			if err == nil {
+				t.Fatal("Adding a tagged spec with --link succeeded, want a refusal")
+			}
+
+			// Nothing about the tagged package is linked, whichever path ran.
+			env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm", "live-tag-lib"), false)
+			env.AssertPackageJSONMissing(projectDir, "live-tag-lib")
+		})
+	}
+}
+
+// TestPullRepointsALinkRowLeftOnAnotherVersion pins that a refresh leaves the
+// database describing what it just linked.
+//
+// pull writes no link row because a publish that moves a tag carries the links
+// following it across, so the row add wrote already names the version pull
+// resolves. That does not hold once a tag has been deleted and set again by a
+// publish: there is no previous version to carry links from, so the row stays on
+// the build the project no longer has - which is the one remove deletes, the one
+// gc counts as a reason to keep a version, and the one `publish --tag --push`
+// pushes to.
+func TestPullRepointsALinkRowLeftOnAnotherVersion(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("repoint-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "repoint-lib", "2.0.0-beta.1", "module.exports = 'beta one';", "beta")
+
+	projectDir := env.newProject("repoint-project")
+	env.addPkg(projectDir, "repoint-lib@beta", false, false)
+
+	// Drop the channel and publish it afresh: nothing carries the link across.
+	if err := cli.RunTag("repoint-lib", "beta", true); err != nil {
+		t.Fatalf("Failed to delete the beta tag: %v", err)
+	}
+	publishTagged(t, env, pkgDir, "repoint-lib", "2.0.0-beta.2", "module.exports = 'beta two';", "beta")
+
+	env.chdir(projectDir)
+	captureStdout(t, func() {
+		if err := cli.RunPull(nil); err != nil {
+			t.Fatalf("Failed to pull: %v", err)
+		}
+	})
+
+	env.AssertLinkedFileContent(projectDir, "repoint-lib", "index.js", "module.exports = 'beta two';")
+
+	beta, err := env.Database.ResolveTag("repoint-lib", "beta")
+	if err != nil || beta == nil {
+		t.Fatalf("Failed to resolve the beta tag: %v", err)
+	}
+	assertOnlyLink(t, env, projectDir, "repoint-lib", beta, "beta")
+}
+
 // TestStatusShowsWhichTagsNameEachVersion pins that the published table says
 // which channel each retained version belongs to. It lists one row per version
 // now, so without it my-lib 1.0.0 and my-lib 2.0.0-beta.1 sit side by side with

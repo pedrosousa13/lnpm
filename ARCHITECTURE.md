@@ -320,6 +320,8 @@ lnpm add my-package --link
    first and as an exact version only when no tag by that name is set; a spec
    with no `@` resolves through `latest`. The tag is recorded on the link row,
    so a later move of `latest` does not carry this project onto it
+   (`--link` is refused with a tag: it resolves to the source directory, which
+   is not the build any tag names)
 2. Create a temporary directory alongside `.lnpm/{package}/`
 3. Hard link all files from store into it, write the `.lnpm-linked` manifest,
    then rename it to `.lnpm/{package}/`
@@ -495,10 +497,13 @@ lnpm pull my-package other-pkg
    specifier recorded by `add`
 
 `package.json` is never touched: the `file:.lnpm/{package}` reference it holds
-is already correct, and only the contents behind it change. Nothing is written
-to bbolt either — a publish that moves a tag carries the links following that tag
-onto the version it now names, so the link row `add` recorded already points at
-the version `pull` just linked.
+is already correct, and only the contents behind it change. The link row is
+usually left alone too — a publish that moves a tag carries the links following
+that tag onto the version it now names, so the row `add` wrote already points at
+the version `pull` just linked. It is repointed when it does not, which a publish
+leaves behind when the tag it moves was deleted and set again: there is then no
+previous version to carry links from. A project with no row for the package
+gains none; `pull` refreshes links rather than creating them.
 
 ### `lnpm status`
 
