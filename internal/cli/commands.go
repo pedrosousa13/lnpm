@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/pedrosousa13/lnpm/internal/db"
 )
 
 // publishCmd publishes a package to the local store
@@ -19,16 +21,22 @@ This command:
   4. Copies files to ~/.lnpm/store/{name}/{hash}/
   5. Records the package in the database
 
+With --tag the build is stored under that channel instead of moving 'latest', so
+consumers keep the release they are on until they ask for the channel by name
+with 'lnpm add <pkg>@<tag>'.
+
 Examples:
-  lnpm publish           # Publish current package
-  lnpm publish --push    # Publish and update all linked projects
-  lnpm publish --all     # Publish all packages in monorepo`,
+  lnpm publish            # Publish current package
+  lnpm publish --push     # Publish and update all linked projects
+  lnpm publish --all      # Publish all packages in monorepo
+  lnpm publish --tag beta # Publish to the beta channel, leaving latest alone`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
 		all, _ := cmd.Flags().GetBool("all")
 		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
 		skipValidation, _ := cmd.Flags().GetBool("skip-validation")
-		return RunPublish(push, all, skipHooks, skipValidation)
+		tag, _ := cmd.Flags().GetString("tag")
+		return RunPublishTagged(push, all, skipHooks, skipValidation, tag)
 	},
 }
 
@@ -304,6 +312,7 @@ func init() {
 	publishCmd.Flags().Bool("all", false, "Publish all packages in monorepo")
 	publishCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts (prepare, prepublishOnly, prepack)")
 	publishCmd.Flags().Bool("skip-validation", false, "Skip package validation before publish")
+	publishCmd.Flags().String("tag", db.DefaultTag, "Channel to publish to; anything but "+db.DefaultTag+" leaves "+db.DefaultTag+" where it is")
 
 	// retreat flags
 	retreatCmd.Flags().Bool("force", false, "Actually remove everything (required)")

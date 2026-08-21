@@ -58,7 +58,7 @@ func RunPush(skipHooks bool) error {
 			// self-contained, so wrapping them here would only stutter.
 			return err
 		}
-		return finishPublish(cwd, pkgJSON, files, database, false)
+		return finishPublish(cwd, pkgJSON, files, database, false, db.DefaultTag)
 	}
 
 	// Always run prepare scripts before packing

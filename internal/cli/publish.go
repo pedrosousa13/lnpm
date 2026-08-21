@@ -16,8 +16,20 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/workspace"
 )
 
-// RunPublish executes the publish command
+// RunPublish executes the publish command, moving the default tag onto what it
+// writes.
 func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error {
+	return RunPublishTagged(push, all, skipHooks, skipValidation, db.DefaultTag)
+}
+
+// RunPublishTagged is RunPublish, moving tag onto what it writes instead of the
+// default one. An empty tag means the default one, which is what the flag's own
+// default value carries.
+func RunPublishTagged(push bool, all bool, skipHooks bool, skipValidation bool, tag string) error {
+	if tag == "" {
+		tag = db.DefaultTag
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
@@ -25,14 +37,14 @@ func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error 
 
 	// Handle --all for monorepo publishing
 	if all {
-		return publishAll(cwd, push, skipHooks, skipValidation)
+		return publishAll(cwd, push, skipHooks, skipValidation, tag)
 	}
 
-	return publishSingle(cwd, push, skipHooks, skipValidation)
+	return publishSingle(cwd, push, skipHooks, skipValidation, tag)
 }
 
 // publishAll publishes all packages in a monorepo workspace
-func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool) error {
+func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool, tag string) error {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {
 		return fmt.Errorf("failed to detect workspace: %w", err)
@@ -81,7 +93,7 @@ func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool) erro
 				fmt.Printf("%s %s@%s %s\n", sep, pkg.Name, pkg.Version, sep)
 				outputMu.Unlock()
 
-				err := publishSingle(pkg.Path, push, skipHooks, skipValidation)
+				err := publishSingle(pkg.Path, push, skipHooks, skipValidation, tag)
 
 				outputMu.Lock()
 				if err != nil {
@@ -122,7 +134,7 @@ func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool) erro
 }
 
 // publishSingle publishes a single package
-func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation bool) error {
+func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation bool, tag string) error {
 	// Validate package before proceeding
 	if !skipValidation {
 		if err := validation.ValidatePackage(pkgPath); err != nil {
@@ -175,14 +187,24 @@ func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation boo
 		return fmt.Errorf("failed to check existing package: %w", err)
 	}
 
-	if existing != nil && !push {
+	// Nothing to do only if the content is already stored AND the tag being
+	// published already names it. The tag half is not a refinement: this return
+	// skips finishPublish, which is the only place a tag is ever moved, so
+	// without it `publish --tag beta` over an unchanged working tree would print
+	// a reassuring line and leave beta pointing wherever it was - or nowhere.
+	tagged, err := database.ResolveTag(pkgJSON.Name, tag)
+	if err != nil {
+		return fmt.Errorf("failed to read the %s tag of %s: %w", tag, pkgJSON.Name, err)
+	}
+
+	if existing != nil && !push && tagged != nil && tagged.ContentHash == contentHash {
 		fmt.Printf("%s Package %s@%s already published with same content (hash: %s)\n",
 			iconWarn(), pkgJSON.Name, pkgJSON.Version, shortHash(contentHash))
 		fmt.Println("Use --push to update linked projects anyway")
 		return nil
 	}
 
-	if err := finishPublish(pkgPath, pkgJSON, files, database, push); err != nil {
+	if err := finishPublish(pkgPath, pkgJSON, files, database, push, tag); err != nil {
 		return err
 	}
 
@@ -196,8 +218,9 @@ func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation boo
 	return nil
 }
 
-// finishPublish completes publishing with pre-packed data (used by push too)
-func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.FileInfo, database *db.DB, push bool) error {
+// finishPublish completes publishing with pre-packed data (used by push too),
+// moving tag onto the version it records.
+func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.FileInfo, database *db.DB, push bool, tag string) error {
 	contentHash := pack.HashFiles(files)
 
 	// Store the package
@@ -206,7 +229,7 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 		return fmt.Errorf("failed to create store: %w", err)
 	}
 
-	fmt.Printf("Publishing %s@%s (%d files)...\n", pkgJSON.Name, pkgJSON.Version, len(files))
+	fmt.Printf("Publishing %s@%s (%d files%s)...\n", pkgJSON.Name, pkgJSON.Version, len(files), tagClause(tag))
 
 	storePath, err := s.Store(pkgJSON.Name, contentHash, files, pkgPath)
 	if err != nil {
@@ -244,11 +267,11 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 			ModTime:      f.ModTime,
 		}
 	}
-	if err := database.InsertPackageWithFiles(pkg, fileEntries); err != nil {
+	if err := database.InsertPackageWithFilesTagged(pkg, fileEntries, tag); err != nil {
 		return fmt.Errorf("failed to record package: %w", err)
 	}
 
-	fmt.Printf("%s Published %s@%s\n", iconOK(), pkgJSON.Name, pkgJSON.Version)
+	fmt.Printf("%s Published %s@%s%s\n", iconOK(), pkgJSON.Name, pkgJSON.Version, tagSuffix(tag))
 	fmt.Printf("  Hash: %s\n", shortHash(contentHash))
 	fmt.Printf("  Files: %d\n", len(files))
 	fmt.Printf("  Size: %s\n", formatSize(totalSize))
