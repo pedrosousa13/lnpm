@@ -388,8 +388,7 @@ func TestTagDeleteRefusesTheDefaultTag(t *testing.T) {
 // resolves to nothing and, since tags are gc reachability roots, would protect
 // nothing either.
 func TestTagOnAnUnknownPackageFails(t *testing.T) {
-	env := setupTest(t)
-	_ = env
+	setupTest(t)
 
 	err := cli.RunTag("no-such-lib", "beta", false)
 	if err == nil {
