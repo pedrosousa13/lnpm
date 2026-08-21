@@ -274,8 +274,10 @@ func TestDatabasePackageUpdatePreservesLinks(t *testing.T) {
 		t.Fatalf("Failed to get links: %v", err)
 	}
 
+	// Fatal rather than an error: the assertion below indexes into links, and
+	// a failure that panics takes the rest of the package's tests with it.
 	if len(links) != 1 {
-		t.Errorf("Expected 1 link after update, got %d", len(links))
+		t.Fatalf("Expected 1 link after update, got %d", len(links))
 	}
 	if links[0].ProjectID != existingProj.ID {
 		t.Errorf("Expected the link to project %d, got %d", existingProj.ID, links[0].ProjectID)
