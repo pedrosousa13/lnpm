@@ -1056,8 +1056,55 @@ func TestDownloadAndInstallRemovesTheTempDirWhenTheChecksumIsWrong(t *testing.T)
 	if err == nil {
 		t.Fatal("downloadAndInstall returned nil for an archive whose checksum does not match, want an error")
 	}
-	if !strings.Contains(err.Error(), "checksum verification failed") {
-		t.Errorf("error = %q, want it to mention checksum verification failed", err)
+	if !strings.Contains(err.Error(), "release verification failed") {
+		t.Errorf("error = %q, want it to mention release verification failed", err)
+	}
+
+	assertFailedUpdateCleanedUp(t, systemTemp, dst)
+}
+
+// The line a user actually sees is the whole wrapped chain, so it is asserted
+// whole: the wrapper must describe both kinds of refusal, and must not wrap
+// twice or bury the reason.
+func TestDownloadAndInstallReportsTheSignatureFailureItsUserSees(t *testing.T) {
+	const version = "1.2.3"
+	filename, archive := releaseFixture(t, version, "new-binary")
+	checksums := archiveChecksums(filename, archive)
+	attacker := newReleaseKey(t)
+	trustReleaseKeys(t, &newReleaseKey(t).PublicKey)
+	serveRelease(t, releaseHandler(filename, archive, checksums, signChecksums(t, attacker, checksums)))
+	_, dst := newUpdateTarget(t)
+
+	err := downloadAndInstall(version, dst)
+	if err == nil {
+		t.Fatal("downloadAndInstall returned nil for a release signed by an untrusted key, want an error")
+	}
+	const want = "release verification failed: signature verification failed for checksums.txt: not signed by any trusted key"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+}
+
+// An unsigned release is not a checksum problem, so the wrapper must not tell
+// the user it was one - that was the wrong-prefix bug this pins down.
+func TestDownloadAndInstallReportsAnUnsignedReleaseAsUnsigned(t *testing.T) {
+	const version = "1.2.3"
+	filename, archive := releaseFixture(t, version, "new-binary")
+	trustReleaseKeys(t, &newReleaseKey(t).PublicKey)
+	serveRelease(t, releaseHandler(filename, archive, archiveChecksums(filename, archive), nil))
+	systemTemp, dst := newUpdateTarget(t)
+
+	err := downloadAndInstall(version, dst)
+	if err == nil {
+		t.Fatal("downloadAndInstall returned nil for a release publishing no signature, want an error")
+	}
+	if strings.Contains(err.Error(), "checksum verification failed") {
+		t.Errorf("error = %q, want an unsigned release not reported as a checksum failure", err)
+	}
+	for _, want := range []string{"release verification failed", "unsigned", "will not be installed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
 	}
 
 	assertFailedUpdateCleanedUp(t, systemTemp, dst)

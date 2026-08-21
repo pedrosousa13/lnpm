@@ -398,13 +398,18 @@ func downloadBinary(version, url, filename string) (binaryPath, tmpDir string, e
 		return "", tmpDir, fmt.Errorf("download failed: %w", err)
 	}
 
-	// Verify checksum BEFORE extracting or installing — a tampered or
+	// Verify the release BEFORE extracting or installing — a tampered or
 	// corrupted asset must never reach the running binary.
+	//
+	// The wrapper says "release" rather than "checksum" because verifyChecksum
+	// refuses on two distinct grounds now: a checksum that does not match, and
+	// a signature that does not verify or was never published. Naming only the
+	// first told a user with an unsigned release that their checksums were bad.
 	if err := verifyChecksum(version, filename, filePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return "", tmpDir, fmt.Errorf("checksum verification failed: %w", err)
+		return "", tmpDir, fmt.Errorf("release verification failed: %w", err)
 	}
-	fmt.Println("  ✓ Checksum verified")
+	fmt.Println("  ✓ Signature and checksum verified")
 
 	// Extract binary
 	if strings.HasSuffix(filename, ".zip") {

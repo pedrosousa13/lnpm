@@ -3,11 +3,17 @@
 //
 // # The placeholder key must be replaced before shipping
 //
-// keys/PLACEHOLDER-DO-NOT-SHIP.pem is a throwaway key generated to give
-// //go:embed something to compile against. It has no private half that anyone
-// kept, so it can never verify a real release. Replace it with the maintainer's
-// real public key - and delete the placeholder - before cutting a signed
-// release, or every 'lnpm update' will refuse to install.
+// keys/release.pem currently holds a PLACEHOLDER, not the maintainer's key: a
+// throwaway key generated to give //go:embed something to compile against. Its
+// private half was never kept, so it can never verify a real release, and while
+// it is the only key here every 'lnpm update' will refuse to install. Replace
+// its contents with the real public key before cutting a signed release. The
+// file says the same thing above its PEM block, so the warning survives being
+// read on its own.
+//
+// Keep the filename: SECURITY.md tells users to fetch that exact path to verify
+// a download by hand. Nothing here depends on it - the embed glob takes any
+// keys/*.pem - but the documented URL does.
 //
 // # Why a list
 //
