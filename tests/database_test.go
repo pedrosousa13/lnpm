@@ -877,6 +877,96 @@ func TestDatabaseMovingATagMergesADuplicateLink(t *testing.T) {
 	}
 }
 
+// TestDatabaseInsertLinkKeepsOneRowPerProjectAndName pins the invariant
+// moveLinksTx states and linksOfProject, remove and retreat all rely on: a
+// project holds one link row per package name, so linking it to another version
+// of a name replaces the row it had rather than adding beside it.
+func TestDatabaseInsertLinkKeepsOneRowPerProjectAndName(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "onerow-pkg", "h1")
+	v2 := insertTagPkg(t, env.Database, "onerow-pkg", "h2")
+	other := insertTagPkg(t, env.Database, "other-pkg", "h3")
+	proj := insertProject(t, env.Database, filepath.FromSlash("/projects/onerow"))
+
+	for _, l := range []*db.Link{
+		{PackageID: v1.ID, ProjectID: proj.ID, LinkType: "reflink", Tag: "beta"},
+		{PackageID: other.ID, ProjectID: proj.ID, LinkType: "reflink"},
+		{PackageID: v2.ID, ProjectID: proj.ID, LinkType: "reflink"},
+	} {
+		if err := env.Database.InsertLink(l); err != nil {
+			t.Fatalf("insert link to record %d: %v", l.PackageID, err)
+		}
+	}
+
+	links, err := env.Database.GetLinksForProject(proj.ID)
+	if err != nil {
+		t.Fatalf("links for the project: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("the project holds %d links, want one per package name: %+v", len(links), links)
+	}
+	byPackage := make(map[int64]*db.Link, len(links))
+	for _, l := range links {
+		byPackage[l.PackageID] = l
+	}
+	if byPackage[v2.ID] == nil {
+		t.Errorf("the project does not follow the version it was linked to last")
+	}
+	if byPackage[v1.ID] != nil {
+		t.Errorf("the project still holds a row on the version it moved off")
+	}
+	if byPackage[other.ID] == nil {
+		t.Errorf("linking one package removed the row for another")
+	}
+	if got := linkedProjects(t, env.Database, v1.ID); len(got) != 0 {
+		t.Errorf("the package index still names %v on the version moved off", got)
+	}
+}
+
+// TestDatabaseInsertLinkUpdatesTheTagOfAnExistingRow pins the other half of the
+// switch: when both channels name one version - which is what `lnpm tag`
+// produces, since it can only point a tag at what the name resolves to - there
+// is no second row to replace, and the existing one has to start following the
+// channel that was asked for. Left on the old tag the project stays a follower
+// of it, and the next publish carries it forward.
+func TestDatabaseInsertLinkUpdatesTheTagOfAnExistingRow(t *testing.T) {
+	env := setupTest(t)
+
+	v1 := insertTagPkg(t, env.Database, "retag-pkg", "h1")
+	if err := env.Database.SetTag("retag-pkg", "beta", "h1"); err != nil {
+		t.Fatalf("set tag beta: %v", err)
+	}
+	proj := insertProject(t, env.Database, filepath.FromSlash("/projects/retag"))
+
+	if err := env.Database.InsertLink(&db.Link{PackageID: v1.ID, ProjectID: proj.ID, LinkType: "reflink"}); err != nil {
+		t.Fatalf("insert the default-tag link: %v", err)
+	}
+	if err := env.Database.InsertLink(&db.Link{PackageID: v1.ID, ProjectID: proj.ID, LinkType: "reflink", Tag: "beta"}); err != nil {
+		t.Fatalf("switch the link onto beta: %v", err)
+	}
+
+	links, err := env.Database.GetLinksForProject(proj.ID)
+	if err != nil {
+		t.Fatalf("links for the project: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("the project holds %d links, want 1: %+v", len(links), links)
+	}
+	if links[0].Tag != "beta" {
+		t.Errorf("the link follows %q, want beta", links[0].Tag)
+	}
+
+	// Publishing to the default channel must now leave it alone.
+	v2 := insertTagPkg(t, env.Database, "retag-pkg", "h2")
+	if got := linkedProjects(t, env.Database, v2.ID); len(got) != 0 {
+		t.Errorf("publishing to the default channel carried %v onto it", got)
+	}
+	if got := linkedProjects(t, env.Database, v1.ID); len(got) != 1 {
+		t.Errorf("the beta version has %v linked, want the project that asked for beta", got)
+	}
+}
+
 // TestDatabaseDeletingASupersededVersionKeepsTheNameLookup pins that collecting
 // an old version leaves the current one reachable. gc deletes versions one by
 // one, and a delete that cleared the name index would unpublish a package whose

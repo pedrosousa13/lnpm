@@ -627,6 +627,187 @@ func TestPullFollowsItsChannelForward(t *testing.T) {
 	})
 }
 
+// linkRowsFor returns every link row the project at projectDir holds for a
+// package name, whichever version each of them names.
+//
+// Deliberately not linksOfProject: that keys by name, so a project holding two
+// rows for one package collapses to one and the very defect these tests pin
+// becomes invisible.
+func linkRowsFor(t *testing.T, env *TestEnvironment, projectDir, name string) []*db.Link {
+	t.Helper()
+
+	proj, err := env.Database.GetProjectByPath(projectDir)
+	if err != nil || proj == nil {
+		t.Fatalf("Project %s is not in the database: %v", projectDir, err)
+	}
+	links, err := env.Database.GetLinksForProject(proj.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the links of %s: %v", projectDir, err)
+	}
+	packages, err := env.Database.ListPackages()
+	if err != nil {
+		t.Fatalf("Failed to list packages: %v", err)
+	}
+	nameByID := make(map[int64]string, len(packages))
+	for _, pkg := range packages {
+		nameByID[pkg.ID] = pkg.Name
+	}
+
+	var held []*db.Link
+	for _, l := range links {
+		if nameByID[l.PackageID] == name {
+			held = append(held, l)
+		}
+	}
+	return held
+}
+
+// assertOnlyLink fails unless the project holds exactly one link row for name,
+// on the given version and following the given channel, and returns it.
+func assertOnlyLink(t *testing.T, env *TestEnvironment, projectDir, name string, wantPkg *db.Package, wantTag string) {
+	t.Helper()
+
+	held := linkRowsFor(t, env, projectDir, name)
+	if len(held) != 1 {
+		t.Fatalf("The project holds %d link row(s) for %s, want exactly 1: %+v", len(held), name, held)
+	}
+	if held[0].PackageID != wantPkg.ID {
+		t.Errorf("The link names record %d (%s), want %d (%s)",
+			held[0].PackageID, name, wantPkg.ID, wantPkg.Version)
+	}
+	if held[0].Tag != wantTag {
+		t.Errorf("The link follows tag %q, want %q", held[0].Tag, wantTag)
+	}
+}
+
+// republishPushed republishes a package and pushes it to every project linked
+// to the version the default tag lands on, which is what a maintainer's
+// ordinary `lnpm publish --push` does.
+func republishPushed(t *testing.T, env *TestEnvironment, pkgDir, name, version, indexJS string) {
+	t.Helper()
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "package.json"), `{"name":"`+name+`","version":"`+version+`"}`)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), indexJS)
+	captureStdout(t, func() {
+		if err := cli.RunPublish(true, false, false, false); err != nil {
+			t.Fatalf("Failed to publish %s@%s with --push: %v", name, version, err)
+		}
+	})
+}
+
+// TestSwitchingAProjectOntoAChannel covers the flow the whole feature exists
+// for: a project already consuming a package opts into another channel of it.
+//
+// Nothing reconciles the link row the project already holds, so both shapes of
+// the switch used to corrupt it. When the two tags name different versions the
+// add wrote a second row, leaving the project recorded as consuming one package
+// twice - which moveLinksTx, linksOfProject and remove all treat as impossible -
+// and the stale row went on carrying the project onto every later release. When
+// the two tags name the same version, which is what `lnpm tag` produces, the add
+// found the existing row and updated it without recording the tag, so the
+// project stayed a latest follower and the next publish dragged it forward.
+//
+// The subtests differ only in whether the channels start out on one version or
+// two, which is exactly the distinction that decided which corruption happened.
+func TestSwitchingAProjectOntoAChannel(t *testing.T) {
+	cases := []struct {
+		name string
+		// separate publishes a distinct build under beta; otherwise beta is
+		// pointed at the version latest already names, as `lnpm tag` does.
+		separate bool
+		wantBeta string
+	}{
+		{name: "the channels name different versions", separate: true, wantBeta: "module.exports = 'beta';"},
+		{name: "the channels name one version", wantBeta: "module.exports = 'stable';"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupTest(t)
+
+			pkgDir := env.publishPkg("switch-lib", "1.0.0", map[string]string{
+				"index.js": "module.exports = 'stable';",
+			})
+			if tc.separate {
+				publishTagged(t, env, pkgDir, "switch-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+			} else if err := cli.RunTag("switch-lib", "beta", false); err != nil {
+				t.Fatalf("Failed to tag the stored version as beta: %v", err)
+			}
+
+			projectDir := env.newProject("switch-project")
+			env.addPkg(projectDir, "switch-lib", false, false)
+			env.addPkg(projectDir, "switch-lib@beta", false, false)
+
+			beta, err := env.Database.ResolveTag("switch-lib", "beta")
+			if err != nil || beta == nil {
+				t.Fatalf("Failed to resolve the beta tag: %v", err)
+			}
+			assertOnlyLink(t, env, projectDir, "switch-lib", beta, "beta")
+			env.AssertLinkedFileContent(projectDir, "switch-lib", "index.js", tc.wantBeta)
+
+			// A later release of the stable channel must reach neither the link
+			// row nor the files, whether or not it pushes.
+			env.republish(pkgDir, "switch-lib", "3.0.0", "module.exports = 'newer stable';")
+			assertOnlyLink(t, env, projectDir, "switch-lib", beta, "beta")
+
+			republishPushed(t, env, pkgDir, "switch-lib", "4.0.0", "module.exports = 'newest stable';")
+			assertOnlyLink(t, env, projectDir, "switch-lib", beta, "beta")
+			env.AssertLinkedFileContent(projectDir, "switch-lib", "index.js", tc.wantBeta)
+		})
+	}
+}
+
+// TestSwitchingAProjectBackOntoLatest is the other direction: a project that
+// tried a channel goes back to the stable release, and has to start following
+// it again - files, link row and all later publishes included.
+func TestSwitchingAProjectBackOntoLatest(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("unswitch-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "unswitch-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	projectDir := env.newProject("unswitch-project")
+	env.addPkg(projectDir, "unswitch-lib@beta", false, false)
+	env.addPkg(projectDir, "unswitch-lib", false, false)
+
+	stable, err := env.Database.GetPackageByName("unswitch-lib")
+	if err != nil || stable == nil {
+		t.Fatalf("Failed to look up unswitch-lib by name: %v", err)
+	}
+	assertOnlyLink(t, env, projectDir, "unswitch-lib", stable, "")
+	env.AssertLinkedFileContent(projectDir, "unswitch-lib", "index.js", "module.exports = 'stable';")
+
+	// The project follows latest again, so a plain publish carries its link
+	// across and a pushing one refreshes its files.
+	env.republish(pkgDir, "unswitch-lib", "3.0.0", "module.exports = 'newer stable';")
+	newer, err := env.Database.GetPackageByName("unswitch-lib")
+	if err != nil || newer == nil {
+		t.Fatalf("Failed to look up unswitch-lib after the republish: %v", err)
+	}
+	assertOnlyLink(t, env, projectDir, "unswitch-lib", newer, "")
+
+	republishPushed(t, env, pkgDir, "unswitch-lib", "4.0.0", "module.exports = 'newest stable';")
+	newest, err := env.Database.GetPackageByName("unswitch-lib")
+	if err != nil || newest == nil {
+		t.Fatalf("Failed to look up unswitch-lib after the pushing republish: %v", err)
+	}
+	assertOnlyLink(t, env, projectDir, "unswitch-lib", newest, "")
+	env.AssertLinkedFileContent(projectDir, "unswitch-lib", "index.js", "module.exports = 'newest stable';")
+
+	// The beta build keeps no link of its own, so gc is free to collect it once
+	// the tag is dropped.
+	beta, err := env.Database.ResolveTag("unswitch-lib", "beta")
+	if err != nil || beta == nil {
+		t.Fatalf("Failed to resolve the beta tag: %v", err)
+	}
+	if links, _ := env.Database.GetLinksForPackage(beta.ID); len(links) != 0 {
+		t.Errorf("The beta build kept %d link row(s) after the project moved off it", len(links))
+	}
+}
+
 // TestUnlinkingATaggedConsumerDeletesItsLinkRow pins that the commands which
 // tear a project down delete the link the project actually holds.
 //

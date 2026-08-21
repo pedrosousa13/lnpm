@@ -838,6 +838,31 @@ func deleteTagsForHashTx(tx *bolt.Tx, name, hash string) {
 	}
 }
 
+// packageNameTx returns the name of the package a record ID names, or "" when
+// no readable record has that ID.
+func packageNameTx(tx *bolt.Tx, id int64) string {
+	data := tx.Bucket(bucketPackages).Get(itob(id))
+	if data == nil {
+		return ""
+	}
+	var pkg Package
+	if json.Unmarshal(data, &pkg) != nil {
+		return ""
+	}
+	return pkg.Name
+}
+
+// deleteLinkRowTx removes one link row and scrubs it from both indexes, so no
+// index entry outlives the row it named.
+func deleteLinkRowTx(tx *bolt.Tx, linkID, packageID, projectID int64) error {
+	if err := tx.Bucket(bucketLinks).Delete(itob(linkID)); err != nil {
+		return err
+	}
+	removeIDFromIndex(tx.Bucket(bucketLinksByPackage), itob(packageID), linkID)
+	removeIDFromIndex(tx.Bucket(bucketLinksByProject), itob(projectID), linkID)
+	return nil
+}
+
 // removeIDFromIndex removes id from the []int64 stored at key in bucket b,
 // deleting the key entirely when the slice becomes empty.
 func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
@@ -969,9 +994,28 @@ func (db *DB) GetProjectByPath(path string) (*Project, error) {
 
 // --- Link operations ---
 
-// InsertLink creates a link between a package and project
+// InsertLink records that a project consumes a version of a package, replacing
+// whatever it consumed of that package before.
+//
+// A project holds one row per package name, and that is an invariant this
+// function is responsible for rather than one its callers happen to respect.
+// Everything downstream assumes it: moveLinksTx says so outright, linksOfProject
+// keys by name and would silently drop all but one of several rows, and remove
+// and retreat delete the one row that map hands them. A project has one
+// .lnpm/<name> and so consumes one version of one name; a second row is a second
+// answer to which.
+//
+// It is enforced here because the path that would break it is the one the whole
+// feature exists for. `lnpm add pkg@beta` in a project already on latest either
+// finds the row - when both tags name one version, which is what `lnpm tag`
+// produces - or does not, when they name two. Both have to end with one row
+// carrying the tag that was asked for: the first because a row updated without
+// its tag leaves the project recorded as a latest follower, which the next
+// publish drags forward; the second because the stale row goes on being carried
+// onto each new release, and `publish --push` then overwrites the channel
+// consumer's files with what latest names.
 func (db *DB) InsertLink(link *Link) error {
-	debug.Logf("db: insert link pkg=%d proj=%d", link.PackageID, link.ProjectID)
+	debug.Logf("db: insert link pkg=%d proj=%d tag=%q", link.PackageID, link.ProjectID, link.Tag)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -980,39 +1024,53 @@ func (db *DB) InsertLink(link *Link) error {
 		byPackage := tx.Bucket(bucketLinksByPackage)
 		byProject := tx.Bucket(bucketLinksByProject)
 
-		// Check if link already exists
-		var existingLinkID int64
-		err := links.ForEach(func(k, v []byte) error {
-			var l Link
-			if err := json.Unmarshal(v, &l); err != nil {
-				return nil
-			}
-			if l.PackageID == link.PackageID && l.ProjectID == link.ProjectID {
-				existingLinkID = l.ID
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
+		// The name the incoming link is for, so a row this project holds on
+		// another version of it can be recognised. An unreadable package record
+		// leaves this empty, which matches no row and so falls back to the
+		// same-record update alone rather than deleting on a guess.
+		name := packageNameTx(tx, link.PackageID)
 
-		if existingLinkID > 0 {
-			// Update existing link
-			data := links.Get(itob(existingLinkID))
-			if data != nil {
-				var existing Link
-				if json.Unmarshal(data, &existing) == nil {
-					existing.LinkType = link.LinkType
-					existing.UpdatedAt = time.Now()
-					link.ID = existing.ID
+		// indexIDs decodes into a slice of its own, so deleting rows below does
+		// not disturb this walk.
+		var updated bool
+		for _, id := range indexIDs(byProject, itob(link.ProjectID)) {
+			data := links.Get(itob(id))
+			if data == nil {
+				continue // Index entry naming no link row
+			}
+			var existing Link
+			if json.Unmarshal(data, &existing) != nil {
+				continue
+			}
 
-					data, err := json.Marshal(&existing)
-					if err != nil {
-						return err
-					}
-					return links.Put(itob(existing.ID), data)
+			switch {
+			case existing.PackageID == link.PackageID:
+				existing.LinkType = link.LinkType
+				// The tag too. Without it a project that switches channel onto
+				// the version it is already on keeps following the old one.
+				existing.Tag = link.Tag
+				existing.UpdatedAt = time.Now()
+				link.ID = existing.ID
+
+				encoded, err := json.Marshal(&existing)
+				if err != nil {
+					return err
+				}
+				if err := links.Put(itob(existing.ID), encoded); err != nil {
+					return err
+				}
+				updated = true
+
+			case name != "" && packageNameTx(tx, existing.PackageID) == name:
+				// Another version of the same package: the row this link
+				// replaces.
+				if err := deleteLinkRowTx(tx, existing.ID, existing.PackageID, existing.ProjectID); err != nil {
+					return err
 				}
 			}
+		}
+		if updated {
+			return nil
 		}
 
 		// Insert new link
