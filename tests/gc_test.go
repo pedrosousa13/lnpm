@@ -208,6 +208,97 @@ func TestGCKeepsLinkedAndCollectsOrphans(t *testing.T) {
 	env.AssertDatabaseLink("linked-pkg", projectDir)
 }
 
+// TestGCCollectsASupersededVersion covers the version-level sweep the store
+// needs now that publishing keeps the version published before it. The old
+// version is reached by nothing — its link was carried across to the version
+// the tag names — so both its record and its files go, while the version the
+// project actually consumes stays exactly where it is.
+func TestGCCollectsASupersededVersion(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("superseded-pkg")
+	projectDir := env.newProject("consumer")
+	env.addPkg(projectDir, "superseded-pkg", false, false)
+
+	first, err := env.Database.GetPackageByName("superseded-pkg")
+	if err != nil || first == nil {
+		t.Fatalf("Failed to get the first version: %v", err)
+	}
+
+	env.republish(pkgDir, "superseded-pkg", "2.0.0", "module.exports = 'v2';")
+	second, err := env.Database.GetPackageByName("superseded-pkg")
+	if err != nil || second == nil {
+		t.Fatalf("Failed to get the second version: %v", err)
+	}
+	if second.ContentHash == first.ContentHash {
+		t.Fatal("the republish produced the same content, so there is no superseded version")
+	}
+
+	if err := cli.RunGC(false, "", false, true); err != nil {
+		t.Fatalf("Failed to run GC: %v", err)
+	}
+
+	if stale, _ := env.Database.GetPackageByHash("superseded-pkg", first.ContentHash); stale != nil {
+		t.Error("GC kept the record of a version nothing reaches")
+	}
+	env.AssertDirectoryExists(first.StorePath, false)
+
+	env.AssertPackageInDatabase("superseded-pkg", true)
+	env.AssertDirectoryExists(second.StorePath, true)
+	env.AssertDatabaseLink("superseded-pkg", projectDir)
+}
+
+// TestGCKeepsAVersionATagPins is the reachability rule's other half: a tag is a
+// root, so a version nothing links to survives for as long as a tag names it.
+//
+// The version tagged only latest is collected in the same run, and that
+// asymmetry is deliberate. Publish moves latest onto every package it writes, so
+// treating it as a root would leave gc nothing it could ever collect and quietly
+// retire the command. A tag a user set is a decision; latest is a side effect.
+func TestGCKeepsAVersionATagPins(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.simplePkg("pinned-pkg")
+	first, err := env.Database.GetPackageByName("pinned-pkg")
+	if err != nil || first == nil {
+		t.Fatalf("Failed to get the first version: %v", err)
+	}
+
+	env.republish(pkgDir, "pinned-pkg", "2.0.0", "module.exports = 'v2';")
+	second, err := env.Database.GetPackageByName("pinned-pkg")
+	if err != nil || second == nil {
+		t.Fatalf("Failed to get the second version: %v", err)
+	}
+
+	if err := env.Database.SetTag("pinned-pkg", "beta", first.ContentHash); err != nil {
+		t.Fatalf("Failed to tag the first version: %v", err)
+	}
+
+	if err := cli.RunGC(false, "", false, true); err != nil {
+		t.Fatalf("Failed to run GC: %v", err)
+	}
+
+	pinned, err := env.Database.GetPackageByHash("pinned-pkg", first.ContentHash)
+	if err != nil {
+		t.Fatalf("Failed to look up the tagged version: %v", err)
+	}
+	if pinned == nil {
+		t.Error("GC collected a version a tag names")
+	}
+	env.AssertDirectoryExists(first.StorePath, true)
+
+	tags, err := env.Database.TagsForPackage("pinned-pkg")
+	if err != nil {
+		t.Fatalf("Failed to read tags: %v", err)
+	}
+	if tags["beta"] != first.ContentHash {
+		t.Errorf("the beta tag points at %q, want the version it named before GC ran", tags["beta"])
+	}
+
+	// Nothing links the version latest names, and latest alone does not keep it.
+	env.AssertDirectoryExists(second.StorePath, false)
+}
+
 // TestGCNoPackages tests GC against an empty database is a safe no-op.
 func TestGCNoPackages(t *testing.T) {
 	_ = setupTest(t)

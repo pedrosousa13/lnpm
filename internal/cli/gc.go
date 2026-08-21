@@ -50,6 +50,11 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	// Find packages to remove
 	var packagesToRemove []*db.Package
 	var linksToRemove []linkToRemove
+	// Tags of each package name, read once per name. They are reachability
+	// roots, so a failure to read them stops the whole run: this pass decides
+	// what gets deleted, and deciding it from tags gc could not read would be
+	// deleting a version it cannot show is unreachable.
+	tagsByName := make(map[string]map[string]string)
 	// Project directories still on disk, deduplicated: the temp-directory sweep
 	// reads each one once, however many packages are linked into it.
 	projectPaths := make(map[string]struct{})
@@ -85,6 +90,22 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 
 		// Re-check links after filtering orphans
 		validLinks := len(links) - countLinksForPackage(linksToRemove, pkg.ID)
+
+		if _, ok := tagsByName[pkg.Name]; !ok {
+			tags, err := database.TagsForPackage(pkg.Name)
+			if err != nil {
+				return fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
+			}
+			tagsByName[pkg.Name] = tags
+		}
+
+		// A version stays for as long as a tag names it, whatever its links
+		// say. That is the other half of the reachability rule: a build
+		// published to a channel is meant to be there when someone asks for
+		// the channel, and nothing need be linked to it yet.
+		if pinnedByTag(tagsByName[pkg.Name], pkg.ContentHash) {
+			continue
+		}
 
 		// Package is orphaned if no valid links.
 		//
@@ -187,6 +208,27 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	}
 
 	return nil
+}
+
+// pinnedByTag reports whether a tag other than the default one names the version
+// with this content hash.
+//
+// The default tag is excluded, and that asymmetry is the whole of the rule worth
+// arguing about. Every publish moves it onto whatever it just wrote, so it
+// always names something and names it without anyone deciding to: counting it as
+// a root would leave gc unable to collect any current version of any package,
+// which is every package a store holds one version of — the command would still
+// run, report nothing and free nothing. A tag a user set is a decision to keep a
+// build; latest is a side effect of the last publish. What the default tag names
+// is still kept while a project links it, which is the rule gc has always
+// applied.
+func pinnedByTag(tags map[string]string, hash string) bool {
+	for tag, tagged := range tags {
+		if tag != db.DefaultTag && tagged == hash {
+			return true
+		}
+	}
+	return false
 }
 
 // removePackages deletes each package's store entry and then its database row.
