@@ -198,6 +198,14 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 	return release.TagName, nil
 }
 
+// compareVersions reports whether latest supersedes current.
+//
+// Every release up to v1.12.0 shipped a byte-wise string comparison here, which
+// made "1.12.0" > "1.9.0" false and left anyone below 1.10.0 unable to
+// self-update. The fix only runs in a binary those users can never reach, so the
+// next release was forced to 2.0.0: a major bump is the only tag that is both
+// semver-greater and string-greater than every 1.x, so the stale comparison in
+// their installed binary still sees it. See issue #297.
 func compareVersions(current, latest string) *Result {
 	// Normalize mixed v-prefixed and bare inputs to canonical vX.Y.Z form
 	currentSemver := "v" + strings.TrimPrefix(current, "v")

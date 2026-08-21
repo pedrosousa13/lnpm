@@ -1,0 +1,42 @@
+name: PR Title
+
+on:
+  pull_request:
+    # synchronize looks redundant - a push cannot change the title - but a
+    # required status check is recorded per commit SHA, so without it a new
+    # push leaves the newest commit with no result and the check never
+    # reports. Re-running on every push is what keeps it mergeable.
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-title:
+    name: Conventional Commit
+    runs-on: ubuntu-latest
+
+    steps:
+      # Merges are squashed, so the PR title becomes the commit subject that
+      # release-please parses. A non-conventional title is silently dropped
+      # from the changelog and the version bump.
+      - name: Check PR title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # revert is not in this repo's history yet, but GitHub's Revert
+          # button generates `Revert "feat: ..."` and release-please
+          # understands the type. Rejecting it would block a revert exactly
+          # when speed matters.
+          types: |
+            feat
+            fix
+            docs
+            chore
+            test
+            ci
+            style
+            refactor
+            perf
+            revert
