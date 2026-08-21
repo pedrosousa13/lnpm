@@ -299,8 +299,11 @@ Add a package from the store to current project.
 # Add latest published version
 lnpm add my-package
 
-# Add a specific version (must match the version latest names)
+# Add a specific version, from anywhere in the retained history
 lnpm add my-package@1.0.0
+
+# Roll back to a specific published build, by content-hash prefix
+lnpm add my-package@a1b2c3d4
 
 # Add whatever the beta channel currently names
 lnpm add my-package@beta
@@ -316,12 +319,20 @@ lnpm add my-package --link
 ```
 
 **Process:**
-1. Find the version in the store. What follows the `@` is read as a dist-tag
-   first and as an exact version only when no tag by that name is set; a spec
-   with no `@` resolves through `latest`. The tag is recorded on the link row,
-   so a later move of `latest` does not carry this project onto it
-   (`--link` is refused with a tag: it resolves to the source directory, which
-   is not the build any tag names)
+1. Find the version in the store. What follows the `@` is matched in three
+   steps, most specific first: as a dist-tag; then as an exact version, against
+   every version the store has retained and not only the one `latest` names;
+   then as a content-hash prefix of at least four characters, git's minimum for
+   an abbreviated object name. A spec with no `@` resolves through `latest`. A
+   spec that matches two retained versions is refused with their full hashes
+   rather than resolved to one of them. A tag is recorded on the link row, so a
+   later move of `latest` does not carry this project onto it; a version and a
+   hash name a build rather than a channel, so the link they write follows
+   `latest` and the next `lnpm pull` moves the project off that build
+
+   None of the three can be combined with `--link`: that resolves to the source
+   directory, which holds the working tree and is not the build any of them
+   names
 2. Create a temporary directory alongside `.lnpm/{package}/`
 3. Hard link all files from store into it, write the `.lnpm-linked` manifest,
    then rename it to `.lnpm/{package}/`
@@ -565,6 +576,9 @@ lnpm list --store
 
 # List all projects using a package
 lnpm list my-package --projects
+
+# List every retained version of a package, newest first
+lnpm list my-package --versions
 ```
 
 `--store` marks each version with the tags naming it, as a trailing
@@ -576,6 +590,16 @@ is left unmarked, and is what `lnpm gc` will collect once nothing links it.
 one record, and says which build each consumer is on. Resolving by name would
 answer with the version `latest` points at, leaving every project that asked for
 a channel out of the one listing whose job is naming who consumes this package.
+
+`--versions` is one package's history: every version the store still holds,
+newest first, with its content hash, its version, when it was published, the
+dist-tags naming it and the projects linked to it. That set is exactly what
+`lnpm gc` has not collected, because a version's record and its store entry go
+together — there is no separate "ever published" history, and nothing here
+retains anything gc would otherwise take. It is what `lnpm add <pkg>@<hash>` can
+roll a project back to. It cannot be combined with `--projects`: the two answer
+different questions about the same package, so serving one silently would answer
+a question the user did not ask.
 
 ### `lnpm tag <package> <tag>`
 

@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/pedrosousa13/lnpm/internal/db"
 )
 
 // TestTruncate pins the column-fitting helper the status tables rely on: a
@@ -113,5 +117,79 @@ func TestFormatTimeAgo(t *testing.T) {
 func TestFormatTimeAgoFutureTime(t *testing.T) {
 	if got := formatTimeAgo(time.Now().Add(time.Hour)); got != "just now" {
 		t.Errorf("formatTimeAgo(an hour from now) = %q, want %q", got, "just now")
+	}
+}
+
+// TestConsumersNamingNamesProjectsByPath pins the identifier the version
+// history's consumers column uses.
+//
+// Name is a basename, so two projects called app render identically and the
+// column stops distinguishing the thing it exists to distinguish: which
+// consumers a rollback would move. `lnpm list --projects` and `lnpm status` both
+// name projects by path, and this listing is read alongside them.
+func TestConsumersNamingNamesProjectsByPath(t *testing.T) {
+	got := consumersNaming([]*db.Project{
+		{Name: "app", Path: "/home/dev/two/app"},
+		{Name: "app", Path: "/home/dev/one/app"},
+	})
+
+	// Sorted, because the links come back in whatever order the index holds
+	// them and the listing must not reshuffle between runs.
+	want := "/home/dev/one/app, /home/dev/two/app"
+	if got != want {
+		t.Errorf("consumersNaming() = %q, want %q", got, want)
+	}
+}
+
+// TestConsumersNamingCapsWhatItNames pins the bound. A widely consumed package
+// would otherwise put a line of unbounded length on every row of the history;
+// `lnpm list <pkg> --projects` is the listing that names them all.
+func TestConsumersNamingCapsWhatItNames(t *testing.T) {
+	var projects []*db.Project
+	for _, path := range []string{"/p/a", "/p/b", "/p/c", "/p/d", "/p/e"} {
+		projects = append(projects, &db.Project{Name: filepath.Base(path), Path: path})
+	}
+
+	got := consumersNaming(projects)
+
+	want := "/p/a, /p/b, /p/c, and 2 more"
+	if got != want {
+		t.Errorf("consumersNaming() over five projects = %q, want %q", got, want)
+	}
+}
+
+// TestConsumersNamingOnNoProjectsIsEmpty pins that a version nothing links
+// leaves the column blank rather than printing an empty clause.
+func TestConsumersNamingOnNoProjectsIsEmpty(t *testing.T) {
+	if got := consumersNaming(nil); got != "" {
+		t.Errorf("consumersNaming(nil) = %q, want an empty column", got)
+	}
+}
+
+// TestListRefusesProjectsAndVersionsTogether pins that the two listings are not
+// silently one of them. They answer different questions about the same package,
+// and `lnpm list <pkg>` already refuses rather than guessing which was meant.
+func TestListRefusesProjectsAndVersionsTogether(t *testing.T) {
+	for _, flag := range []string{"projects", "versions"} {
+		if err := listCmd.Flags().Set(flag, "true"); err != nil {
+			t.Fatalf("set --%s: %v", flag, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, flag := range []string{"projects", "versions"} {
+			if err := listCmd.Flags().Set(flag, "false"); err != nil {
+				t.Fatalf("reset --%s: %v", flag, err)
+			}
+		}
+	})
+
+	err := listCmd.RunE(listCmd, []string{"some-pkg"})
+	if err == nil {
+		t.Fatal("list --projects --versions succeeded, want a refusal")
+	}
+	for _, want := range []string{"--versions", "--projects"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %v, want it to name %s", err, want)
+		}
 	}
 }

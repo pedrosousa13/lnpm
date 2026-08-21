@@ -80,7 +80,7 @@ lnpm push
 | `lnpm pull [pkg...]` | Sync linked packages with the store (all of them when no name is given) |
 | `lnpm push` | Push changes to all linked projects (`--tag` picks the channel) |
 | `lnpm status` | Show all published packages and active links across every project |
-| `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
+| `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers, `--versions` lists one package's history) |
 | `lnpm tag <pkg> <tag>` | Point a dist-tag at a published package (`--delete` removes one) |
 | `lnpm check` | Fail if lnpm has left anything an `npm publish` would ship (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
@@ -147,13 +147,14 @@ lnpm add my-package@beta
 lnpm add my-package        # still the latest release
 ```
 
-What follows the `@` is read as a tag first and as an exact version only if no
-tag by that name is set. A project that added a package under a tag keeps
-following it: `lnpm pull` refreshes it to whatever that tag now names, never to
-`latest`. Switching channels is just another `lnpm add` — `lnpm add
-my-package@beta` in a project already on `latest` moves it over, and dropping the
-tag moves it back. A tag cannot be combined with `--link`, which resolves to the
-source directory rather than to any published build.
+What follows the `@` is read as a tag first, then as an exact version, then as a
+content-hash prefix — the last two are what [roll a project back](#version-history-and-rollback).
+A project that added a package under a tag keeps following it: `lnpm pull`
+refreshes it to whatever that tag now names, never to `latest`. Switching
+channels is just another `lnpm add` — `lnpm add my-package@beta` in a project
+already on `latest` moves it over, and dropping the tag moves it back. None of
+the three can be combined with `--link`, which resolves to the source directory
+rather than to any published build.
 
 `lnpm push` goes to the channel the build in the store already carries, so
 pushing a pre-release keeps it a pre-release. An edit gives the tree content no
@@ -175,6 +176,43 @@ lnpm list --store                   # Shows which tags name each stored version
 It is also not a garbage-collection root: only a tag you set keeps a version
 alive, because `latest` moves onto everything a publish writes and treating it
 as a root would leave `lnpm gc` unable to reclaim anything.
+
+### Version History and Rollback
+
+Publishing keeps the version published before it, so a release that breaks one
+consumer can be undone for that consumer alone — no republishing an old source
+tree from a git checkout:
+
+```bash
+lnpm list mylib --versions
+# mylib versions:
+#   HASH       VERSION        PUBLISHED            TAGS                 LINKED IN
+#   -----------------------------------------------------------------------------
+#   a1b2c3d4   1.3.0          2 hours ago          latest               ~/apps/myapp
+#   9f8e7d6c   1.2.0          3 days ago
+
+cd ~/apps/myapp
+lnpm add mylib@9f8e7d6c   # Roll this project back to the build that worked
+```
+
+Either identifier the listing prints works. What follows the `@` is matched as a
+dist-tag first, then as an exact version against every retained version, then as
+a content-hash prefix of at least four characters. The eight characters the
+listing shows are enough; type more of them if that ever names two builds. A spec
+that names two builds is refused with their full hashes rather than resolved to
+one of them.
+
+The history is the set `lnpm gc` has not collected: a version stays for as long
+as a link or a tag you set reaches it. A version a project has rolled back to is
+linked, so `gc` keeps it — while the versions in between, which nothing reaches
+any more, are reclaimed.
+
+A rollback holds until that project runs `lnpm pull`. A rolled-back link follows
+no channel, so a pull resolves it through `latest`, moves the project onto the
+current release and repoints the link — after which `gc` is free to collect the
+build the project was on. Bare `lnpm pull` refreshes every package in the lock,
+so pulling one package can undo another package's rollback with no signal. There
+is no pinned link yet: re-run `lnpm add mylib@<hash>` to go back.
 
 ### Monorepo Support
 

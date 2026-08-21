@@ -97,12 +97,13 @@ func TestGCDryRun(t *testing.T) {
 
 // TestGCWithAge exercises the --older-than age filter.
 //
-// COVERAGE GAP (deferred): we cannot publish a genuinely "old" package because
-// back-dating a package's UpdatedAt requires a DB/source change (e.g. a test
-// helper on db.DB), which is out of scope for a test-only change. As a result
-// this test cannot prove the filter correctly REMOVES packages older than the
-// threshold while KEEPING newer ones in the same run. Instead it pins the two
-// observable boundary behaviors that need no back-dating:
+// COVERAGE GAP (deferred): this test does not prove the filter correctly REMOVES
+// packages older than the threshold while KEEPING newer ones in the same run.
+// Back-dating a package's UpdatedAt would need a DB/source change (e.g. a test
+// helper on db.DB), and the one way to get there without it - parseDuration
+// falls through to time.ParseDuration, so a sub-second threshold parses and a
+// wall-clock sleep would cross it - buys a slow, flaky test of untouched code.
+// Instead this pins the two observable boundary behaviors that need neither:
 //   - a very large threshold must PROTECT a freshly published orphan, and
 //   - a zero threshold ("0d") must NOT protect it (filter is bypassed),
 //

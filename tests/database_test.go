@@ -988,6 +988,88 @@ func TestDatabaseDeletingAVersionDropsOnlyItsOwnTags(t *testing.T) {
 	assertTags(t, env.Database, "tagdel-pkg", map[string]string{})
 }
 
+// --- Version history ---------------------------------------------------------
+
+// TestDatabaseGetPackageVersionsListsEveryRetainedVersion covers the lookup the
+// version history rests on: every record the store still holds for one name, not
+// the single version the name index resolves to.
+//
+// GetPackageByName answers with what the default tag names, which is one row of
+// a history that now has several. A rollback needs the rest of them.
+func TestDatabaseGetPackageVersionsListsEveryRetainedVersion(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "history-pkg", "h1")
+	insertTagPkg(t, env.Database, "history-pkg", "h2")
+	insertTagPkg(t, env.Database, "history-pkg", "h3")
+	// A second name, so the listing has something it must leave out.
+	insertTagPkg(t, env.Database, "other-pkg", "h9")
+
+	versions, err := env.Database.GetPackageVersions("history-pkg")
+	if err != nil {
+		t.Fatalf("GetPackageVersions() error = %v", err)
+	}
+
+	var hashes []string
+	for _, v := range versions {
+		if v.Name != "history-pkg" {
+			t.Errorf("GetPackageVersions(history-pkg) returned a version of %s", v.Name)
+		}
+		hashes = append(hashes, v.ContentHash)
+	}
+	sort.Strings(hashes)
+	if got := strings.Join(hashes, ","); got != "h1,h2,h3" {
+		t.Errorf("GetPackageVersions() returned %s, want every retained version h1,h2,h3", got)
+	}
+}
+
+// TestDatabaseGetPackageVersionsOrdersNewestFirst pins the order, because a
+// history that reshuffles between runs is not a history. bolt hands records back
+// in ID order, which is close enough to be mistaken for correct and is not the
+// order a reader rolling back is looking for.
+//
+// This pins the timestamp half only. Every insert here goes through the normal
+// path, which stamps UpdatedAt from time.Now, so on any clock finer than the gap
+// between two inserts the three timestamps differ and the tie-break on ID is
+// never reached. The tie-break has its own test in internal/db, where a record's
+// timestamp can be written rather than stamped.
+func TestDatabaseGetPackageVersionsOrdersNewestFirst(t *testing.T) {
+	env := setupTest(t)
+
+	insertTagPkg(t, env.Database, "ordered-pkg", "h1")
+	insertTagPkg(t, env.Database, "ordered-pkg", "h2")
+	insertTagPkg(t, env.Database, "ordered-pkg", "h3")
+
+	versions, err := env.Database.GetPackageVersions("ordered-pkg")
+	if err != nil {
+		t.Fatalf("GetPackageVersions() error = %v", err)
+	}
+
+	var order []string
+	for _, v := range versions {
+		order = append(order, v.ContentHash)
+	}
+	if got := strings.Join(order, ","); got != "h3,h2,h1" {
+		t.Errorf("GetPackageVersions() ordered them %s, want the most recently published first", got)
+	}
+}
+
+// TestDatabaseGetPackageVersionsOfAnUnknownNameIsEmpty pins that a name the
+// store does not hold is an empty history rather than an error. The callers are
+// listings and a spec resolver, and both say what an unknown package means in
+// their own words - wording that predates this lookup.
+func TestDatabaseGetPackageVersionsOfAnUnknownNameIsEmpty(t *testing.T) {
+	env := setupTest(t)
+
+	versions, err := env.Database.GetPackageVersions("no-such-pkg")
+	if err != nil {
+		t.Fatalf("GetPackageVersions() error = %v, want no error for an unknown name", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("GetPackageVersions(no-such-pkg) returned %d versions, want none", len(versions))
+	}
+}
+
 // --- Tag operations ----------------------------------------------------------
 
 // insertTagPkg inserts a package with the given name and content hash under the
