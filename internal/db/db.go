@@ -405,11 +405,25 @@ func (db *DB) insertPackageTx(tx *bolt.Tx, pkg *Package, tag string) error {
 	packages := tx.Bucket(bucketPackages)
 
 	// A record is addressed by name and content hash. Publishing the same
-	// content again describes the same version, and updates it in place;
-	// publishing different content adds a version beside the ones already
-	// there instead of displacing them, which is what lets two tags name
-	// genuinely different content. Which version a name resolves to is decided
-	// by the tag, below, and not by which record was written last.
+	// content again updates that record in place; publishing different content
+	// adds a version beside the ones already there instead of displacing them,
+	// which is what lets two tags name genuinely different content. Which
+	// version a name resolves to is decided by the tag, below, and not by which
+	// record was written last.
+	//
+	// The update overwrites Version, which is what one record addressed by
+	// content forces: the same bytes cannot be two versions at once, so the
+	// newer publish's label is the one kept. Normally that is the only version
+	// there is, because package.json is inside the hash. It is not always:
+	// pack's walk tests the ignore rules before the default-include list, and
+	// the default-include list is consulted only under a "files" whitelist, so
+	// an .npmignore - or a .gitignore through the fallback - with a line reading
+	// package.json drops it from the pack, and two publishes differing only in
+	// version then hash the same. What that costs is a report: `lnpm status`
+	// shows the record under the newer version while the tag that named it has
+	// not moved. No consumer is affected, because the content really is
+	// identical. The fix belongs in pack, which unlike npm lets package.json be
+	// ignored at all.
 	if existing := findPackageByHashTx(tx, pkg.Name, pkg.ContentHash); existing != nil {
 		existing.Version = pkg.Version
 		existing.SourcePath = pkg.SourcePath
