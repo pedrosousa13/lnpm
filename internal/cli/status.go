@@ -40,15 +40,19 @@ func RunStatus() error {
 		fmt.Println("  (none)")
 	} else {
 		// Print header
-		fmt.Printf("  %-25s %-14s %-10s %-16s %-20s\n", "NAME", "VERSION", "HASH", "TAGS", "PUBLISHED")
-		fmt.Printf("  %s\n", hrule(88))
+		// The rule is as wide as the columns and their separators: 25+14+10+20+20
+		// plus the four single spaces between them. The tag column is wide enough
+		// for three tags - "latest, beta, next" is 18 - because a version that
+		// several channels name is the one a reader most needs spelled out.
+		fmt.Printf("  %-25s %-14s %-10s %-20s %-20s\n", "NAME", "VERSION", "HASH", "TAGS", "PUBLISHED")
+		fmt.Printf("  %s\n", hrule(93))
 
 		for _, pkg := range packages {
-			fmt.Printf("  %-25s %-14s %-10s %-16s %-20s\n",
+			fmt.Printf("  %-25s %-14s %-10s %-20s %-20s\n",
 				truncate(pkg.Name, 25),
 				truncate(pkg.Version, 14),
 				shortHash(pkg.ContentHash),
-				truncate(strings.Join(tagsNamingList(tagsByName[pkg.Name], pkg.ContentHash), ", "), 16),
+				truncate(strings.Join(tagsNamingList(tagsByName[pkg.Name], pkg.ContentHash), ", "), 20),
 				formatTimeAgo(pkg.UpdatedAt),
 			)
 		}
