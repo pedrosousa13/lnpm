@@ -50,12 +50,24 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	// Find packages to remove
 	var packagesToRemove []*db.Package
 	var linksToRemove []linkToRemove
+	// Tags of each package name, read once per name. They are reachability
+	// roots, so a failure to read them stops the whole run: this pass decides
+	// what gets deleted, and deciding it from tags gc could not read would be
+	// deleting a version it cannot show is unreachable.
+	tagsByName := make(map[string]map[string]string)
 	// Project directories still on disk, deduplicated: the temp-directory sweep
 	// reads each one once, however many packages are linked into it.
 	projectPaths := make(map[string]struct{})
 
 	for _, pkg := range packages {
-		links, _ := database.GetLinksForPackage(pkg.ID)
+		// A failure to read the links stops the run, for the reason the tag read
+		// below stops it: this pass decides what gets deleted, and a read that
+		// failed is indistinguishable here from a version nothing links - so
+		// carrying on would delete a version gc cannot show is unreachable.
+		links, err := database.GetLinksForPackage(pkg.ID)
+		if err != nil {
+			return fmt.Errorf("failed to read the links of %s@%s: %w", pkg.Name, pkg.Version, err)
+		}
 
 		// Check for orphaned links
 		// Named lnk, not link, so it does not shadow the link package the
@@ -86,19 +98,39 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		// Re-check links after filtering orphans
 		validLinks := len(links) - countLinksForPackage(linksToRemove, pkg.ID)
 
-		// Package is orphaned if no valid links.
+		if _, ok := tagsByName[pkg.Name]; !ok {
+			tags, err := database.TagsForPackage(pkg.Name)
+			if err != nil {
+				return fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
+			}
+			tagsByName[pkg.Name] = tags
+		}
+
+		// A version stays for as long as a tag names it, whatever its links
+		// say. That is the other half of the reachability rule: a build
+		// published to a channel is meant to be there when someone asks for
+		// the channel, and nothing need be linked to it yet.
+		if pinnedByTag(tagsByName[pkg.Name], pkg.ContentHash) {
+			continue
+		}
+
+		// The version is orphaned if no valid links.
 		//
-		// Note for whoever adds pruning of superseded store generations: an
-		// incremental relink carries an unchanged file across from the package
-		// already in the project with a hard link, so .lnpm/{package} keeps the
-		// inode - and therefore the store generation - that first materialised
-		// each file, however many versions have been published since. Today that
-		// costs nothing, because what gets removed here is the whole package and
-		// only when no valid link remains, so nothing a project still points at
-		// is ever deleted. Start deleting entries a linked project no longer
-		// names and it becomes one extra copy per unchanged file per project:
-		// the last reference to the old generation's inode is the consumer's,
-		// and the disk it shared with the store stops being shared.
+		// A superseded version reaches this with no links of its own, because
+		// moving a tag carries them to the version it now names. That is what
+		// makes the generations a store used to accumulate collectable at all,
+		// and it has a cost worth stating. An incremental relink carries an
+		// unchanged file across from the package already in the project with a
+		// hard link, so .lnpm/{package} keeps the inode - and therefore the
+		// store generation - that first materialised each file, however many
+		// versions have been published since. Removing that generation's entry
+		// does not touch the project's files: the consumer's hard link keeps the
+		// inode alive. What it ends is the sharing. Those bytes are the
+		// consumer's alone afterwards, and publishing that exact content again
+		// copies them into the store again rather than finding them there.
+		//
+		// It stays a cost rather than a loss because nothing a link or a tag
+		// still reaches is removed.
 		if validLinks == 0 {
 			// Check age if specified
 			if maxAge > 0 {
@@ -187,6 +219,27 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	}
 
 	return nil
+}
+
+// pinnedByTag reports whether a tag other than the default one names the version
+// with this content hash.
+//
+// The default tag is excluded, and that asymmetry is the whole of the rule worth
+// arguing about. Every publish moves it onto whatever it just wrote, so it
+// always names something and names it without anyone deciding to: counting it as
+// a root would leave gc unable to collect any current version of any package,
+// which is every package a store holds one version of — the command would still
+// run, report nothing and free nothing. A tag a user set is a decision to keep a
+// build; latest is a side effect of the last publish. What the default tag names
+// is still kept while a project links it, which is the rule gc has always
+// applied.
+func pinnedByTag(tags map[string]string, hash string) bool {
+	for tag, tagged := range tags {
+		if tag != db.DefaultTag && tagged == hash {
+			return true
+		}
+	}
+	return false
 }
 
 // removePackages deletes each package's store entry and then its database row.

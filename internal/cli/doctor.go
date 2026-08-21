@@ -59,17 +59,49 @@ func RunDoctor() error {
 	} else {
 		fmt.Printf("%s OK\n", iconOK())
 
-		// Check 3: Orphaned packages (packages with no links)
+		// Check 3: Orphaned packages (versions no link and no tag reaches)
+		//
+		// A version a non-default tag names is not counted, and that is not
+		// cosmetic: this check's whole output is advice to run gc, and gc keeps
+		// exactly those versions. Counting one would send a user to a command
+		// that would then find nothing to do, which reads as lnpm being unable to
+		// clean up after itself rather than as it holding on to a build on
+		// purpose. Reachable only since publish learned --tag; before that no
+		// version could be tagged and unlinked at once.
 		fmt.Print("Checking for orphaned packages... ")
 		packages, _ := database.ListPackages()
+		tagsByName := make(map[string]map[string]string)
 		orphanedCount := 0
+		// Tags are what tells an orphan from a build lnpm is keeping on purpose,
+		// so a name whose tags cannot be read makes the count meaningless rather
+		// than approximate: every version of that name would be counted as an
+		// orphan and the user sent to a gc that would keep them. Reported as an
+		// issue and the check abandoned, which is what doctor does with anything
+		// it cannot answer.
+		var tagsErr error
 		for _, pkg := range packages {
 			links, _ := database.GetLinksForPackage(pkg.ID)
-			if len(links) == 0 {
-				orphanedCount++
+			if len(links) > 0 {
+				continue
 			}
+			if _, ok := tagsByName[pkg.Name]; !ok {
+				tags, err := database.TagsForPackage(pkg.Name)
+				if err != nil {
+					tagsErr = fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
+					break
+				}
+				tagsByName[pkg.Name] = tags
+			}
+			if pinnedByTag(tagsByName[pkg.Name], pkg.ContentHash) {
+				continue
+			}
+			orphanedCount++
 		}
-		if orphanedCount > 0 {
+		if tagsErr != nil {
+			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("  %v\n", tagsErr)
+			issues++
+		} else if orphanedCount > 0 {
 			fmt.Printf("%s %d orphaned package(s)\n", iconWarn(), orphanedCount)
 			fmt.Println("  Fix: Run 'lnpm gc' to remove unused packages")
 			warnings++

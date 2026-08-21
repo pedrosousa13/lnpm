@@ -78,9 +78,10 @@ lnpm push
 | `lnpm add <pkg...>` | Add package(s) from store to project |
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm pull [pkg...]` | Sync linked packages with the store (all of them when no name is given) |
-| `lnpm push` | Push changes to all linked projects |
+| `lnpm push` | Push changes to all linked projects (`--tag` picks the channel) |
 | `lnpm status` | Show all published packages and active links across every project |
 | `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
+| `lnpm tag <pkg> <tag>` | Point a dist-tag at a published package (`--delete` removes one) |
 | `lnpm check` | Fail if lnpm has left anything an `npm publish` would ship (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
 | `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`, `--yes`) |
@@ -127,6 +128,53 @@ and are not even committed. Prefer the default when you want a reproducible
 snapshot; use `--link` while you iterate. `lnpm pull` and `lnpm push` skip
 live-linked packages rather than replacing them with a snapshot, and
 `lnpm remove` / `lnpm retreat` delete only the link, never the source.
+
+### Dist-tags
+
+A publish moves the `latest` tag, and `lnpm add my-package` resolves through it.
+`--tag` publishes to another channel instead, leaving `latest` where it is, so an
+experimental build can sit in the store without reaching the projects that are on
+the stable release:
+
+```bash
+# In the package directory
+lnpm publish --tag beta
+
+# In a project that wants the experimental build
+lnpm add my-package@beta
+
+# Everyone else is unaffected
+lnpm add my-package        # still the latest release
+```
+
+What follows the `@` is read as a tag first and as an exact version only if no
+tag by that name is set. A project that added a package under a tag keeps
+following it: `lnpm pull` refreshes it to whatever that tag now names, never to
+`latest`. Switching channels is just another `lnpm add` — `lnpm add
+my-package@beta` in a project already on `latest` moves it over, and dropping the
+tag moves it back. A tag cannot be combined with `--link`, which resolves to the
+source directory rather than to any published build.
+
+`lnpm push` goes to the channel the build in the store already carries, so
+pushing a pre-release keeps it a pre-release. An edit gives the tree content no
+channel has ever named, and the version in `package.json` answers instead — a
+push loop does not bump it, so the tags naming the stored build with that
+version say which channel the tree is on. Bump past everything in the store and
+push has nothing left to go on: it goes to `latest` and says so. Pass `--tag` to
+say otherwise.
+
+Tags can also be moved on a package already in the store, with no republish:
+
+```bash
+lnpm tag my-package beta            # Point beta at the published version
+lnpm tag my-package beta --delete   # Remove the beta tag
+lnpm list --store                   # Shows which tags name each stored version
+```
+
+`latest` cannot be deleted — it is what every lookup by name resolves through.
+It is also not a garbage-collection root: only a tag you set keeps a version
+alive, because `latest` moves onto everything a publish writes and treating it
+as a root would leave `lnpm gc` unable to reclaim anything.
 
 ### Monorepo Support
 

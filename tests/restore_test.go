@@ -106,14 +106,20 @@ func TestRestoreWithoutSnapshotReportsNothingToRestore(t *testing.T) {
 	env.AssertDirectoryExists(filepath.Join(projectDir, ".lnpm"), false)
 }
 
-// TestRestoreReportsStaleVersionAndContinues covers the criterion that a package
-// whose recorded version is no longer the one in the store is reported per
-// package and does not abort the rest of the restore. The store is latest-wins,
-// so republishing at a new version is what strands the snapshot's entry.
-func TestRestoreReportsStaleVersionAndContinues(t *testing.T) {
+// TestRestoreReportsACollectedBuildAndContinues covers the criterion that a
+// package restore cannot put back is reported per package and does not abort the
+// rest of the restore.
+//
+// Restore resolves through the content hash the snapshot recorded, so a
+// republish no longer strands the entry - the build it names is still in the
+// store beside the newer one. What does strand it is gc collecting that build,
+// which after a retreat is exactly what happens: nothing links it and no tag
+// names it. The healthy package is tagged to keep gc off it, since nothing links
+// that either.
+func TestRestoreReportsACollectedBuildAndContinues(t *testing.T) {
 	env := setupTest(t)
 
-	stalePkgDir := env.simplePkg("stale-restore-pkg")
+	env.simplePkg("stale-restore-pkg")
 	env.simplePkg("fresh-restore-pkg")
 	projectDir := env.newProject("stale-restore-project")
 	env.addPkg(projectDir, "stale-restore-pkg", false, false)
@@ -123,7 +129,14 @@ func TestRestoreReportsStaleVersionAndContinues(t *testing.T) {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
-	env.republish(stalePkgDir, "stale-restore-pkg", "2.0.0", "module.exports = 'v2';")
+	if err := cli.RunTag("fresh-restore-pkg", "keep", false); err != nil {
+		t.Fatalf("Failed to tag the healthy package: %v", err)
+	}
+	captureStdout(t, func() {
+		if err := cli.RunGC(false, "", false, true); err != nil {
+			t.Fatalf("Failed to collect the unreferenced build: %v", err)
+		}
+	})
 	env.chdir(projectDir)
 
 	var err error
@@ -132,9 +145,9 @@ func TestRestoreReportsStaleVersionAndContinues(t *testing.T) {
 		t.Error("Expected restore to exit non-zero when a package could not be restored")
 	}
 
-	want := "version 1.0.0 of stale-restore-pkg not found in store (latest published is 2.0.0"
-	if !strings.Contains(out, want) {
-		t.Errorf("Expected the report to contain %q, got:\n%s", want, out)
+	want := "stale-restore-pkg@1.0.0 (hash "
+	if !strings.Contains(out, want) || !strings.Contains(out, "is no longer in the store") {
+		t.Errorf("Expected the report to name the collected build (%q), got:\n%s", want, out)
 	}
 
 	// The healthy package is restored regardless.
@@ -290,6 +303,29 @@ func TestRestoreReportsAnUnknownDependencyField(t *testing.T) {
 	}
 }
 
+// collectUnreferencedBuilds takes every build no link and no tag reaches out of
+// the isolated store, which after a retreat is every build the project had. The
+// packages a caller needs to survive are named in keep and tagged first, since
+// gc keeps any version a non-default tag names.
+//
+// It is how a restore is made to fail on purpose. Republishing no longer does
+// it: restore resolves the snapshot's content hash, and the build that hash
+// names stays in the store beside whatever was published after it.
+func collectUnreferencedBuilds(t *testing.T, keep ...string) {
+	t.Helper()
+
+	for _, name := range keep {
+		if err := cli.RunTag(name, "keep", false); err != nil {
+			t.Fatalf("Failed to tag %s to keep gc off it: %v", name, err)
+		}
+	}
+	captureStdout(t, func() {
+		if err := cli.RunGC(false, "", false, true); err != nil {
+			t.Fatalf("Failed to collect unreferenced builds: %v", err)
+		}
+	})
+}
+
 // TestRestoreCountsOnlyThePackagesItAttempted pins the denominator of the
 // failure summary. Packages restore skipped because the user re-added them were
 // never attempted, so counting them makes the failure look like a smaller
@@ -298,7 +334,7 @@ func TestRestoreCountsOnlyThePackagesItAttempted(t *testing.T) {
 	env := setupTest(t)
 
 	readdedDir := env.simplePkg("count-readded-pkg")
-	staleDir := env.simplePkg("count-stale-pkg")
+	env.simplePkg("count-stale-pkg")
 	env.simplePkg("count-ok-pkg")
 	projectDir := env.newProject("count-restore-project")
 	env.addPkg(projectDir, "count-readded-pkg", false, false)
@@ -310,11 +346,11 @@ func TestRestoreCountsOnlyThePackagesItAttempted(t *testing.T) {
 	}
 
 	// One package is re-added since the retreat, so restore skips it untouched;
-	// another is republished, so the version the snapshot recorded is gone and
-	// restore cannot put it back. Only two of the three are ever attempted.
+	// another has had its build collected, so restore cannot put it back. Only
+	// two of the three are ever attempted.
 	env.republish(readdedDir, "count-readded-pkg", "2.0.0", "module.exports = 'v2';")
 	env.addPkg(projectDir, "count-readded-pkg", false, false)
-	env.republish(staleDir, "count-stale-pkg", "2.0.0", "module.exports = 'v2';")
+	collectUnreferencedBuilds(t, "count-ok-pkg")
 	env.chdir(projectDir)
 
 	var err error
@@ -380,16 +416,17 @@ func TestRestoreNamesTheSnapshotInAReadError(t *testing.T) {
 func TestRestoreMarkersComeFromTheIconHelpers(t *testing.T) {
 	cases := []struct {
 		name string
-		// stale republishes the package after the retreat, so its recorded
-		// version is gone from the store and restore reports a failure.
-		stale bool
+		// collected runs gc after the retreat, which takes the recorded build
+		// out of the store - nothing links it and no tag names it - so restore
+		// reports a failure.
+		collected bool
 		// dev adds the package with --dev and no package.json entry, so restore
 		// cannot tell which field it belonged in and reports a warning.
 		dev  bool
 		want string
 	}{
 		{name: "package restored", want: "Restored glyph-restore-pkg@1.0.0"},
-		{name: "version no longer in the store", stale: true, want: "not found in store"},
+		{name: "build no longer in the store", collected: true, want: "is no longer in the store"},
 		{name: "dependency field unknown", dev: true, want: "so its field is unknown"},
 	}
 
@@ -398,15 +435,19 @@ func TestRestoreMarkersComeFromTheIconHelpers(t *testing.T) {
 			t.Setenv("NO_COLOR", "1")
 			env := setupTest(t)
 
-			pkgDir := env.simplePkg("glyph-restore-pkg")
+			env.simplePkg("glyph-restore-pkg")
 			projectDir := env.newProject("glyph-restore-project")
 			env.addPkg(projectDir, "glyph-restore-pkg", tc.dev, false)
 
 			if err := cli.RunRetreat(true, false); err != nil {
 				t.Fatalf("Failed to retreat: %v", err)
 			}
-			if tc.stale {
-				env.republish(pkgDir, "glyph-restore-pkg", "2.0.0", "module.exports = 'v2';")
+			if tc.collected {
+				captureStdout(t, func() {
+					if err := cli.RunGC(false, "", false, true); err != nil {
+						t.Fatalf("Failed to collect the unreferenced build: %v", err)
+					}
+				})
 			}
 			env.chdir(projectDir)
 
@@ -453,7 +494,7 @@ func TestRestoreRerunDoesNotReportItsOwnWorkAsAReAdd(t *testing.T) {
 	env := setupTest(t)
 
 	env.simplePkg("prune-ok-pkg")
-	staleDir := env.simplePkg("prune-stale-pkg")
+	env.simplePkg("prune-stale-pkg")
 	projectDir := env.newProject("prune-restore-project")
 	env.addPkg(projectDir, "prune-ok-pkg", false, false)
 	env.addPkg(projectDir, "prune-stale-pkg", false, false)
@@ -462,9 +503,9 @@ func TestRestoreRerunDoesNotReportItsOwnWorkAsAReAdd(t *testing.T) {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
-	// Republishing strands the version the snapshot recorded, so the first run
-	// restores one package and fails on the other.
-	env.republish(staleDir, "prune-stale-pkg", "2.0.0", "module.exports = 'v2';")
+	// Collecting the build the snapshot recorded strands its entry, so the first
+	// run restores one package and fails on the other.
+	collectUnreferencedBuilds(t, "prune-ok-pkg")
 	env.chdir(projectDir)
 
 	var err error
@@ -506,7 +547,7 @@ func TestRestoreDropsAReAddedPackageFromTheSnapshot(t *testing.T) {
 	env := setupTest(t)
 
 	readdedDir := env.simplePkg("skip-readded-pkg")
-	staleDir := env.simplePkg("skip-stale-pkg")
+	env.simplePkg("skip-stale-pkg")
 	projectDir := env.newProject("skip-restore-project")
 	env.addPkg(projectDir, "skip-readded-pkg", false, false)
 	env.addPkg(projectDir, "skip-stale-pkg", false, false)
@@ -515,11 +556,11 @@ func TestRestoreDropsAReAddedPackageFromTheSnapshot(t *testing.T) {
 		t.Fatalf("Failed to retreat: %v", err)
 	}
 
-	// One package is added again by the user, so restore skips it; another is
-	// stranded, so the run fails and the snapshot is kept.
+	// One package is added again by the user, so restore skips it; the other has
+	// had its build collected, so the run fails and the snapshot is kept.
 	env.republish(readdedDir, "skip-readded-pkg", "2.0.0", "module.exports = 'v2';")
 	env.addPkg(projectDir, "skip-readded-pkg", false, false)
-	env.republish(staleDir, "skip-stale-pkg", "2.0.0", "module.exports = 'v2';")
+	collectUnreferencedBuilds(t)
 	env.chdir(projectDir)
 
 	captureStdout(t, func() { _ = cli.RunRestore() })

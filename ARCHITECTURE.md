@@ -183,8 +183,19 @@ links              - Link data (key: ID, value: JSON)
 links_by_package   - Index (key: package_id, value: [link_ids])
 links_by_project   - Index (key: project_id, value: [link_ids])
 files              - File manifest (key: package_id, value: [FileEntry])
-meta               - Metadata (next_id counter)
+meta               - Metadata (next_id counter, schema_version)
+tags               - Dist-tags (key: name + NUL + tag, value: content hash)
 ```
+
+A package record is addressed by its name and content hash, so several versions
+of one name can be in the store at once. Which version a name resolves to is
+decided by the `tags` bucket: `packages_by_name` names the version tagged
+`latest`, and the two are written together so they cannot disagree.
+
+`meta.schema_version` records the shape above. A database written before tags
+existed carries none, and gains a `latest` tag per name when it is opened —
+`packages_by_name` was the only way to reach a package then, so the record it
+named was that package's latest by definition.
 
 ### Data Structures (JSON)
 
@@ -219,6 +230,7 @@ meta               - Metadata (next_id counter)
   "package_id": 1,
   "project_id": 1,
   "link_type": "hardlink",
+  "tag": "beta",  // channel followed; absent means latest
   "created_at": "2024-01-15T10:00:00Z",
   "updated_at": "2024-01-15T10:30:00Z"
 }
@@ -238,7 +250,16 @@ lnpm publish
 
 # Publish and push to all linked projects
 lnpm publish --push
+
+# Publish to a channel other than latest, leaving latest where it is
+lnpm publish --tag beta
 ```
+
+`--tag` changes which tag is moved onto the version being written, and nothing
+else. The build is stored and recorded the same way; only `latest` stays put.
+The "already published with same content" shortcut is skipped unless the tag
+being published already names that content, because that shortcut is what would
+otherwise leave the tag unmoved.
 
 **Process:**
 1. Read `package.json` for name/version
@@ -278,8 +299,11 @@ Add a package from the store to current project.
 # Add latest published version
 lnpm add my-package
 
-# Add a specific version (must match the latest published version)
+# Add a specific version (must match the version latest names)
 lnpm add my-package@1.0.0
+
+# Add whatever the beta channel currently names
+lnpm add my-package@beta
 
 # Add without modifying package.json
 lnpm add my-package --pure
@@ -292,7 +316,12 @@ lnpm add my-package --link
 ```
 
 **Process:**
-1. Find package in store (latest or specified version)
+1. Find the version in the store. What follows the `@` is read as a dist-tag
+   first and as an exact version only when no tag by that name is set; a spec
+   with no `@` resolves through `latest`. The tag is recorded on the link row,
+   so a later move of `latest` does not carry this project onto it
+   (`--link` is refused with a tag: it resolves to the source directory, which
+   is not the build any tag names)
 2. Create a temporary directory alongside `.lnpm/{package}/`
 3. Hard link all files from store into it, write the `.lnpm-linked` manifest,
    then rename it to `.lnpm/{package}/`
@@ -355,6 +384,9 @@ Push updates to all linked projects.
 # Push current package to all consumers
 lnpm push
 
+# Push to a channel other than the one the build already carries
+lnpm push --tag beta
+
 # Push, skipping prepare scripts
 lnpm push --skip-hooks
 ```
@@ -362,8 +394,22 @@ lnpm push --skip-hooks
 **Process:**
 1. Run prepare scripts (unless `--skip-hooks`)
 2. Calculate new content hash
-3. Update store with new version
-4. For each linked project:
+3. Work out which channel to push to, unless `--tag` said. Two questions are
+   asked in order, and `latest` wins wherever it appears in either answer:
+   - which tags name the packed content — exact for an unchanged working tree,
+     since that is the build they name
+   - failing that, which tags name a stored record carrying the working tree's
+     version — a push loop edits files without touching `package.json`, so the
+     version still identifies the pre-release being worked on
+
+   One tag other than `latest` wins; several sharing a version is refused,
+   since each would move and carry its consumers. Several naming one content
+   hash is not refused: each already points at it, so every choice moves
+   nothing. A version bumped past everything in the store is answered by
+   neither question and goes to `latest`, with a warning naming the other
+   channels the package has
+4. Update store with new version, moving that tag onto it
+5. For each linked project:
    - Skip it if it is live-linked (`.lnpm/{package}` is a link, not a
      directory): it already resolves to the source directory being pushed, and
      relinking would swap its live link for a snapshot copy
@@ -456,8 +502,11 @@ lnpm pull my-package other-pkg
 2. Skip any package that is live-linked (`.lnpm/{package}` is a link, not a
    directory): it resolves to its source, so there is nothing to refresh, and
    relinking it would silently swap the live link for a snapshot copy
-3. For each remaining package, look it up in the store; skip it when the lock
-   entry already matches the store's version and content hash
+3. For each remaining package, resolve the channel this project's link row
+   follows — `latest` for a link that names none — and skip the package when the
+   lock entry already matches that version and content hash. Resolving by name
+   instead would answer with `latest` for every project and quietly move a
+   tagged consumer onto the stable release
 4. Relink it from the store, exactly as `add` and `push` do — including the
    incremental path, so a `pull` that finds only a few files changed rewrites
    only those
@@ -465,9 +514,13 @@ lnpm pull my-package other-pkg
    specifier recorded by `add`
 
 `package.json` is never touched: the `file:.lnpm/{package}` reference it holds
-is already correct, and only the contents behind it change. Nothing is written
-to bbolt either — publishing updates the package row in place, so the link row
-`add` recorded still points at the right package.
+is already correct, and only the contents behind it change. The link row is
+usually left alone too — a publish that moves a tag carries the links following
+that tag onto the version it now names, so the row `add` wrote already points at
+the version `pull` just linked. It is repointed when it does not, which a publish
+leaves behind when the tag it moves was deleted and set again: there is then no
+previous version to carry links from. A project with no row for the package
+gains none; `pull` refreshes links rather than creating them.
 
 ### `lnpm status`
 
@@ -478,12 +531,13 @@ lnpm status
 
 # Output:
 # 📦 Published Packages
-# ┌──────────────┬─────────┬──────────┬─────────────────────┐
-# │ Package      │ Version │ Hash     │ Published           │
-# ├──────────────┼─────────┼──────────┼─────────────────────┤
-# │ my-package   │ 1.0.0   │ abc123   │ 2 minutes ago       │
-# │ other-pkg    │ 2.1.0   │ def456   │ 1 hour ago          │
-# └──────────────┴─────────┴──────────┴─────────────────────┘
+# ┌──────────────┬──────────────┬──────────┬──────────┬───────────────┐
+# │ Package      │ Version      │ Hash     │ Tags     │ Published     │
+# ├──────────────┼──────────────┼──────────┼──────────┼───────────────┤
+# │ my-package   │ 1.0.0        │ abc123   │ latest   │ 2 minutes ago │
+# │ my-package   │ 2.0.0-beta.1 │ abc789   │ beta     │ 1 minute ago  │
+# │ other-pkg    │ 2.1.0        │ def456   │ latest   │ 1 hour ago    │
+# └──────────────┴──────────────┴──────────┴──────────┴───────────────┘
 #
 # 🔗 Active Links
 # ┌──────────────┬─────────────────────────┬──────────┐
@@ -493,6 +547,10 @@ lnpm status
 # │ my-package   │ ~/code/other-app        │ hardlink │
 # └──────────────┴─────────────────────────┴──────────┘
 ```
+
+The published table lists one row per retained version, so it carries the tags
+naming each of them. Without that column two rows of one name say nothing about
+which build a plain `lnpm add` would give you.
 
 ### `lnpm list`
 
@@ -509,15 +567,51 @@ lnpm list --store
 lnpm list my-package --projects
 ```
 
+`--store` marks each version with the tags naming it, as a trailing
+`[beta, latest]`. With more than one version of a name live at once that is the
+only place a user can see which build a channel points at; a version no tag names
+is left unmarked, and is what `lnpm gc` will collect once nothing links it.
+
+`--projects` walks every version of the name rather than resolving the name to
+one record, and says which build each consumer is on. Resolving by name would
+answer with the version `latest` points at, leaving every project that asked for
+a channel out of the one listing whose job is naming who consumes this package.
+
+### `lnpm tag <package> <tag>`
+
+Manage a package's dist-tags without republishing it.
+
+```bash
+# Point beta at the version the package resolves to
+lnpm tag my-package beta
+
+# Remove the beta tag, leaving the version it named in the store
+lnpm tag my-package beta --delete
+```
+
+Setting names the version `packages_by_name` points at — the one tagged
+`latest` — because that is the version a publish just wrote and the only one a
+user can name without knowing content hashes. Moving a tag carries the projects
+following *that* tag onto the new version and leaves the others alone.
+
+`latest` cannot be deleted: `packages_by_name` mirrors it, so removing it would
+leave the package published, its files on disk, and every command that resolves
+by name unable to see it.
+
 ### `lnpm gc`
 
 Garbage collect unused packages from store.
+
+A version is collected when no valid link and no tag reaches it. `latest` does
+not count: every publish moves it onto what it just wrote, so treating it as a
+root would leave nothing collectable — see
+`docs/adr/0002-latest-is-not-a-garbage-collection-root.md`.
 
 ```bash
 # Dry run - show what would be removed
 lnpm gc --dry-run
 
-# Remove packages with no active links
+# Remove versions no link and no tag reaches
 lnpm gc
 
 # Remove packages older than 30 days

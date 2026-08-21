@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/spf13/cobra"
 )
 
@@ -19,16 +20,22 @@ This command:
   4. Copies files to ~/.lnpm/store/{name}/{hash}/
   5. Records the package in the database
 
+With --tag the build is stored under that channel instead of moving 'latest', so
+consumers keep the release they are on until they ask for the channel by name
+with 'lnpm add <pkg>@<tag>'.
+
 Examples:
-  lnpm publish           # Publish current package
-  lnpm publish --push    # Publish and update all linked projects
-  lnpm publish --all     # Publish all packages in monorepo`,
+  lnpm publish            # Publish current package
+  lnpm publish --push     # Publish and update all linked projects
+  lnpm publish --all      # Publish all packages in monorepo
+  lnpm publish --tag beta # Publish to the beta channel, leaving latest alone`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
 		all, _ := cmd.Flags().GetBool("all")
 		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
 		skipValidation, _ := cmd.Flags().GetBool("skip-validation")
-		return RunPublish(push, all, skipHooks, skipValidation)
+		tag, _ := cmd.Flags().GetString("tag")
+		return RunPublishTagged(push, all, skipHooks, skipValidation, tag)
 	},
 }
 
@@ -51,10 +58,17 @@ project with no further command, and package.json uses link: instead of file:.
 That trades away the isolation the default gives you - the project then builds
 against files that have not been published, or even committed.
 
+What follows the @ in a spec is read as a dist-tag first and as an exact version
+only if no tag by that name is set, so 'lnpm add my-package@beta' links whatever
+build the beta channel currently names. A spec with no @ resolves to latest, as
+it always has. A tag cannot be combined with --link: that resolves to the
+package's source directory, which is not the build any tag names.
+
 Examples:
   lnpm add my-package            # Add latest version
   lnpm add pkg1 pkg2 pkg3        # Add multiple packages
   lnpm add my-package@1.0.0      # Add specific version
+  lnpm add my-package@beta       # Add the build tagged beta
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
   lnpm add my-package --pure     # Don't modify package.json
@@ -110,9 +124,13 @@ the store, picking up anything published since they were added.
 With no arguments every package in lnpm.lock is refreshed.
 
 This command:
-  1. Finds each package's current version in the store
+  1. Finds the version the channel each package follows now names
   2. Refreshes .lnpm/{package}/
   3. Updates lnpm.lock
+
+A package added as <pkg>@<tag> follows that channel, so pull moves it to
+whatever the tag names and never onto ` + db.DefaultTag + `. Everything else follows
+` + db.DefaultTag + `, as it always has.
 
 package.json is never modified: its reference already points at .lnpm/{package}.
 
@@ -137,12 +155,19 @@ This command:
   3. Updates store
   4. Re-links to all linked projects
 
+Push goes to the channel the build already in the store carries, so pushing an
+unchanged pre-release keeps it a pre-release rather than moving ` + db.DefaultTag + ` onto
+it. Content the store does not hold yet is in no channel, so it goes to
+` + db.DefaultTag + `; use --tag to say otherwise.
+
 Examples:
   lnpm push              # Push to all linked projects
+  lnpm push --tag beta   # Push to the beta channel, leaving latest alone
   lnpm push --skip-hooks # Skip prepare scripts`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
-		return RunPush(skipHooks)
+		tag, _ := cmd.Flags().GetString("tag")
+		return RunPushTagged(skipHooks, tag)
 	},
 }
 
@@ -151,7 +176,8 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show current state of all links",
 	Long: `Show the current state of lnpm including:
-  - Published packages in the store
+  - Published packages in the store, one row per retained version, with the
+    dist-tags naming each
   - Active links between packages and projects
 
 This provides full visibility into what lnpm is managing.`,
@@ -165,6 +191,10 @@ var listCmd = &cobra.Command{
 	Use:   "list [package]",
 	Short: "List packages in project or store",
 	Long: `List packages linked in the current project or available in the store.
+
+--store marks each stored version with the dist-tags naming it, and --projects
+names every project consuming the package with the build each is on, whichever
+channel it followed to get there.
 
 Examples:
   lnpm list                      # List packages in current project
@@ -187,8 +217,15 @@ var gcCmd = &cobra.Command{
 	Short: "Garbage collect unused packages",
 	Long: `Remove unused packages from the store.
 
+A stored version goes when no link and no dist-tag reaches it. The ` + db.DefaultTag + `
+tag does not count: every publish moves it onto what it just wrote, so treating
+it as a reason to keep a version would leave gc nothing it could ever collect.
+A version a tag you set names is kept even with nothing linked to it, which is
+what a build published to a channel is waiting for. Removing one of those takes
+two steps: 'lnpm tag <pkg> <tag> --delete', then 'lnpm gc'.
+
 Examples:
-  lnpm gc              # Remove packages with no links
+  lnpm gc              # Remove versions no link and no tag reaches
   lnpm gc --dry-run    # Show what would be removed
   lnpm gc --older-than 30d   # Remove packages older than 30 days
   lnpm gc --fix-links  # Clean up orphaned link records
@@ -257,13 +294,42 @@ Everything comes back as a store copy (file:.lnpm/<pkg>), because the snapshot
 does not record which packages were added with --link. Run 'lnpm add --link
 <pkg>' again for the ones that should point back at their live source.
 
-A package whose recorded version is no longer the one in the store is reported
-and skipped; the snapshot is kept so restore can be re-run after publishing it.
+Each package comes back on the exact build the snapshot recorded, found by its
+content hash, so a project that was consuming a dist-tagged build gets that
+build and not whatever ` + db.DefaultTag + ` names now. The tag itself is not recorded
+anywhere, so the restored link follows ` + db.DefaultTag + ` and says so.
+
+A build that is no longer in the store is reported and skipped; the snapshot is
+kept so restore can be re-run after publishing it again.
 
 Examples:
   lnpm restore   # Undo the last 'lnpm retreat --force'`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunRestore()
+	},
+}
+
+// tagCmd manages dist-tags on a package already in the store
+var tagCmd = &cobra.Command{
+	Use:   "tag <package> <tag>",
+	Short: "Point a dist-tag at a published package, or remove one",
+	Long: `Manage the dist-tags of a package already in the store, without republishing
+it.
+
+Setting points the tag at the version the package currently resolves to - the
+one tagged ` + db.DefaultTag + ` - so 'lnpm add <pkg>@<tag>' from then on links that build.
+Removing takes the tag off and leaves the version it named in the store.
+
+The ` + db.DefaultTag + ` tag cannot be removed: it is what every lookup by name resolves
+through, so deleting it would leave the package published and invisible.
+
+Examples:
+  lnpm tag my-package beta            # Point beta at the published version
+  lnpm tag my-package beta --delete   # Remove the beta tag`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		del, _ := cmd.Flags().GetBool("delete")
+		return RunTag(args[0], args[1], del)
 	},
 }
 
@@ -299,11 +365,18 @@ func init() {
 	// Register check command
 	rootCmd.AddCommand(checkCmd)
 
+	// Register tag command
+	rootCmd.AddCommand(tagCmd)
+
+	// tag flags
+	tagCmd.Flags().Bool("delete", false, "Remove the tag instead of setting it")
+
 	// publish flags
 	publishCmd.Flags().Bool("push", false, "Push to all linked projects after publish")
 	publishCmd.Flags().Bool("all", false, "Publish all packages in monorepo")
 	publishCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts (prepare, prepublishOnly, prepack)")
 	publishCmd.Flags().Bool("skip-validation", false, "Skip package validation before publish")
+	publishCmd.Flags().String("tag", db.DefaultTag, "Channel to publish to; anything but "+db.DefaultTag+" leaves "+db.DefaultTag+" where it is")
 
 	// retreat flags
 	retreatCmd.Flags().Bool("force", false, "Actually remove everything (required)")
@@ -321,6 +394,7 @@ func init() {
 
 	// push flags
 	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
+	pushCmd.Flags().String("tag", "", "Channel to push to (default: the channel the build already in the store carries)")
 
 	// list flags
 	listCmd.Flags().Bool("store", false, "List packages in store")

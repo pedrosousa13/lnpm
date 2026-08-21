@@ -137,7 +137,7 @@ func publishForLink(t *testing.T, database *db.DB, name string, files map[string
 	if err != nil {
 		t.Fatalf("pack source: %v", err)
 	}
-	if err := finishPublish(src, pkgJSON, collected, database, false); err != nil {
+	if err := finishPublish(src, pkgJSON, collected, database, false, db.DefaultTag); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 

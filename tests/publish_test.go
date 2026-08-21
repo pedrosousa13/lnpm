@@ -268,6 +268,49 @@ func TestPublishVersionUpdate(t *testing.T) {
 	}
 }
 
+// TestPublishKeepsThePreviousVersionInTheStore pins that publishing does not
+// take the version published before it out of reach.
+//
+// The store has always written one directory per content hash and never removed
+// a sibling, but the database used to overwrite the one record it kept for a
+// name — so the previous version's files stayed on disk while nothing could
+// name them. Both halves are asserted here: the record and the tree.
+func TestPublishKeepsThePreviousVersionInTheStore(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("retained-pkg", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+	})
+	first, err := env.Database.GetPackageByName("retained-pkg")
+	if err != nil || first == nil {
+		t.Fatalf("Failed to get the first version: %v", err)
+	}
+
+	env.republish(pkgDir, "retained-pkg", "2.0.0", "module.exports = 'v2';")
+
+	second, err := env.Database.GetPackageByName("retained-pkg")
+	if err != nil || second == nil {
+		t.Fatalf("Failed to get the second version: %v", err)
+	}
+	if second.ContentHash == first.ContentHash {
+		t.Fatal("the republish produced the same content hash, so there is no second version to keep")
+	}
+
+	retained, err := env.Database.GetPackageByHash("retained-pkg", first.ContentHash)
+	if err != nil {
+		t.Fatalf("Failed to look up the first version by hash: %v", err)
+	}
+	if retained == nil {
+		t.Error("publishing a new version discarded the record of the one before it")
+	}
+	env.AssertDirectoryExists(first.StorePath, true)
+	env.AssertDirectoryExists(second.StorePath, true)
+
+	if first.StorePath == second.StorePath {
+		t.Error("both versions were stored at the same path")
+	}
+}
+
 // TestPublishSymlinks tests publishing a package containing symlinks succeeds.
 func TestPublishSymlinks(t *testing.T) {
 	env := setupTest(t)

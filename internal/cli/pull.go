@@ -57,6 +57,16 @@ func RunPull(packageNames []string) error {
 		}
 	}
 
+	// Which channel this project follows for each package. Resolving by name
+	// alone would answer with whatever latest points at, so a consumer that asked
+	// for beta would be relinked onto the stable release and have its lock
+	// rewritten to match - the carry-over onto latest that asking for a channel
+	// exists to prevent, reached through pull instead of through a moved tag.
+	held, err := linksOfProject(database, cwd)
+	if err != nil {
+		return err
+	}
+
 	s, err := store.New()
 	if err != nil {
 		return fmt.Errorf("failed to access store: %w", err)
@@ -84,17 +94,34 @@ func RunPull(packageNames []string) error {
 			continue
 		}
 
-		pkg, err := database.GetPackageByName(name)
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s: failed to look up package: %w", name, err))
-			continue
-		}
-		if pkg == nil {
-			failed = append(failed, fmt.Errorf("%s: not found in store - did you run 'lnpm publish' in the package directory", name))
-			continue
+		tag := held.tag(name)
+		var pkg *db.Package
+		if !isDefaultTag(tag) {
+			pkg, err = database.ResolveTag(name, tag)
+			if err != nil {
+				failed = append(failed, fmt.Errorf("%s: failed to resolve tag %s: %w", name, tag, err))
+				continue
+			}
+			if pkg == nil {
+				// Reported rather than quietly resolved by name: falling back
+				// would move the project onto latest, which is the one outcome
+				// this whole lookup exists to avoid.
+				failed = append(failed, fmt.Errorf("%s: tag %s is no longer set in the store - re-add it under a tag that is", name, tag))
+				continue
+			}
+		} else {
+			pkg, err = database.GetPackageByName(name)
+			if err != nil {
+				failed = append(failed, fmt.Errorf("%s: failed to look up package: %w", name, err))
+				continue
+			}
+			if pkg == nil {
+				failed = append(failed, fmt.Errorf("%s: not found in store - did you run 'lnpm publish' in the package directory", name))
+				continue
+			}
 		}
 
-		fmt.Printf("Pulling %s... ", name)
+		fmt.Printf("Pulling %s%s... ", name, tagSuffix(tag))
 
 		if entry.Version == pkg.Version && entry.Hash == pkg.ContentHash {
 			fmt.Printf("already up to date (%s)\n", pkg.Version)
@@ -112,10 +139,8 @@ func RunPull(packageNames []string) error {
 			continue
 		}
 
-		// The link type Link reports is deliberately dropped, and no db link row
-		// is written: publishing updates the existing package row in place, so
-		// the row add recorded still points at the package pull just linked, and
-		// no command surfaces the stored link type. The per-file counts are
+		// The link type Link reports is deliberately dropped: no command surfaces
+		// the stored one, and pull does not change it. The per-file counts are
 		// kept: pull runs the same incremental relink push does, and reporting
 		// nothing would make it the one command that leaves the user guessing
 		// whether the refresh cost the whole package.
@@ -141,6 +166,32 @@ func RunPull(packageNames []string) error {
 		fmt.Printf("updated %s -> %s (%d changed, %d unchanged)\n", entry.Version, pkg.Version, linkRes.Changed, linkRes.Unchanged)
 		refreshed++
 		lastVersion = pkg.Version
+
+		// Leave the database describing what was just linked.
+		//
+		// Usually there is nothing to do: a publish that moves a tag carries the
+		// links following it onto the version it now names, so the row add wrote
+		// already names this one. That breaks down when a tag has been deleted
+		// and set again by a publish - there is no previous version to carry
+		// links from - and the row is then left on a build this project no longer
+		// has. That row is what remove deletes, what gc reads as a reason to keep
+		// that build, and what `publish --tag --push` decides whom to push to
+		// from, so all three would act on the wrong version.
+		//
+		// Only an existing row is repointed. pull refreshes links rather than
+		// creating them, and a project with no row for this package had none
+		// before pull ran either.
+		if l, ok := held[name]; ok && l.PackageID != pkg.ID {
+			repointed := &db.Link{
+				PackageID: pkg.ID,
+				ProjectID: l.ProjectID,
+				LinkType:  l.LinkType,
+				Tag:       l.Tag,
+			}
+			if err := database.InsertLink(repointed); err != nil {
+				fmt.Printf("  %s Failed to record the link for %s: %v\n", iconWarn(), name, err)
+			}
+		}
 	}
 
 	// A failed save must not swallow the per-package failures: both are
