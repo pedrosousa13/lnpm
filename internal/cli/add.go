@@ -32,6 +32,10 @@ type addResult struct {
 	pkg         *db.Package
 	linkType    link.LinkType
 	origVersion string
+	// tag is the channel the spec asked for, empty for the default one. It is
+	// recorded on the link so that moving latest later does not drag a
+	// consumer that asked for another channel onto it.
+	tag string
 	// rolledBack records that this package's package.json handling failed and
 	// the package was undone, so every later step - the lock entry, the
 	// package.json write, the database link, the success line - skips it.
@@ -93,12 +97,11 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 			name, version := parsePackageSpec(pkgSpec)
 
-			// The store keeps the latest published version per package
-			// (latest-wins), so resolve by name and then check the requested
-			// version against what's stored, same as the single-package path.
-			pkg, lookupErr := database.GetPackageByName(name)
+			// Resolved exactly as the single-package path resolves it: a tag
+			// first, then the version latest names.
+			pkg, tag, lookupErr := resolveAddSpec(database, name, version)
 			if lookupErr != nil {
-				result.err = fmt.Errorf("failed to look up package: %w", lookupErr)
+				result.err = lookupErr
 				results <- result
 				return
 			}
@@ -107,13 +110,9 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 				results <- result
 				return
 			}
-			if version != "" && pkg.Version != version {
-				result.err = versionNotInStoreError(version, name, pkg.Version)
-				results <- result
-				return
-			}
 
 			result.pkg = pkg
+			result.tag = tag
 
 			linkRes, err := linkPackage(database, linker, s, pkg, useLink)
 			if err != nil {
@@ -272,6 +271,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			PackageID: r.pkg.ID,
 			ProjectID: existingProj.ID,
 			LinkType:  string(r.linkType),
+			Tag:       r.tag,
 		}
 		if err := database.InsertLink(dbLink); err != nil {
 			fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), r.pkg.Name, err)
@@ -279,7 +279,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 		// Reported exactly as the single-package path reports it, so a live link
 		// is spelled out rather than shown as the bare type name "link".
-		fmt.Printf("%s Added %s@%s\n", iconOK(), r.pkg.Name, r.pkg.Version)
+		fmt.Printf("%s Added %s@%s%s\n", iconOK(), r.pkg.Name, r.pkg.Version, tagSuffix(r.tag))
 		fmt.Printf("  Link type: %s\n", linkTypeLabel(r.linkType))
 	}
 
@@ -485,23 +485,20 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Find package in store. The store keeps the latest published version per
-	// package (latest-wins), so a requested version must match what's stored.
-	pkg, err := database.GetPackageByName(name)
+	// Find the version in the store: a tag if the spec names one, otherwise the
+	// version latest points at, which a requested version must match.
+	pkg, tag, err := resolveAddSpec(database, name, version)
 	if err != nil {
-		return fmt.Errorf("failed to look up package: %w", err)
+		return err
 	}
 	if pkg == nil {
 		return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
 	}
-	if version != "" && pkg.Version != version {
-		return versionNotInStoreError(version, name, pkg.Version)
-	}
 
 	if useLink {
-		fmt.Printf("Adding %s@%s (linked to source)...\n", pkg.Name, pkg.Version)
+		fmt.Printf("Adding %s@%s (linked to source%s)...\n", pkg.Name, pkg.Version, tagClause(tag))
 	} else {
-		fmt.Printf("Adding %s@%s...\n", pkg.Name, pkg.Version)
+		fmt.Printf("Adding %s@%s%s...\n", pkg.Name, pkg.Version, tagSuffix(tag))
 	}
 
 	// Get store
@@ -602,12 +599,13 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		PackageID: pkg.ID,
 		ProjectID: existingProj.ID,
 		LinkType:  string(linkType),
+		Tag:       tag,
 	}
 	if err := database.InsertLink(dbLink); err != nil {
 		return fmt.Errorf("failed to record link: %w", err)
 	}
 
-	fmt.Printf("%s Added %s@%s\n", iconOK(), pkg.Name, pkg.Version)
+	fmt.Printf("%s Added %s@%s%s\n", iconOK(), pkg.Name, pkg.Version, tagSuffix(tag))
 	fmt.Printf("  Link type: %s\n", linkTypeLabel(linkType))
 	fmt.Printf("  Package manager: %s\n", pm)
 	if !pure {
@@ -644,6 +642,41 @@ func parsePackageSpec(spec string) (name, version string) {
 		return spec[:idx], spec[idx+1:]
 	}
 	return spec, ""
+}
+
+// resolveAddSpec works out which version of name an add should link, and which
+// channel the resulting link follows.
+//
+// requested is whatever followed the @ in the spec, and a tag is tried before a
+// version: `pkg@beta` has to mean the build beta names, and only a spec that
+// matches no tag falls through to the exact-version check that has always been
+// there. A returned tag of "" means the link follows the default one, which is
+// how every link written before tags existed reads.
+//
+// An unknown name is reported as a nil package rather than an error, because the
+// two add paths word that one differently and both wordings predate tags.
+func resolveAddSpec(database *db.DB, name, requested string) (*db.Package, string, error) {
+	if requested != "" {
+		tagged, err := database.ResolveTag(name, requested)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to resolve tag %s of %s: %w", requested, name, err)
+		}
+		if tagged != nil {
+			return tagged, requested, nil
+		}
+	}
+
+	pkg, err := database.GetPackageByName(name)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to look up package: %w", err)
+	}
+	if pkg == nil {
+		return nil, "", nil
+	}
+	if requested != "" && pkg.Version != requested {
+		return nil, "", versionNotInStoreError(requested, name, pkg.Version)
+	}
+	return pkg, "", nil
 }
 
 // versionNotInStoreError reports that the store holds a different version of

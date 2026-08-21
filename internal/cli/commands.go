@@ -59,10 +59,16 @@ project with no further command, and package.json uses link: instead of file:.
 That trades away the isolation the default gives you - the project then builds
 against files that have not been published, or even committed.
 
+What follows the @ in a spec is read as a dist-tag first and as an exact version
+only if no tag by that name is set, so 'lnpm add my-package@beta' links whatever
+build the beta channel currently names. A spec with no @ resolves to latest, as
+it always has.
+
 Examples:
   lnpm add my-package            # Add latest version
   lnpm add pkg1 pkg2 pkg3        # Add multiple packages
   lnpm add my-package@1.0.0      # Add specific version
+  lnpm add my-package@beta       # Add the build tagged beta
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
   lnpm add my-package --pure     # Don't modify package.json

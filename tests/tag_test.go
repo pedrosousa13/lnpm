@@ -7,6 +7,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 // publishTagged rewrites an already published package's source with a new
@@ -150,4 +151,153 @@ func TestPublishFirstVersionUnderATagIsReachableByName(t *testing.T) {
 
 	assertTagged(t, env, "beta-only-lib", "beta", pkg.ContentHash)
 	assertTagged(t, env, "beta-only-lib", db.DefaultTag, pkg.ContentHash)
+}
+
+// TestAddByTagLinksTheTaggedBuild covers the second acceptance criterion:
+// `lnpm add mylib@beta` materialises the build the beta tag names, not the one
+// latest names.
+func TestAddByTagLinksTheTaggedBuild(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("channel-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "channel-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	projectDir := env.newProject("channel-project")
+	env.addPkg(projectDir, "channel-lib@beta", false, false)
+
+	env.AssertLinkedFileContent(projectDir, "channel-lib", "index.js", "module.exports = 'beta';")
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		entry, ok := lock.Get("channel-lib")
+		if !ok {
+			t.Fatal("channel-lib is missing from the lock file")
+		}
+		if entry.Version != "2.0.0-beta.1" {
+			t.Errorf("The lock file records version %s, want the tagged 2.0.0-beta.1", entry.Version)
+		}
+	})
+}
+
+// TestAddByTagRecordsTheTagOnTheLink pins that a project which asked for a
+// channel is recorded as following it. Without the tag on the link row, the next
+// time latest moves the link is carried onto it and the beta consumer is
+// silently switched to the stable release it deliberately did not ask for.
+func TestAddByTagRecordsTheTagOnTheLink(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("pinned-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "pinned-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	projectDir := env.newProject("pinned-project")
+	env.addPkg(projectDir, "pinned-lib@beta", false, false)
+
+	beta, err := env.Database.ResolveTag("pinned-lib", "beta")
+	if err != nil || beta == nil {
+		t.Fatalf("Failed to resolve the beta tag: %v", err)
+	}
+	links, err := env.Database.GetLinksForPackage(beta.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the links of the beta build: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("The beta build has %d link(s), want exactly 1", len(links))
+	}
+	if links[0].Tag != "beta" {
+		t.Errorf("The link follows tag %q, want beta", links[0].Tag)
+	}
+
+	// Moving latest must leave the beta consumer where it is.
+	env.republish(pkgDir, "pinned-lib", "3.0.0", "module.exports = 'newer stable';")
+
+	stillBeta, err := env.Database.ResolveTag("pinned-lib", "beta")
+	if err != nil || stillBeta == nil {
+		t.Fatalf("Failed to re-resolve the beta tag: %v", err)
+	}
+	links, err = env.Database.GetLinksForPackage(stillBeta.ID)
+	if err != nil {
+		t.Fatalf("Failed to re-read the links of the beta build: %v", err)
+	}
+	if len(links) != 1 {
+		t.Errorf("Publishing to latest left the beta build with %d link(s), want 1", len(links))
+	}
+}
+
+// TestAddWithoutATagStillResolvesLatest covers the third acceptance criterion:
+// the default resolution is untouched, so a plain add gets the build latest
+// names even when another channel holds something newer.
+func TestAddWithoutATagStillResolvesLatest(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("default-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "default-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	projectDir := env.newProject("default-project")
+	env.addPkg(projectDir, "default-lib", false, false)
+
+	env.AssertLinkedFileContent(projectDir, "default-lib", "index.js", "module.exports = 'stable';")
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		entry, _ := lock.Get("default-lib")
+		if entry.Version != "1.0.0" {
+			t.Errorf("A plain add recorded version %s, want the latest-tagged 1.0.0", entry.Version)
+		}
+	})
+}
+
+// TestAddByAnUnsetTagStillReportsTheVersion pins that resolving a tag first does
+// not swallow the message an exact-version add gives. A spec that names no tag
+// falls through to the version check, which is what still tells a user their
+// version is not the one in the store.
+func TestAddByAnUnsetTagStillReportsTheVersion(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("exact-lib")
+	projectDir := env.newProject("exact-project")
+	env.chdir(projectDir)
+
+	err := cli.RunAdd("exact-lib@9.9.9", false, false, false)
+	if err == nil {
+		t.Fatal("Adding a version that is neither a tag nor the stored version succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "9.9.9") || !strings.Contains(err.Error(), "1.0.0") {
+		t.Errorf("The error is %v, want it to name both the requested and the stored version", err)
+	}
+}
+
+// TestAddMultipleResolvesTagsToo pins that the parallel add path resolves a tag
+// the same way the single-package one does. The two duplicate their resolution,
+// and a fix applied to only one of them is exactly the kind of drift that makes
+// `lnpm add a@beta b` behave differently from `lnpm add a@beta`.
+func TestAddMultipleResolvesTagsToo(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("multi-tagged-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "multi-tagged-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+	env.simplePkg("multi-plain-lib")
+
+	projectDir := env.newProject("multi-project")
+	env.chdir(projectDir)
+	if err := cli.RunAddMultiple([]string{"multi-tagged-lib@beta", "multi-plain-lib"}, false, false, false, false); err != nil {
+		t.Fatalf("Failed to add a tagged and a plain package together: %v", err)
+	}
+
+	env.AssertLinkedFileContent(projectDir, "multi-tagged-lib", "index.js", "module.exports = 'beta';")
+
+	beta, err := env.Database.ResolveTag("multi-tagged-lib", "beta")
+	if err != nil || beta == nil {
+		t.Fatalf("Failed to resolve the beta tag: %v", err)
+	}
+	links, err := env.Database.GetLinksForPackage(beta.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the links of the beta build: %v", err)
+	}
+	if len(links) != 1 || links[0].Tag != "beta" {
+		t.Errorf("The parallel add recorded links %+v, want exactly one following beta", links)
+	}
 }
