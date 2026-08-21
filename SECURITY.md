@@ -201,6 +201,72 @@ The decision to accept a non-cryptographic hash here, and the route to tamper
 evidence if it is ever needed, are recorded in
 `docs/adr/0007-the-stores-content-hash-is-a-consistency-control-not-tamper-evidence.md`.
 
+## Release Integrity
+
+Release artifacts are signed with a maintainer-held key.
+
+What is signed is `checksums.txt`, the SHA-256 checksum file published on every
+release. Every archive and package on the release has an entry in it, so the one
+signature covers the whole release: verify the signature over `checksums.txt`,
+then verify your download against `checksums.txt`.
+
+The signature is published on the release as `checksums.txt.sig`. It is an ECDSA
+P-256 signature over the SHA-256 digest of `checksums.txt`, encoded as ASN.1 DER
+— raw bytes, not base64 and not armored.
+
+The public keys lnpm trusts are committed in `internal/releasekeys/keys/` as SPKI
+PEM files and compiled into the binary.
+
+### Verifying a release yourself
+
+Replace `v2.1.0` with the release you are checking and `lnpm_2.1.0_linux_amd64.tar.gz`
+with the archive you downloaded:
+
+```sh
+BASE=https://github.com/pedrosousa13/lnpm/releases/download/v2.1.0
+
+curl -sSLO "$BASE/checksums.txt"
+curl -sSLO "$BASE/checksums.txt.sig"
+curl -sSLO "$BASE/lnpm_2.1.0_linux_amd64.tar.gz"
+
+curl -sSLO https://raw.githubusercontent.com/pedrosousa13/lnpm/v2.1.0/internal/releasekeys/keys/release.pem
+
+openssl dgst -sha256 -verify release.pem -signature checksums.txt.sig checksums.txt
+
+sha256sum --ignore-missing -c checksums.txt
+```
+
+The first command prints `Verified OK` and the second prints `OK` for your
+archive. If either fails, do not install the download.
+
+More than one key may be present in `internal/releasekeys/keys/` while a key is
+being rotated. A release is valid if any one of those keys verifies it, so try
+each in turn. Fetch the keys at the tag you are verifying, not from `main`.
+
+### Automatic verification
+
+`lnpm update` performs this verification in-process before installing. It
+downloads `checksums.txt` and `checksums.txt.sig`, verifies the signature against
+the trusted keys built into your current binary, and only then checks the
+downloaded archive against `checksums.txt`. If the signature is missing, is not
+valid, or was made by a key your binary does not trust, `lnpm update` refuses to
+install and leaves your existing binary in place.
+
+This closes a gap in checksum-only verification: `checksums.txt` is served from
+the same release as the binaries it describes, so on its own it proves only that
+the download matches *some* checksum file, not that the checksum file came from
+the maintainer.
+
+### Unsigned releases
+
+Releases up to and including **v2.0.0 are unsigned**. No `checksums.txt.sig` was
+published for them and the commands above will not work against them.
+
+This does not leave an installed lnpm unable to update. `lnpm update` only ever
+installs the latest release, never an older one, and every release from the one
+after v2.0.0 onward is signed. So the only release `lnpm update` will ever try to
+install is a signed one.
+
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities privately. GitHub's private vulnerability
