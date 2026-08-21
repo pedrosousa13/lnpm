@@ -394,12 +394,20 @@ lnpm push --skip-hooks
 **Process:**
 1. Run prepare scripts (unless `--skip-hooks`)
 2. Calculate new content hash
-3. Work out which channel to push to, unless `--tag` said: the tags naming the
-   packed content answer it, since an unchanged working tree is the build they
-   name. One tag other than `latest` naming it wins; `latest` naming it, or no
-   tag naming it, means `latest`; several naming it is refused. Content the store
-   does not hold is named by nothing, so an edited pre-release still moves
-   `latest` unless `--tag` says otherwise
+3. Work out which channel to push to, unless `--tag` said. Two questions are
+   asked in order, and `latest` wins wherever it appears in either answer:
+   - which tags name the packed content — exact for an unchanged working tree,
+     since that is the build they name
+   - failing that, which tags name a stored record carrying the working tree's
+     version — a push loop edits files without touching `package.json`, so the
+     version still identifies the pre-release being worked on
+
+   One tag other than `latest` wins; several sharing a version is refused,
+   since each would move and carry its consumers. Several naming one content
+   hash is not refused: each already points at it, so every choice moves
+   nothing. A version bumped past everything in the store is answered by
+   neither question and goes to `latest`, with a warning naming the other
+   channels the package has
 4. Update store with new version, moving that tag onto it
 5. For each linked project:
    - Skip it if it is live-linked (`.lnpm/{package}` is a link, not a

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,46 +18,109 @@ import (
 // said.
 //
 // Push has no channel of its own to go on. It re-publishes the working tree, and
-// nothing records which channel that tree was last published to. What is
-// recorded is which tags name the build already in the store, and for an
-// unchanged working tree that answers the question exactly: a push over the
-// build tagged beta is a push to beta. That is the case worth getting right -
-// without it a bare push in a package whose current build is a pre-release moves
-// the default tag onto it and releases something nobody asked to release.
+// nothing records which channel that tree was last published to. Two things in
+// the store answer the question anyway, and they are asked in that order.
 //
-// Content the store does not hold is named by no tag and falls back to the
-// default one, so editing a pre-release and pushing it does still move the
-// default tag. Nothing in the store can be read to infer otherwise, and
-// inferring it from the last publish would mean inferring it from state lnpm
-// does not keep; --tag is what says it instead.
+// The first is which tags name the packed content. For an unchanged working tree
+// that is exact: a push over the build tagged beta is a push to beta.
 //
-// Content several channels name is refused rather than resolved by picking one.
-// Which channel a build belongs to is not a thing to guess when the guess
-// releases software.
-func pushTag(database *db.DB, name, hash string) (string, error) {
+// The second is the version string, and it is what covers the loop push exists
+// for. An edit gives the tree content no tag has ever named, but a push loop
+// edits files without touching package.json, so the version is still the one the
+// stored pre-release carries - and the tags naming that record say which channel
+// the tree belongs to. Without this step an ordinary edit inside a pre-release
+// moved the default tag onto it, carried every latest-following consumer across
+// and wrote the pre-release into all of them, saying nothing.
+//
+// The default tag wins wherever it appears, at either step. It naming the
+// content means the push moves nothing; it naming the version means the mainline
+// is on this version, which is what an edit-without-bumping there looks like.
+//
+// Beyond that, resolution stops. A version bumped past everything in the store
+// is answered by neither step and falls back to the default tag, because the
+// store holds nothing that says otherwise - warnPushMovesTheDefaultTag says so
+// out loud rather than letting the fallback pass for a decision.
+func pushTag(database *db.DB, name, version, hash string) (string, error) {
 	tags, err := database.TagsForPackage(name)
 	if err != nil {
 		return "", fmt.Errorf("failed to read the tags of %s: %w", name, err)
 	}
 
-	var naming []string
-	for _, tag := range tagsNamingList(tags, hash) {
-		if tag == db.DefaultTag {
-			// Already what the default tag names, so this push moves nothing.
-			return db.DefaultTag, nil
-		}
-		naming = append(naming, tag)
+	// Tags naming the packed content. Several non-default ones are not
+	// ambiguous, because every choice has the same outcome: each already points
+	// at this hash, so setTagTx finds nothing to move and carries no link, and
+	// the name index is touched only for the default tag. The first is taken so
+	// that the channel the run reports is at least the same on every run.
+	if naming := tagsNamingList(tags, hash); len(naming) > 0 {
+		return pickDefaultFirst(naming), nil
 	}
 
-	switch len(naming) {
-	case 0:
-		return db.DefaultTag, nil
-	case 1:
-		return naming[0], nil
-	default:
-		return "", fmt.Errorf("the build of %s in your working tree is named by the tags %s, so which channel this push is for is ambiguous: re-run with --tag",
-			name, strings.Join(naming, ", "))
+	// Tags naming a stored record that carries this version.
+	var naming []string
+	for tag, tagged := range tags {
+		pkg, err := database.GetPackageByHash(name, tagged)
+		if err != nil {
+			return "", fmt.Errorf("failed to read the version the %s tag of %s names: %w", tag, name, err)
+		}
+		if pkg != nil && pkg.Version == version {
+			naming = append(naming, tag)
+		}
 	}
+	sort.Strings(naming)
+
+	switch {
+	case len(naming) == 0:
+		warnPushMovesTheDefaultTag(name, tags)
+		return db.DefaultTag, nil
+	case len(naming) == 1 || naming[0] == db.DefaultTag:
+		return pickDefaultFirst(naming), nil
+	default:
+		// Two channels carrying one version on builds this content is not. The
+		// push would move whichever was picked and drag its consumers with it,
+		// so the choice is not the caller's to guess.
+		return "", fmt.Errorf("%s@%s is named by the tags %s, so which channel this push is for is ambiguous: re-run with --tag",
+			name, version, strings.Join(naming, ", "))
+	}
+}
+
+// pickDefaultFirst returns the default tag when it is in the sorted list, and
+// otherwise the first entry.
+func pickDefaultFirst(naming []string) string {
+	for _, tag := range naming {
+		if tag == db.DefaultTag {
+			return db.DefaultTag
+		}
+	}
+	return naming[0]
+}
+
+// warnPushMovesTheDefaultTag says that this push is about to release, in the one
+// case where the store holds nothing that could say otherwise: content no tag
+// names, carrying a version no tagged record carries.
+//
+// It is said only for a package that has channels besides the default one. A
+// package with none has nothing to be moved onto the wrong one, and the line
+// would then be on every push lnpm has ever printed. Where there are channels
+// the fallback is a real decision made by default, and the line that follows it
+// - "Pushing my-lib@2.0.0-beta.2..." - names no tag at all, because tagSuffix
+// leaves the default one unsaid. So without this nothing in the run says which
+// channel is moving.
+func warnPushMovesTheDefaultTag(name string, tags map[string]string) {
+	others := make([]string, 0, len(tags))
+	for tag := range tags {
+		if tag != db.DefaultTag {
+			others = append(others, tag)
+		}
+	}
+	if len(others) == 0 {
+		return
+	}
+	sort.Strings(others)
+
+	fmt.Printf("  %s no tag names the build in your working tree, so this push moves the %s tag onto it\n",
+		iconWarn(), db.DefaultTag)
+	fmt.Printf("      %s also has the tags %s: re-run with --tag if this build belongs to one of them\n",
+		name, strings.Join(others, ", "))
 }
 
 // RunPush executes the push command, publishing to the channel the build
@@ -145,7 +209,7 @@ func RunPushTagged(skipHooks bool, tag string) error {
 	newHash := pack.HashFiles(files)
 
 	if tag == "" {
-		tag, err = pushTag(database, pkgJSON.Name, newHash)
+		tag, err = pushTag(database, pkgJSON.Name, pkgJSON.Version, newHash)
 		if err != nil {
 			return err
 		}

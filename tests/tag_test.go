@@ -1059,6 +1059,129 @@ func TestPushUnderATagMovesOnlyThatChannel(t *testing.T) {
 	}
 }
 
+// TestPushEditingATaggedBuildStaysOnItsChannel covers push's dominant workflow.
+// Push exists to propagate a *changed* working tree - an unchanged one is what
+// publish already handles - so the edit-and-push loop is the case that decides
+// whether push can release something nobody asked to release.
+//
+// Resolving the channel from the tags that name the packed content answers
+// nothing here: the edit gives the tree a hash no tag has ever named. What still
+// answers is the version string, which a push loop does not touch, so the tags
+// naming the stored record that carries it say which channel the tree belongs
+// to. Without that, an edit inside a pre-release moved the default tag onto the
+// pre-release and carried every latest-following consumer onto it, silently.
+func TestPushEditingATaggedBuildStaysOnItsChannel(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-loop-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	stable, err := env.Database.GetPackageByName("push-loop-lib")
+	if err != nil || stable == nil {
+		t.Fatalf("Failed to read the published package: %v", err)
+	}
+	publishTagged(t, env, pkgDir, "push-loop-lib", "2.0.0-beta.1", "module.exports = 'beta one';", "beta")
+
+	// A consumer of the stable channel, which the push must not disturb, and one
+	// of the pre-release channel, which is the one it is for.
+	consumerDir := env.newProject("push-loop-consumer")
+	env.addPkg(consumerDir, "push-loop-lib", false, false)
+	testerDir := env.newProject("push-loop-tester")
+	env.addPkg(testerDir, "push-loop-lib@beta", false, false)
+
+	// The loop: edit the pre-release's tree, bump nothing, push.
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'beta two';")
+	captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("Failed to push an edited pre-release: %v", err)
+		}
+	})
+
+	assertTagged(t, env, "push-loop-lib", db.DefaultTag, stable.ContentHash)
+	moved, err := env.Database.ResolveTag("push-loop-lib", "beta")
+	if err != nil || moved == nil {
+		t.Fatalf("Failed to re-resolve the beta tag: %v", err)
+	}
+	if moved.Version != "2.0.0-beta.1" {
+		t.Errorf("The beta tag names %s, want the pre-release just pushed", moved.Version)
+	}
+	env.AssertLinkedFileContent(consumerDir, "push-loop-lib", "index.js", "module.exports = 'stable';")
+	env.AssertLinkedFileContent(testerDir, "push-loop-lib", "index.js", "module.exports = 'beta two';")
+}
+
+// TestPushWarnsWhenItMovesTheDefaultTagOntoAnUnnamedBuild is the other side of
+// the rule above. Bumping the pre-release number is as ordinary as editing
+// without bumping, and it puts a version in the working tree that no stored
+// record carries, so nothing in the store can say which channel the build is
+// for and push falls back to the default tag. Falling back is defensible; doing
+// it silently, in a package that plainly has other channels, is not.
+func TestPushWarnsWhenItMovesTheDefaultTagOntoAnUnnamedBuild(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-warn-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "push-warn-lib", "2.0.0-beta.1", "module.exports = 'beta one';", "beta")
+
+	// Bump the pre-release, so the version names no stored record either.
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "package.json"), `{"name":"push-warn-lib","version":"2.0.0-beta.2"}`)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'beta two';")
+
+	out := captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("Failed to push: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, db.DefaultTag+" tag onto it") {
+		t.Errorf("push did not say it was moving the default tag, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "--tag") {
+		t.Errorf("push did not say how to publish to another channel, output was:\n%s", out)
+	}
+	assertNoRawGlyphs(t, out)
+}
+
+// TestPushOnABuildTwoChannelsNameProceeds pins that push does not refuse an
+// operation whose outcome is the same whichever way it is resolved.
+//
+// When two non-default tags name the packed content, every choice is a no-op on
+// the tags: each already points at that hash, so nothing moves and no link is
+// carried. Refusing it blocked a harmless push, and the state is reached
+// ordinarily by pointing a second channel at a build that already has one.
+func TestPushOnABuildTwoChannelsNameProceeds(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-two-tags-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	stable, err := env.Database.GetPackageByName("push-two-tags-lib")
+	if err != nil || stable == nil {
+		t.Fatalf("Failed to read the published package: %v", err)
+	}
+	publishTagged(t, env, pkgDir, "push-two-tags-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+	beta, err := env.Database.ResolveTag("push-two-tags-lib", "beta")
+	if err != nil || beta == nil {
+		t.Fatalf("Failed to resolve the beta tag: %v", err)
+	}
+	// The same build, pointed at by a second channel.
+	publishTagged(t, env, pkgDir, "push-two-tags-lib", "2.0.0-beta.1", "module.exports = 'beta';", "next")
+	assertTagged(t, env, "push-two-tags-lib", "next", beta.ContentHash)
+
+	env.chdir(pkgDir)
+	captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("Pushing a build two channels name was refused: %v", err)
+		}
+	})
+
+	assertTagged(t, env, "push-two-tags-lib", db.DefaultTag, stable.ContentHash)
+	assertTagged(t, env, "push-two-tags-lib", "beta", beta.ContentHash)
+	assertTagged(t, env, "push-two-tags-lib", "next", beta.ContentHash)
+}
+
 // TestRestoreAfterARepublishSaysToPull covers what hash-based restore turned a
 // failure into. A package republished while the project was retreated used to
 // have the consumer reported as missing from the store; now the recorded build

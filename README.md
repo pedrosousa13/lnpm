@@ -155,10 +155,13 @@ my-package@beta` in a project already on `latest` moves it over, and dropping th
 tag moves it back. A tag cannot be combined with `--link`, which resolves to the
 source directory rather than to any published build.
 
-`lnpm push` goes to the channel the build already in the store carries, so
-pushing an unchanged pre-release keeps it a pre-release. Content the store does
-not hold yet is in no channel and goes to `latest`; pass `--tag` to say
-otherwise.
+`lnpm push` goes to the channel the build in the store already carries, so
+pushing a pre-release keeps it a pre-release. An edit gives the tree content no
+channel has ever named, and the version in `package.json` answers instead — a
+push loop does not bump it, so the tags naming the stored build with that
+version say which channel the tree is on. Bump past everything in the store and
+push has nothing left to go on: it goes to `latest` and says so. Pass `--tag` to
+say otherwise.
 
 Tags can also be moved on a package already in the store, with no republish:
 
