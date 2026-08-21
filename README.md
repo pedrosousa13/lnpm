@@ -78,7 +78,7 @@ lnpm push
 | `lnpm add <pkg...>` | Add package(s) from store to project |
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm pull [pkg...]` | Sync linked packages with the store (all of them when no name is given) |
-| `lnpm push` | Push changes to all linked projects |
+| `lnpm push` | Push changes to all linked projects (`--tag` picks the channel) |
 | `lnpm status` | Show all published packages and active links across every project |
 | `lnpm list` | List this project's linked packages (`--store` lists the store, `--projects` lists consumers) |
 | `lnpm tag <pkg> <tag>` | Point a dist-tag at a published package (`--delete` removes one) |
@@ -150,7 +150,15 @@ lnpm add my-package        # still the latest release
 What follows the `@` is read as a tag first and as an exact version only if no
 tag by that name is set. A project that added a package under a tag keeps
 following it: `lnpm pull` refreshes it to whatever that tag now names, never to
-`latest`.
+`latest`. Switching channels is just another `lnpm add` — `lnpm add
+my-package@beta` in a project already on `latest` moves it over, and dropping the
+tag moves it back. A tag cannot be combined with `--link`, which resolves to the
+source directory rather than to any published build.
+
+`lnpm push` goes to the channel the build already in the store carries, so
+pushing an unchanged pre-release keeps it a pre-release. Content the store does
+not hold yet is in no channel and goes to `latest`; pass `--tag` to say
+otherwise.
 
 Tags can also be moved on a package already in the store, with no republish:
 

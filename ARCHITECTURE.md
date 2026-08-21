@@ -384,6 +384,9 @@ Push updates to all linked projects.
 # Push current package to all consumers
 lnpm push
 
+# Push to a channel other than the one the build already carries
+lnpm push --tag beta
+
 # Push, skipping prepare scripts
 lnpm push --skip-hooks
 ```
@@ -391,8 +394,14 @@ lnpm push --skip-hooks
 **Process:**
 1. Run prepare scripts (unless `--skip-hooks`)
 2. Calculate new content hash
-3. Update store with new version
-4. For each linked project:
+3. Work out which channel to push to, unless `--tag` said: the tags naming the
+   packed content answer it, since an unchanged working tree is the build they
+   name. One tag other than `latest` naming it wins; `latest` naming it, or no
+   tag naming it, means `latest`; several naming it is refused. Content the store
+   does not hold is named by nothing, so an edited pre-release still moves
+   `latest` unless `--tag` says otherwise
+4. Update store with new version, moving that tag onto it
+5. For each linked project:
    - Skip it if it is live-linked (`.lnpm/{package}` is a link, not a
      directory): it already resolves to the source directory being pushed, and
      relinking would swap its live link for a snapshot copy
