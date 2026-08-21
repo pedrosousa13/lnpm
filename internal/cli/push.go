@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -12,8 +13,62 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
-// RunPush executes the push command
+// pushTag works out which channel a push publishes to when the user has not
+// said.
+//
+// Push has no channel of its own to go on. It re-publishes the working tree, and
+// nothing records which channel that tree was last published to. What is
+// recorded is which tags name the build already in the store, and for an
+// unchanged working tree that answers the question exactly: a push over the
+// build tagged beta is a push to beta. That is the case worth getting right -
+// without it a bare push in a package whose current build is a pre-release moves
+// the default tag onto it and releases something nobody asked to release.
+//
+// Content the store does not hold is named by no tag and falls back to the
+// default one, so editing a pre-release and pushing it does still move the
+// default tag. Nothing in the store can be read to infer otherwise, and
+// inferring it from the last publish would mean inferring it from state lnpm
+// does not keep; --tag is what says it instead.
+//
+// Content several channels name is refused rather than resolved by picking one.
+// Which channel a build belongs to is not a thing to guess when the guess
+// releases software.
+func pushTag(database *db.DB, name, hash string) (string, error) {
+	tags, err := database.TagsForPackage(name)
+	if err != nil {
+		return "", fmt.Errorf("failed to read the tags of %s: %w", name, err)
+	}
+
+	var naming []string
+	for _, tag := range tagsNamingList(tags, hash) {
+		if tag == db.DefaultTag {
+			// Already what the default tag names, so this push moves nothing.
+			return db.DefaultTag, nil
+		}
+		naming = append(naming, tag)
+	}
+
+	switch len(naming) {
+	case 0:
+		return db.DefaultTag, nil
+	case 1:
+		return naming[0], nil
+	default:
+		return "", fmt.Errorf("the build of %s in your working tree is named by the tags %s, so which channel this push is for is ambiguous: re-run with --tag",
+			name, strings.Join(naming, ", "))
+	}
+}
+
+// RunPush executes the push command, publishing to the channel the build
+// already in the store carries.
 func RunPush(skipHooks bool) error {
+	return RunPushTagged(skipHooks, "")
+}
+
+// RunPushTagged is RunPush, publishing to tag. An empty tag means work the
+// channel out from the store, which is what a bare `lnpm push` does; see
+// pushTag.
+func RunPushTagged(skipHooks bool, tag string) error {
 	// Get current directory
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -58,7 +113,12 @@ func RunPush(skipHooks bool) error {
 			// self-contained, so wrapping them here would only stutter.
 			return err
 		}
-		return finishPublish(cwd, pkgJSON, files, database, false, db.DefaultTag)
+		// Nothing is in the store to read a channel off, so an unset --tag can
+		// only mean the default one.
+		if tag == "" {
+			tag = db.DefaultTag
+		}
+		return finishPublish(cwd, pkgJSON, files, database, false, tag)
 	}
 
 	// Always run prepare scripts before packing
@@ -84,7 +144,14 @@ func RunPush(skipHooks bool) error {
 	// Calculate content hash
 	newHash := pack.HashFiles(files)
 
-	fmt.Printf("Pushing %s@%s...\n", pkgJSON.Name, pkgJSON.Version)
+	if tag == "" {
+		tag, err = pushTag(database, pkgJSON.Name, newHash)
+		if err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("Pushing %s@%s%s...\n", pkgJSON.Name, pkgJSON.Version, tagSuffix(tag))
 
 	// Get store
 	s, err := store.New()
@@ -134,7 +201,7 @@ func RunPush(skipHooks bool) error {
 			ModTime:      f.ModTime,
 		}
 	}
-	if err := database.InsertPackageWithFiles(pkg, fileEntries); err != nil {
+	if err := database.InsertPackageWithFilesTagged(pkg, fileEntries, tag); err != nil {
 		return fmt.Errorf("failed to update package: %w", err)
 	}
 

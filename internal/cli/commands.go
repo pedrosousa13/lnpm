@@ -154,12 +154,19 @@ This command:
   3. Updates store
   4. Re-links to all linked projects
 
+Push goes to the channel the build already in the store carries, so pushing an
+unchanged pre-release keeps it a pre-release rather than moving ` + db.DefaultTag + ` onto
+it. Content the store does not hold yet is in no channel, so it goes to
+` + db.DefaultTag + `; use --tag to say otherwise.
+
 Examples:
   lnpm push              # Push to all linked projects
+  lnpm push --tag beta   # Push to the beta channel, leaving latest alone
   lnpm push --skip-hooks # Skip prepare scripts`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
-		return RunPush(skipHooks)
+		tag, _ := cmd.Flags().GetString("tag")
+		return RunPushTagged(skipHooks, tag)
 	},
 }
 
@@ -381,6 +388,7 @@ func init() {
 
 	// push flags
 	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
+	pushCmd.Flags().String("tag", "", "Channel to push to (default: the channel the build already in the store carries)")
 
 	// list flags
 	listCmd.Flags().Bool("store", false, "List packages in store")

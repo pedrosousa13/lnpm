@@ -17,17 +17,25 @@ import (
 // produce: this listing exists to say which version each channel names, and
 // latest is the channel most readers came to find.
 func tagsNaming(tags map[string]string, hash string) string {
+	naming := tagsNamingList(tags, hash)
+	if len(naming) == 0 {
+		return ""
+	}
+	return " [" + strings.Join(naming, ", ") + "]"
+}
+
+// tagsNamingList returns, sorted, every tag in tags that points at hash. It is
+// tagsNaming without the rendering, for the callers that lay the tags out
+// themselves or count them.
+func tagsNamingList(tags map[string]string, hash string) []string {
 	var naming []string
 	for tag, tagged := range tags {
 		if tagged == hash {
 			naming = append(naming, tag)
 		}
 	}
-	if len(naming) == 0 {
-		return ""
-	}
 	sort.Strings(naming)
-	return " [" + strings.Join(naming, ", ") + "]"
+	return naming
 }
 
 // projectLinks maps each package name a project consumes to the link row that

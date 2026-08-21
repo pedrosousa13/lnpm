@@ -817,6 +817,79 @@ func TestSwitchingAProjectBackOntoLatest(t *testing.T) {
 	}
 }
 
+// TestPushKeepsABetaBuildOffTheDefaultChannel pins that pushing does not
+// release. `lnpm push` re-publishes the working tree and relinks consumers, and
+// it used to record whatever it wrote under the default tag - so a bare push in
+// a package whose current build is a pre-release promoted that pre-release to
+// the channel every plain `lnpm add` resolves through.
+func TestPushKeepsABetaBuildOffTheDefaultChannel(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-tag-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	stable, err := env.Database.GetPackageByName("push-tag-lib")
+	if err != nil || stable == nil {
+		t.Fatalf("Failed to read the published package: %v", err)
+	}
+	publishTagged(t, env, pkgDir, "push-tag-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+	beta, err := env.Database.ResolveTag("push-tag-lib", "beta")
+	if err != nil || beta == nil {
+		t.Fatalf("Failed to resolve the beta tag: %v", err)
+	}
+
+	// The working tree is still the beta one publishTagged left behind.
+	env.chdir(pkgDir)
+	captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("Failed to push: %v", err)
+		}
+	})
+
+	assertTagged(t, env, "push-tag-lib", db.DefaultTag, stable.ContentHash)
+	assertTagged(t, env, "push-tag-lib", "beta", beta.ContentHash)
+}
+
+// TestPushUnderATagMovesOnlyThatChannel is the other half: a push of content the
+// store does not hold names no channel of its own, so --tag is how a maintainer
+// says which one it belongs to. Without it the edited pre-release would land on
+// the default tag, which is the promotion the test above pins against.
+func TestPushUnderATagMovesOnlyThatChannel(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-edit-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	stable, err := env.Database.GetPackageByName("push-edit-lib")
+	if err != nil || stable == nil {
+		t.Fatalf("Failed to read the published package: %v", err)
+	}
+	publishTagged(t, env, pkgDir, "push-edit-lib", "2.0.0-beta.1", "module.exports = 'beta one';", "beta")
+
+	projectDir := env.newProject("push-edit-project")
+	env.addPkg(projectDir, "push-edit-lib@beta", false, false)
+
+	// Edit the pre-release, so the content the push carries is in no channel yet.
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'beta two';")
+	captureStdout(t, func() {
+		if err := cli.RunPushTagged(false, "beta"); err != nil {
+			t.Fatalf("Failed to push under a tag: %v", err)
+		}
+	})
+
+	assertTagged(t, env, "push-edit-lib", db.DefaultTag, stable.ContentHash)
+	env.AssertLinkedFileContent(projectDir, "push-edit-lib", "index.js", "module.exports = 'beta two';")
+
+	moved, err := env.Database.ResolveTag("push-edit-lib", "beta")
+	if err != nil || moved == nil {
+		t.Fatalf("Failed to re-resolve the beta tag: %v", err)
+	}
+	if moved.Version != "2.0.0-beta.1" {
+		t.Errorf("The beta tag names %s, want the build just pushed", moved.Version)
+	}
+}
+
 // TestRestorePutsBackTheBuildTheSnapshotRecorded pins that a retreat and a
 // restore leave a consumer on the channel it was on.
 //
