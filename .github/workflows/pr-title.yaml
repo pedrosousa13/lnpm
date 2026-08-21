@@ -2,6 +2,10 @@ name: PR Title
 
 on:
   pull_request:
+    # synchronize looks redundant - a push cannot change the title - but a
+    # required status check is recorded per commit SHA, so without it a new
+    # push leaves the newest commit with no result and the check never
+    # reports. Re-running on every push is what keeps it mergeable.
     types: [opened, edited, synchronize, reopened]
 
 permissions:
@@ -21,6 +25,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # revert is not in this repo's history yet, but GitHub's Revert
+          # button generates `Revert "feat: ..."` and release-please
+          # understands the type. Rejecting it would block a revert exactly
+          # when speed matters.
           types: |
             feat
             fix
@@ -31,3 +39,4 @@ jobs:
             style
             refactor
             perf
+            revert
