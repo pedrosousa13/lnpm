@@ -30,6 +30,51 @@ func tagsNaming(tags map[string]string, hash string) string {
 	return " [" + strings.Join(naming, ", ") + "]"
 }
 
+// tagsFollowedByProject reports which channel the project at path follows for
+// each package it has linked, as package name to tag. A name absent from the
+// result, or present with an empty tag, follows the default one.
+//
+// The link row is the authority here rather than the lock file, because the lock
+// records what was linked and not what was asked for: two versions of a name can
+// be in the store at once now, and only the link says which channel the project
+// chose.
+//
+// A project not in the database yet - a lock file written by an add whose
+// database write failed, say - is not an error. It has no links to read, so
+// every package it holds falls back to the default tag, which is what the
+// caller would have done anyway.
+func tagsFollowedByProject(database *db.DB, path string) (map[string]string, error) {
+	proj, err := database.GetProjectByPath(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to look up this project: %w", err)
+	}
+	if proj == nil {
+		return nil, nil
+	}
+
+	links, err := database.GetLinksForProject(proj.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read this project's links: %w", err)
+	}
+
+	packages, err := database.ListPackages()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list packages: %w", err)
+	}
+	nameByID := make(map[int64]string, len(packages))
+	for _, pkg := range packages {
+		nameByID[pkg.ID] = pkg.Name
+	}
+
+	followed := make(map[string]string, len(links))
+	for _, l := range links {
+		if name, ok := nameByID[l.PackageID]; ok {
+			followed[name] = l.Tag
+		}
+	}
+	return followed, nil
+}
+
 // RunTag manages a dist-tag on a package already in the store, without
 // republishing it.
 //

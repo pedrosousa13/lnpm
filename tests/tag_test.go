@@ -561,3 +561,69 @@ func TestDoctorStillReportsAnUntaggedOrphan(t *testing.T) {
 		t.Errorf("doctor did not report the untagged, unlinked versions, output was:\n%s", out)
 	}
 }
+
+// TestPullKeepsAProjectOnItsChannel pins that refreshing does not switch
+// channels. pull resolves by name, and the name index mirrors latest, so a beta
+// consumer running `lnpm pull` would have its files replaced with the stable
+// release and its lock rewritten to match - the very carry-over onto latest that
+// asking for a channel exists to prevent, reached through a different command.
+//
+// Unreachable before add learned tags: no link could follow anything but the
+// default one.
+func TestPullKeepsAProjectOnItsChannel(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("pull-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "pull-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	projectDir := env.newProject("pull-project")
+	env.addPkg(projectDir, "pull-lib@beta", false, false)
+
+	// Move latest well past the beta build.
+	env.republish(pkgDir, "pull-lib", "3.0.0", "module.exports = 'newer stable';")
+
+	env.chdir(projectDir)
+	if err := cli.RunPull(nil); err != nil {
+		t.Fatalf("Failed to pull: %v", err)
+	}
+
+	env.AssertLinkedFileContent(projectDir, "pull-lib", "index.js", "module.exports = 'beta';")
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		entry, _ := lock.Get("pull-lib")
+		if entry.Version != "2.0.0-beta.1" {
+			t.Errorf("pull rewrote the lock to %s, want the beta build 2.0.0-beta.1", entry.Version)
+		}
+	})
+}
+
+// TestPullFollowsItsChannelForward is the other half: staying on a channel must
+// still mean picking up what that channel now names, or pull would have stopped
+// doing its job for tagged consumers.
+func TestPullFollowsItsChannelForward(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("pull-forward-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "pull-forward-lib", "2.0.0-beta.1", "module.exports = 'beta one';", "beta")
+
+	projectDir := env.newProject("pull-forward-project")
+	env.addPkg(projectDir, "pull-forward-lib@beta", false, false)
+
+	publishTagged(t, env, pkgDir, "pull-forward-lib", "2.0.0-beta.2", "module.exports = 'beta two';", "beta")
+
+	env.chdir(projectDir)
+	if err := cli.RunPull(nil); err != nil {
+		t.Fatalf("Failed to pull: %v", err)
+	}
+
+	env.AssertLinkedFileContent(projectDir, "pull-forward-lib", "index.js", "module.exports = 'beta two';")
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		entry, _ := lock.Get("pull-forward-lib")
+		if entry.Version != "2.0.0-beta.2" {
+			t.Errorf("pull recorded %s, want the newer beta build 2.0.0-beta.2", entry.Version)
+		}
+	})
+}

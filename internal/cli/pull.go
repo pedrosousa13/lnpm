@@ -57,6 +57,16 @@ func RunPull(packageNames []string) error {
 		}
 	}
 
+	// Which channel this project follows for each package. Resolving by name
+	// alone would answer with whatever latest points at, so a consumer that asked
+	// for beta would be relinked onto the stable release and have its lock
+	// rewritten to match - the carry-over onto latest that asking for a channel
+	// exists to prevent, reached through pull instead of through a moved tag.
+	followed, err := tagsFollowedByProject(database, cwd)
+	if err != nil {
+		return err
+	}
+
 	s, err := store.New()
 	if err != nil {
 		return fmt.Errorf("failed to access store: %w", err)
@@ -84,17 +94,34 @@ func RunPull(packageNames []string) error {
 			continue
 		}
 
-		pkg, err := database.GetPackageByName(name)
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s: failed to look up package: %w", name, err))
-			continue
-		}
-		if pkg == nil {
-			failed = append(failed, fmt.Errorf("%s: not found in store - did you run 'lnpm publish' in the package directory", name))
-			continue
+		tag := followed[name]
+		var pkg *db.Package
+		if tagNote(tag) != "" {
+			pkg, err = database.ResolveTag(name, tag)
+			if err != nil {
+				failed = append(failed, fmt.Errorf("%s: failed to resolve tag %s: %w", name, tag, err))
+				continue
+			}
+			if pkg == nil {
+				// Reported rather than quietly resolved by name: falling back
+				// would move the project onto latest, which is the one outcome
+				// this whole lookup exists to avoid.
+				failed = append(failed, fmt.Errorf("%s: tag %s is no longer set in the store - re-add it under a tag that is", name, tag))
+				continue
+			}
+		} else {
+			pkg, err = database.GetPackageByName(name)
+			if err != nil {
+				failed = append(failed, fmt.Errorf("%s: failed to look up package: %w", name, err))
+				continue
+			}
+			if pkg == nil {
+				failed = append(failed, fmt.Errorf("%s: not found in store - did you run 'lnpm publish' in the package directory", name))
+				continue
+			}
 		}
 
-		fmt.Printf("Pulling %s... ", name)
+		fmt.Printf("Pulling %s%s... ", name, tagSuffix(tag))
 
 		if entry.Version == pkg.Version && entry.Hash == pkg.ContentHash {
 			fmt.Printf("already up to date (%s)\n", pkg.Version)
