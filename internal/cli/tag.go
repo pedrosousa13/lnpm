@@ -38,6 +38,29 @@ func tagsNamingList(tags map[string]string, hash string) []string {
 	return naming
 }
 
+// tagsOfPackages reads the tags of every name in packages, once per name however
+// many of its versions the store holds.
+//
+// A name whose tags cannot be read fails the caller rather than being reported
+// as untagged. Both callers are listings whose point is saying which channel
+// names which build, and a row that silently claimed a version has no channel
+// would be worse than no row: it is exactly what a version gc is about to
+// collect looks like.
+func tagsOfPackages(database *db.DB, packages []*db.Package) (map[string]map[string]string, error) {
+	tagsByName := make(map[string]map[string]string)
+	for _, pkg := range packages {
+		if _, ok := tagsByName[pkg.Name]; ok {
+			continue
+		}
+		tags, err := database.TagsForPackage(pkg.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
+		}
+		tagsByName[pkg.Name] = tags
+	}
+	return tagsByName, nil
+}
+
 // projectLinks maps each package name a project consumes to the link row that
 // records it. An absent name is a package this project has no link for.
 type projectLinks map[string]*db.Link

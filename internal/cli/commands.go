@@ -175,7 +175,8 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show current state of all links",
 	Long: `Show the current state of lnpm including:
-  - Published packages in the store
+  - Published packages in the store, one row per retained version, with the
+    dist-tags naming each
   - Active links between packages and projects
 
 This provides full visibility into what lnpm is managing.`,
@@ -189,6 +190,10 @@ var listCmd = &cobra.Command{
 	Use:   "list [package]",
 	Short: "List packages in project or store",
 	Long: `List packages linked in the current project or available in the store.
+
+--store marks each stored version with the dist-tags naming it, and --projects
+names every project consuming the package with the build each is on, whichever
+channel it followed to get there.
 
 Examples:
   lnpm list                      # List packages in current project

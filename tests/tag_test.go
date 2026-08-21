@@ -817,6 +817,83 @@ func TestSwitchingAProjectBackOntoLatest(t *testing.T) {
 	}
 }
 
+// TestStatusShowsWhichTagsNameEachVersion pins that the published table says
+// which channel each retained version belongs to. It lists one row per version
+// now, so without it my-lib 1.0.0 and my-lib 2.0.0-beta.1 sit side by side with
+// nothing to say which of them a plain `lnpm add` would give you.
+func TestStatusShowsWhichTagsNameEachVersion(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("status-tag-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "status-tag-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	out := captureStdout(t, func() {
+		if err := cli.RunStatus(); err != nil {
+			t.Errorf("RunStatus() error = %v", err)
+		}
+	})
+
+	var stable, beta string
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(line, "1.0.0") && strings.Contains(line, "status-tag-lib"):
+			stable = line
+		case strings.Contains(line, "2.0.0-beta.1") && strings.Contains(line, "status-tag-lib"):
+			beta = line
+		}
+	}
+	if stable == "" || beta == "" {
+		t.Fatalf("The published table is missing one of the two live versions, output was:\n%s", out)
+	}
+	// Checked against the tag column's own text: the beta build's version string
+	// already holds "beta", so looking for the bare word would pass whether the
+	// column printed anything or not.
+	if !strings.Contains(stable, db.DefaultTag) {
+		t.Errorf("The 1.0.0 row does not name the %s tag: %q", db.DefaultTag, stable)
+	}
+	if strings.Count(beta, "beta") < 2 {
+		t.Errorf("The 2.0.0-beta.1 row does not name the beta tag beside its version: %q", beta)
+	}
+	assertNoRawGlyphs(t, out)
+}
+
+// TestListProjectsFindsConsumersOfATaggedBuild pins that `lnpm list <pkg>
+// --projects` sees every project consuming the package, whichever version each
+// is on. It resolved the name to one record, and the name index mirrors the
+// default tag, so a project that asked for a channel was simply invisible - in
+// the one command whose whole job is saying who consumes this package.
+func TestListProjectsFindsConsumersOfATaggedBuild(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("consumers-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "consumers-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	stableProject := env.newProject("consumers-stable")
+	env.addPkg(stableProject, "consumers-lib", false, false)
+	betaProject := env.newProject("consumers-beta")
+	env.addPkg(betaProject, "consumers-lib@beta", false, false)
+
+	out := captureStdout(t, func() {
+		if err := cli.RunList(false, "consumers-lib", true); err != nil {
+			t.Errorf("RunList(--projects) error = %v", err)
+		}
+	})
+
+	for _, want := range []string{stableProject, betaProject} {
+		if !strings.Contains(out, want) {
+			t.Errorf("The listing does not name %s, output was:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "[beta]") || !strings.Contains(out, "["+db.DefaultTag+"]") {
+		t.Errorf("The listing does not say which version each consumer is on, output was:\n%s", out)
+	}
+	assertNoRawGlyphs(t, out)
+}
+
 // TestPushKeepsABetaBuildOffTheDefaultChannel pins that pushing does not
 // release. `lnpm push` re-publishes the working tree and relinks consumers, and
 // it used to record whatever it wrote under the default tag - so a bare push in

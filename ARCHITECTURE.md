@@ -509,12 +509,13 @@ lnpm status
 
 # Output:
 # 📦 Published Packages
-# ┌──────────────┬─────────┬──────────┬─────────────────────┐
-# │ Package      │ Version │ Hash     │ Published           │
-# ├──────────────┼─────────┼──────────┼─────────────────────┤
-# │ my-package   │ 1.0.0   │ abc123   │ 2 minutes ago       │
-# │ other-pkg    │ 2.1.0   │ def456   │ 1 hour ago          │
-# └──────────────┴─────────┴──────────┴─────────────────────┘
+# ┌──────────────┬──────────────┬──────────┬──────────┬───────────────┐
+# │ Package      │ Version      │ Hash     │ Tags     │ Published     │
+# ├──────────────┼──────────────┼──────────┼──────────┼───────────────┤
+# │ my-package   │ 1.0.0        │ abc123   │ latest   │ 2 minutes ago │
+# │ my-package   │ 2.0.0-beta.1 │ abc789   │ beta     │ 1 minute ago  │
+# │ other-pkg    │ 2.1.0        │ def456   │ latest   │ 1 hour ago    │
+# └──────────────┴──────────────┴──────────┴──────────┴───────────────┘
 #
 # 🔗 Active Links
 # ┌──────────────┬─────────────────────────┬──────────┐
@@ -524,6 +525,10 @@ lnpm status
 # │ my-package   │ ~/code/other-app        │ hardlink │
 # └──────────────┴─────────────────────────┴──────────┘
 ```
+
+The published table lists one row per retained version, so it carries the tags
+naming each of them. Without that column two rows of one name say nothing about
+which build a plain `lnpm add` would give you.
 
 ### `lnpm list`
 
@@ -544,6 +549,11 @@ lnpm list my-package --projects
 `[beta, latest]`. With more than one version of a name live at once that is the
 only place a user can see which build a channel points at; a version no tag names
 is left unmarked, and is what `lnpm gc` will collect once nothing links it.
+
+`--projects` walks every version of the name rather than resolving the name to
+one record, and says which build each consumer is on. Resolving by name would
+answer with the version `latest` points at, leaving every project that asked for
+a channel out of the one listing whose job is naming who consumes this package.
 
 ### `lnpm tag <package> <tag>`
 

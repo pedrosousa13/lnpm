@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,20 +24,31 @@ func RunStatus() error {
 		return fmt.Errorf("failed to list packages: %w", err)
 	}
 
+	// Tags of each name, read once per name however many of its versions the
+	// store holds. The table lists one row per retained version, so without the
+	// tags two rows of one name say nothing about which of them a plain add
+	// resolves to - and a name whose tags cannot be read would print rows that
+	// claim it has none.
+	tagsByName, err := tagsOfPackages(database, packages)
+	if err != nil {
+		return err
+	}
+
 	// Print packages section
 	fmt.Println(header("📦", "Published Packages"))
 	if len(packages) == 0 {
 		fmt.Println("  (none)")
 	} else {
 		// Print header
-		fmt.Printf("  %-25s %-12s %-10s %-20s\n", "NAME", "VERSION", "HASH", "PUBLISHED")
-		fmt.Printf("  %s\n", hrule(70))
+		fmt.Printf("  %-25s %-14s %-10s %-16s %-20s\n", "NAME", "VERSION", "HASH", "TAGS", "PUBLISHED")
+		fmt.Printf("  %s\n", hrule(88))
 
 		for _, pkg := range packages {
-			fmt.Printf("  %-25s %-12s %-10s %-20s\n",
+			fmt.Printf("  %-25s %-14s %-10s %-16s %-20s\n",
 				truncate(pkg.Name, 25),
-				truncate(pkg.Version, 12),
+				truncate(pkg.Version, 14),
 				shortHash(pkg.ContentHash),
+				truncate(strings.Join(tagsNamingList(tagsByName[pkg.Name], pkg.ContentHash), ", "), 16),
 				formatTimeAgo(pkg.UpdatedAt),
 			)
 		}
@@ -124,21 +136,9 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 			return nil
 		}
 
-		// Tags of each name, read once per name however many of its versions the
-		// store holds. With more than one version live at a time this listing is
-		// the only place a user can see which of them a channel points at, so a
-		// name whose tags cannot be read fails the command rather than being
-		// printed as if it had none.
-		tagsByName := make(map[string]map[string]string)
-		for _, pkg := range packages {
-			if _, ok := tagsByName[pkg.Name]; ok {
-				continue
-			}
-			tags, err := database.TagsForPackage(pkg.Name)
-			if err != nil {
-				return fmt.Errorf("failed to read the tags of %s: %w", pkg.Name, err)
-			}
-			tagsByName[pkg.Name] = tags
+		tagsByName, err := tagsOfPackages(database, packages)
+		if err != nil {
+			return err
 		}
 
 		fmt.Println("Packages in store:")
@@ -154,28 +154,56 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 	}
 
 	if packageName != "" && showProjects {
-		// List projects using a specific package
-		pkg, err := database.GetPackageByName(packageName)
+		// Every version of the name, not the one it resolves to. The name index
+		// mirrors the default tag, so resolving by name would answer with the
+		// stable release and leave every project that asked for a channel out of
+		// a listing whose whole job is naming who consumes this package.
+		packages, err := database.ListPackages()
 		if err != nil {
-			return fmt.Errorf("failed to look up package: %w", err)
+			return fmt.Errorf("failed to list packages: %w", err)
 		}
-		if pkg == nil {
+		var versions []*db.Package
+		for _, pkg := range packages {
+			if pkg.Name == packageName {
+				versions = append(versions, pkg)
+			}
+		}
+		if len(versions) == 0 {
 			return fmt.Errorf("package %s not found", packageName)
 		}
 
-		projects, err := database.GetProjectsForPackage(pkg.ID)
+		tags, err := database.TagsForPackage(packageName)
 		if err != nil {
-			return fmt.Errorf("failed to get projects: %w", err)
+			return fmt.Errorf("failed to read the tags of %s: %w", packageName, err)
 		}
 
-		if len(projects) == 0 {
+		// Each line says which build the project is on, because that is what
+		// differs between them now and what a maintainer looking at this list is
+		// deciding from.
+		var lines []string
+		for _, version := range versions {
+			projects, err := database.GetProjectsForPackage(version.ID)
+			if err != nil {
+				return fmt.Errorf("failed to get projects: %w", err)
+			}
+			for _, proj := range projects {
+				lines = append(lines, fmt.Sprintf("  %s (%s) -> %s@%s%s",
+					proj.Path, proj.PackageManager, packageName, version.Version,
+					tagsNaming(tags, version.ContentHash)))
+			}
+		}
+
+		if len(lines) == 0 {
 			fmt.Printf("No projects using %s\n", packageName)
 			return nil
 		}
 
+		// Sorted, so a store holding several versions lists the same way on
+		// every run rather than in whatever order the records were written.
+		sort.Strings(lines)
 		fmt.Printf("Projects using %s:\n", packageName)
-		for _, proj := range projects {
-			fmt.Printf("  %s (%s)\n", proj.Path, proj.PackageManager)
+		for _, line := range lines {
+			fmt.Println(line)
 		}
 		return nil
 	}
