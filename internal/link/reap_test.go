@@ -155,6 +155,35 @@ func TestFindTempEntriesWithoutLnpmDir(t *testing.T) {
 	}
 }
 
+// TestFindTempEntriesRefusesASymlinkedLnpmDirectory covers the sweep's half of
+// the same hole the linker's guard closes. os.ReadDir follows a symlinked .lnpm,
+// so a project whose checkout points .lnpm outside itself would have gc list -
+// and then offer to delete - temp entries that belong to whatever it points at.
+//
+// The refusal is reported as one directory the sweep could not read, which is
+// the shape this function already has for a directory it must not act on: gc
+// prints the count, reclaims nothing there, and every other project still gets
+// swept.
+func TestFindTempEntriesRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	project := filepath.Join(tmpDir, "project")
+	outside := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A temp entry the sweep would happily reclaim if it looked here at all.
+	seedDir(t, filepath.Join(outside, ".tmp-deadbeef"))
+	linkDirAt(t, outside, filepath.Join(project, ".lnpm"))
+
+	entries, unreadable := FindTempEntries(project)
+	if len(entries) != 0 {
+		t.Errorf("FindTempEntries() found %v through a symlinked .lnpm, want nothing outside the project", foundPaths(entries))
+	}
+	if unreadable != 1 {
+		t.Errorf("FindTempEntries() reported %d unreadable director(ies), want 1 for the .lnpm it refused", unreadable)
+	}
+}
+
 // TestFindTempEntriesMatchesWhatTheConstructorsProduce ties the matcher to the
 // names newTempDir actually creates, so a change to one without the other is
 // caught here rather than by a leak nobody sees.

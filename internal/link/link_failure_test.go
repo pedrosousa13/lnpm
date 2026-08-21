@@ -27,6 +27,22 @@ func storeFixture(t *testing.T, root string, contents map[string]string) (string
 	return storePath, writeStoreFiles(t, storePath, contents)
 }
 
+// linkDirAt points linkPath at target the way the linker itself points
+// .lnpm/{package} at a source directory: a symlink where the platform allows
+// one, a junction on Windows where it does not. That is what a hostile checkout
+// gets to commit, and a junction is the case a plain os.ModeSymlink test would
+// miss.
+//
+// Skipping rather than failing when neither can be created keeps the test honest
+// on a Windows runner holding no symlink privilege: the guard is not exercised
+// there, and saying so beats pretending it passed.
+func linkDirAt(t *testing.T, target, linkPath string) {
+	t.Helper()
+	if err := createDirSymlink(target, linkPath); err != nil {
+		t.Skipf("cannot create a directory link at %s: %v", linkPath, err)
+	}
+}
+
 func assertNoSymlink(t *testing.T, projectPath, packageName string) {
 	t.Helper()
 	nodeModulesPath := filepath.Join(projectPath, "node_modules", packageName)
@@ -548,22 +564,6 @@ func TestLinkSourceRejectsTraversingName(t *testing.T) {
 	}
 }
 
-// linkDirAt points linkPath at target the way the linker itself points
-// .lnpm/{package} at a source directory: a symlink where the platform allows
-// one, a junction on Windows where it does not. That is what a hostile checkout
-// gets to commit, and a junction is the case a plain os.ModeSymlink test would
-// miss.
-//
-// Skipping rather than failing when neither can be created keeps the test honest
-// on a Windows runner holding no symlink privilege: the guard is not exercised
-// there, and saying so beats pretending it passed.
-func linkDirAt(t *testing.T, target, linkPath string) {
-	t.Helper()
-	if err := createDirSymlink(target, linkPath); err != nil {
-		t.Skipf("cannot create a directory link at %s: %v", linkPath, err)
-	}
-}
-
 // TestLinkRefusesASymlinkedLnpmDirectory covers the ancestor pack's name
 // validation does not reach. A repository can commit .lnpm as a symlink pointing
 // anywhere - .gitignore does not stop a tracked symlink from being checked out -
@@ -690,5 +690,53 @@ func TestLinkSourceRefusesASymlinkedScopeDirectory(t *testing.T) {
 
 	if _, err := os.Lstat(filepath.Join(victim, "scoped")); !os.IsNotExist(err) {
 		t.Errorf("scoped was created outside the project (Lstat err = %v), want none", err)
+	}
+}
+
+// TestUnlinkRefusesWhenTheLnpmDirectoryCannotBeInspected pins the direction the
+// guard fails in, which is what docs/adr/0001 is about: only "the entry is not
+// there" means there is nothing to refuse. Every other Lstat failure - a
+// permission denied on the project directory here, an I/O error or a too-long
+// name elsewhere - leaves the guard unable to tell a real directory from a link,
+// and a guard that cannot tell must not wave the caller through.
+//
+// What this test can prove is bounded, and worth stating: an unsearchable
+// project directory also blocks the RemoveAll that follows, so both the guarded
+// and the unguarded build fail here. The difference it asserts is therefore
+// which failure comes back - the guard refusing and naming the directory it
+// could not inspect, rather than a downstream error from the work it should
+// never have started. Nothing portable makes an Lstat fail while leaving the
+// work that follows able to succeed.
+func TestUnlinkRefusesWhenTheLnpmDirectoryCannotBeInspected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode 0000 does not deny directory traversal on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 0000 does not deny traversal")
+	}
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".lnpm", "my-package"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unsearchable, so Lstat of anything inside it fails with EACCES rather than
+	// with a not-exist error.
+	if err := os.Chmod(projectPath, 0000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore before t.TempDir's cleanup walks the tree.
+	t.Cleanup(func() { _ = os.Chmod(projectPath, 0755) })
+
+	err := New(projectPath).Unlink("my-package")
+	if err == nil {
+		t.Fatal("Unlink() with an uninspectable .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "inspect") {
+		t.Errorf("Unlink() error = %v, want the guard's refusal to inspect .lnpm rather than a downstream failure", err)
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("Unlink() error = %v, want it to name .lnpm", err)
 	}
 }

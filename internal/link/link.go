@@ -104,7 +104,7 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	}
 	// Before the reuse scan below, which reads .lnpm/{package} long before
 	// anything creates it: reading through a redirected path is part of the bug.
-	if err := l.checkLnpmDirs(packageName); err != nil {
+	if err := l.refuseLinkedLnpmDirs(packageName); err != nil {
 		return Result{}, err
 	}
 
@@ -422,7 +422,7 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return "", err
 	}
-	if err := l.checkLnpmDirs(packageName); err != nil {
+	if err := l.refuseLinkedLnpmDirs(packageName); err != nil {
 		return "", err
 	}
 
@@ -512,7 +512,7 @@ func (l *Linker) Unlink(packageName string) error {
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return err
 	}
-	if err := l.checkLnpmDirs(packageName); err != nil {
+	if err := l.refuseLinkedLnpmDirs(packageName); err != nil {
 		return err
 	}
 
@@ -542,8 +542,9 @@ func (l *Linker) Unlink(packageName string) error {
 	return nil
 }
 
-// checkLnpmDirs refuses to work through a .lnpm - or, for a scoped package, a
-// .lnpm/{scope} - that is not a real directory in the project.
+// refuseLinkedLnpmDirs refuses to work through a .lnpm - or, for a scoped
+// package, a .lnpm/{scope} - that is a link rather than a directory in the
+// project.
 //
 // pack.ValidatePackageName guards the segments the package name contributes, but
 // nothing guarded their ancestors, and a repository can commit .lnpm itself as a
@@ -552,36 +553,48 @@ func (l *Linker) Unlink(packageName string) error {
 // under it then lands wherever it points, so a link writes outside the project
 // and an unlink deletes outside it.
 //
-// Lstat, not Stat, is the whole point: the entry itself has to be visible rather
-// than what it resolves to. The mode bits accepted are IsLiveLinked's, for the
-// reason its comment gives - a Windows junction reads as ModeIrregular rather
-// than ModeSymlink, and junctions are what createDirSymlink falls back to.
-//
-// A missing .lnpm is not an error: both directories are created on demand, and
-// only an entry that already exists and is not a directory is refused. Nothing
-// above the project is examined, so a project legitimately reached through a
-// symlinked parent is left alone.
-func (l *Linker) checkLnpmDirs(packageName string) error {
+// Only the two entries the project owns are examined. Nothing above the project
+// is, so a project legitimately reached through a symlinked parent is left
+// alone.
+func (l *Linker) refuseLinkedLnpmDirs(packageName string) error {
 	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
-	if isDirLink(lnpmDir) {
-		return fmt.Errorf("refusing to use %s: it is a link, not a real directory inside the project - this checkout replaced .lnpm with a link, and using it would read and write outside the project", lnpmDir)
+	if err := refuseLinkedDir(".lnpm directory", lnpmDir); err != nil {
+		return err
 	}
 
 	if scope, _, scoped := strings.Cut(packageName, "/"); scoped {
-		scopeDir := filepath.Join(lnpmDir, scope)
-		if isDirLink(scopeDir) {
-			return fmt.Errorf("refusing to use %s: the scope directory is a link, not a real directory inside the project - this checkout replaced it with a link, and using it would read and write outside the project", scopeDir)
-		}
+		return refuseLinkedDir("scope directory", filepath.Join(lnpmDir, scope))
 	}
 
 	return nil
 }
 
-// isDirLink reports whether path exists and carries a link mode bit: a symlink
-// on any platform, or a Windows junction. A path that does not exist is not one.
-func isDirLink(path string) bool {
+// refuseLinkedDir returns an error unless path is a directory the caller may
+// safely build under: one that is really there, or not there at all.
+//
+// Lstat, not Stat, is the whole point: the entry itself has to be visible rather
+// than what it resolves to. The mode bits accepted are IsLiveLinked's, for the
+// reason its comment gives - a Windows junction reads as ModeIrregular rather
+// than ModeSymlink, and junctions are what createDirSymlink falls back to.
+//
+// A path that does not exist is not refused: .lnpm and its scope directories are
+// created on demand. Every other Lstat failure is, per docs/adr/0001 - a check
+// that cannot see the entry cannot report it as safe, and treating "I could not
+// look" as "it is fine" is the fail-open direction the ADR asks to be fixed.
+// Nothing is lost by refusing: an entry lnpm cannot Lstat is not one it could
+// have linked into either.
+func refuseLinkedDir(kind, path string) error {
 	info, err := os.Lstat(path)
-	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot inspect the %s %s: %w", kind, path, err)
+	}
+	if info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		return fmt.Errorf("the %s %s is a link, not a directory - remove it and re-run", kind, path)
+	}
+	return nil
 }
 
 // removeDirIfEmpty removes dir when it holds no entries at all.
