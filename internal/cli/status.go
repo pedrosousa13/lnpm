@@ -289,41 +289,68 @@ func RunListVersions(packageName string) error {
 	}
 
 	fmt.Printf("%s versions:\n", packageName)
+	// The rule is as wide as the columns and their separators: 10+14+20+20 plus
+	// the four single spaces between them, plus the last heading, which is the
+	// one column left unpadded because a project path is longer than any width
+	// worth reserving for it.
+	fmt.Printf("  %-10s %-14s %-20s %-20s %s\n", "HASH", "VERSION", "PUBLISHED", "TAGS", "LINKED IN")
+	fmt.Printf("  %s\n", hrule(77))
+
 	for _, version := range versions {
 		consumers, err := database.GetProjectsForPackage(version.ID)
 		if err != nil {
 			return fmt.Errorf("failed to get the projects on %s@%s: %w", packageName, version.Version, err)
 		}
-		fmt.Printf("  %-10s %-14s published %-20s%s%s\n",
+		// Trimmed because the last two columns are both often empty - most
+		// versions carry no tag and have no consumer - and a padded row would
+		// then be mostly trailing spaces.
+		fmt.Println(strings.TrimRight(fmt.Sprintf("  %-10s %-14s %-20s %-20s %s",
 			shortHash(version.ContentHash),
 			truncate(version.Version, 14),
 			formatTimeAgo(version.UpdatedAt),
-			tagsNaming(tags, version.ContentHash),
+			truncate(strings.Join(tagsNamingList(tags, version.ContentHash), ", "), 20),
 			consumersNaming(consumers),
-		)
+		), " "))
 	}
 
 	return nil
 }
 
-// consumersNaming renders the projects on a version as a trailing "(currently
-// linked in myapp)", and nothing when none are.
+// namedConsumers is how many projects consumersNaming spells out before falling
+// back to a count.
+const namedConsumers = 3
+
+// consumersNaming renders the projects on a version, and nothing when none are.
 //
-// Projects are named rather than counted, and named by project name rather than
-// by path: this row exists so a maintainer deciding whether to roll a version
-// back can see who it would move, and a count does not answer that. Sorted,
-// because the links come back in whatever order the index holds them and an
-// unordered listing would reshuffle itself between runs over an unchanged store.
+// Projects are named rather than counted, because this column exists so a
+// maintainer deciding whether to roll a version back can see who it would move,
+// and a count does not answer that. They are named by path, as `lnpm list
+// --projects` and `lnpm status` both name them: Name is a basename, so two
+// projects called myapp render identically and the column stops distinguishing
+// the thing it exists to distinguish. Paths are left untruncated for the same
+// reason - a path cut to a column width loses the segment that tells two of them
+// apart.
+//
+// Sorted, because the links come back in whatever order the index holds them and
+// an unordered listing would reshuffle itself between runs over an unchanged
+// store. Capped at namedConsumers, because a widely consumed package would
+// otherwise put a line of unbounded length on every row; `lnpm list <pkg>
+// --projects` is the listing that names them all.
 func consumersNaming(projects []*db.Project) string {
 	if len(projects) == 0 {
 		return ""
 	}
-	names := make([]string, 0, len(projects))
+	paths := make([]string, 0, len(projects))
 	for _, proj := range projects {
-		names = append(names, proj.Name)
+		paths = append(paths, proj.Path)
 	}
-	sort.Strings(names)
-	return " (currently linked in " + strings.Join(names, ", ") + ")"
+	sort.Strings(paths)
+
+	if len(paths) > namedConsumers {
+		omitted := len(paths) - namedConsumers
+		paths = append(paths[:namedConsumers:namedConsumers], fmt.Sprintf("and %d more", omitted))
+	}
+	return strings.Join(paths, ", ")
 }
 
 // truncate truncates a string to maxLen runes, appending "..." when shortened.

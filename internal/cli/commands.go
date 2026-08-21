@@ -223,6 +223,13 @@ Examples:
 			packageName = args[0]
 		}
 		if showVersions {
+			// Refused rather than ignored: the two listings answer different
+			// questions about the same package, so silently serving one of them
+			// leaves the user reading an answer to a question they did not ask.
+			// RunList refuses a package name it cannot serve for the same reason.
+			if showProjects {
+				return fmt.Errorf("--versions and --projects cannot be combined: --versions lists what %s can be rolled back to, --projects lists who consumes it", packageName)
+			}
 			return RunListVersions(packageName)
 		}
 		return RunList(showStore, packageName, showProjects)

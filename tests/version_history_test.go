@@ -90,12 +90,20 @@ func TestListVersionsListsEveryRetainedVersion(t *testing.T) {
 	}
 
 	for _, row := range []string{firstRow, secondRow} {
-		if !strings.Contains(row, "published") {
+		if !strings.Contains(row, "just now") && !strings.Contains(row, "ago") {
 			t.Errorf("a version row carries no publish time:\n%s", row)
 		}
 	}
 	if !strings.Contains(out, "history-lib") {
 		t.Errorf("RunListVersions did not name the package, output was:\n%s", out)
+	}
+	// The columns are padded, so they have to be named: a reader otherwise gets
+	// four aligned fields and is left to guess which is the hash and which the
+	// version, on the one listing whose output is meant to be typed back.
+	for _, heading := range []string{"HASH", "VERSION", "PUBLISHED", "TAGS", "LINKED IN"} {
+		if !strings.Contains(out, heading) {
+			t.Errorf("RunListVersions printed no %s column heading, output was:\n%s", heading, out)
+		}
 	}
 	assertNoRawGlyphs(t, out)
 }
