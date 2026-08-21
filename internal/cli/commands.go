@@ -281,6 +281,30 @@ Examples:
 	},
 }
 
+// tagCmd manages dist-tags on a package already in the store
+var tagCmd = &cobra.Command{
+	Use:   "tag <package> <tag>",
+	Short: "Point a dist-tag at a published package, or remove one",
+	Long: `Manage the dist-tags of a package already in the store, without republishing
+it.
+
+Setting points the tag at the version the package currently resolves to - the
+one tagged ` + db.DefaultTag + ` - so 'lnpm add <pkg>@<tag>' from then on links that build.
+Removing takes the tag off and leaves the version it named in the store.
+
+The ` + db.DefaultTag + ` tag cannot be removed: it is what every lookup by name resolves
+through, so deleting it would leave the package published and invisible.
+
+Examples:
+  lnpm tag my-package beta            # Point beta at the published version
+  lnpm tag my-package beta --delete   # Remove the beta tag`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		del, _ := cmd.Flags().GetBool("delete")
+		return RunTag(args[0], args[1], del)
+	},
+}
+
 // checkCmd scans package.json for leftover lnpm references
 var checkCmd = &cobra.Command{
 	Use:   "check",
@@ -312,6 +336,12 @@ func init() {
 
 	// Register check command
 	rootCmd.AddCommand(checkCmd)
+
+	// Register tag command
+	rootCmd.AddCommand(tagCmd)
+
+	// tag flags
+	tagCmd.Flags().Bool("delete", false, "Remove the tag instead of setting it")
 
 	// publish flags
 	publishCmd.Flags().Bool("push", false, "Push to all linked projects after publish")

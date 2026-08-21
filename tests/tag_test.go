@@ -301,3 +301,143 @@ func TestAddMultipleResolvesTagsToo(t *testing.T) {
 		t.Errorf("The parallel add recorded links %+v, want exactly one following beta", links)
 	}
 }
+
+// TestTagPointsATagAtTheStoredVersion covers the fourth acceptance criterion's
+// first half: `lnpm tag mylib beta` names the version already in the store,
+// without a republish. Nothing is packed, hashed or copied - the store entry the
+// package resolves to is the one the tag ends up on.
+func TestTagPointsATagAtTheStoredVersion(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("taggable-lib")
+	stored, err := env.Database.GetPackageByName("taggable-lib")
+	if err != nil || stored == nil {
+		t.Fatalf("Failed to read the published package: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := cli.RunTag("taggable-lib", "beta", false); err != nil {
+			t.Errorf("RunTag() error = %v", err)
+		}
+	})
+
+	assertTagged(t, env, "taggable-lib", "beta", stored.ContentHash)
+	if !strings.Contains(out, "beta") || !strings.Contains(out, "taggable-lib") {
+		t.Errorf("RunTag did not report what it tagged, output was:\n%s", out)
+	}
+	assertNoRawGlyphs(t, out)
+
+	// A tag is only worth having if an add resolves through it.
+	projectDir := env.newProject("taggable-project")
+	env.addPkg(projectDir, "taggable-lib@beta", false, false)
+	env.AssertFilesLinked(projectDir, "taggable-lib")
+}
+
+// TestTagDeleteRemovesTheTag covers the criterion's second half: `--delete`
+// takes the tag off without touching the version it named, which stays in the
+// store and stays reachable by name.
+func TestTagDeleteRemovesTheTag(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("untaggable-lib")
+	if err := cli.RunTag("untaggable-lib", "beta", false); err != nil {
+		t.Fatalf("Failed to set the tag: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := cli.RunTag("untaggable-lib", "beta", true); err != nil {
+			t.Errorf("RunTag(delete) error = %v", err)
+		}
+	})
+
+	tags, err := env.Database.TagsForPackage("untaggable-lib")
+	if err != nil {
+		t.Fatalf("Failed to read the tags: %v", err)
+	}
+	if _, ok := tags["beta"]; ok {
+		t.Errorf("The beta tag survived --delete: %v", tags)
+	}
+	if _, ok := tags[db.DefaultTag]; !ok {
+		t.Errorf("Deleting beta also removed %s: %v", db.DefaultTag, tags)
+	}
+	env.AssertPackageInDatabase("untaggable-lib", true)
+	assertNoRawGlyphs(t, out)
+}
+
+// TestTagDeleteRefusesTheDefaultTag pins that the database's refusal reaches the
+// user rather than being worked around. The name index mirrors the default tag,
+// so removing it would leave the package published, its files on disk, and every
+// command that resolves by name unable to see it.
+func TestTagDeleteRefusesTheDefaultTag(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("keep-latest-lib")
+
+	err := cli.RunTag("keep-latest-lib", db.DefaultTag, true)
+	if err == nil {
+		t.Fatal("Deleting the default tag succeeded, want a refusal")
+	}
+	if !strings.Contains(err.Error(), db.DefaultTag) {
+		t.Errorf("The refusal is %v, want it to name the %s tag", err, db.DefaultTag)
+	}
+	env.AssertPackageInDatabase("keep-latest-lib", true)
+}
+
+// TestTagOnAnUnknownPackageFails pins that tagging something the store does not
+// hold is an error rather than a tag pointing at nothing. A dangling tag
+// resolves to nothing and, since tags are gc reachability roots, would protect
+// nothing either.
+func TestTagOnAnUnknownPackageFails(t *testing.T) {
+	env := setupTest(t)
+	_ = env
+
+	err := cli.RunTag("no-such-lib", "beta", false)
+	if err == nil {
+		t.Fatal("Tagging a package that is not in the store succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "no-such-lib") {
+		t.Errorf("The error is %v, want it to name the package", err)
+	}
+}
+
+// TestTagCarriesConsumersOfThatChannelOnly pins what moving a tag on an existing
+// package does to the projects following it: the beta consumer is carried onto
+// the version beta now names, and the latest consumer is left where it is.
+func TestTagCarriesConsumersOfThatChannelOnly(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("carry-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'one';",
+	})
+	publishTagged(t, env, pkgDir, "carry-lib", "2.0.0-beta.1", "module.exports = 'two';", "beta")
+
+	betaProject := env.newProject("beta-consumer")
+	env.addPkg(betaProject, "carry-lib@beta", false, false)
+	stableProject := env.newProject("stable-consumer")
+	env.addPkg(stableProject, "carry-lib", false, false)
+
+	// Point beta back at the version latest names.
+	if err := cli.RunTag("carry-lib", "beta", false); err != nil {
+		t.Fatalf("Failed to move the beta tag: %v", err)
+	}
+
+	stable, err := env.Database.GetPackageByName("carry-lib")
+	if err != nil || stable == nil {
+		t.Fatalf("Failed to read carry-lib: %v", err)
+	}
+	links, err := env.Database.GetLinksForPackage(stable.ID)
+	if err != nil {
+		t.Fatalf("Failed to read the links of the stable build: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("The stable build has %d link(s), want both consumers after beta was moved onto it", len(links))
+	}
+
+	tagsSeen := map[string]int{}
+	for _, l := range links {
+		tagsSeen[l.Tag]++
+	}
+	if tagsSeen["beta"] != 1 || tagsSeen[""] != 1 {
+		t.Errorf("The links follow %v, want one on beta and one on the default tag", tagsSeen)
+	}
+}
