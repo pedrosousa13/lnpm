@@ -968,9 +968,16 @@ func TestListProjectsFindsConsumersOfATaggedBuild(t *testing.T) {
 		}
 	})
 
+	// The database normalises a project path through its symlinks on the way in,
+	// so the listing prints the resolved one. Resolved here too, or this fails
+	// under a TMPDIR that is itself a symlink and says nothing about the listing.
 	for _, want := range []string{stableProject, betaProject} {
-		if !strings.Contains(out, want) {
-			t.Errorf("The listing does not name %s, output was:\n%s", want, out)
+		resolved, err := filepath.EvalSymlinks(want)
+		if err != nil {
+			t.Fatalf("Failed to resolve %s: %v", want, err)
+		}
+		if !strings.Contains(out, resolved) {
+			t.Errorf("The listing does not name %s, output was:\n%s", resolved, out)
 		}
 	}
 	if !strings.Contains(out, "[beta]") || !strings.Contains(out, "["+db.DefaultTag+"]") {
