@@ -28,13 +28,19 @@ import (
 // the snapshot for the re-run it advises, and the re-run then sees only what is
 // genuinely left.
 //
-// Two parts of the pre-retreat state cannot be rebuilt from the snapshot,
-// because the lock file records neither. The first is whether a package was
-// added with --link: everything is restored as a store copy, which is what the
-// file:.lnpm/<pkg> specifier the command writes describes. The second is which
-// dependency field a package belonged in; that is recovered from package.json,
-// where retreat has just put the original specifier back, and reported when the
-// package has no entry there to recover it from.
+// Which build each package was on is rebuilt exactly: the snapshot records a
+// content hash, and that names one version of one package however many of them
+// the store holds.
+//
+// Three parts of the pre-retreat state cannot be rebuilt, because the lock file
+// records none of them. The first is whether a package was added with --link:
+// everything is restored as a store copy, which is what the file:.lnpm/<pkg>
+// specifier the command writes describes. The second is which dependency field
+// a package belonged in; that is recovered from package.json, where retreat has
+// just put the original specifier back, and reported when the package has no
+// entry there to recover it from. The third is the dist-tag a package was added
+// under: the restored link follows the default channel, and a package restored
+// on a build that channel does not name is reported.
 func RunRestore() error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -123,22 +129,36 @@ func RunRestore() error {
 		}
 		attempted++
 
-		// The store keeps the latest published version per package, so the
-		// version the snapshot recorded may since have been superseded. Report
-		// it the way add does and carry on with the rest.
-		pkg, err := database.GetPackageByName(name)
+		// Resolved through the content hash the snapshot recorded, which names
+		// one build of one package exactly. Resolving by name would answer with
+		// whatever the default tag points at, and the store can hold several
+		// versions of a name at once now: a consumer that was on another channel
+		// would have had the build it asked for reported as missing while it sat
+		// in the store, and a consumer on the default channel would be put back
+		// on a release it never linked.
+		//
+		// A snapshot written before the lock file recorded hashes has none, and
+		// falls back to the name it always resolved through.
+		var pkg *db.Package
+		if entry.Hash != "" {
+			pkg, err = database.GetPackageByHash(name, entry.Hash)
+		} else {
+			pkg, err = database.GetPackageByName(name)
+		}
 		if err != nil {
 			fmt.Printf("  %s %s: failed to look up package: %v\n", iconFail(), name, err)
 			failed++
 			continue
 		}
 		if pkg == nil {
-			fmt.Printf("  %s %s: not found in store. Did you run 'lnpm publish' in the package directory?\n", iconFail(), name)
-			failed++
-			continue
-		}
-		if entry.Version != "" && pkg.Version != entry.Version {
-			fmt.Printf("  %s %s: %v\n", iconFail(), name, versionNotInStoreError(entry.Version, name, pkg.Version))
+			// Reported per package and not fatal, so one collected build does not
+			// abort the rest of the restore.
+			if entry.Hash == "" {
+				fmt.Printf("  %s %s: not found in store. Did you run 'lnpm publish' in the package directory?\n", iconFail(), name)
+			} else {
+				fmt.Printf("  %s %s@%s (hash %s) is no longer in the store; re-publish it, then re-run 'lnpm restore'\n",
+					iconFail(), name, entry.Version, shortHash(entry.Hash))
+			}
 			failed++
 			continue
 		}
@@ -206,6 +226,7 @@ func RunRestore() error {
 		consumeSnapshotEntry(snapshot, cwd, name)
 
 		recordRestoredLink(database, cwd, pkg, linkRes.Type)
+		warnIfOffTheDefaultChannel(database, name, pkg)
 
 		fmt.Printf("%s Restored %s@%s\n", iconOK(), name, pkg.Version)
 		restored++
@@ -279,6 +300,13 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 		return
 	}
 
+	// The link follows the default tag, which is what an unset Tag means. Nothing
+	// records the channel a consumer was on: the lock file has never held one, so
+	// neither does the snapshot retreat writes from it. Guessing from the tags
+	// that happen to name this build today would be a guess about what someone
+	// asked for months ago, and a wrong one is worse than none - it would have
+	// later publishes carry the project down a channel it never chose.
+	// warnIfOffTheDefaultChannel says so out loud instead.
 	dbLink := &db.Link{
 		PackageID: pkg.ID,
 		ProjectID: existingProj.ID,
@@ -287,6 +315,29 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 	if err := database.InsertLink(dbLink); err != nil {
 		fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), pkg.Name, err)
 	}
+}
+
+// warnIfOffTheDefaultChannel reports that a restored package is on a build the
+// default tag does not name, which means the project was following some other
+// channel before the retreat and is not following it now.
+//
+// This is the third thing restore cannot rebuild from the snapshot, alongside
+// whether a package was added with --link and which dependency field it was in.
+// Left unsaid it would surface later and elsewhere: the files are right, so
+// nothing looks wrong until the next `lnpm pull` reads the restored link as a
+// default-channel one and moves the project onto the stable release.
+//
+// A failure to read the tag is not reported. The warning is advice about a state
+// restore has already left the project in, and turning a failed read into a
+// second warning about the first would say less than nothing.
+func warnIfOffTheDefaultChannel(database *db.DB, name string, pkg *db.Package) {
+	current, err := database.ResolveTag(name, db.DefaultTag)
+	if err != nil || (current != nil && current.ContentHash == pkg.ContentHash) {
+		return
+	}
+	fmt.Printf("  %s %s was restored on a build the %s tag does not name, so it now follows %s\n",
+		iconWarn(), name, db.DefaultTag, db.DefaultTag)
+	fmt.Printf("      If it was added under a dist-tag, run 'lnpm add %s@<tag>' to follow that channel again\n", name)
 }
 
 // dependencyFieldKnown reports whether package.json still says which dependency

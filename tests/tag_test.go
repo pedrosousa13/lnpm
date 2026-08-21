@@ -817,6 +817,58 @@ func TestSwitchingAProjectBackOntoLatest(t *testing.T) {
 	}
 }
 
+// TestRestorePutsBackTheBuildTheSnapshotRecorded pins that a retreat and a
+// restore leave a consumer on the channel it was on.
+//
+// restore used to resolve by name and compare the snapshot's version against
+// what the default tag names, so every consumer of a tagged build was reported
+// as missing from the store and skipped - while the build it asked for sat in
+// the store the whole time. The snapshot records the content hash, which names
+// that build exactly.
+func TestRestorePutsBackTheBuildTheSnapshotRecorded(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("restore-tagged-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'stable';",
+	})
+	publishTagged(t, env, pkgDir, "restore-tagged-lib", "2.0.0-beta.1", "module.exports = 'beta';", "beta")
+
+	projectDir := env.newProject("restore-tagged-project")
+	env.addPkg(projectDir, "restore-tagged-lib@beta", false, false)
+
+	env.chdir(projectDir)
+	captureStdout(t, func() {
+		if err := cli.RunRetreat(true, false); err != nil {
+			t.Fatalf("Failed to retreat: %v", err)
+		}
+	})
+
+	var out string
+	var err error
+	out = captureStdout(t, func() { err = cli.RunRestore() })
+	if err != nil {
+		t.Fatalf("Failed to restore a consumer of a tagged build: %v\n%s", err, out)
+	}
+
+	env.AssertLinkedFileContent(projectDir, "restore-tagged-lib", "index.js", "module.exports = 'beta';")
+	env.AssertLockfile(projectDir, func(lock *lockfile.LockFile) {
+		entry, ok := lock.Get("restore-tagged-lib")
+		if !ok {
+			t.Fatal("restore-tagged-lib is missing from the lock file")
+		}
+		if entry.Version != "2.0.0-beta.1" {
+			t.Errorf("restore recorded version %s, want the beta build 2.0.0-beta.1", entry.Version)
+		}
+	})
+
+	// The snapshot cannot say which channel the project followed, so the
+	// restored link follows the default one and restore has to say so.
+	if !strings.Contains(out, db.DefaultTag+" tag does not name") {
+		t.Errorf("restore did not warn that the channel could not be restored, output was:\n%s", out)
+	}
+	assertNoRawGlyphs(t, out)
+}
+
 // TestUnlinkingATaggedConsumerDeletesItsLinkRow pins that the commands which
 // tear a project down delete the link the project actually holds.
 //

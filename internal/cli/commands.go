@@ -270,8 +270,13 @@ Everything comes back as a store copy (file:.lnpm/<pkg>), because the snapshot
 does not record which packages were added with --link. Run 'lnpm add --link
 <pkg>' again for the ones that should point back at their live source.
 
-A package whose recorded version is no longer the one in the store is reported
-and skipped; the snapshot is kept so restore can be re-run after publishing it.
+Each package comes back on the exact build the snapshot recorded, found by its
+content hash, so a project that was consuming a dist-tagged build gets that
+build and not whatever ` + db.DefaultTag + ` names now. The tag itself is not recorded
+anywhere, so the restored link follows ` + db.DefaultTag + ` and says so.
+
+A build that is no longer in the store is reported and skipped; the snapshot is
+kept so restore can be re-run after publishing it again.
 
 Examples:
   lnpm restore   # Undo the last 'lnpm retreat --force'`,
