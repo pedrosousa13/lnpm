@@ -188,8 +188,8 @@ lnpm list mylib --versions
 # mylib versions:
 #   HASH       VERSION        PUBLISHED            TAGS                 LINKED IN
 #   -----------------------------------------------------------------------------
-#   a1b2c3d4   1.3.0          2 hours ago          latest
-#   9f8e7d6c   1.2.0          3 days ago                                ~/apps/myapp
+#   a1b2c3d4   1.3.0          2 hours ago          latest               ~/apps/myapp
+#   9f8e7d6c   1.2.0          3 days ago
 
 cd ~/apps/myapp
 lnpm add mylib@9f8e7d6c   # Roll this project back to the build that worked
