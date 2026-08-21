@@ -183,8 +183,19 @@ links              - Link data (key: ID, value: JSON)
 links_by_package   - Index (key: package_id, value: [link_ids])
 links_by_project   - Index (key: project_id, value: [link_ids])
 files              - File manifest (key: package_id, value: [FileEntry])
-meta               - Metadata (next_id counter)
+meta               - Metadata (next_id counter, schema_version)
+tags               - Dist-tags (key: name + NUL + tag, value: content hash)
 ```
+
+A package record is addressed by its name and content hash, so several versions
+of one name can be in the store at once. Which version a name resolves to is
+decided by the `tags` bucket: `packages_by_name` names the version tagged
+`latest`, and the two are written together so they cannot disagree.
+
+`meta.schema_version` records the shape above. A database written before tags
+existed carries none, and gains a `latest` tag per name when it is opened —
+`packages_by_name` was the only way to reach a package then, so the record it
+named was that package's latest by definition.
 
 ### Data Structures (JSON)
 
@@ -219,6 +230,7 @@ meta               - Metadata (next_id counter)
   "package_id": 1,
   "project_id": 1,
   "link_type": "hardlink",
+  "tag": "beta",  // channel followed; absent means latest
   "created_at": "2024-01-15T10:00:00Z",
   "updated_at": "2024-01-15T10:30:00Z"
 }
@@ -513,11 +525,16 @@ lnpm list my-package --projects
 
 Garbage collect unused packages from store.
 
+A version is collected when no valid link and no tag reaches it. `latest` does
+not count: every publish moves it onto what it just wrote, so treating it as a
+root would leave nothing collectable — see
+`docs/adr/0002-latest-is-not-a-garbage-collection-root.md`.
+
 ```bash
 # Dry run - show what would be removed
 lnpm gc --dry-run
 
-# Remove packages with no active links
+# Remove versions no link and no tag reaches
 lnpm gc
 
 # Remove packages older than 30 days
