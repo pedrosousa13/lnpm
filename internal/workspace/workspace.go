@@ -30,15 +30,15 @@ type Package struct {
 func Detect(startPath string) (*Workspace, error) {
 	// Walk up looking for workspace root
 	current := startPath
-	for startDir := true; ; startDir = false {
+	startDir := true
+	for {
 		ws, err := detectWorkspaceAt(current)
 		// A malformed glob pattern is a config error, not a "no workspace
 		// here" signal. Walking past it would end in "no workspace found",
 		// which hides the offending pattern from the user, and docs/adr/0001
-		// requires a malformed pattern to abort naming the pattern. It aborts
-		// at every level of the walk, unlike the read and parse failures
-		// below, because it fails open: the pattern widens a publish rather
-		// than stopping one, which is the ADR's bug case.
+		// requires a malformed pattern to abort naming the pattern. This guard
+		// is unconditional, as #241 wrote it; the starting-directory rule
+		// below, settled separately in #288, deliberately does not narrow it.
 		//
 		// doublestar.ErrBadPattern is path.ErrBadPattern, so this guard would
 		// also catch a bad-pattern error raised by path.Match anywhere under
@@ -70,6 +70,7 @@ func Detect(startPath string) (*Workspace, error) {
 			break
 		}
 		current = parent
+		startDir = false
 	}
 
 	return nil, nil
