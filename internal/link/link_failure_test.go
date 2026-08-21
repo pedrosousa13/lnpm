@@ -547,3 +547,148 @@ func TestLinkSourceRejectsTraversingName(t *testing.T) {
 		t.Errorf("a link was created outside the project (Lstat err = %v), want none", err)
 	}
 }
+
+// linkDirAt points linkPath at target the way the linker itself points
+// .lnpm/{package} at a source directory: a symlink where the platform allows
+// one, a junction on Windows where it does not. That is what a hostile checkout
+// gets to commit, and a junction is the case a plain os.ModeSymlink test would
+// miss.
+//
+// Skipping rather than failing when neither can be created keeps the test honest
+// on a Windows runner holding no symlink privilege: the guard is not exercised
+// there, and saying so beats pretending it passed.
+func linkDirAt(t *testing.T, target, linkPath string) {
+	t.Helper()
+	if err := createDirSymlink(target, linkPath); err != nil {
+		t.Skipf("cannot create a directory link at %s: %v", linkPath, err)
+	}
+}
+
+// TestLinkRefusesASymlinkedLnpmDirectory covers the ancestor pack's name
+// validation does not reach. A repository can commit .lnpm as a symlink pointing
+// anywhere - .gitignore does not stop a tracked symlink from being checked out -
+// and every path the linker builds under it then lands outside the project.
+func TestLinkRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	outside := filepath.Join(tmpDir, "outside")
+	for _, dir := range []string{projectPath, outside} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, outside, filepath.Join(projectPath, ".lnpm"))
+
+	storePath, files := storeFixture(t, tmpDir, map[string]string{
+		"package.json":  `{"name":"my-package"}`,
+		"dist/index.js": "index contents",
+	})
+
+	_, err := New(projectPath).Link("my-package", storePath, files)
+	if err == nil {
+		t.Fatal("Link() through a symlinked .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("Link() error = %v, want it to name .lnpm", err)
+	}
+
+	// The refusal has to be effective, not merely reported: an error raised after
+	// the tree was materialised through the link would leave the same files
+	// outside the project as no check at all.
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the directory outside the project holds %d entries after a refused Link, want it untouched", len(entries))
+	}
+	assertNoSymlink(t, projectPath, "my-package")
+}
+
+// TestLinkSourceRefusesASymlinkedLnpmDirectory is the same hole reached through
+// the live-link path, which writes .lnpm/{package} directly rather than through
+// a temp directory.
+func TestLinkSourceRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	sourcePath := filepath.Join(tmpDir, "source")
+	outside := filepath.Join(tmpDir, "outside")
+	for _, dir := range []string{projectPath, sourcePath, outside} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, outside, filepath.Join(projectPath, ".lnpm"))
+
+	_, err := New(projectPath).LinkSource("demo-pkg", sourcePath)
+	if err == nil {
+		t.Fatal("LinkSource() through a symlinked .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("LinkSource() error = %v, want it to name .lnpm", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(outside, "demo-pkg")); !os.IsNotExist(err) {
+		t.Errorf("demo-pkg was created outside the project (Lstat err = %v), want none", err)
+	}
+}
+
+// TestUnlinkRefusesASymlinkedLnpmDirectory is the destructive half. Unlink's
+// RemoveAll of .lnpm/{package} follows a symlinked .lnpm, so an attacker who
+// picks the package name picks a directory to delete outside the project.
+func TestUnlinkRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	documents := filepath.Join(victim, "Documents")
+	for _, dir := range []string{projectPath, documents} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	taxes := filepath.Join(documents, "taxes.txt")
+	if err := os.WriteFile(taxes, []byte("keep me"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, victim, filepath.Join(projectPath, ".lnpm"))
+
+	err := New(projectPath).Unlink("Documents")
+	if err == nil {
+		t.Fatal("Unlink() through a symlinked .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("Unlink() error = %v, want it to name .lnpm", err)
+	}
+
+	if got, err := os.ReadFile(taxes); err != nil || string(got) != "keep me" {
+		t.Errorf("victim/Documents/taxes.txt = %q (err %v) after a refused Unlink, want it intact", string(got), err)
+	}
+}
+
+// TestLinkSourceRefusesASymlinkedScopeDirectory covers the second ancestor a
+// scoped name adds. A real .lnpm holding a symlinked @org redirects every scoped
+// package just as completely, one level down.
+func TestLinkSourceRefusesASymlinkedScopeDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	sourcePath := filepath.Join(tmpDir, "source")
+	victim := filepath.Join(tmpDir, "victim")
+	for _, dir := range []string{filepath.Join(projectPath, ".lnpm"), sourcePath, victim} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, victim, filepath.Join(projectPath, ".lnpm", "@org"))
+
+	_, err := New(projectPath).LinkSource("@org/scoped", sourcePath)
+	if err == nil {
+		t.Fatal("LinkSource() through a symlinked scope directory error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "@org") {
+		t.Errorf("LinkSource() error = %v, want it to name the @org scope directory", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(victim, "scoped")); !os.IsNotExist(err) {
+		t.Errorf("scoped was created outside the project (Lstat err = %v), want none", err)
+	}
+}

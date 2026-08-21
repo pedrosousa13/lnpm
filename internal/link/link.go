@@ -102,6 +102,11 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return Result{}, err
 	}
+	// Before the reuse scan below, which reads .lnpm/{package} long before
+	// anything creates it: reading through a redirected path is part of the bug.
+	if err := l.checkLnpmDirs(packageName); err != nil {
+		return Result{}, err
+	}
 
 	// The manifest's name is reserved before anything else reads the file set,
 	// so nothing below has to consider a package's file competing for it.
@@ -417,6 +422,9 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return "", err
 	}
+	if err := l.checkLnpmDirs(packageName); err != nil {
+		return "", err
+	}
 
 	// An empty source path is rejected before it is resolved, because
 	// filepath.Abs("") returns the working directory and a working directory
@@ -504,6 +512,9 @@ func (l *Linker) Unlink(packageName string) error {
 	if err := pack.ValidatePackageName(packageName); err != nil {
 		return err
 	}
+	if err := l.checkLnpmDirs(packageName); err != nil {
+		return err
+	}
 
 	// Remove .lnpm/{package}
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
@@ -529,6 +540,48 @@ func (l *Linker) Unlink(packageName string) error {
 	removeDirIfEmpty(filepath.Join(l.projectPath, ".lnpm"))
 
 	return nil
+}
+
+// checkLnpmDirs refuses to work through a .lnpm - or, for a scoped package, a
+// .lnpm/{scope} - that is not a real directory in the project.
+//
+// pack.ValidatePackageName guards the segments the package name contributes, but
+// nothing guarded their ancestors, and a repository can commit .lnpm itself as a
+// symlink at any directory it likes. .gitignore does not save anyone from that:
+// a tracked symlink is checked out regardless. Every path the linker builds
+// under it then lands wherever it points, so a link writes outside the project
+// and an unlink deletes outside it.
+//
+// Lstat, not Stat, is the whole point: the entry itself has to be visible rather
+// than what it resolves to. The mode bits accepted are IsLiveLinked's, for the
+// reason its comment gives - a Windows junction reads as ModeIrregular rather
+// than ModeSymlink, and junctions are what createDirSymlink falls back to.
+//
+// A missing .lnpm is not an error: both directories are created on demand, and
+// only an entry that already exists and is not a directory is refused. Nothing
+// above the project is examined, so a project legitimately reached through a
+// symlinked parent is left alone.
+func (l *Linker) checkLnpmDirs(packageName string) error {
+	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
+	if isDirLink(lnpmDir) {
+		return fmt.Errorf("refusing to use %s: it is a link, not a real directory inside the project - this checkout replaced .lnpm with a link, and using it would read and write outside the project", lnpmDir)
+	}
+
+	if scope, _, scoped := strings.Cut(packageName, "/"); scoped {
+		scopeDir := filepath.Join(lnpmDir, scope)
+		if isDirLink(scopeDir) {
+			return fmt.Errorf("refusing to use %s: the scope directory is a link, not a real directory inside the project - this checkout replaced it with a link, and using it would read and write outside the project", scopeDir)
+		}
+	}
+
+	return nil
+}
+
+// isDirLink reports whether path exists and carries a link mode bit: a symlink
+// on any platform, or a Windows junction. A path that does not exist is not one.
+func isDirLink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
 }
 
 // removeDirIfEmpty removes dir when it holds no entries at all.
