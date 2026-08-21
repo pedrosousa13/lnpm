@@ -749,7 +749,7 @@ func resolveAddSpec(database *db.DB, name, requested string) (*db.Package, strin
 		return pkg, "", specHash, err
 	}
 
-	return nil, "", specVersion, versionNotInStoreError(requested, name, versions)
+	return nil, "", specVersion, versionNotInStoreError(name, requested, versions)
 }
 
 // matchVersion finds the retained version whose version string is exactly
@@ -838,7 +838,13 @@ func liveLinkSpecError(name, requested string, kind specKind) error {
 // answers to what the user asked for, shared by the parallel and the
 // single-package add paths so both tell the user the same thing.
 //
-// Every retained version is named, and that is the whole change from the message
+// The parameters are declared in the order the message reads them. name and
+// requested are both plain strings, so a caller that swaps them still compiles
+// and quietly produces a message that lies about which is which - "no version of
+// 1.0.0 matches mylib"; keeping declaration order and interpolation order
+// identical is what makes such a swap visible at the call site.
+//
+// The retained versions are named, and that is the whole change from the message
 // this replaces. That one reported what the default tag points at as though it
 // were the only version there was - true while the store held one record per
 // name, and misleading the moment it stopped being, because the version the user
@@ -849,19 +855,37 @@ func liveLinkSpecError(name, requested string, kind specKind) error {
 // parallel path wraps this error as "<spec>: %w", so the string has to compose
 // as a clause, and a terminal period would read badly there as well as trip
 // staticcheck's ST1005.
-func versionNotInStoreError(requested, name string, retained []*db.Package) error {
+func versionNotInStoreError(name, requested string, retained []*db.Package) error {
 	return fmt.Errorf("no version of %s matches %s (retained: %s; run 'lnpm list %s --versions' for the full history)",
 		name, requested, describeVersions(retained), name)
 }
+
+// describedVersions is how many retained versions versionNotInStoreError names
+// before falling back to a count.
+const describedVersions = 5
 
 // describeVersions renders retained versions as "1.3.0 (a1b2c3d4)", in the order
 // GetPackageVersions returns them, which is newest first. The short hash is the
 // one `lnpm list --versions` prints, so what the error shows is what the user
 // would type back.
+//
+// Only the newest describedVersions are spelled out, with the rest counted. The
+// message already points at `lnpm list <pkg> --versions`, so it does not have to
+// be the history: a package with thirty retained versions would otherwise
+// produce a single ~700-character error, which the parallel add path then wraps
+// again. Every other display path in lnpm caps what it prints the same way.
 func describeVersions(retained []*db.Package) string {
-	described := make([]string, len(retained))
-	for i, v := range retained {
-		described[i] = fmt.Sprintf("%s (%s)", v.Version, shortHash(v.ContentHash))
+	shown := retained
+	if len(shown) > describedVersions {
+		shown = shown[:describedVersions]
+	}
+
+	described := make([]string, 0, len(shown)+1)
+	for _, v := range shown {
+		described = append(described, fmt.Sprintf("%s (%s)", truncate(v.Version, 14), shortHash(v.ContentHash)))
+	}
+	if omitted := len(retained) - len(shown); omitted > 0 {
+		described = append(described, fmt.Sprintf("and %d more", omitted))
 	}
 	return strings.Join(described, ", ")
 }

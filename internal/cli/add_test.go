@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -490,6 +491,83 @@ func TestResolveAddSpecErrorNamesEveryRetainedVersion(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal is %v, want it to name the retained version %s the user could roll back to", err, want)
 		}
+	}
+	// The name and the spec are two plain strings the message reads in order, so
+	// a caller that swaps them still compiles and produces a message that lies
+	// about which is which. Reading the opening clause is what catches that.
+	if !strings.HasPrefix(err.Error(), "no version of deadend-pkg matches 9.9.9") {
+		t.Errorf("the refusal is %v, want it to name the package and then the spec", err)
+	}
+}
+
+// TestResolveAddSpecErrorCapsTheRetainedVersions pins that the dead end stays a
+// readable clause on a package with a long history. The message points at
+// `lnpm list <pkg> --versions`, so it does not have to be the history: naming
+// every retained version of a package with thirty of them produces a single
+// ~700-character error, which the parallel add path then wraps again.
+func TestResolveAddSpecErrorCapsTheRetainedVersions(t *testing.T) {
+	_, database := newGCStore(t)
+
+	for i := 0; i < 30; i++ {
+		seedVersion(t, database, "long-history-pkg",
+			fmt.Sprintf("1.0.%d", i),
+			fmt.Sprintf("%02dcccccccccccccc", i))
+	}
+
+	_, _, _, err := resolveAddSpec(database, "long-history-pkg", "9.9.9")
+	if err == nil {
+		t.Fatal("resolveAddSpec(9.9.9) succeeded, want a refusal")
+	}
+	if strings.Contains(err.Error(), "1.0.0") {
+		t.Errorf("the refusal names all thirty retained versions:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "more") {
+		t.Errorf("the refusal is %v, want it to say how many versions it left out", err)
+	}
+	if len(err.Error()) > 250 {
+		t.Errorf("the refusal is %d characters long, want a clause a wrapped error can carry:\n%v", len(err.Error()), err)
+	}
+}
+
+// TestResolveAddSpecReportsHowTheSpecResolved pins the fact --link has to guard
+// on, and which the returned tag cannot carry.
+//
+// A tag comes back as itself, but a version and a hash both come back with an
+// empty tag, because they name a build rather than a channel - the same empty
+// tag a bare name returns. A guard reading the tag string therefore cannot tell
+// "the user asked for nothing" from "the user asked for a specific build", and
+// would let `add pkg@<hash> --link` through to live-link the working tree while
+// printing the historical version number.
+func TestResolveAddSpecReportsHowTheSpecResolved(t *testing.T) {
+	_, database := newGCStore(t)
+
+	seedVersion(t, database, "kind-pkg", "1.0.0", "aaaaaaaa11111111")
+	newest := seedVersion(t, database, "kind-pkg", "2.0.0", "bbbbbbbb22222222")
+	if err := database.SetTag("kind-pkg", "beta", newest.ContentHash); err != nil {
+		t.Fatalf("set the tag: %v", err)
+	}
+
+	for _, tc := range []struct {
+		requested string
+		want      specKind
+	}{
+		{"", specDefault},
+		{"beta", specTag},
+		{"1.0.0", specVersion},
+		{"aaaaaaaa", specHash},
+	} {
+		t.Run(string(tc.want), func(t *testing.T) {
+			pkg, _, kind, err := resolveAddSpec(database, "kind-pkg", tc.requested)
+			if err != nil {
+				t.Fatalf("resolveAddSpec(%q) error = %v", tc.requested, err)
+			}
+			if pkg == nil {
+				t.Fatalf("resolveAddSpec(%q) resolved nothing", tc.requested)
+			}
+			if kind != tc.want {
+				t.Errorf("resolveAddSpec(%q) reported kind %q, want %q", tc.requested, kind, tc.want)
+			}
+		})
 	}
 }
 
