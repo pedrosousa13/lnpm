@@ -4,3 +4,17 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # "/" covers every workflow under .github/workflows/; the ecosystem does not
+  # take one entry per file.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # Without a prefix Dependabot titles its PRs "Bump actions/checkout from
+      # 4 to 5", which has no conventional type and so fails the required
+      # PR Title check. The prefix makes it "ci: bump actions/checkout from
+      # 4 to 5" - "ci" is in the allowlist in pr-title.yaml, and bumping an
+      # action is a CI change that release-please keeps out of the changelog.
+      prefix: "ci"
