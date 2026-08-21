@@ -210,6 +210,195 @@ func TestDetectPNPMWorkspaceExcludesNegatedPackage(t *testing.T) {
 	assertPackages(t, ws.Packages, []string{pkgA})
 }
 
+// --- a config Detect is using, versus one it is walking past ------------------
+//
+// Detect walks from startPath to the filesystem root, so the two ends of that
+// walk are not the same kind of place. The starting directory's config is one
+// the caller is actually using; anything found further up belongs to whatever
+// happens to sit above them, which on a deep enough path is an unrelated
+// project. Issue #288 settled the split there: a broken config you are using
+// aborts naming the file, a broken config you are only passing through does
+// not become your problem.
+
+func TestDetectUnparseablePackageJSONInStartDirFails(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/package-a")
+
+	manifest := filepath.Join(root, "package.json")
+	if err := os.WriteFile(manifest, []byte(`{"name":"root","workspaces":["packages/*",}`), 0644); err != nil {
+		t.Fatalf("Failed to write package.json: %v", err)
+	}
+
+	ws, err := Detect(root)
+	if err == nil {
+		t.Fatalf("Expected an error for the unparseable package.json, got nil and workspace %+v", ws)
+	}
+	if !strings.Contains(err.Error(), manifest) {
+		t.Errorf("Expected the error to name %s, got: %v", manifest, err)
+	}
+	// encoding/json describes the syntax problem and nothing else, so the
+	// message only reaches the file because Detect's side wraps it. Pin that
+	// the wrap keeps the original reachable rather than flattening it.
+	var syntax *json.SyntaxError
+	if !errors.As(err, &syntax) {
+		t.Errorf("Expected the error to wrap a *json.SyntaxError, got: %v", err)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+func TestDetectUnparseablePnpmWorkspaceInStartDirFails(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/package-a")
+
+	config := filepath.Join(root, "pnpm-workspace.yaml")
+	if err := os.WriteFile(config, []byte("packages: [packages/*\n"), 0644); err != nil {
+		t.Fatalf("Failed to write pnpm-workspace.yaml: %v", err)
+	}
+
+	ws, err := Detect(root)
+	if err == nil {
+		t.Fatalf("Expected an error for the unparseable pnpm-workspace.yaml, got nil and workspace %+v", ws)
+	}
+	if !strings.Contains(err.Error(), config) {
+		t.Errorf("Expected the error to name %s, got: %v", config, err)
+	}
+	// gopkg.in/yaml.v3 has no exported error type to match on, so assert the
+	// weaker but still meaningful thing: the parse error is wrapped, not
+	// replaced by a message that names only the file.
+	if errors.Unwrap(err) == nil {
+		t.Errorf("Expected the error to wrap the YAML parse error, got: %v", err)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+// A config that cannot be read fails the same way a config that cannot be
+// parsed does. os.ReadFile returns a *fs.PathError, which already names the
+// file, so this pins that the message stays actionable without Detect adding
+// a second spelling of the same path.
+func TestDetectUnreadableConfigInStartDirFails(t *testing.T) {
+	requirePermissionEnforcement(t)
+
+	root := t.TempDir()
+	writePackage(t, root, "packages/package-a")
+
+	manifest := filepath.Join(root, "package.json")
+	if err := os.WriteFile(manifest, []byte(`{"name":"root","workspaces":["packages/*"]}`), 0644); err != nil {
+		t.Fatalf("Failed to write package.json: %v", err)
+	}
+	if err := os.Chmod(manifest, 0000); err != nil {
+		t.Fatalf("Failed to chmod package.json: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(manifest, 0644) })
+
+	ws, err := Detect(root)
+	if err == nil {
+		t.Fatalf("Expected an error for the unreadable package.json, got nil and workspace %+v", ws)
+	}
+	if !strings.Contains(err.Error(), manifest) {
+		t.Errorf("Expected the error to name %s, got: %v", manifest, err)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("Expected the error to wrap a permission error, got: %v", err)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+// The other half of the split. A project with no workspace of its own, sitting
+// under a broken one, reports "no workspace" rather than inheriting a failure
+// it cannot fix - Detect walks to the filesystem root, so propagating here
+// would let any broken config anywhere above a user's home directory break
+// every command they run.
+func TestDetectWalksPastABrokenAncestorConfig(t *testing.T) {
+	for _, tc := range []struct{ name, file, contents string }{
+		{"package.json", "package.json", `{"name":"root","workspaces":["packages/*",}`},
+		{"pnpm-workspace.yaml", "pnpm-workspace.yaml", "packages: [packages/*\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, tc.file), []byte(tc.contents), 0644); err != nil {
+				t.Fatalf("Failed to write %s: %v", tc.file, err)
+			}
+
+			project := filepath.Join(root, "nested", "project")
+			if err := os.MkdirAll(project, 0755); err != nil {
+				t.Fatalf("Failed to create %s: %v", project, err)
+			}
+
+			ws, err := Detect(project)
+			if err != nil {
+				t.Fatalf("Expected the broken ancestor config to be walked past, got: %v", err)
+			}
+			if ws != nil {
+				t.Errorf("Expected no workspace, got %+v", ws)
+			}
+		})
+	}
+}
+
+// #241's guard has to keep working at every level of the walk, not only the
+// first. A malformed glob pattern is the one failure docs/adr/0001 requires to
+// abort wherever it is found, because it widens a publish rather than failing
+// closed - it is not covered by the starting-directory rule above and must not
+// be narrowed to it.
+func TestDetectMalformedPatternInAncestorReturnsError(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/public-api")
+
+	manifest := `{"name":"root","workspaces":["packages/[bad"]}`
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("Failed to write package.json: %v", err)
+	}
+
+	project := filepath.Join(root, "nested", "project")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatalf("Failed to create %s: %v", project, err)
+	}
+
+	ws, err := Detect(project)
+	if err == nil {
+		t.Fatalf("Expected an error for the malformed pattern, got nil and workspace %+v", ws)
+	}
+	if !strings.Contains(err.Error(), "packages/[bad") {
+		t.Errorf("Expected the error to name the offending pattern, got: %v", err)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+// "There is no workspace here" is not a failure, and the starting-directory
+// rule must not turn any of these three into one. Every ordinary project has a
+// package.json with no workspaces field, so getting this wrong would fail every
+// command run in one.
+func TestDetectTreatsAConfigDeclaringNoWorkspaceAsNoWorkspace(t *testing.T) {
+	for _, tc := range []struct{ name, file, contents string }{
+		{"package.json with no workspaces field", "package.json", `{"name":"solo","version":"1.0.0"}`},
+		{"pnpm-workspace.yaml with an empty packages list", "pnpm-workspace.yaml", "packages: []\n"},
+		{"neither config present", "README.md", "not a manifest\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, tc.file), []byte(tc.contents), 0644); err != nil {
+				t.Fatalf("Failed to write %s: %v", tc.file, err)
+			}
+
+			ws, err := Detect(root)
+			if err != nil {
+				t.Fatalf("Expected no error, got: %v", err)
+			}
+			if ws != nil {
+				t.Errorf("Expected no workspace, got %+v", ws)
+			}
+		})
+	}
+}
+
 // --- ListPackages -----------------------------------------------------------
 //
 // Every path in w.Packages had a package.json when expandGlobs filtered on it,

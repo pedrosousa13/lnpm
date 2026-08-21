@@ -30,18 +30,35 @@ type Package struct {
 func Detect(startPath string) (*Workspace, error) {
 	// Walk up looking for workspace root
 	current := startPath
+	startDir := true
 	for {
 		ws, err := detectWorkspaceAt(current)
 		// A malformed glob pattern is a config error, not a "no workspace
 		// here" signal. Walking past it would end in "no workspace found",
 		// which hides the offending pattern from the user, and docs/adr/0001
-		// requires a malformed pattern to abort naming the pattern. Every
-		// other failure keeps the existing walk-up behaviour.
+		// requires a malformed pattern to abort naming the pattern. This guard
+		// is unconditional, as #241 wrote it; the starting-directory rule
+		// below, settled separately in #288, deliberately does not narrow it.
 		//
 		// doublestar.ErrBadPattern is path.ErrBadPattern, so this guard would
 		// also catch a bad-pattern error raised by path.Match anywhere under
 		// detectWorkspaceAt. Nothing under there calls path.Match today.
 		if errors.Is(err, doublestar.ErrBadPattern) {
+			return nil, err
+		}
+		// A config that will not read or will not parse aborts only in the
+		// directory Detect started from - the first iteration, and the only
+		// place along the walk where the config is one the caller is actually
+		// using. Reporting it as "no workspace found" points the user at their
+		// command line when the problem is a typo in the file beside them.
+		//
+		// Later iterations keep swallowing it, deliberately. Detect walks to
+		// the filesystem root, so a config anywhere above the user - a stray
+		// package.json in a home directory, an unrelated project this one
+		// happens to sit beneath - would otherwise break every command run
+		// here. Issue #288 weighed aborting everywhere and declined it for
+		// that reason; do not widen this to the whole loop.
+		if err != nil && startDir {
 			return nil, err
 		}
 		if err == nil && ws != nil {
@@ -53,6 +70,7 @@ func Detect(startPath string) (*Workspace, error) {
 			break
 		}
 		current = parent
+		startDir = false
 	}
 
 	return nil, nil
@@ -75,7 +93,12 @@ func detectWorkspaceAt(dir string) (*Workspace, error) {
 	return nil, nil
 }
 
-// parsePnpmWorkspace parses a pnpm-workspace.yaml file
+// parsePnpmWorkspace parses a pnpm-workspace.yaml file.
+//
+// The parse error is wrapped with the path because yaml.Unmarshal describes
+// only the syntax problem and never says which file it was reading. The read
+// error is not: os.ReadFile returns a *fs.PathError, which already names the
+// file, and wrapping would give one file two spellings in one message.
 func parsePnpmWorkspace(root, path string) (*Workspace, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -86,7 +109,7 @@ func parsePnpmWorkspace(root, path string) (*Workspace, error) {
 		Packages []string `yaml:"packages"`
 	}
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 
 	if len(config.Packages) == 0 {
@@ -105,7 +128,9 @@ func parsePnpmWorkspace(root, path string) (*Workspace, error) {
 	}, nil
 }
 
-// parsePackageJSONWorkspace parses workspaces from package.json
+// parsePackageJSONWorkspace parses workspaces from package.json. It names the
+// file on a parse error and leaves a read error alone, for the reasons
+// parsePnpmWorkspace records.
 func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -116,7 +141,7 @@ func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
 		Workspaces interface{} `json:"workspaces"`
 	}
 	if err := json.Unmarshal(data, &pkgJSON); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 
 	if pkgJSON.Workspaces == nil {
