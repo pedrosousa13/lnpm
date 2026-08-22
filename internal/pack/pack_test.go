@@ -3,6 +3,7 @@ package pack
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -1466,6 +1467,31 @@ func TestDefaultExcludesMatchCaseInsensitively(t *testing.T) {
 	}
 }
 
+// TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite pins the
+// invariant lowerDefaultExcludes rests on. Lowering a pattern is only a change
+// of case while the pattern holds no character class, brace or escape:
+// strings.ToLower rewrites "[A-Z]" into "[a-z]" and "\A" into "\a", which change
+// what the pattern matches rather than how it is cased.
+//
+// The invariant is already recorded in
+// docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md ("No
+// defaultExcludes entry contains a brace or a character class"), where it is
+// what kept the move to doublestar away from the default list. Nothing enforced
+// it, so this test does.
+//
+// It is deliberately narrow. The fold is derived from defaultExcludes rather
+// than written out beside it, so a new entry is folded automatically and needs
+// no case in TestDefaultExcludesMatchCaseInsensitively; a metacharacter is the
+// one way a new entry can break the fold silently.
+func TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite(t *testing.T) {
+	for _, pattern := range defaultExcludes {
+		if i := strings.IndexAny(pattern, `[]{}\`); i >= 0 {
+			t.Errorf("defaultExcludes entry %q contains %q: lowering it for the case-insensitive match would rewrite the pattern, not just its case — a class becomes [a-z] and an escape becomes \\a. See docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md, which records that no entry carries one",
+				pattern, pattern[i])
+		}
+	}
+}
+
 // TestPackMixedCaseSecretsNeverShip is issue #317 end to end, against real files
 // on disk. The unit table above asks the matcher; this asks what a publish would
 // actually carry, which is the claim that matters.
@@ -1524,18 +1550,21 @@ func TestPackMixedCaseSecretsNeverShip(t *testing.T) {
 // built-in force-exclude set folds case, a pattern the user wrote in .npmignore
 // or .gitignore does not.
 //
-// The two are different kinds of rule. defaultExcludes is a guard lnpm applies
-// on the user's behalf, and a guard that can be stepped around by holding shift
-// is not a guard. A user's ignore pattern is a preference, and git — the tool
-// every one of these files was written for — matches it case-sensitively, so
-// folding it here would silently drop files the author's own toolchain keeps.
+// The two are different kinds of rule, and they fail in opposite directions.
+// defaultExcludes is a guard lnpm applies on the user's behalf, and a guard that
+// can be stepped around by holding shift is not a guard; folding it only ever
+// withholds more. A user's ignore pattern is a preference, and folding it would
+// drop files the author never asked to drop. See isDefaultExcluded for the rest
+// of the reasoning, including why matching git is not one of the reasons — git
+// folds ignore matching itself when core.ignorecase is set, as it is by default
+// on macOS and Windows.
 //
 // This test is what fails if the fold is applied to the shared matcher
 // (applyIgnorePatterns or matchesIgnorePattern) rather than to the built-in set
 // alone.
 func TestUserIgnorePatternsStayCaseSensitive(t *testing.T) {
 	if isExcluded("SECRET.TXT", []string{"secret.txt"}) {
-		t.Error(`isExcluded("SECRET.TXT", ["secret.txt"]) = true, want false: a user ignore pattern matches case-sensitively, as it does in git`)
+		t.Error(`isExcluded("SECRET.TXT", ["secret.txt"]) = true, want false: only the built-in exclusion list folds case, a pattern the user wrote does not`)
 	}
 	if isExcluded("Dist/app.js", []string{"dist/"}) {
 		t.Error(`isExcluded("Dist/app.js", ["dist/"]) = true, want false: a user directory pattern matches case-sensitively too`)
