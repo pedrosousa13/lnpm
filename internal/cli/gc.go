@@ -64,6 +64,14 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		// below stops it: this pass decides what gets deleted, and a read that
 		// failed is indistinguishable here from a version nothing links - so
 		// carrying on would delete a version gc cannot show is unreachable.
+		//
+		// This check was here and did nothing until #329. The lookup dropped a
+		// link row or an index entry it could not parse and returned a nil
+		// error, so the state this guard describes arrived as an empty list and
+		// went straight past it: the run deleted the store entry of a package a
+		// project was still consuming, and reported success. The guard is worth
+		// no more than the error it inspects, which is why the fix was made
+		// there rather than by adding a branch here.
 		links, err := database.GetLinksForPackage(pkg.ID)
 		if err != nil {
 			return fmt.Errorf("failed to read the links of %s@%s: %w", pkg.Name, pkg.Version, err)

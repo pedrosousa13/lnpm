@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
@@ -532,4 +536,160 @@ func TestRunGCReportsAPathThatNormalisationRewrote(t *testing.T) {
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Errorf("RunGC left %s behind (stat err = %v)", orphan, err)
 	}
+}
+
+// --- Unreadable links --------------------------------------------------------
+
+// seedCollectableLink records a package with a store entry on disk and one
+// project linked to it, and returns the entry's directory and the link's ID.
+//
+// The entry is the thing the regression is about: with the link readable gc
+// keeps it, and the sweep on #329 showed that damaging the link is enough to
+// make gc delete it while the project is still consuming it.
+func seedCollectableLink(t *testing.T, database *db.DB, storeRoot string) (string, int64) {
+	t.Helper()
+
+	entry := filepath.Join(storeRoot, "linked-pkg", "0123456789abcdef")
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "index.js"), []byte("payload"), 0644); err != nil {
+		t.Fatalf("seed entry file: %v", err)
+	}
+
+	proj := &db.Project{Path: t.TempDir(), Name: "consumer"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	pkg := &db.Package{
+		Name:        "linked-pkg",
+		Version:     "1.0.0",
+		ContentHash: "0123456789abcdef",
+		StorePath:   entry,
+	}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+	lnk := &db.Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}
+	if err := database.InsertLink(lnk); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+	return entry, lnk.ID
+}
+
+// damageDatabase writes bytes straight into a bucket of the store's bbolt file,
+// standing in for the damage a torn write leaves behind.
+//
+// It closes lnpm's handle first and leaves it closed, because bbolt holds an
+// exclusive file lock: the run under test reopens the database itself, which is
+// also what makes the damage look to gc exactly like damage it found on open.
+func damageDatabase(t *testing.T, bucket string, key []byte, value []byte) {
+	t.Helper()
+
+	storePath, err := config.GetStorePath()
+	if err != nil {
+		t.Fatalf("resolve store path: %v", err)
+	}
+	db.ResetForTesting()
+
+	handle, err := bolt.Open(filepath.Join(storePath, "lnpm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("open the database directly: %v", err)
+	}
+	err = handle.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(bucket)).Put(key, value)
+	})
+	if closeErr := handle.Close(); closeErr != nil {
+		t.Fatalf("close the database: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("damage %s: %v", bucket, err)
+	}
+}
+
+// linkKey encodes a link or package ID the way the link buckets key their rows.
+func linkKey(id int64) []byte {
+	key := make([]byte, 8)
+	binary.BigEndian.PutUint64(key, uint64(id))
+	return key
+}
+
+// assertGCDeletedNothing fails unless the store entry and the database row are
+// both still there after the run.
+func assertGCDeletedNothing(t *testing.T, entry string) {
+	t.Helper()
+
+	if _, err := os.Stat(entry); err != nil {
+		t.Errorf("gc removed the store entry of a package whose links it could not read: %v", err)
+	}
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	packages, err := database.ListPackages()
+	if err != nil {
+		t.Fatalf("list packages: %v", err)
+	}
+	if len(packages) != 1 {
+		t.Errorf("gc dropped the database row of a package whose links it could not read, %d package(s) left", len(packages))
+	}
+}
+
+// TestRunGCAbortsWhenALinkRowCannotBeRead is the sweep's first reproduction on
+// #329, turned into a regression test.
+//
+// gc's orphan scan already states the rule - a read that failed is
+// indistinguishable from a version nothing links - and already aborts when the
+// lookup returns an error. Before the fix the lookup dropped the unreadable row
+// and returned a nil error, so gc collected the package and reported success
+// while a project was still consuming it.
+func TestRunGCAbortsWhenALinkRowCannotBeRead(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, linkID := seedCollectableLink(t, database, storeRoot)
+
+	damageDatabase(t, "links", linkKey(linkID), []byte("{ not a link"))
+
+	out := captureStdout(t, func() {
+		err := RunGC(false, "", false, true)
+		if err == nil {
+			t.Fatal("RunGC() returned no error for a link row it could not read")
+		}
+		if !strings.Contains(err.Error(), "linked-pkg@1.0.0") {
+			t.Errorf("RunGC() error = %v, want it to name the package it could not read", err)
+		}
+	})
+
+	if strings.Contains(out, "orphaned package") {
+		t.Errorf("gc called a package orphaned on links it could not read, output was:\n%s", out)
+	}
+	assertGCDeletedNothing(t, entry)
+}
+
+// TestRunGCAbortsWhenALinkIndexEntryCannotBeRead is the sweep's second
+// reproduction: the by-package index entry is the damaged one, which hides every
+// link the package has rather than one of them.
+func TestRunGCAbortsWhenALinkIndexEntryCannotBeRead(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	damageDatabase(t, "links_by_package", linkKey(packages[0].ID), []byte("[ not ids"))
+
+	out := captureStdout(t, func() {
+		err := RunGC(false, "", false, true)
+		if err == nil {
+			t.Fatal("RunGC() returned no error for a link index entry it could not read")
+		}
+		if !strings.Contains(err.Error(), "linked-pkg@1.0.0") {
+			t.Errorf("RunGC() error = %v, want it to name the package it could not read", err)
+		}
+	})
+
+	if strings.Contains(out, "orphaned package") {
+		t.Errorf("gc called a package orphaned on an index entry it could not read, output was:\n%s", out)
+	}
+	assertGCDeletedNothing(t, entry)
 }

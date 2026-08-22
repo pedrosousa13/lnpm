@@ -542,12 +542,23 @@ func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 	byPackage := tx.Bucket(bucketLinksByPackage)
 	byProject := tx.Bucket(bucketLinksByProject)
 
-	fromIDs := indexIDs(byPackage, itob(fromID))
+	// Both index entries are read before anything moves, and an unreadable one
+	// abandons the tag move rather than being treated as empty. Treating the
+	// source as empty would leave every consumer on the version the tag moved
+	// off; treating the destination as empty would rewrite its entry from the
+	// links carried across alone, dropping the ones already there.
+	fromIDs, err := indexIDs(byPackage, itob(fromID))
+	if err != nil {
+		return err
+	}
 	if len(fromIDs) == 0 {
 		return nil
 	}
 
-	toIDs := indexIDs(byPackage, itob(toID))
+	toIDs, err := indexIDs(byPackage, itob(toID))
+	if err != nil {
+		return err
+	}
 	onDestination := make(map[int64]bool, len(toIDs))
 	for _, id := range toIDs {
 		if data := links.Get(itob(id)); data != nil {
@@ -598,17 +609,28 @@ func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 	return putIndexIDs(byPackage, itob(toID), toIDs)
 }
 
-// indexIDs reads a link index entry, which holds a JSON array of link IDs.
-func indexIDs(b *bolt.Bucket, key []byte) []int64 {
+// indexIDs reads a link index entry, which holds a JSON array of link IDs. A
+// key that is not there is not an error: it is a package or project nothing
+// links, which is the ordinary state of most of them.
+//
+// An entry that will not parse is an error, and the distinction is the whole of
+// #329. Returning no IDs for it made "this package has no consumers" and "this
+// package's consumers could not be read" the same answer, and gc acts on the
+// first by deleting the version. Per ADR-0001 the direction is what decides: a
+// swallowed error that widens what a destructive pass removes is a bug, so this
+// one is reported rather than absorbed. The opposite direction is left alone -
+// ListPackages still skips a package record it cannot parse, which leaks a store
+// entry instead of deleting one.
+func indexIDs(b *bolt.Bucket, key []byte) ([]int64, error) {
 	data := b.Get(key)
 	if data == nil {
-		return nil
+		return nil, nil
 	}
 	var ids []int64
-	if json.Unmarshal(data, &ids) != nil {
-		return nil
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return nil, fmt.Errorf("link index entry for key %d is unreadable: %w", btoi(key), err)
 	}
-	return ids
+	return ids, nil
 }
 
 // putIndexIDs writes a link index entry, deleting the key when no IDs are left
@@ -1131,8 +1153,19 @@ func (db *DB) InsertLink(link *Link) error {
 
 		// indexIDs decodes into a slice of its own, so deleting rows below does
 		// not disturb this walk.
+		//
+		// An unreadable index entry refuses the insert instead of walking no
+		// rows. This walk is what keeps one row per project and package name:
+		// skipping it would leave the row this link replaces in place, and the
+		// project would then hold two answers to which version it consumes -
+		// the state the doc comment above says everything downstream assumes
+		// away.
+		existingIDs, err := indexIDs(byProject, itob(link.ProjectID))
+		if err != nil {
+			return err
+		}
 		var updated bool
-		for _, id := range indexIDs(byProject, itob(link.ProjectID)) {
+		for _, id := range existingIDs {
 			data := links.Get(itob(id))
 			if data == nil {
 				continue // Index entry naming no link row
@@ -1216,7 +1249,27 @@ func (db *DB) InsertLink(link *Link) error {
 	})
 }
 
-// GetLinksForPackage returns all links for a package
+// GetLinksForPackage returns every link a package has, and reports rather than
+// hides any it could not read.
+//
+// This is gc's reachability check, so the three ways the answer can be short - an
+// unreadable index entry, an index entry naming a row that is not there, and a
+// row that will not parse - all have to be errors. Each of them otherwise leaves
+// a consumer out of a list gc reads as "nothing is using this version", and gc
+// then deletes the store entry that project is linked to and reports success.
+// That is the whole of #329, and ADR-0001 is the rule it is decided by: a
+// swallowed error that widens a destructive set is a bug.
+//
+// The index entry naming no row is included even though no flow lnpm has
+// produces one. Every path that deletes a link row - moveLinksTx, DeletePackage,
+// deleteLinkRowTx, DeleteLink - scrubs the ID from both indexes inside the same
+// bolt transaction, and bolt commits a transaction whole or not at all, so the
+// state is unreachable except through damage to the file. Tolerating it would be
+// tolerating exactly the class of damage the other two cases refuse.
+//
+// Returning the links read so far alongside the error was rejected: a caller
+// that checks the error is no better off for them, and one that does not gets a
+// short list that looks complete, which is the bug.
 func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1226,29 +1279,29 @@ func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
 		links := tx.Bucket(bucketLinks)
 		byPackage := tx.Bucket(bucketLinksByPackage)
 
-		data := byPackage.Get(itob(packageID))
-		if data == nil {
-			return nil
-		}
-
-		var linkIDs []int64
-		if err := json.Unmarshal(data, &linkIDs); err != nil {
-			return nil
+		linkIDs, err := indexIDs(byPackage, itob(packageID))
+		if err != nil {
+			return err
 		}
 
 		for _, id := range linkIDs {
 			linkData := links.Get(itob(id))
-			if linkData != nil {
-				var link Link
-				if json.Unmarshal(linkData, &link) == nil {
-					result = append(result, &link)
-				}
+			if linkData == nil {
+				return fmt.Errorf("link index names link %d, which is not in the database", id)
 			}
+			var link Link
+			if err := json.Unmarshal(linkData, &link); err != nil {
+				return fmt.Errorf("link %d is unreadable: %w", id, err)
+			}
+			result = append(result, &link)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return result, err
+	return result, nil
 }
 
 // GetLinksForProject returns all links for a project
