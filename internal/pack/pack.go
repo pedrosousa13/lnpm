@@ -8,6 +8,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	// Aliased slashpath, not path, so it does not collide with the "path"
+	// variables this file is full of: filepath.Walk's callback parameter,
+	// readIgnoreFile and HashFile all name one. filepath.Dir is not a
+	// substitute for it — on Windows filepath.Clean rewrites "/" as "\", which
+	// would corrupt the slash-separated cache keys and scope prefixes that
+	// ignoreLoader is built on.
+	slashpath "path"
 	"strings"
 	"sync"
 
@@ -148,10 +155,11 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 	var filesToHash []*FileInfo
 	fileCount := 0
 
-	// Load .npmignore or .gitignore patterns. They are kept apart from
-	// defaultExcludes because the two rank differently against the "files"
+	// Load .npmignore or .gitignore patterns, from every directory on the way
+	// down to each path rather than the package root alone. They are kept apart
+	// from defaultExcludes because the two rank differently against the "files"
 	// whitelist: the user's patterns lose to it, defaultExcludes beat it.
-	ignorePatterns := loadIgnorePatterns(packageDir)
+	ignores := newIgnoreLoader(packageDir)
 
 	// If files field is specified, use whitelist mode
 	useWhitelist := len(filesField) > 0
@@ -206,7 +214,7 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 		// publishing an empty package because .gitignore held the build output
 		// costs more.
 		if !useWhitelist {
-			if isExcluded(relPath, ignorePatterns) {
+			if ignores.excludes(relPath) {
 				if info.IsDir() {
 					// Pruning is the one place last-match-wins does not hold
 					// end to end: the walk never descends, so a later "!"
@@ -233,7 +241,7 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 				// A default include arrives on its own steam rather than
 				// through the "files" field, so an ignore pattern still drops
 				// it. Nothing skipped the check above for this path.
-				if isExcluded(relPath, ignorePatterns) {
+				if ignores.excludes(relPath) {
 					return nil
 				}
 			default:
@@ -313,6 +321,115 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 	return filesToHash, nil
 }
 
+// ignoreScope is one ignore file's patterns together with the directory they
+// resolve against, as a slash-separated path relative to the package root ("."
+// for the package root itself). The directory is what a leading "/" in a pattern
+// anchors to, so "/lib/gen.js" in src/.npmignore names src/lib/gen.js and says
+// nothing about lib/gen.js at the root.
+type ignoreScope struct {
+	dir      string
+	patterns []string
+}
+
+// ignoreLoader answers, for one path, what the ignore files above it say — the
+// package root's, then every directory down to the one the path sits in.
+//
+// filepath.Walk has no "leaving a directory" callback, so patterns are resolved
+// per path from the root down rather than pushed and popped on a stack, and the
+// per-directory answer is cached. The cache is not an optimization to taste: it
+// is what keeps a package of N files D directories deep at one read per
+// directory instead of N*D — see TestIgnoreLoaderReadsEachDirectoryOnce.
+type ignoreLoader struct {
+	// read returns the patterns governing one directory, given as a
+	// slash-separated path relative to the package root. It is a field so that
+	// a test can count the reads; production always gets loadIgnorePatterns.
+	read  func(dir string) []string
+	cache map[string][]ignoreScope
+	// dirVerdicts memoizes excludes for directories. Without it the "is this
+	// scope's own directory excluded" check below is exponential in depth: the
+	// check at depth D re-asks every shallower depth, each of which re-asks all
+	// of its own. Memoized, each directory is decided once per pack.
+	dirVerdicts map[string]bool
+}
+
+func newIgnoreLoader(root string) *ignoreLoader {
+	return &ignoreLoader{
+		read: func(dir string) []string {
+			return loadIgnorePatterns(filepath.Join(root, filepath.FromSlash(dir)))
+		},
+		cache:       make(map[string][]ignoreScope),
+		dirVerdicts: make(map[string]bool),
+	}
+}
+
+// scopes returns the ignore files governing the contents of dir, shallowest
+// first. An ignore file never governs the directory holding it — git cannot
+// exclude src through src/.gitignore — so a scope for dir applies to the paths
+// inside it, which is exactly what excludes asks for.
+func (l *ignoreLoader) scopes(dir string) []ignoreScope {
+	if scopes, ok := l.cache[dir]; ok {
+		return scopes
+	}
+
+	var scopes []ignoreScope
+	if dir != "." {
+		scopes = l.scopes(slashpath.Dir(dir))
+	}
+	if patterns := l.read(dir); patterns != nil {
+		// Copy rather than append in place: the parent's slice is cached and
+		// shared with every sibling directory, so appending to it could
+		// overwrite one sibling's scope with another's in the backing array.
+		scopes = append(append([]ignoreScope{}, scopes...), ignoreScope{dir: dir, patterns: patterns})
+	}
+
+	l.cache[dir] = scopes
+	return scopes
+}
+
+// excludes reports whether the ignore files governing relPath exclude it.
+// relPath is slash-separated and relative to the package root.
+//
+// Every applicable file is evaluated, shallowest first, carrying the running
+// last-match-wins verdict from one to the next. So a deeper file has the final
+// say, as it does in git: a root "*.txt" plus "!keep.txt" in src/.npmignore
+// publishes src/keep.txt. Each file's patterns are matched against the path
+// relative to that file's own directory, not the package root.
+//
+// A scope whose own directory is excluded stops the whole thing. git never
+// descends into an ignored directory, so an ignore file sitting in one is never
+// read and cannot re-include anything out of it. Enforcing that here rather than
+// leaving it to the walk's directory pruning is what keeps the two walk modes
+// agreeing: with a "files" whitelist the walk descends into ignored directories
+// on purpose (#349), so pruning is not there to do it.
+func (l *ignoreLoader) excludes(relPath string) bool {
+	excluded := false
+	for _, scope := range l.scopes(slashpath.Dir(relPath)) {
+		if scope.dir != "." && l.dirExcluded(scope.dir) {
+			return true
+		}
+
+		subPath := relPath
+		if scope.dir != "." {
+			subPath = strings.TrimPrefix(relPath, scope.dir+"/")
+		}
+		excluded = applyIgnorePatterns(subPath, scope.patterns, excluded)
+	}
+	return excluded
+}
+
+// dirExcluded is excludes memoized for a directory. It terminates because the
+// scopes governing dir are drawn from strictly shallower directories, so the
+// recursion walks up towards the package root and stops there.
+func (l *ignoreLoader) dirExcluded(dir string) bool {
+	if verdict, ok := l.dirVerdicts[dir]; ok {
+		return verdict
+	}
+
+	verdict := l.excludes(dir)
+	l.dirVerdicts[dir] = verdict
+	return verdict
+}
+
 // loadIgnorePatterns reads .npmignore or .gitignore
 func loadIgnorePatterns(dir string) []string {
 	var patterns []string
@@ -361,8 +478,15 @@ func readIgnoreFile(path string) []string {
 // their own, which is what keeps a user negation from re-including a
 // default-excluded path such as .env or node_modules.
 func isExcluded(relPath string, patterns []string) bool {
+	return applyIgnorePatterns(relPath, patterns, false)
+}
+
+// applyIgnorePatterns is isExcluded with the running verdict passed in, so one
+// ignore file's patterns can pick up where a shallower file's left off.
+// ignoreLoader.excludes chains the calls; anything asking about a single flat
+// pattern list wants isExcluded.
+func applyIgnorePatterns(relPath string, patterns []string, excluded bool) bool {
 	baseName := filepath.Base(relPath)
-	excluded := false
 
 	for _, pattern := range patterns {
 		// A leading "!" negates: a match un-excludes the path.
@@ -371,8 +495,11 @@ func isExcluded(relPath string, patterns []string) bool {
 			pattern = pattern[1:]
 		}
 
-		// A leading "/" anchors the pattern to the package root, so it is
-		// matched against the full relative path only, never the basename.
+		// A leading "/" anchors the pattern to the directory of the ignore file
+		// it came from, so it is matched against the path relative to that
+		// directory only, never the basename. For a root ignore file that is
+		// the package root; for src/.npmignore it is src, and ignoreLoader.
+		// excludes has already trimmed relPath to suit.
 		anchored := strings.HasPrefix(pattern, "/")
 		if anchored {
 			pattern = pattern[1:]
@@ -617,6 +744,13 @@ func ReadPackageJSON(dir string) (*PackageJSON, error) {
 // a published tarball through rules of its own: the package.json "files" field
 // passed as filesField, and the root .npmignore - falling back to a root
 // .gitignore when there is none, as npm does.
+//
+// It reads the root ignore file only, where collectFiles now reads one per
+// directory. The gap is deliberate and currently invisible: the only caller asks
+// about lockfile.RetreatFileName, which sits in the package root, and no ignore
+// file in a subdirectory can govern a root-level path. A caller passing a nested
+// path would get an answer that ignores the ignore file next to it, so widen
+// this before adding one.
 //
 // It deliberately does not consult defaultExcludes. Those are lnpm's additions
 // to npm's rules, and this answers what a tool that reads only the project's own
