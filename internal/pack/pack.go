@@ -100,6 +100,27 @@ var defaultExcludes = []string{
 	"*.tgz",
 }
 
+// lowerDefaultExcludes is defaultExcludes lower-cased once, for the
+// case-insensitive matching isDefaultExcluded does. It is derived rather than
+// written out so the two lists cannot drift: a new entry added above is folded
+// here whatever case it is spelled in.
+//
+// Lowering the patterns and not just the path is safe because no entry carries a
+// character class, brace or escape — the invariant
+// docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md already
+// records, there for keeping the move to doublestar clear of this list. It
+// matters again here for a different reason: strings.ToLower would rewrite
+// "[A-Z]" into "[a-z]" and "\A" into "\a", changing what the pattern matches
+// rather than how it is cased. TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite
+// pins it.
+var lowerDefaultExcludes = func() []string {
+	lowered := make([]string, len(defaultExcludes))
+	for i, pattern := range defaultExcludes {
+		lowered[i] = strings.ToLower(pattern)
+	}
+	return lowered
+}()
+
 // Pack determines which files should be included in a package publish
 func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 	debug.Logf("pack: scanning %s", packageDir)
@@ -195,7 +216,7 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 		// Check if excluded. defaultExcludes are checked on their own and
 		// first, because nothing overrides them — not a user "!" negation, not
 		// the "files" field.
-		if isExcluded(relPath, defaultExcludes) {
+		if isDefaultExcluded(relPath) {
 			if info.IsDir() {
 				// Nothing inside a default-excluded directory can be wanted, so
 				// the walk never descends. This is what keeps a large
@@ -479,6 +500,44 @@ func readIgnoreFile(path string) []string {
 // default-excluded path such as .env or node_modules.
 func isExcluded(relPath string, patterns []string) bool {
 	return applyIgnorePatterns(relPath, patterns, false)
+}
+
+// isDefaultExcluded reports whether the built-in force-exclude set covers
+// relPath, matching case-insensitively.
+//
+// defaultExcludes is a guard lnpm applies on the user's behalf rather than a
+// preference the user expressed, and a guard that can be stepped around by
+// holding shift is not a guard: matched case-sensitively, ".ENV", ".Env.local"
+// and ".NPMRC" all shipped while ".env" and ".npmrc" did not. On macOS and
+// Windows those name the same file, so whether a secret was protected came down
+// to how the developer typed it (#317). Folding here can only widen the set, and
+// every name it newly catches is one the guard already meant to keep out.
+//
+// The user's own .npmignore and .gitignore patterns keep matching
+// case-sensitively, which is why this folds the path itself instead of teaching
+// applyIgnorePatterns or matchesIgnorePattern a case-insensitive mode — both are
+// shared with the user-pattern path. Note this is a divergence from git rather
+// than a match to it: git folds its own ignore matching whenever core.ignorecase
+// is set, which git sets at init and clone on a case-insensitive filesystem, so
+// on macOS and Windows a default git repository already ignores SECRET.TXT for a
+// "secret.txt" pattern. Three reasons to diverge anyway. The scope is the issue's
+// (#317 changes the built-in guard, not the user's rules, and moving those is a
+// decision of its own). The two fail in opposite directions: folding the guard
+// only ever withholds more, and every name it newly catches is one the guard
+// already meant to keep out, where folding the user's patterns would drop files
+// the author never asked to drop. And lnpm has no core.ignorecase of its own —
+// no per-project signal saying whether this filesystem folds — so the choice
+// would have to be made unconditionally, which would then diverge from git on
+// Linux instead.
+//
+// The fold is ASCII-adequate rather than exhaustive: strings.ToLower applies
+// Unicode's simple lowercase mapping, not full case folding, so a name equal to
+// an entry only under a full fold is not caught — "ß" does not become "ss", and
+// the Turkish dotless "ı" stays itself rather than becoming "i". Every entry is
+// ASCII, so this costs nothing today, and it matches how isDefaultInclude and
+// isGitRelatedPath already compare.
+func isDefaultExcluded(relPath string) bool {
+	return isExcluded(strings.ToLower(relPath), lowerDefaultExcludes)
 }
 
 // applyIgnorePatterns is isExcluded with the running verdict passed in, so one
