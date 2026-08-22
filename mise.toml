@@ -1,0 +1,4 @@
+[tools]
+# Matches the `go` directive in go.mod. CI does not read this file — it uses
+# `go-version-file: go.mod` — so keep the two in step when go.mod's directive moves.
+go = "1.26"
