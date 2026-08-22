@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
 func TestReadPackageJSON(t *testing.T) {
@@ -1076,5 +1078,330 @@ func TestHashFiles(t *testing.T) {
 	// Different files should have different combined hash
 	if hash1 == hash3 {
 		t.Errorf("HashFiles returned same hash for different files")
+	}
+}
+
+// TestDefaultExcludesStillExclude pins what every defaultExcludes entry keeps
+// out, one entry at a time. defaultExcludes is the security guard — it is what
+// stops a publish shipping .env, .git or node_modules — and it runs through the
+// same matcher as the user's ignore patterns, so a change to that matcher can
+// widen a publish without any test of user-facing behavior noticing.
+//
+// What this does and does not establish. The paths below are hand-authored, not
+// derived from the matcher's behavior before any particular change, and none of
+// them reaches the glob engine by a route that engine change would alter: the
+// "/**" entries return from the trailing-"/**" branch before globbing, and no
+// entry uses "**" elsewhere, "{", "[" or "\". So this test would have passed
+// identically before and after the move from filepath.Match to doublestar and
+// could not have caught that going wrong — TestIsExcludedDoublestarSpansAnyDepth
+// and TestIsExcludedBraceAlternation are the tests that did that job.
+//
+// Its value is forward-looking: it is a pin against drift, and specifically
+// against the guard growing a hole. The completeness check fails the build when
+// a defaultExcludes entry is added with no case here, or with an empty one.
+func TestDefaultExcludesStillExclude(t *testing.T) {
+	// Each case names a defaultExcludes pattern and paths it must exclude on
+	// its own.
+	tests := []struct {
+		pattern string
+		paths   []string
+	}{
+		{".git", []string{".git", ".git/config"}},
+		{".git/**", []string{".git", ".git/objects/ab/cdef"}},
+		{".gitignore", []string{".gitignore", "src/.gitignore"}},
+		{".gitattributes", []string{".gitattributes", "src/.gitattributes"}},
+		{".hg", []string{".hg", ".hg/store"}},
+		{".hg/**", []string{".hg", ".hg/store/data"}},
+		{".svn", []string{".svn", ".svn/entries"}},
+		{".svn/**", []string{".svn", ".svn/pristine/ab"}},
+		{"CVS", []string{"CVS", "CVS/Root"}},
+		{"CVS/**", []string{"CVS", "CVS/Root"}},
+		{".DS_Store", []string{".DS_Store", "src/.DS_Store"}},
+		{"Thumbs.db", []string{"Thumbs.db", "src/Thumbs.db"}},
+		{"node_modules", []string{"node_modules", "node_modules/dep/index.js"}},
+		{"node_modules/**", []string{"node_modules", "node_modules/dep/index.js"}},
+		{".npmrc", []string{".npmrc", "src/.npmrc"}},
+		{".npmignore", []string{".npmignore", "src/.npmignore"}},
+		{".yalc", []string{".yalc", ".yalc/pkg/index.js"}},
+		{".yalc/**", []string{".yalc", ".yalc/pkg/index.js"}},
+		{".lnpm", []string{".lnpm", ".lnpm/pkg/index.js"}},
+		{".lnpm/**", []string{".lnpm", ".lnpm/pkg/index.js"}},
+		{"lnpm.lock", []string{"lnpm.lock", "src/lnpm.lock"}},
+		{lockfile.RetreatFileName, []string{"lnpm.lock.retreat", "src/lnpm.lock.retreat"}},
+		{"yalc.lock", []string{"yalc.lock", "src/yalc.lock"}},
+		{"*.log", []string{"debug.log", "src/deep/debug.log"}},
+		{"*.orig", []string{"index.js.orig", "src/index.js.orig"}},
+		{"*.swp", []string{".index.js.swp", "src/.index.js.swp"}},
+		{"*.swo", []string{".index.js.swo", "src/.index.js.swo"}},
+		{"*~", []string{"index.js~", "src/index.js~"}},
+		{".env", []string{".env", "src/.env"}},
+		{".env.*", []string{".env.local", "src/.env.production"}},
+		{"*.tgz", []string{"pkg-1.0.0.tgz", "src/pkg.tgz"}},
+	}
+
+	covered := make(map[string]int, len(tests))
+	for _, tt := range tests {
+		covered[tt.pattern] = len(tt.paths)
+	}
+	for _, pattern := range defaultExcludes {
+		switch n, ok := covered[pattern]; {
+		case !ok:
+			t.Errorf("defaultExcludes entry %q has no case here: every default exclude needs one, or the guard can grow a hole unnoticed", pattern)
+		case n == 0:
+			t.Errorf("defaultExcludes entry %q is listed with no paths, so it asserts nothing", pattern)
+		}
+	}
+
+	for _, tt := range tests {
+		for _, path := range tt.paths {
+			t.Run(tt.pattern+" excludes "+path, func(t *testing.T) {
+				if !isExcluded(path, []string{tt.pattern}) {
+					t.Errorf("isExcluded(%q, [%q]) = false, want true", path, tt.pattern)
+				}
+			})
+		}
+	}
+}
+
+// TestDefaultExcludesAreLiteralNotPrefixes pins the other half of the guard: a
+// default exclude must not swallow a neighbouring name. README's File Filtering
+// section documents that ".envrc" matches neither ".env" nor ".env.*" and is
+// published, and pack.go's own comment relies on "lnpm.lock" not covering
+// "lnpm.lock.retreat" — which is why the retreat snapshot is listed separately.
+func TestDefaultExcludesAreLiteralNotPrefixes(t *testing.T) {
+	tests := []struct {
+		path    string
+		pattern string
+	}{
+		{".envrc", ".env"},
+		{".envrc", ".env.*"},
+		{"src/.envrc", ".env"},
+		{"src/.envrc", ".env.*"},
+		{"env", ".env"},
+		{"lnpm.lock.retreat", "lnpm.lock"},
+		{"node_modules_backup/dep.js", "node_modules"},
+		{"logger.js", "*.log"},
+		{".gitignore.bak", ".gitignore"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+" vs "+tt.pattern, func(t *testing.T) {
+			if isExcluded(tt.path, []string{tt.pattern}) {
+				t.Errorf("isExcluded(%q, [%q]) = true, want false", tt.path, tt.pattern)
+			}
+		})
+	}
+
+	// .envrc survives the entire default list, not just the two .env entries.
+	if isExcluded(".envrc", defaultExcludes) {
+		t.Error("isExcluded(\".envrc\", defaultExcludes) = true, want false: README documents .envrc as published")
+	}
+}
+
+// TestIsExcludedDoublestarSpansAnyDepth pins "**" to the meaning git and npm
+// give it: zero or more path segments. The three "**/*.pem" rows are issue #316
+// — matching with filepath.Match, whose "*" never crosses a separator, excluded
+// only the two-segment middle row, so a key at the package root and a key three
+// deep were both published by the standard "exclude keys everywhere" idiom.
+func TestIsExcludedDoublestarSpansAnyDepth(t *testing.T) {
+	tests := []struct {
+		path     string
+		patterns []string
+		want     bool
+	}{
+		// The three depths from the issue. "**/" must be able to stand for no
+		// directory at all, which is what excludes the root .pem.
+		{"root.pem", []string{"**/*.pem"}, true},
+		{"keys/deploy.pem", []string{"**/*.pem"}, true},
+		{"src/keys/deploy.pem", []string{"**/*.pem"}, true},
+		{"src/keys/deploy.txt", []string{"**/*.pem"}, false},
+
+		// A "**" in the middle spans any depth under its prefix, including
+		// none, and never escapes that prefix.
+		{"src/prod.key", []string{"src/**/*.key"}, true},
+		{"src/deep/nest/prod.key", []string{"src/**/*.key"}, true},
+		{"other/prod.key", []string{"src/**/*.key"}, false},
+
+		// A single "*" still does not cross a separator.
+		{"src/deploy.pem", []string{"src/*.pem"}, true},
+		{"src/keys/deploy.pem", []string{"src/*.pem"}, false},
+		{"a/b/c.js", []string{"a/*/c.js"}, true},
+		{"a/b/x/c.js", []string{"a/*/c.js"}, false},
+
+		// A trailing "/**" keeps its current meaning: the directory itself and
+		// everything under it, and nothing that merely shares the prefix.
+		{"dist", []string{"dist/**"}, true},
+		{"dist/cli/index.js", []string{"dist/**"}, true},
+		{"distant/index.js", []string{"dist/**"}, false},
+
+		// Anchoring survives: a leading "/" pins the pattern to the package
+		// root, so "**" beneath it cannot climb back out.
+		{"keys/deploy.pem", []string{"/**/*.pem"}, true},
+		{"src/keys/deploy.pem", []string{"/src/**/*.pem"}, true},
+		{"lib/src/keys/deploy.pem", []string{"/src/**/*.pem"}, false},
+
+		// Negation survives, including its narrowing rule: a "!" pattern
+		// re-includes the paths it names directly, never the paths merely
+		// underneath a directory it named.
+		{"keys/deploy.pem", []string{"**/*.pem", "!keys/deploy.pem"}, false},
+		{"keys/other.pem", []string{"**/*.pem", "!keys/deploy.pem"}, true},
+		{"src/keys/deploy.pem", []string{"src/**", "!src"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+" vs "+tt.patterns[0], func(t *testing.T) {
+			got := isExcluded(tt.path, tt.patterns)
+			if got != tt.want {
+				t.Errorf("isExcluded(%q, %v) = %v, want %v", tt.path, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPackDoublestarIgnoreExcludesAtEveryDepth is issue #316 end to end: a
+// .gitignore holding the "exclude keys everywhere" idiom, against real .pem
+// files at three depths. It also proves the pattern does not prune the walk —
+// collectFiles asks isExcluded about directories too, and "**/*.pem" must not
+// match the "keys" directory and take safe.js down with it.
+func TestPackDoublestarIgnoreExcludesAtEveryDepth(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "doublestar-ignore",
+		"version": "1.0.0"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("**/*.pem\nsrc/**/*.key\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := map[string]string{
+		"root.pem":               "key",
+		"keys/deploy.pem":        "key",
+		"src/keys/deploy.pem":    "key",
+		"src/deep/nest/prod.key": "key",
+		"other/prod.key":         "not covered by src/**/*.key",
+		"keys/safe.js":           "ok",
+		"src/deep/nest/index.js": "ok",
+		"index.js":               "ok",
+	}
+	for rel, content := range files {
+		path := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, packedFiles, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range packedFiles {
+		packed[f.RelPath] = true
+	}
+
+	for _, name := range []string{"root.pem", "keys/deploy.pem", "src/keys/deploy.pem", "src/deep/nest/prod.key"} {
+		if packed[name] {
+			t.Errorf("%q was packed: a key matched by the ignore file must never ship, packed set was %v", name, packed)
+		}
+	}
+	for _, name := range []string{"package.json", "index.js", "keys/safe.js", "src/deep/nest/index.js", "other/prod.key"} {
+		if !packed[name] {
+			t.Errorf("expected %q to be packed, packed set was %v", name, packed)
+		}
+	}
+}
+
+// TestIsExcludedBraceAlternation pins a deliberate consequence of globbing
+// ignore patterns with doublestar rather than filepath.Match, not an accident:
+// doublestar expands brace alternation and filepath.Match does not. It cuts
+// both ways, so both directions are pinned here.
+//
+// The gain moves toward npm, whose ignore handling goes through minimatch and
+// does expand braces. The loss moves away from git, which has no brace syntax
+// and would read the pattern literally. lnpm's filtering is modeled on npm's
+// conventions, so the trade is accepted — but it must not be silent, which is
+// what this test and the README bullet are for.
+func TestIsExcludedBraceAlternation(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		pattern string
+		want    bool
+	}{
+		// Gained: a brace pattern now globs. filepath.Match matched none of
+		// these, because it read "{pem,key}" as eight literal characters.
+		{"alternation matches first branch", "a.pem", "*.{pem,key}", true},
+		{"alternation matches second branch", "a.key", "*.{pem,key}", true},
+		{"alternation matches nested", "src/deep/a.key", "*.{pem,key}", true},
+		{"alternation does not match other extensions", "a.txt", "*.{pem,key}", false},
+
+		// Lost: a filename containing literal braces is no longer matched by a
+		// pattern spelling those braces, because the pattern now expands to
+		// "weirda.txt" and "weirdb.txt" instead.
+		{"literal braces no longer match by basename", "src/weird{a,b}.txt", "weird{a,b}.txt", false},
+		{"expanded branch matches instead", "src/weirda.txt", "weird{a,b}.txt", true},
+
+		// Not lost: globbing is not the only route through the matcher. Every
+		// branch that compares strings still reads the braces literally, so a
+		// pattern naming the full path, and every directory form, still
+		// excludes a literal-brace name. Only the two globbing routes —
+		// basename, and a full path carrying metacharacters — lost it.
+		{"literal braces still match a full-path pattern", "weird{a,b}.txt", "weird{a,b}.txt", true},
+		{"literal braces still match an anchored full-path pattern", "src/weird{a,b}.txt", "/src/weird{a,b}.txt", true},
+		{"literal-brace directory still matches by name", "weird{a,b}/file.js", "weird{a,b}", true},
+		{"literal-brace directory still matches trailing slash", "weird{a,b}/file.js", "weird{a,b}/", true},
+		{"literal-brace directory still matches trailing doublestar", "weird{a,b}/deep/file.js", "weird{a,b}/**", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isExcluded(tt.path, []string{tt.pattern})
+			if got != tt.want {
+				t.Errorf("isExcluded(%q, [%q]) = %v, want %v", tt.path, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform pins a platform
+// inconsistency the move to doublestar removed.
+//
+// collectFiles hands isExcluded a relPath that has already been through
+// filepath.ToSlash, so separators are always "/". filepath.Match, though, reads
+// its separator from the platform: "\" on Windows. A "/" in the path was
+// therefore an ordinary character there, and "*" — which matches any run of
+// non-separator characters — crossed it freely. So "src/*.pem" excluded
+// "src/a/b.pem" on Windows and not on Linux or macOS, from identical inputs.
+//
+// doublestar's separator is always "/", so this now holds on every platform.
+// The Windows CI job is where this test earns its keep — on Linux and macOS it
+// was already true, and TestIsExcludedDoublestarSpansAnyDepth covers the rest of
+// single-"*" containment. Only the one row that used to differ by platform, and
+// the positive control that stops it passing vacuously, live here.
+func TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform(t *testing.T) {
+	tests := []struct {
+		path    string
+		pattern string
+		want    bool
+	}{
+		{"src/a.pem", "src/*.pem", true},
+		{"src/a/b.pem", "src/*.pem", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+" vs "+tt.pattern, func(t *testing.T) {
+			got := isExcluded(tt.path, []string{tt.pattern})
+			if got != tt.want {
+				t.Errorf("isExcluded(%q, [%q]) = %v, want %v", tt.path, tt.pattern, got, tt.want)
+			}
+		})
 	}
 }

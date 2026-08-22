@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/cespare/xxhash/v2"
 	"github.com/panjf2000/ants/v2"
 	"github.com/pedrosousa13/lnpm/internal/debug"
@@ -418,6 +419,23 @@ func isExcluded(relPath string, patterns []string) bool {
 // underneath a directory it names, because git cannot re-include a file whose
 // parent directory is excluded. A positive pattern keeps that reach, since git
 // ignores everything inside an ignored directory.
+//
+// Globbing goes through doublestar, not filepath.Match, so that "**" means zero
+// or more path segments the way git and npm read it. filepath.Match's "*" never
+// crosses a separator, which left "**/*.pem" — the standard "exclude keys
+// everywhere" idiom — matching paths of exactly two segments: a key at the
+// package root and a key nested two directories down were both published, while
+// the pattern looked like it worked.
+//
+// That also brings the rest of doublestar's syntax, and one direction of it
+// fails open: "weird{a,b}.txt" is now brace alternation, so it no longer
+// excludes a file of that literal name by basename, and "[!a]" negates a
+// character class where filepath.Match read it as the class containing "!" and
+// "a". The branches below that compare strings rather than glob are the escape
+// hatch — a pattern naming the full path still matches. Accepted deliberately,
+// with the reasoning
+// and the rejected alternatives in
+// docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md.
 func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated bool) bool {
 	// "dir/**" matches the directory and everything under it.
 	if strings.HasSuffix(pattern, "/**") {
@@ -434,12 +452,12 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 		// For unanchored patterns without path separators, also match against
 		// the basename. This follows gitignore behavior: "*.log" matches
 		// "foo/bar.log".
-		if matched, _ := filepath.Match(pattern, baseName); matched {
+		if matched, _ := doublestar.Match(pattern, baseName); matched {
 			return true
 		}
 	} else {
 		// Full path glob match
-		if matched, _ := filepath.Match(pattern, relPath); matched {
+		if matched, _ := doublestar.Match(pattern, relPath); matched {
 			return true
 		}
 	}
@@ -459,6 +477,13 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // precisely because it does match basenames and must suppress that. Teaching
 // isIncluded to match basenames (npm's "files" does match a bare "*.md"
 // against a nested path) would mean handling anchoring here too.
+//
+// The two also glob through different engines, which is the more surprising
+// half of the asymmetry. isExcluded matches with doublestar, where "**" spans
+// zero or more path segments; isIncluded still uses filepath.Match, where "*"
+// never crosses a separator and "**" is understood only as the trailing "/**"
+// handled below. So "lib/**/*.js" excludes lib/top.js as an ignore pattern but
+// does not include it as a "files" entry.
 //
 // A trailing "/" marks a directory whose contents are included, and is dropped
 // only from patterns with no glob metacharacter. npm does not read a trailing
