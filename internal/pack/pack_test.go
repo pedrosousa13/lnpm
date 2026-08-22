@@ -713,9 +713,10 @@ func TestPackNpmignoreNegationReincludesFile(t *testing.T) {
 }
 
 // TestIsExcludedDefaultExcludesCannotBeNegated proves a user "!" pattern cannot
-// re-include a default-excluded path. collectFiles appends defaultExcludes
-// after the user's patterns, and the last matching pattern wins, so a default
-// exclude always has the final say.
+// re-include a default-excluded path when the two lists are concatenated: the
+// last matching pattern wins, so a default exclude always has the final say.
+// collectFiles reaches the same answer by evaluating defaultExcludes on their
+// own, where a user negation is not in the list to begin with.
 func TestIsExcludedDefaultExcludesCannotBeNegated(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -740,9 +741,9 @@ func TestIsExcludedDefaultExcludesCannotBeNegated(t *testing.T) {
 }
 
 // TestPackDefaultExcludesWinInWhitelistMode proves default excludes still win
-// when package.json has a "files" whitelist and .npmignore tries to negate
-// them: excludes are evaluated before the whitelist, and defaultExcludes are
-// appended last so they have the final say.
+// when package.json has a "files" whitelist naming them and .npmignore tries to
+// negate them: defaultExcludes are evaluated first and on their own, ahead of
+// both the user's patterns and the whitelist.
 func TestPackDefaultExcludesWinInWhitelistMode(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -794,6 +795,211 @@ func TestPackDefaultExcludesWinInWhitelistMode(t *testing.T) {
 		if packed[name] {
 			t.Errorf("default-excluded %q was packed: a user negation must not re-include it", name)
 		}
+	}
+}
+
+// TestPackFilesFieldWinsOverGitignore packs the standard TypeScript setup: a
+// .gitignore holding the build output out of version control, and a "files"
+// field asking for exactly that build output. npm documents that a path the
+// "files" field names cannot be excluded by .npmignore or .gitignore, so dist
+// ships even though it is ignored.
+//
+// The .gitignore also names two paths the "files" field does not — a coverage
+// directory and README.md, which would otherwise arrive through
+// defaultIncludes — to prove the ignore rules still apply everywhere the
+// whitelist is silent.
+//
+// Regression test for #318.
+func TestPackFilesFieldWinsOverGitignore(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "ts-build",
+		"version": "1.0.0",
+		"main": "dist/index.js",
+		"files": ["dist"]
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("dist/\ncoverage/\nREADME.md\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("# ts-build"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	distDir := filepath.Join(tmpDir, "dist", "nested")
+	if err := os.MkdirAll(distDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "dist", "index.js"), []byte("exports.x = 1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "dist", "index.d.ts"), []byte("export const x: number"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "util.js"), []byte("exports.y = 2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "index.ts"), []byte("export const x = 1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	coverageDir := filepath.Join(tmpDir, "coverage")
+	if err := os.MkdirAll(coverageDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(coverageDir, "report.html"), []byte("<html></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range files {
+		packed[f.RelPath] = true
+	}
+
+	for _, name := range []string{"package.json", "dist/index.js", "dist/index.d.ts", "dist/nested/util.js"} {
+		if !packed[name] {
+			t.Errorf("expected whitelisted file %q to be packed, packed set was %v", name, packed)
+		}
+	}
+	for _, name := range []string{"src/index.ts", "coverage/report.html", "README.md", ".gitignore"} {
+		if packed[name] {
+			t.Errorf("expected file %q to be excluded, packed set was %v", name, packed)
+		}
+	}
+}
+
+// TestPackFilesFieldGlobReachesIntoIgnoredDirectory packs a glob "files" entry
+// selecting into a .gitignored directory. No lexical reading of the pattern can
+// tell in advance which directories a glob selects out of, so the walk has to
+// descend into the ignored directory and ask isIncluded per file.
+//
+// lib/top.js is in dropFiles for "lib/**/*.js" on purpose. It is not packed
+// even with no ignore file present: filepath.Match does not let "**" span a
+// path separator, so the three-segment pattern never matches a two-segment
+// path. That is a pre-existing isIncluded limitation, independent of the
+// whitelist-versus-ignore precedence under test, and the case is here to pin it
+// so it is not mistaken for a bug in that precedence.
+//
+// Regression test for #318.
+func TestPackFilesFieldGlobReachesIntoIgnoredDirectory(t *testing.T) {
+	tests := []struct {
+		name      string
+		filesJSON string
+		wantFile  string
+		dropFiles []string
+	}{
+		{"double star glob", `["lib/**/*.js"]`, "lib/sub/a.js", []string{"lib/sub/a.txt", "lib/top.js"}},
+		{"single star directory glob", `["*/keep.js"]`, "lib/keep.js", []string{"lib/drop.js"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			pkgJSON := `{
+				"name": "glob-reach",
+				"version": "1.0.0",
+				"files": ` + tt.filesJSON + `
+			}`
+			if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("lib/\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, rel := range append([]string{tt.wantFile}, tt.dropFiles...) {
+				path := filepath.Join(tmpDir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, files, err := Pack(tmpDir)
+			if err != nil {
+				t.Fatalf("Pack() error: %v", err)
+			}
+
+			packed := make(map[string]bool)
+			for _, f := range files {
+				packed[f.RelPath] = true
+			}
+
+			if !packed[tt.wantFile] {
+				t.Errorf("expected %q, selected by files %s, to be packed despite the .gitignore; packed set was %v", tt.wantFile, tt.filesJSON, packed)
+			}
+			for _, rel := range tt.dropFiles {
+				if packed[rel] {
+					t.Errorf("expected %q, which files %s does not select, to be excluded; packed set was %v", rel, tt.filesJSON, packed)
+				}
+			}
+		})
+	}
+}
+
+// TestPackFilesFieldReachesIntoIgnoredDirectory covers the case where the
+// "files" field names a path *inside* an ignored directory rather than the
+// directory itself. The walk must not prune "lib", or it never reaches the file
+// the whitelist asked for. Everything else under lib stays ignored.
+//
+// Regression test for #318.
+func TestPackFilesFieldReachesIntoIgnoredDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "reach-into",
+		"version": "1.0.0",
+		"files": ["lib/keep.js"]
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("lib/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	libDir := filepath.Join(tmpDir, "lib")
+	if err := os.MkdirAll(libDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, "keep.js"), []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, "drop.js"), []byte("drop"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range files {
+		packed[f.RelPath] = true
+	}
+
+	if !packed["lib/keep.js"] {
+		t.Errorf("expected whitelisted file %q to be packed, packed set was %v", "lib/keep.js", packed)
+	}
+	if packed["lib/drop.js"] {
+		t.Errorf("expected file %q to be excluded, packed set was %v", "lib/drop.js", packed)
 	}
 }
 
