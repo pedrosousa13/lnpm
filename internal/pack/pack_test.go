@@ -1570,44 +1570,60 @@ func TestUserIgnorePatternsStayCaseSensitive(t *testing.T) {
 		t.Error(`isExcluded("Dist/app.js", ["dist/"]) = true, want false: a user directory pattern matches case-sensitively too`)
 	}
 
-	tmpDir := t.TempDir()
+	// The two names go in two packages, never one directory, and that is not
+	// tidiness — it is the same filesystem property this whole issue is about,
+	// turned on the fixture. On macOS and Windows "secret.txt" and "SECRET.TXT"
+	// are one file, so writing both into one directory leaves a single entry
+	// under the name written first, and an assertion that "SECRET.TXT" ships
+	// cannot hold there whatever the product does. The bug was dangerous for
+	// exactly the reason the fixture is impossible. Both filesystems are
+	// case-preserving, though: a package holding only "SECRET.TXT" reports that
+	// name to the walk, so with the user's pattern spelled "secret.txt" and no
+	// folding, it ships on all three platforms.
+	packOne := func(name string, files map[string]string) map[string]bool {
+		t.Helper()
 
-	pkgJSON := `{
-		"name": "case-sensitive-ignores",
-		"version": "1.0.0"
-	}`
-	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte("secret.txt\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	files := map[string]string{
-		"secret.txt": "dropped",
-		"SECRET.TXT": "kept",
-		"index.js":   "ok",
-	}
-	for rel, content := range files {
-		if err := os.WriteFile(filepath.Join(tmpDir, rel), []byte(content), 0644); err != nil {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"`+name+`","version":"1.0.0"}`), 0644); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, ".npmignore"), []byte("secret.txt\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		for rel, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		_, packedFiles, err := Pack(dir)
+		if err != nil {
+			t.Fatalf("Pack(%s) error: %v", name, err)
+		}
+
+		packed := make(map[string]bool)
+		for _, f := range packedFiles {
+			packed[f.RelPath] = true
+		}
+		return packed
 	}
 
-	_, packedFiles, err := Pack(tmpDir)
-	if err != nil {
-		t.Fatalf("Pack() error: %v", err)
+	lower := packOne("ignores-lowercase-name", map[string]string{
+		"secret.txt": "dropped",
+		"index.js":   "ok",
+	})
+	if lower["secret.txt"] {
+		t.Errorf("%q was packed but .npmignore names it, packed set was %v", "secret.txt", lower)
+	}
+	if !lower["index.js"] {
+		t.Errorf("expected %q to be packed, packed set was %v", "index.js", lower)
 	}
 
-	packed := make(map[string]bool)
-	for _, f := range packedFiles {
-		packed[f.RelPath] = true
-	}
-
-	if packed["secret.txt"] {
-		t.Errorf("%q was packed but .npmignore names it, packed set was %v", "secret.txt", packed)
-	}
-	if !packed["SECRET.TXT"] {
-		t.Errorf("%q was not packed: a user ignore pattern must not fold case, packed set was %v", "SECRET.TXT", packed)
+	upper := packOne("ignores-uppercase-name", map[string]string{
+		"SECRET.TXT": "kept",
+		"index.js":   "ok",
+	})
+	if !upper["SECRET.TXT"] {
+		t.Errorf("%q was not packed: a user ignore pattern must not fold case, packed set was %v", "SECRET.TXT", upper)
 	}
 }
