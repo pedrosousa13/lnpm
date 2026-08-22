@@ -147,9 +147,10 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 	var filesToHash []*FileInfo
 	fileCount := 0
 
-	// Load .npmignore or .gitignore patterns
+	// Load .npmignore or .gitignore patterns. They are kept apart from
+	// defaultExcludes because the two rank differently against the "files"
+	// whitelist: the user's patterns lose to it, defaultExcludes beat it.
 	ignorePatterns := loadIgnorePatterns(packageDir)
-	ignorePatterns = append(ignorePatterns, defaultExcludes...)
 
 	// If files field is specified, use whitelist mode
 	useWhitelist := len(filesField) > 0
@@ -182,15 +183,37 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 		// Normalize path separators for pattern matching
 		relPath = filepath.ToSlash(relPath)
 
-		// Check if excluded
-		if isExcluded(relPath, ignorePatterns) {
+		// Check if excluded. defaultExcludes are checked on their own and
+		// first, because nothing overrides them — not a user "!" negation, not
+		// the "files" field.
+		if isExcluded(relPath, defaultExcludes) {
 			if info.IsDir() {
-				// Pruning is the one place last-match-wins does not hold end
-				// to end: the walk never descends, so a later "!" pattern
-				// inside this directory is never consulted.
+				// Nothing inside a default-excluded directory can be wanted, so
+				// the walk never descends. This is what keeps a large
+				// node_modules off the walk entirely.
 				return filepath.SkipDir
 			}
 			return nil
+		}
+
+		// The user's ignore patterns decide the whole tree only when there is no
+		// whitelist. With one they drop nothing here, and are consulted again
+		// further down for default includes alone — a "files" entry may be a
+		// glob, so which paths under an ignored directory it selects cannot be
+		// known without descending into it and asking isIncluded per file.
+		// Walking into ignored directories costs something in whitelist mode;
+		// publishing an empty package because .gitignore held the build output
+		// costs more.
+		if !useWhitelist {
+			if isExcluded(relPath, ignorePatterns) {
+				if info.IsDir() {
+					// Pruning is the one place last-match-wins does not hold
+					// end to end: the walk never descends, so a later "!"
+					// pattern inside this directory is never consulted.
+					return filepath.SkipDir
+				}
+				return nil
+			}
 		}
 
 		// Skip directories (we only care about files)
@@ -200,7 +223,19 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 
 		// Check if included
 		if useWhitelist {
-			if !isIncluded(relPath, filesField) && !isDefaultInclude(relPath) {
+			switch {
+			case isIncluded(relPath, filesField):
+				// npm documents that a file included with the "files" field
+				// cannot be excluded through .npmignore or .gitignore, so the
+				// user's ignore patterns are not consulted at all here.
+			case isDefaultInclude(relPath):
+				// A default include arrives on its own steam rather than
+				// through the "files" field, so an ignore pattern still drops
+				// it. Nothing skipped the check above for this path.
+				if isExcluded(relPath, ignorePatterns) {
+					return nil
+				}
+			default:
 				return nil
 			}
 		}
@@ -321,8 +356,8 @@ func readIgnoreFile(path string) []string {
 //
 // It follows gitignore semantics: every pattern is evaluated and the last one
 // that matches decides the outcome, so a later "!pattern" re-includes a path an
-// earlier pattern excluded. collectFiles appends defaultExcludes after the
-// user's patterns, which is what keeps a user negation from re-including a
+// earlier pattern excluded. collectFiles evaluates defaultExcludes in a call of
+// their own, which is what keeps a user negation from re-including a
 // default-excluded path such as .env or node_modules.
 func isExcluded(relPath string, patterns []string) bool {
 	baseName := filepath.Base(relPath)

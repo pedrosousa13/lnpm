@@ -515,10 +515,10 @@ package.json    ──►       pkg/abc123/      (reflink/hardlink)     (symlink
 
 lnpm decides which files to publish in Go — it does not shell out to the `npm` CLI. The rules are closely modeled on npm's conventions:
 
-- Respects `package.json` `files` field
-- Honors a root `.npmignore`, falling back to a root `.gitignore` (ignore files in subdirectories are not read)
+- Respects `package.json` `files` field. A file it selects is published whatever the ignore files say, as it is for npm — a `.gitignore` holding `dist/` out of version control does not stop `files: ["dist"]` publishing the build output
+- Honors a root `.npmignore`, falling back to a root `.gitignore` (ignore files in subdirectories are not read). They decide every path the `files` field does not select, including the always-included set below
 - Supports gitignore pattern syntax — root anchoring (`/dist`), directory patterns (`dist/`) and negation (`*.txt` followed by `!keep.txt`), with the last matching pattern deciding
-- Applies a built-in exclusion list — VCS metadata and ignore files (`.git`, `.hg`, `.svn`, `CVS`, `.gitignore`, `.gitattributes`, `.npmignore`, `.npmrc`), `node_modules`, OS cruft (`.DS_Store`, `Thumbs.db`), editor and merge backups (`*.swp`, `*.swo`, `*~`, `*.orig`), lnpm and yalc state (`.lnpm/`, `.yalc/`, `lnpm.lock`, `lnpm.lock.retreat`, `yalc.lock`), `*.log`, `*.tgz`, and exactly `.env` and `.env.*` — that a `!` pattern cannot re-include. The patterns are literal, not prefixes: `.envrc` matches neither `.env` nor `.env.*`, so it is published
+- Applies a built-in exclusion list — VCS metadata and ignore files (`.git`, `.hg`, `.svn`, `CVS`, `.gitignore`, `.gitattributes`, `.npmignore`, `.npmrc`), `node_modules`, OS cruft (`.DS_Store`, `Thumbs.db`), editor and merge backups (`*.swp`, `*.swo`, `*~`, `*.orig`), lnpm and yalc state (`.lnpm/`, `.yalc/`, `lnpm.lock`, `lnpm.lock.retreat`, `yalc.lock`), `*.log`, `*.tgz`, and exactly `.env` and `.env.*` — that neither a `!` pattern nor a `files` entry can re-include. The patterns are literal, not prefixes: `.envrc` matches neither `.env` nor `.env.*`, so it is published
 - **Additional safety**: Explicit `.git` filtering prevents any VCS files from being linked
 - **Symlinks are skipped, never followed** — a symlink inside a package can't pull files from outside it (e.g. `~/.ssh`) into the store
 - Package names are restricted to a plain name (`my-pkg`) or a single scope (`@org/my-pkg`), because the name is joined into the store path. Everything else is rejected: a second `/`, a single `/` whose first segment is not a scope, `.` or `..` segments, absolute paths, backslashes and NUL bytes
@@ -526,8 +526,7 @@ lnpm decides which files to publish in Go — it does not shell out to the `npm`
 Because the filtering is lnpm's own, some cases differ from `npm publish`:
 
 - The default exclusion list is not npm's. lnpm additionally drops `.env`/`.env.*`, logs and `*.tgz`, and does not drop the lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) that npm always ignores
-- Ignore patterns are applied before the `files` whitelist, so a root `.npmignore` can drop a file that `files` listed; for npm the `files` field wins
-- An excluded directory is pruned during the walk, so a negation can't reach back into it: `dist/` plus `!dist/keep.js` publishes neither file. npm diverges in the opposite direction — the negation defeats the `dist/` rule entirely and npm publishes the whole directory, `dist/other.js` included. Spelled `dist/*` instead, the negation does what it looks like in both
+- With no `files` field, an excluded directory is pruned during the walk, so a negation can't reach back into it: `dist/` plus `!dist/keep.js` publishes neither file. npm diverges in the opposite direction — the negation defeats the `dist/` rule entirely and npm publishes the whole directory, `dist/other.js` included. Spelled `dist/*` instead, the negation does what it looks like in both
 - Entries in `files` are matched against the full path and never against a basename, so `**/*.md` picks up `docs/guide.md` but misses `top.md` at the package root, which npm includes
 - The always-included set differs: lnpm adds `CHANGELOG*`, `CHANGES*` and `HISTORY*`, and does not automatically include the files named by `main` and `bin`. Those files are exempt from the `files` whitelist only — an ignore pattern still drops them
 
