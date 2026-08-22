@@ -1405,3 +1405,180 @@ func TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultExcludesMatchCaseInsensitively is issue #317. The force-exclude set
+// is a security guard, and it was reading the developer's shift key: ".ENV",
+// ".Env.local" and ".NPMRC" all shipped while ".env" and ".npmrc" did not. On
+// macOS and Windows those name the same file as the lowercase form, so the guard
+// was simply absent for anyone who typed the name differently.
+//
+// Only the built-in set folds case. TestUserIgnorePatternsStayCaseSensitive pins
+// the other side of that line.
+func TestDefaultExcludesMatchCaseInsensitively(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		// The names from the issue. Each is the same file as its lowercase form
+		// on a case-insensitive filesystem.
+		{".ENV", true},
+		{".Env", true},
+		{".Env.local", true},
+		{".NPMRC", true},
+		{"Node_Modules/evil/index.js", true},
+		{"Node_Modules", true},
+
+		// The lowercase forms keep working. Folding case must widen the guard,
+		// never move it.
+		{".env", true},
+		{".env.local", true},
+		{".npmrc", true},
+		{"node_modules/dep/index.js", true},
+
+		// Entries that carry uppercase in the list itself fold the same way, in
+		// both directions.
+		{"src/.ds_store", true},
+		{"src/.DS_Store", true},
+		{"thumbs.db", true},
+		{"cvs/Root", true},
+		{".GIT/config", true},
+		{"DEBUG.LOG", true},
+		{"pkg-1.0.0.TGZ", true},
+
+		// Folding case must not turn a default exclude into a prefix. README
+		// documents .envrc as published, and that has to hold however it is
+		// typed.
+		{".envrc", false},
+		{".ENVRC", false},
+		{"src/.EnvRc", false},
+		{"ENV", false},
+		{"Node_Modules_Backup/dep.js", false},
+		{"LOGGER.JS", false},
+		{"index.js", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := isDefaultExcluded(tt.path); got != tt.want {
+				t.Errorf("isDefaultExcluded(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPackMixedCaseSecretsNeverShip is issue #317 end to end, against real files
+// on disk. The unit table above asks the matcher; this asks what a publish would
+// actually carry, which is the claim that matters.
+func TestPackMixedCaseSecretsNeverShip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "mixed-case-secrets",
+		"version": "1.0.0"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := map[string]string{
+		".ENV":                       "SECRET=1",
+		".Env.local":                 "SECRET=2",
+		".NPMRC":                     "//registry:_authToken=deadbeef",
+		"Node_Modules/evil/index.js": "steal()",
+		"index.js":                   "ok",
+		".envrc":                     "use flake",
+	}
+	for rel, content := range files {
+		path := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, packedFiles, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range packedFiles {
+		packed[f.RelPath] = true
+	}
+
+	for _, name := range []string{".ENV", ".Env.local", ".NPMRC", "Node_Modules/evil/index.js"} {
+		if packed[name] {
+			t.Errorf("%q was packed: a default exclude must hold however the name is cased, packed set was %v", name, packed)
+		}
+	}
+	for _, name := range []string{"package.json", "index.js", ".envrc"} {
+		if !packed[name] {
+			t.Errorf("expected %q to be packed, packed set was %v", name, packed)
+		}
+	}
+}
+
+// TestUserIgnorePatternsStayCaseSensitive pins the scope of issue #317: the
+// built-in force-exclude set folds case, a pattern the user wrote in .npmignore
+// or .gitignore does not.
+//
+// The two are different kinds of rule. defaultExcludes is a guard lnpm applies
+// on the user's behalf, and a guard that can be stepped around by holding shift
+// is not a guard. A user's ignore pattern is a preference, and git — the tool
+// every one of these files was written for — matches it case-sensitively, so
+// folding it here would silently drop files the author's own toolchain keeps.
+//
+// This test is what fails if the fold is applied to the shared matcher
+// (applyIgnorePatterns or matchesIgnorePattern) rather than to the built-in set
+// alone.
+func TestUserIgnorePatternsStayCaseSensitive(t *testing.T) {
+	if isExcluded("SECRET.TXT", []string{"secret.txt"}) {
+		t.Error(`isExcluded("SECRET.TXT", ["secret.txt"]) = true, want false: a user ignore pattern matches case-sensitively, as it does in git`)
+	}
+	if isExcluded("Dist/app.js", []string{"dist/"}) {
+		t.Error(`isExcluded("Dist/app.js", ["dist/"]) = true, want false: a user directory pattern matches case-sensitively too`)
+	}
+
+	tmpDir := t.TempDir()
+
+	pkgJSON := `{
+		"name": "case-sensitive-ignores",
+		"version": "1.0.0"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte("secret.txt\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := map[string]string{
+		"secret.txt": "dropped",
+		"SECRET.TXT": "kept",
+		"index.js":   "ok",
+	}
+	for rel, content := range files {
+		if err := os.WriteFile(filepath.Join(tmpDir, rel), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, packedFiles, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	packed := make(map[string]bool)
+	for _, f := range packedFiles {
+		packed[f.RelPath] = true
+	}
+
+	if packed["secret.txt"] {
+		t.Errorf("%q was packed but .npmignore names it, packed set was %v", "secret.txt", packed)
+	}
+	if !packed["SECRET.TXT"] {
+		t.Errorf("%q was not packed: a user ignore pattern must not fold case, packed set was %v", "SECRET.TXT", packed)
+	}
+}
