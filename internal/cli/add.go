@@ -377,6 +377,12 @@ func linkTypeLabel(t link.LinkType) string {
 // storeFilesForLink returns the files of pkg's store entry, each carrying the
 // content hash and permissions the database recorded for it.
 //
+// A store entry that is not one the store committed is refused outright, by
+// GetFiles rather than here — add, pull and publish's relink all arrive through
+// this function, and before #330 all three linked whatever an interrupted gc
+// had left behind. Nothing here can repair such an entry, so the error is
+// passed up and the command stops.
+//
 // Walking the store is what says which files the entry holds; the database is
 // what says what is in them. Link needs both: it compares those hashes against
 // the ones it last linked into the project to decide which files it can leave
@@ -408,7 +414,10 @@ func linkTypeLabel(t link.LinkType) string {
 func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pack.FileInfo, error) {
 	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
 	if err != nil {
-		return nil, err
+		// The version is added here because the store does not have it: entries
+		// are addressed by name and content hash, and a user told only that
+		// "left-pad" is damaged still has to work out which build to re-publish.
+		return nil, fmt.Errorf("%s@%s: %w", pkg.Name, pkg.Version, err)
 	}
 
 	entries, err := database.GetFilesForPackage(pkg.ID)

@@ -446,9 +446,9 @@ func TestExists_WithVariousPermissions(t *testing.T) {
 		t.Fatalf("Failed to mark pkg dir complete: %v", err)
 	}
 
-	// Exists should return true
-	if !store.Exists("perm-test", "hash123") {
-		t.Error("Expected package to exist")
+	// The completeness check should pass
+	if err := store.CheckComplete("perm-test", "hash123"); err != nil {
+		t.Errorf("Expected package to be complete: %v", err)
 	}
 
 	// Make it read-only
@@ -459,9 +459,9 @@ func TestExists_WithVariousPermissions(t *testing.T) {
 		_ = os.Chmod(pkgPath, 0755)
 	}()
 
-	// Should still exist
-	if !store.Exists("perm-test", "hash123") {
-		t.Error("Expected read-only package to still exist")
+	// Should still read as complete
+	if err := store.CheckComplete("perm-test", "hash123"); err != nil {
+		t.Errorf("Expected read-only package to still be complete: %v", err)
 	}
 }
 

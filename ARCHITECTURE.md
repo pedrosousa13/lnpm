@@ -279,14 +279,19 @@ otherwise leave the tag unmoved.
 
    Every entry carries a `.lnpm-complete` marker, written as the last file
    inside the temporary directory and removed before the tree when `lnpm gc`
-   deletes the entry. The store reports an entry as present only when the
-   marker is there, so a deletion interrupted partway reads as absent rather
-   than as a truncated package. Entries written before markers existed are
-   marked once, the first time a command opens the store, and
-   `~/.lnpm/store/.lnpm-markers-backfilled` records that the pass finished. An
-   entry that cannot be marked is skipped and the sentinel is withheld, so the
-   next store open retries it; `lnpm doctor` reports the backfill as pending
-   until it completes.
+   deletes the entry. The marker records the entry's content hash. An entry
+   counts as complete only when the marker is there and names the directory it
+   sits in, so a deletion interrupted partway reads as absent rather than as a
+   truncated package.
+
+   Both the write path and the read paths check it: `lnpm add`, `lnpm pull` and
+   the relink after `lnpm publish --push` refuse an entry that fails, naming the
+   directory and telling the user to re-publish. lnpm never deletes such an
+   entry — it cannot tell what is inside one — so removing it is the user's
+   call. `lnpm doctor` lists them. That includes entries written before markers
+   existed: nothing can establish that those are whole without re-hashing their
+   content, so they are reported rather than grandfathered, and the packages
+   have to be published again.
 
 5. Record in bbolt database
 6. If `--push`, update all linked projects

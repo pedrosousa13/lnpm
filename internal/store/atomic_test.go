@@ -58,8 +58,8 @@ func TestStoreAtomicCommit(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 
-	if !s.Exists("atomic-pkg", "deadbeef") {
-		t.Fatal("package should exist after Store")
+	if err := s.CheckComplete("atomic-pkg", "deadbeef"); err != nil {
+		t.Fatalf("package should be complete after Store: %v", err)
 	}
 	got, err := s.GetFiles("atomic-pkg", "deadbeef")
 	if err != nil {
@@ -152,15 +152,15 @@ func TestStoreConcurrentSameHash(t *testing.T) {
 	}
 	wg.Wait()
 
-	if !s.Exists("race-pkg", "cafebabe") {
-		t.Fatal("package should exist after concurrent stores")
+	if err := s.CheckComplete("race-pkg", "cafebabe"); err != nil {
+		t.Fatalf("package should be complete after concurrent stores: %v", err)
 	}
 	for i, path := range paths {
 		if path == "" {
 			continue // the store call already failed the test
 		}
-		if !hasMarker(path) {
-			t.Errorf("caller %d was handed %s, which is not a complete package", i, path)
+		if err := CheckComplete(path); err != nil {
+			t.Errorf("caller %d was handed %s, which is not a complete package: %v", i, path, err)
 		}
 		entries, err := os.ReadDir(path)
 		if err != nil {

@@ -17,12 +17,12 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
-// TestExistsRejectsEntryWithoutMarker simulates a deletion that was
+// TestCheckCompleteRejectsEntryWithoutMarker simulates a deletion that was
 // interrupted after the completeness marker was removed but before the tree
 // was: the directory and its files are still there, so a bare directory stat
 // reports the package as present. Only the marker distinguishes it from a
 // committed entry.
-func TestExistsRejectsEntryWithoutMarker(t *testing.T) {
+func TestCheckCompleteRejectsEntryWithoutMarker(t *testing.T) {
 	s := newTestStore(t)
 
 	entry := s.PackagePath("partial-pkg", "abc123")
@@ -33,14 +33,14 @@ func TestExistsRejectsEntryWithoutMarker(t *testing.T) {
 		t.Fatalf("write content: %v", err)
 	}
 
-	if s.Exists("partial-pkg", "abc123") {
-		t.Errorf("Exists reported a marker-less entry at %s as present; a partially deleted entry must read as absent", entry)
+	if err := s.CheckComplete("partial-pkg", "abc123"); err == nil {
+		t.Errorf("CheckComplete passed a marker-less entry at %s; a partially deleted entry must not read as complete", entry)
 	}
 }
 
 // TestStoreWritesMarkerOnCommit pins that a committed entry carries the
-// marker, so the stricter Exists does not report freshly stored packages as
-// missing.
+// marker, so the strict CheckComplete does not report freshly stored packages
+// as missing.
 func TestStoreWritesMarkerOnCommit(t *testing.T) {
 	s := newTestStore(t)
 
@@ -53,8 +53,8 @@ func TestStoreWritesMarkerOnCommit(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, markerName)); err != nil {
 		t.Errorf("committed entry has no marker: %v", err)
 	}
-	if !s.Exists("marked-pkg", "deadbeef") {
-		t.Errorf("Exists reported the freshly stored entry %s as absent", dest)
+	if err := s.CheckComplete("marked-pkg", "deadbeef"); err != nil {
+		t.Errorf("CheckComplete refused the freshly stored entry %s: %v", dest, err)
 	}
 }
 
@@ -75,8 +75,8 @@ func TestRemoveEntryDeletesTheWholeEntry(t *testing.T) {
 	if _, err := os.Stat(entry); !os.IsNotExist(err) {
 		t.Errorf("entry %s still present after removal (stat err = %v)", entry, err)
 	}
-	if s.Exists("doomed-pkg", "b0b0") {
-		t.Error("Exists still reports the removed entry as present")
+	if err := s.CheckComplete("doomed-pkg", "b0b0"); err == nil {
+		t.Error("CheckComplete still reports the removed entry as complete")
 	}
 }
 
@@ -136,8 +136,17 @@ func TestRemoveEntryRemovesMarkerBeforeTree(t *testing.T) {
 	if err == nil {
 		t.Error("RemoveEntry reported success even though the marker could not be removed")
 	}
-	if !s.Exists("stuck-pkg", "f00d") {
-		t.Error("the entry stopped reading as complete even though its removal failed")
+	// The entry reads as incomplete here, and that is the fixture rather than
+	// the product: the obstruction standing in the marker's place is a
+	// directory, so reading the marker fails with EISDIR, and CheckComplete
+	// fails closed on a marker it cannot read. Whether a *survivable* failed
+	// removal leaves the entry usable cannot be observed through this fixture —
+	// only an obstruction that leaves the marker file itself readable could show
+	// it, and there is no portable way to make os.Remove fail on a file that
+	// os.ReadFile still succeeds on. What the assertion below does pin is the
+	// fail-closed direction, which is the one that matters for a read path.
+	if err := s.CheckComplete("stuck-pkg", "f00d"); err == nil {
+		t.Error("an entry whose completeness marker cannot be read was served as complete")
 	}
 }
 

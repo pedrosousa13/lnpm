@@ -74,10 +74,9 @@ func TestFindTempDirsFindsScopedTempDirs(t *testing.T) {
 	}
 }
 
-// TestFindTempDirsLeavesStoreEntriesAlone is the negative case. Store entries,
-// the completeness marker and the backfill sentinel all live in the same tree,
-// and a sweep that matches any dot-prefixed entry would take the store's own
-// bookkeeping with it.
+// TestFindTempDirsLeavesStoreEntriesAlone is the negative case. Store entries
+// and the completeness marker live in the same tree, and a sweep that matches
+// any dot-prefixed entry would take the store's own bookkeeping with it.
 func TestFindTempDirsLeavesStoreEntriesAlone(t *testing.T) {
 	s := newReapStore(t)
 
