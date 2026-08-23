@@ -1,8 +1,10 @@
 package pack
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -1823,6 +1825,517 @@ func TestExcludedByProjectRulesAnchorsDefaultIncludesToRoot(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("ExcludedByProjectRules(dir, %v, %q) = %v, want %v (%s)",
 					filesField, tt.relPath, got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// writeMainEntryTree writes rel -> content under root, delegating to
+// writeTestFile so a failure names the path it could not write. Keys are
+// slash-separated so the fixtures read the same on every platform.
+func writeMainEntryTree(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for rel, content := range files {
+		writeTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), content)
+	}
+}
+
+// packedRelPaths packs root and returns the packed set sorted, so a test can
+// assert the exact set rather than "contains".
+func packedRelPaths(t *testing.T, root string) []string {
+	t.Helper()
+	_, files, err := Pack(root)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+	got := make([]string, 0, len(files))
+	for _, f := range files {
+		got = append(got, f.RelPath)
+	}
+	sort.Strings(got)
+	return got
+}
+
+func assertPackedSet(t *testing.T, root string, want []string, why string) {
+	t.Helper()
+	got := packedRelPaths(t, root)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("packed set mismatch: %s\n got: %v\nwant: %v", why, got, want)
+	}
+}
+
+// TestMainEntryPath pins the normalization directly, which the Pack-level tests
+// cannot do for every row: two spellings that both select nothing are
+// indistinguishable through Pack, and the platform-dependent rows have no
+// fixture that could assert them on one OS.
+//
+// The backslash and drive-absolute rows are the reason this test exists rather
+// than being folded into the Pack fixtures. Their expectations are chosen by
+// runtime.GOOS because the same string genuinely means different things per
+// platform: "lib\\index.js" is one filename on Linux and a two-segment path on
+// Windows, and "C:/x" is a relative path under a directory named "C:" on Linux
+// and an absolute path on Windows. Asserting one answer on both would be wrong
+// on one of them. Before these rows existed no fixture spelled main with a
+// backslash at all, so no CI job checked either half.
+func TestMainEntryPath(t *testing.T) {
+	// On Windows filepath.ToSlash folds "\" and filepath.IsAbs accepts a drive
+	// letter; on Linux and macOS neither happens.
+	backslash := `lib\index.js`
+	driveAbsolute := "C:/x"
+	if runtime.GOOS == "windows" {
+		backslash = "lib/index.js"
+		driveAbsolute = ""
+	}
+
+	tests := []struct {
+		main string
+		want string
+		why  string
+	}{
+		{"", "", "no main declared selects nothing"},
+		{"lib/index.js", "lib/index.js", "the plain form is already normalized"},
+		{"./lib/index.js", "lib/index.js", "npm accepts a leading ./ and Node resolves it the same"},
+		{"lib/../lib/index.js", "lib/index.js", "Clean collapses an interior .."},
+		{"./index.js", "index.js", "a root entry point keeps working"},
+		{"lib", "lib", "a directory is returned and matches nothing, never a prefix"},
+		{"lib/", "lib", "Clean drops a trailing slash"},
+		{".", "", "the package root is not an entry point"},
+		{"..", "", "the parent is outside the package"},
+		{"../evil.js", "", "an escaping path selects nothing"},
+		{"lib/../../evil.js", "", "an escape that only appears after Clean is still rejected"},
+		{"/etc/passwd", "", "a rooted path is outside the package"},
+		{`lib\index.js`, backslash, "backslashes fold on Windows and are a literal filename elsewhere"},
+		{"C:/x", driveAbsolute, "drive-absolute on Windows, an ordinary relative path elsewhere"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.main, func(t *testing.T) {
+			if got := mainEntryPath(tt.main); got != tt.want {
+				t.Errorf("mainEntryPath(%q) = %q, want %q (%s)", tt.main, got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// TestPackForceIncludesMainUnderFilesWhitelist is #319's fixture, asserted as an
+// exact set: main "lib/index.js" with files ["dist"] shipped [dist/a.js,
+// package.json], so requiring the published package failed at runtime on the one
+// path the manifest names.
+//
+// The "./" spelling is the same file. npm accepts both, and Node resolves them
+// identically, so the two rows must produce the same packed set.
+func TestPackForceIncludesMainUnderFilesWhitelist(t *testing.T) {
+	for _, main := range []string{"lib/index.js", "./lib/index.js"} {
+		t.Run(main, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "main-entry",
+					"version": "1.0.0",
+					"main": "` + main + `",
+					"files": ["dist"]
+				}`,
+				"dist/a.js":     "module.exports = {}",
+				"lib/index.js":  "module.exports = require('../dist/a.js')",
+				"src/index.ts":  "export const x = 1",
+				"lib/helper.js": "module.exports = 1",
+			})
+
+			assertPackedSet(t, tmpDir, []string{
+				"dist/a.js",
+				"lib/index.js",
+				"package.json",
+			}, "the manifest's main must ship whatever the files whitelist says, and "+
+				"only the file it names — not its whole directory")
+		})
+	}
+}
+
+// TestPackEmptyMainChangesNothing pins the no-main baseline. Without it the
+// force-include could be selecting paths for a reason other than main.
+func TestPackEmptyMainChangesNothing(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "no-main",
+			"version": "1.0.0",
+			"files": ["dist"]
+		}`,
+		"dist/a.js":    "module.exports = {}",
+		"lib/index.js": "module.exports = {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"dist/a.js",
+		"package.json",
+	}, "a manifest with no main selects nothing extra")
+}
+
+// TestPackMainCannotDefeatDefaultExcludes pins the far side of the boundary the
+// force-include opens. main beats the "files" whitelist and the user's ignore
+// patterns; it must never beat lnpm's built-in force-exclude set.
+//
+// The distinction is the one isDefaultExcluded already records: the user's
+// ignore patterns are a preference the user expressed, defaultExcludes is a
+// guard lnpm applies on the user's behalf. A guard that can be stepped around by
+// naming the file in "main" is not a guard — it would make the manifest a way to
+// smuggle .env, .npmrc or anything out of node_modules past the one list that
+// exists to hold them back. docs/adr/0004 records the boundary.
+//
+// The property holds structurally rather than by a check in the force-include
+// itself: collectFiles evaluates isDefaultExcluded in the walk and returns early,
+// above the whitelist branch the force-include lives in. Nothing pinned that
+// before — TestPackDefaultExcludesWinInWhitelistMode predates the force-include
+// and does not exercise main — so a refactor hoisting the force-include above the
+// isDefaultExcluded check would open the hole with every other test still green.
+// This is the test that goes red on it: hoisted there, the .env and .npmrc rows
+// pack [.env dist/a.js package.json] and [.npmrc dist/a.js package.json]. Run and
+// confirmed.
+//
+// The two root rows are the load-bearing ones. The node_modules row is held up by
+// a second, independent barrier and stays green under that same hoist: the
+// isDefaultExcluded check returns filepath.SkipDir for the node_modules
+// directory, so the walk never reaches the nested file for any per-file check to
+// see. It is kept as a row because that pruning is worth pinning too, but it is
+// not what catches a hoisted force-include — do not read it as covering the .env
+// case.
+func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
+	tests := []struct {
+		name string
+		main string
+	}{
+		{"dotenv", ".env"},
+		{"npmrc", ".npmrc"},
+		{"nested in node_modules", "node_modules/evil/index.js"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "main-vs-guard",
+					"version": "1.0.0",
+					"main": "` + tt.main + `",
+					"files": ["dist"]
+				}`,
+				"dist/a.js": "module.exports = {}",
+				tt.main:     "SECRET=hunter2",
+			})
+
+			assertPackedSet(t, tmpDir, []string{
+				"dist/a.js",
+				"package.json",
+			}, "main overrides the user's ignore patterns but never lnpm's "+
+				"built-in force-exclude set, so naming "+tt.main+" in \"main\" "+
+				"must not ship it")
+		})
+	}
+}
+
+// TestPackMainSurvivesIgnorePatternsUnderFilesWhitelist pins the decision
+// recorded in docs/adr/0004: under a whitelist, main beats the user's ignore
+// patterns as well as the whitelist itself. This is the case that runs against
+// docs/adr/0001's direction rule, so it is the one to read the ADR beside.
+//
+// The ignore file names the entry point by basename rather than by its
+// directory on purpose. A "lib/" pattern would prune the directory during the
+// walk, so this fixture would pass on the strength of the walk never reaching
+// the file, which tests nothing about the branch under test.
+func TestPackMainSurvivesIgnorePatternsUnderFilesWhitelist(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "main-vs-ignore",
+			"version": "1.0.0",
+			"main": "lib/index.js",
+			"files": ["dist"]
+		}`,
+		".npmignore":   "index.js\n",
+		"dist/a.js":    "module.exports = {}",
+		"lib/index.js": "module.exports = {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"dist/a.js",
+		"lib/index.js",
+		"package.json",
+	}, "an ignore pattern must not drop the entry point the manifest names")
+}
+
+// TestPackMainRespectsIgnorePatternsWithoutFilesWhitelist is the other half of
+// that decision, and the guard for the second revert direction: the
+// force-include lives inside the whitelist branch, so a package with no "files"
+// field behaves exactly as it did before #319.
+//
+// Hoisting the force-include above the whitelist branch — where it would also
+// override the ignore patterns in non-whitelist mode — fails here.
+func TestPackMainRespectsIgnorePatternsWithoutFilesWhitelist(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "main-no-whitelist",
+			"version": "1.0.0",
+			"main": "lib/index.js"
+		}`,
+		".npmignore":   "index.js\n",
+		"dist/a.js":    "module.exports = {}",
+		"lib/index.js": "module.exports = {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"dist/a.js",
+		"package.json",
+	}, "with no files field the user's ignore patterns decide the whole tree, "+
+		"main included, exactly as they did before #319")
+}
+
+// TestPackMainNamingDirectoryShipsNothingExtra pins that main is matched as one
+// path and never as a prefix. Node resolves a directory main through its own
+// index/package.json lookup, which #319 puts out of scope; what must not happen
+// is main ["lib"] quietly widening the whitelist to everything under lib.
+func TestPackMainNamingDirectoryShipsNothingExtra(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "dir-main",
+			"version": "1.0.0",
+			"main": "lib",
+			"files": ["dist"]
+		}`,
+		"dist/a.js":     "module.exports = {}",
+		"lib/index.js":  "module.exports = {}",
+		"lib/secret.js": "module.exports = {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"dist/a.js",
+		"package.json",
+	}, "a main naming a directory must not pull the directory's contents in")
+}
+
+// TestPackMainEscapingPackageRootSelectsNothing pins that no spelling of main
+// reaches outside the package. The file it names really exists here, one level
+// above the package root, so the assertion is about the selection rule and not
+// about the file being absent.
+func TestPackMainEscapingPackageRootSelectsNothing(t *testing.T) {
+	for _, main := range []string{"../evil.js", "../../evil.js", "lib/../../evil.js"} {
+		t.Run(main, func(t *testing.T) {
+			parent := t.TempDir()
+			writeMainEntryTree(t, parent, map[string]string{
+				"evil.js": "stolen",
+			})
+
+			tmpDir := filepath.Join(parent, "pkg")
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "escaping-main",
+					"version": "1.0.0",
+					"main": "` + main + `",
+					"files": ["dist"]
+				}`,
+				"dist/a.js":    "module.exports = {}",
+				"lib/index.js": "module.exports = {}",
+			})
+
+			assertPackedSet(t, tmpDir, []string{
+				"dist/a.js",
+				"package.json",
+			}, "main must never select a path outside the package root")
+		})
+	}
+}
+
+// TestPackMissingMainDoesNotAbort pins #319's "does not abort" criterion: pack
+// tolerates a main naming a path that is not on disk. The abort for that case
+// stays where it already was, in validation.ValidatePackage, which
+// internal/cli/publish.go runs before it packs. docs/adr/0004 records why it was
+// not moved.
+func TestPackMissingMainDoesNotAbort(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "missing-main",
+			"version": "1.0.0",
+			"main": "lib/index.js",
+			"files": ["dist"]
+		}`,
+		"dist/a.js": "module.exports = {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"dist/a.js",
+		"package.json",
+	}, "a main that names nothing on disk selects nothing and must not abort pack")
+}
+
+// capturePackStdout runs fn with os.Stdout redirected and returns what was
+// written. Pack's warning goes to stdout because internal/pack has no warning
+// idiom of its own to match — iconWarn and its siblings are unexported in
+// internal/cli, which imports this package, so borrowing them would be a cycle.
+func capturePackStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe(): %v", err)
+	}
+	os.Stdout = w
+
+	// Drained on a goroutine so a warning longer than the pipe buffer cannot
+	// deadlock the writer.
+	done := make(chan string, 1)
+	go func() {
+		var sb strings.Builder
+		_, _ = io.Copy(&sb, r)
+		done <- sb.String()
+	}()
+
+	fn()
+
+	os.Stdout = orig
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing the pipe: %v", err)
+	}
+	out := <-done
+	_ = r.Close()
+	return out
+}
+
+// TestPackWarnsWhenMainIsNotPacked covers the half of #319 the force-include
+// does not reach: a main that is still missing from the finished set.
+//
+// The three rows are three different routes to the same broken package, which is
+// why the check is on the packed set rather than on the selection branch. Only
+// the first is caught by validation.ValidatePackage, and only on the publish
+// path — internal/cli/push.go packs with no validation at all, and `lnpm publish
+// --skip-validation` turns that check off — so without this warning the other
+// two ship silently and the first ships silently on `lnpm push`.
+func TestPackWarnsWhenMainIsNotPacked(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "not on disk at all",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","main":"lib/index.js","files":["dist"]}`,
+				"dist/a.js":    "module.exports = {}",
+			},
+		},
+		{
+			name: "held back by defaultExcludes",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","main":".env","files":["dist"]}`,
+				"dist/a.js":    "module.exports = {}",
+				".env":         "SECRET=hunter2",
+			},
+		},
+		{
+			name: "dropped by an ignore pattern with no files field",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","main":"lib/index.js"}`,
+				".npmignore":   "index.js\n",
+				"dist/a.js":    "module.exports = {}",
+				"lib/index.js": "module.exports = {}",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, tt.files)
+
+			var files []*FileInfo
+			var err error
+			out := capturePackStdout(t, func() {
+				_, files, err = Pack(tmpDir)
+			})
+
+			if err != nil {
+				t.Fatalf("Pack() must warn and continue, not fail: %v", err)
+			}
+			if !strings.Contains(out, "warning:") {
+				t.Errorf("Pack() printed no warning for a main that is not in the "+
+					"packed set; the publish would report success on a package that "+
+					"does not load\ngot stdout: %q", out)
+			}
+
+			// The rest of the package must still be there — the warning reports
+			// the defect, it does not narrow the publish.
+			var names []string
+			for _, f := range files {
+				names = append(names, f.RelPath)
+			}
+			sort.Strings(names)
+			if strings.Join(names, "\n") != "dist/a.js\npackage.json" {
+				t.Errorf("warning must not change what is packed\ngot: %v", names)
+			}
+		})
+	}
+}
+
+// TestPackDoesNotWarnWhenMainIsPacked is the negative half. A warning that fires
+// on healthy packages is one every reader learns to skip past, so the quiet
+// cases are worth pinning as hard as the loud one.
+//
+// The escaping row records a real gap rather than an endorsement: mainEntryPath
+// maps both "no main" and "main outside the package" to "", so the warning
+// cannot tell them apart and stays quiet for a manifest that is arguably
+// defective. #319 is about the entry point going missing from the tarball, and
+// widening the warning to malformed manifests is a separate call.
+func TestPackDoesNotWarnWhenMainIsPacked(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "force-included past the whitelist",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","main":"lib/index.js","files":["dist"]}`,
+				"dist/a.js":    "module.exports = {}",
+				"lib/index.js": "module.exports = {}",
+			},
+		},
+		{
+			name: "declared with a leading ./",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","main":"./lib/index.js","files":["dist"]}`,
+				"dist/a.js":    "module.exports = {}",
+				"lib/index.js": "module.exports = {}",
+			},
+		},
+		{
+			name: "no main declared",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","files":["dist"]}`,
+				"dist/a.js":    "module.exports = {}",
+			},
+		},
+		{
+			name: "main escaping the package root",
+			files: map[string]string{
+				"package.json": `{"name":"p","version":"1.0.0","main":"../evil.js","files":["dist"]}`,
+				"dist/a.js":    "module.exports = {}",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, tt.files)
+
+			out := capturePackStdout(t, func() {
+				if _, _, err := Pack(tmpDir); err != nil {
+					t.Errorf("Pack() error: %v", err)
+				}
+			})
+
+			if strings.Contains(out, "warning:") {
+				t.Errorf("Pack() warned about a main that needs no warning\ngot stdout: %q", out)
 			}
 		})
 	}

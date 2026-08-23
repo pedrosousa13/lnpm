@@ -132,7 +132,8 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
 	// Collect files using custom filtering
-	files, err := collectFiles(packageDir, pkgJSON.Files, mainEntryPath(pkgJSON.Main))
+	mainEntry := mainEntryPath(pkgJSON.Main)
+	files, err := collectFiles(packageDir, pkgJSON.Files, mainEntry)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -142,7 +143,64 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 
 	debug.Logf("pack: collected %d files (after safety filters)", len(files))
 
+	warnMainEntryNotPacked(pkgJSON.Main, mainEntry, files)
+
 	return pkgJSON, files, nil
+}
+
+// warnMainEntryNotPacked reports a manifest whose "main" is not in the packed
+// set. It warns and returns; it never fails the pack.
+//
+// The check is on the finished set rather than on the selection branch, which
+// costs one pass and catches every way the entry point can go missing: not on
+// disk at all, dropped by an ignore pattern in non-whitelist mode, held back by
+// defaultExcludes, or removed by filterGitFiles. Whatever the route, the
+// published package does not load, and that is the fact worth saying.
+//
+// It lives in Pack rather than in the CLI because Pack is where every caller
+// converges. internal/cli/publish.go:159 is only one of them:
+// internal/cli/push.go:169 and push.go:194 pack with no validation at all, and
+// publish's own --skip-validation turns its check off, so a warning wired into
+// the publish path alone would leave `lnpm push` exactly as silent as #319
+// found it. Putting it here also means the next caller gets it without knowing
+// to ask.
+//
+// It found two on its first run. tests/fixtures/turborepo's "ui" and "utils"
+// packages each declare main "dist/index.js" and ship only src/index.js — there
+// is no dist directory in the fixture at all — and tests/workspace_test.go
+// publishes them through RunPublish with skipValidation set, so nothing had ever
+// reported it. The fixtures are left as they are; the warning is the point.
+//
+// Note this package has no warning idiom to match. iconWarn and its siblings
+// live in internal/cli/output.go and are unexported, and internal/cli imports
+// this package, so borrowing them would be an import cycle. The only user-facing
+// writes pack makes today are collectFiles' progress counter, which is a
+// carriage-return line it erases afterwards rather than a notice. So this is a
+// plain fmt.Printf with a spelled-out "warning:" prefix rather than an invented
+// second icon set. If pack grows more notices than this one, the icon helpers
+// are what should move to a package both can import, not be duplicated here.
+//
+// The message names the manifest's spelling, not the normalized form, because
+// that is the string the reader will search package.json for.
+func warnMainEntryNotPacked(declared, mainEntry string, files []*FileInfo) {
+	// An empty or root-escaping "main" is not reported. mainEntryPath returns ""
+	// for both, so the two are indistinguishable here, and a package with no
+	// "main" at all is the overwhelmingly common case — warning on it would
+	// train the reader to ignore the line. A "main" that escapes the package is
+	// a defect this does not catch; #319 is about the entry point going missing
+	// from the tarball.
+	if mainEntry == "" {
+		return
+	}
+
+	for _, f := range files {
+		if f.RelPath == mainEntry {
+			return
+		}
+	}
+
+	fmt.Printf("warning: package.json \"main\" is %q, but no such file is in the "+
+		"package; the published package will not load\n", declared)
 }
 
 // readPackageJSON reads and parses package.json
@@ -184,13 +242,15 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 // Normalization is filepath.ToSlash here and filepath.ToSlash on the relPath
 // side, so the two are compared like with like on whichever platform is running.
 // ToSlash is identity when Separator is '/' and otherwise replaces Separator
-// with '/' (internal/filepathlite/path.go), and Separator is '\\' only on
-// Windows. So on Windows both sides fold and main "lib\\index.js" matches the
-// walked lib/index.js, while on Linux neither side folds and a file whose name
-// genuinely contains a backslash still matches a main spelled the same way. The
-// Linux half is run — filepath.ToSlash(`lib\index.js`) came back unchanged; the
-// Windows half is read off that stdlib source and can only be exercised by the
-// Windows CI job.
+// with '/' (Go's stdlib internal/filepathlite/path.go — not this repo's
+// internal/), and Separator is '\\' only on Windows. So on Windows both sides
+// fold and main "lib\\index.js" matches the walked lib/index.js, while on Linux
+// neither side folds and a file whose name genuinely contains a backslash still
+// matches a main spelled the same way. TestMainEntryPath carries a backslash row
+// whose expectation is chosen by runtime.GOOS, so the Windows CI job asserts the
+// folding half and the Linux and macOS jobs assert the literal half; before that
+// row existed, no fixture spelled main with a backslash and no job checked
+// either.
 //
 // slashpath.Clean, not filepath.Clean: filepath.Clean rewrites "/" as "\" on
 // Windows — the reason for this file's slashpath import in the first place —
@@ -208,6 +268,16 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 // with the escaping file actually present on disk. The guard is what keeps that
 // true if the comparison in collectFiles is ever loosened from equality; a
 // prefix comparison with "../evil.js" left in would reach outside the package.
+//
+// Absoluteness is asked twice because one question does not cover it. The
+// HasPrefix "/" test catches the rooted spelling, which filepath.IsAbs rejects on
+// Windows — there "\x" and "/x" are rooted but driveless, so IsAbs is false —
+// and filepath.IsAbs catches the drive-absolute "C:/x", which HasPrefix cannot
+// see. IsAbs is asked of the manifest's own spelling and is deliberately
+// platform-dependent: "C:/x" really is an absolute path on Windows and really is
+// a relative path on Linux, where "C:" is an ordinary directory name, so
+// answering the same on both would be wrong on one of them. TestMainEntryPath
+// pins the row per GOOS.
 //
 // A main naming a directory returns that directory's path and matches nothing:
 // collectFiles skips directories before the whitelist branch, and the comparison
@@ -230,7 +300,8 @@ func mainEntryPath(main string) string {
 	}
 
 	rel := slashpath.Clean(filepath.ToSlash(main))
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "/") {
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") ||
+		strings.HasPrefix(rel, "/") || filepath.IsAbs(main) {
 		return ""
 	}
 	return rel
@@ -326,22 +397,16 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 				// whitelist says (#319).
 				//
 				// Decision: main is exempt from the user's ignore patterns too,
-				// not from the whitelist alone. Rejected: treating it like a
-				// default include below, where an ignore pattern still drops it
-				// and README documented that as the rule. That reading leaves
-				// #319's own failure reachable — an .npmignore naming the entry
-				// point drops it, publish reports success, and requiring the
-				// package fails on the path the manifest advertises. The
-				// publish-time check does not catch it either: validation.
-				// ValidatePackage only stats main on disk, so a main that exists
-				// but is not packed passes validation and ships broken. README's
-				// divergence list is updated to match.
-				//
-				// The two differ in what dropping them costs, which is what
-				// makes them worth treating differently: a package missing its
-				// README is merely poorer, a package missing its main does not
-				// load. Overriding an explicit ignore rule is a real surprise,
-				// and it is the smaller one.
+				// not from the whitelist alone. So this ships a file the
+				// maintainer explicitly excluded, which is the direction
+				// docs/adr/0001 calls a bug. The reasoning and the rejected
+				// alternatives are in
+				// docs/adr/0004-the-main-entry-point-outranks-the-maintainers-own-ignore-patterns.md;
+				// the short form is that the other reading leaves #319's failure
+				// reachable *and* invisible, because validation.ValidatePackage
+				// only stats main on disk, so a main that exists but is not
+				// packed passes validation and publish reports success on a
+				// package that does not load.
 				//
 				// The boundary in full: main beats the "files" whitelist and
 				// the user's ignore patterns, and loses to defaultExcludes.
