@@ -2340,3 +2340,292 @@ func TestPackDoesNotWarnWhenMainIsPacked(t *testing.T) {
 		})
 	}
 }
+
+// TestPackManifestSurvivesIgnorePatterns is #301's fixture. An .npmignore line
+// reading "package.json" removed the manifest from the pack, so lnpm published a
+// package with no manifest in it — something npm does not permit and no consumer
+// resolving through the package can survive.
+//
+// The three rows are the three routes the issue names, and all three packed
+// [index.js] before the fix. Run and confirmed at bdd5447 by writing these rows
+// and reading the failure: each reported `got: [index.js]` against a want that
+// also holds package.json.
+//
+// Two distinct code sites dropped it, which is why the rows are not redundant.
+// Rows 1 and 2 go through the non-whitelist prune, where ignores.excludes decides
+// the whole tree; row 3 goes through the whitelist switch, where the
+// isDefaultInclude arm re-consults the same patterns. A fix to one leaves the
+// other reachable.
+//
+// Neither ignore file appears in any want: .npmignore and .gitignore are both in
+// defaultExcludes, so they never ship. TestDefaultExcludesStillExclude pins that
+// separately.
+func TestPackManifestSurvivesIgnorePatterns(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "npmignore names the manifest",
+			files: map[string]string{
+				"package.json": `{"name":"manifest-vs-npmignore","version":"1.0.0"}`,
+				".npmignore":   "package.json\n",
+				"index.js":     "module.exports = {}",
+			},
+		},
+		{
+			name: "gitignore fallback names the manifest",
+			files: map[string]string{
+				"package.json": `{"name":"manifest-vs-gitignore","version":"1.0.0"}`,
+				".gitignore":   "package.json\n",
+				"index.js":     "module.exports = {}",
+			},
+		},
+		{
+			name: "files whitelist omits it and npmignore names it",
+			files: map[string]string{
+				"package.json": `{"name":"manifest-vs-both","version":"1.0.0","files":["index.js"]}`,
+				".npmignore":   "package.json\n",
+				"index.js":     "module.exports = {}",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, tt.files)
+
+			assertPackedSet(t, tmpDir, []string{
+				"index.js",
+				"package.json",
+			}, "no ignore rule and no files field may drop the manifest; a package "+
+				"without one is not installable")
+		})
+	}
+}
+
+// TestPackContentHashCoversVersionWithManifestIgnored is the identical-hash
+// reproduction from #301's body, kept as its own test because it is the
+// consequence that reaches the store rather than the tarball.
+//
+// The manifest is the only file carrying the version string into the hashed
+// content. With it dropped, bumping the version changed nothing the hash sees, so
+// two genuinely different releases hashed the same and insertPackageTx treated
+// them as one record and overwrote its version in place (#196). Run and
+// confirmed at bdd5447: this fixture hashed 1.0.0 and 2.0.0 to the same digest.
+//
+// The assertion is that the two differ, not that either equals a literal. A
+// hard-coded digest would pin xxhash's output and HashFiles' framing, neither of
+// which #301 is about, and would have to be rewritten by anyone who touches
+// either.
+func TestPackContentHashCoversVersionWithManifestIgnored(t *testing.T) {
+	hashAtVersion := func(version string) string {
+		t.Helper()
+		tmpDir := t.TempDir()
+		writeMainEntryTree(t, tmpDir, map[string]string{
+			"package.json": `{"name":"hash-covers-version","version":"` + version + `"}`,
+			".npmignore":   "package.json\n",
+			"index.js":     "module.exports = {}",
+		})
+
+		_, files, err := Pack(tmpDir)
+		if err != nil {
+			t.Fatalf("Pack() error: %v", err)
+		}
+		return HashFiles(files)
+	}
+
+	first := hashAtVersion("1.0.0")
+	second := hashAtVersion("2.0.0")
+	if first == second {
+		t.Errorf("packing the same tree at 1.0.0 and 2.0.0 produced the same content "+
+			"hash %s; the manifest was dropped, so the hash no longer covers the "+
+			"version and the store records two releases as one", first)
+	}
+}
+
+// TestPackManifestForceIncludeIsRootAnchored pins that the exemption covers the
+// package's own manifest and nothing that merely shares its name. A nested
+// sub/package.json is a different package's manifest, or a fixture, and an
+// .npmignore naming "package.json" must still drop it.
+//
+// This is the same anchoring isDefaultInclude already applies after #320, and it
+// is asserted here rather than left to that function because the force-include is
+// a separate comparison that could have been written as a basename test.
+//
+// The row is not purely a guard: at bdd5447 it fails on the root manifest, since
+// the unanchored "package.json" pattern drops both. Run and confirmed — the
+// failure read `got: [index.js sub/a.js]`.
+func TestPackManifestForceIncludeIsRootAnchored(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json":     `{"name":"nested-manifest","version":"1.0.0"}`,
+		".npmignore":       "package.json\n",
+		"index.js":         "module.exports = {}",
+		"sub/package.json": `{"name":"not-this-one","version":"1.0.0"}`,
+		"sub/a.js":         "module.exports = {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"index.js",
+		"package.json",
+		"sub/a.js",
+	}, "only the package root's own manifest is unexcludable; a nested "+
+		"package.json is an ordinary file the user's patterns still govern")
+}
+
+// TestPackFailsWhenManifestIsNotPacked pins #301's backstop: if the finished set
+// somehow holds no manifest, Pack refuses rather than handing a caller a package
+// that cannot be installed.
+//
+// The fixture is a symlinked package.json, which is the one route to a
+// manifest-free set that survives the force-include. readPackageJSON goes through
+// os.ReadFile, which follows the link, so the manifest reads and parses fine and
+// Pack gets as far as the walk; the walk then skips every symlink before any
+// include check runs, so nothing the force-include does can put it back. Run and
+// confirmed at bdd5447 before any fix existed: Pack returned nil error and the
+// packed set was [index.js].
+//
+// This is an abort where the sibling case in docs/adr/0004 is a warning, and the
+// two are not inconsistent. A missing "main" leaves a package that is present and
+// does not load, and validation.ValidatePackage already refuses it on the
+// ordinary publish path. A missing manifest leaves something that is not a
+// package at all — nothing downstream can read its name or version — and no
+// existing check catches it: readPackageJSON reads from disk, not from the packed
+// set, so it passes precisely in this case.
+//
+// It lives in Pack rather than in the publish command for the reason
+// warnMainEntryNotPacked does: internal/cli/publish.go:159 is one of three
+// callers, and internal/cli/push.go:169 and push.go:194 pack with no validation
+// at all.
+func TestPackFailsWhenManifestIsNotPacked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+
+	// The real manifest lives outside the package so the walk finds only the
+	// link. Writing it inside would leave a second, ordinary package.json for
+	// the force-include to select, and the fixture would prove nothing.
+	outside := t.TempDir()
+	writeMainEntryTree(t, outside, map[string]string{
+		"manifest.json": `{"name":"symlinked-manifest","version":"1.0.0"}`,
+	})
+
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"index.js": "module.exports = {}",
+	})
+	if err := os.Symlink(filepath.Join(outside, "manifest.json"),
+		filepath.Join(tmpDir, "package.json")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, files, err := Pack(tmpDir)
+	if err == nil {
+		var names []string
+		for _, f := range files {
+			names = append(names, f.RelPath)
+		}
+		sort.Strings(names)
+		t.Fatalf("Pack() succeeded on a package with no package.json in the packed "+
+			"set; the published package is not installable\npacked: %v", names)
+	}
+	if !strings.Contains(err.Error(), "package.json") {
+		t.Errorf("Pack() error must name the missing file so the reader knows what "+
+			"to look for\ngot: %v", err)
+	}
+}
+
+// TestPackSucceedsWhenManifestIsPacked is the backstop's negative half. An abort
+// that can fire on a healthy package is worse than the bug it guards, and every
+// other Pack test would report the same failure text, so the ordinary case is
+// pinned on its own.
+func TestPackSucceedsWhenManifestIsPacked(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{"name":"healthy","version":"1.0.0","files":["index.js"]}`,
+		"index.js":     "module.exports = {}",
+		"src/index.ts": "export const x = 1",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"index.js",
+		"package.json",
+	}, "the backstop must not fire on a package whose manifest is packed")
+}
+
+// TestPackManifestCannotDefeatDefaultExcludes pins where the manifest
+// force-include sits in collectFiles: below the isDefaultExcluded check, never
+// above it. #301 puts the manifest beyond the reach of the user's own rules; it
+// does not exempt it from lnpm's built-in guard, for the reason docs/adr/0004
+// gives for "main" and docs/adr/0005 repeats for the manifest — a guard anything
+// can step around is not a guard.
+//
+// No ordinary fixture can see that placement, because no defaultExcludes entry
+// matches package.json, so this test puts one there for its own duration and
+// asks which wins. Below the guard, the manifest is dropped and Pack then
+// refuses via requireManifestPacked; hoisted above it, the manifest ships past
+// the guard and Pack succeeds. Run and confirmed red under that hoist
+// (isDefaultExcluded consulted as "&& !isManifest"): both rows reported
+// `packed: [index.js package.json]`.
+//
+// lowerDefaultExcludes is recomputed alongside defaultExcludes because
+// isDefaultExcluded reads only the lowered copy. Run and confirmed: dropping the
+// lowered line leaves the guard exactly as it was, and the test then fails with
+// the same `packed: [index.js package.json]` a real hoist produces — a failure
+// that looks like the bug this test exists to catch but is not it.
+//
+// This mutates package-level state, so it must not call t.Parallel() and must
+// not run beside a test that does. No test in this package calls it.
+func TestPackManifestCannotDefeatDefaultExcludes(t *testing.T) {
+	originalExcludes, originalLowered := defaultExcludes, lowerDefaultExcludes
+	t.Cleanup(func() {
+		defaultExcludes, lowerDefaultExcludes = originalExcludes, originalLowered
+	})
+	// New slices rather than append-in-place, so the restored originals cannot
+	// share a backing array with the mutated copies.
+	defaultExcludes = append(append([]string{}, originalExcludes...), manifestFileName)
+	lowerDefaultExcludes = append(append([]string{}, originalLowered...), manifestFileName)
+
+	tests := []struct {
+		name     string
+		manifest string
+	}{
+		{
+			name:     "no files field",
+			manifest: `{"name":"guard-vs-manifest","version":"1.0.0"}`,
+		},
+		{
+			name:     "files whitelist",
+			manifest: `{"name":"guard-vs-manifest","version":"1.0.0","files":["index.js"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": tt.manifest,
+				"index.js":     "module.exports = {}",
+			})
+
+			_, files, err := Pack(tmpDir)
+			if err == nil {
+				var names []string
+				for _, f := range files {
+					names = append(names, f.RelPath)
+				}
+				sort.Strings(names)
+				t.Fatalf("Pack() succeeded with package.json in defaultExcludes; "+
+					"the manifest force-include has been hoisted above the "+
+					"built-in guard, which is what makes the guard steppable\n"+
+					"packed: %v", names)
+			}
+			if !strings.Contains(err.Error(), "package.json") {
+				t.Errorf("Pack() must fail through requireManifestPacked, which "+
+					"names the missing file\ngot: %v", err)
+			}
+		})
+	}
+}

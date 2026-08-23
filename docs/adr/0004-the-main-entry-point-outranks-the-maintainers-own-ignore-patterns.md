@@ -50,6 +50,12 @@ exempt from both. A reader who finds the two treatments in the same `switch`
 should not "make them consistent" without deciding, for each, whether losing the
 file breaks the package or merely impoverishes it.
 
+`main` was the only entry exempt from both when this was written, and is no
+longer. `docs/adr/0005` makes the package root's own `package.json` unexcludable
+by anything except `defaultExcludes`, in every mode rather than under a `files`
+whitelist alone. There are now three treatments in that `switch`, and the
+question to decide per file is unchanged.
+
 It applies in whitelist mode only. A package with no `files` field is untouched:
 there the user's ignore patterns decide the whole tree, `main` included, exactly
 as before. That is #319's stated scope and it keeps the widening confined to
@@ -99,3 +105,11 @@ semantics, so an abort there changes far more than the publish contract, and
 `validation.ValidatePackage` already refuses a manifest whose `main` is not on
 disk before publish packs anything. A warning gives the missing-from-the-tarball
 case the visibility it lacked without moving the abort.
+
+This holds for `main` and is superseded for the manifest. `docs/adr/0005` adds
+an abort to `Pack` for a packed set with no `package.json` in it, on the
+distinction this paragraph rests on: the abort was refused here because
+`validation.ValidatePackage` already catches the `main` case, and nothing
+catches the manifest case at all — `readPackageJSON` reads from disk rather than
+from the packed set, so it passes precisely when the manifest is missing from
+the pack.
