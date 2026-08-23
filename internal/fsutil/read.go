@@ -101,6 +101,13 @@ var ErrFileTooLarge = errors.New("file is over the size limit")
 // able to. The refusal names the file, its size and the limit, because a user
 // who hits it has to decide whether the file is corrupt or the limit is wrong,
 // and cannot do either without all three.
+//
+// max is a parameter although both call sites pass MaxYAMLBytes, and no test
+// passes anything else. It stays one because this function knows nothing about
+// YAML: the limit is a property of the format the caller is about to parse, and
+// baking a YAML-derived number into a filesystem helper would put the reason for
+// the number somewhere it cannot be read. Do not read the parameter as an
+// invitation to make the limit configurable - nothing asked for that.
 func ReadFileCapped(path string, max int64) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
