@@ -107,6 +107,13 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
 		return Result{}, err
 	}
+	// And node_modules, which the link created at the end of this function needs.
+	// Checked up here and not only down there: by the time createNodeModulesSymlink
+	// runs, .lnpm/{package} has been built and renamed into place, so refusing
+	// there would leave the project holding half of what it asked for.
+	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
+		return Result{}, err
+	}
 
 	// The manifest's name is reserved before anything else reads the file set,
 	// so nothing below has to consider a package's file competing for it.
@@ -425,6 +432,11 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
 		return "", err
 	}
+	// Same reason as in Link: .lnpm/{package} is renamed into place before the
+	// node_modules link is made, so the refusal has to come before either.
+	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
+		return "", err
+	}
 
 	// An empty source path is rejected before it is resolved, because
 	// filepath.Abs("") returns the working directory and a working directory
@@ -650,6 +662,14 @@ func requireRealDir(kind, path string) error {
 // off by default and named for what turning it on does: lnpm follows the link,
 // and the MkdirAll and the RemoveAll below land wherever it points.
 //
+// The override is checked before requireRealDir rather than inside it, so it
+// waives every refusal that check makes and not only the link it is named for:
+// a regular file, a fifo or a device at either path is let through too. That is
+// deliberate and it is what "behaves as it did before the guard" means - all of
+// them reached MkdirAll's ENOTDIR before, and the override's job is to restore
+// exactly that, not to substitute a different opinion about which of them is
+// tolerable.
+//
 // A config that cannot be read leaves the guard on, per docs/adr/0001: an
 // override nobody could confirm was set is not one to act on.
 func (l *Linker) requireRealNodeModulesDirs(packageName string) error {
@@ -704,10 +724,17 @@ func removeDirIfEmpty(dir string) {
 
 // createNodeModulesSymlink creates a symlink from node_modules/{pkg} to .lnpm/{pkg}
 func (l *Linker) createNodeModulesSymlink(packageName string) error {
-	// Ahead of the two MkdirAlls below, which create node_modules and the scope
-	// directory, and ahead of the RemoveAll after them. All three follow a link
-	// at either of those names, so all three have to be behind the guard: run
-	// after the RemoveAll it would report the deletion rather than prevent it.
+	// Every caller in this package checks the same thing before it starts work,
+	// so for all of them this is a repeat and no test can red on it alone. It
+	// stays because it is the single point all of them funnel through: a caller
+	// added later is covered whether or not its author remembers, which is the
+	// case the entry-point copies cannot make.
+	//
+	// It sits above rather than below the three calls that follow the link - the
+	// two MkdirAlls, which create node_modules and the scope directory, and the
+	// RemoveAll after them. Measured while it was the only copy: placed just
+	// below that RemoveAll it returned the same refusal, with the file outside
+	// the project already deleted and the directory outside it already created.
 	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
 		return err
 	}

@@ -55,10 +55,15 @@ Known limits, which this section deliberately does not claim otherwise about:
 - The `node_modules` guard is overridable and `.lnpm`'s is not, so a project
   that sets `follow_symlinked_node_modules` gets the old behaviour back,
   redirect included. That is the trade relocated `node_modules` setups are
-  worth, not an oversight.
+  worth, not an oversight. The key is named for the symlink it exists for but
+  switches the whole check off, so a regular file or a device at either path is
+  accepted under it too.
 - The guard covers `node_modules` and `node_modules/{scope}`. The entry beneath
   them is removed with calls that do not follow a link at their last component,
   so a package's own `node_modules/{package}` needs no equivalent check.
+- The guard is in the linker, and `retreat` does not go through it: it removes
+  `node_modules/{name}` itself, with no check on the two directories above. A
+  committed symlink still redirects that one removal.
 - Read paths are not covered. `Store.GetFiles` walks the store path it builds
   from a name, and the link-status queries `pull` runs only `Lstat` it, and
   neither validates the name first. They read rather than write, so they cannot
