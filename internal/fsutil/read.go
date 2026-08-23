@@ -10,27 +10,64 @@ import (
 //
 // It exists to bound parse cost, not memory. gopkg.in/yaml.v3's cost is
 // superlinear in the input, and the sweep on #323 measured it going up faster
-// than the file does: 5,000 lock entries (1.1MB) took 165ms, 20,000 (4.5MB) took
-// 2.69s, 40,000 (9.0MB) took 25.1s - 4.6x the work for 2x the input - and
-// 100,000 (21MB) took 3m35s allocating 259MiB. That cost is inside the YAML
-// library rather than in lnpm's own structs, and go-yaml has been archived
-// upstream since 2025, so a cap at read time is the mitigation available.
+// than the file does:
+//
+//	entries     size    elapsed
+//	  5,000    1.1MB      165ms
+//	 10,000    2.2MB      806ms
+//	 20,000    4.5MB      2.69s
+//	 40,000    9.0MB      25.1s
+//	100,000     21MB    3m35.5s, 259MiB allocated
+//
+// Doubling 20,000 entries to 40,000 costs 9.3x the time (25.1/2.69). Per byte
+// that is 0.598 s/MB against 2.79 s/MB, so the rate itself rises 4.6x across
+// those two rows. That cost is inside the YAML library rather than in lnpm's own
+// structs, and go-yaml has been archived upstream since 2025, so a cap at read
+// time is the mitigation available.
 //
 // The 4 MiB figure comes from those rows rather than from roundness. They put a
-// lock entry at about 225 bytes (4.5MB/20,000, and 9.0MB/40,000), so 4 MiB is
-// roughly 18,600 entries - between the 10,000-entry row at 806ms and the
-// 20,000-entry row at 2.69s, which bounds a worst-case parse to a few seconds.
+// lock entry at about 225 bytes (4.5MB/20,000, and 9.0MB/40,000), so 4 MiB of
+// lock-shaped content is roughly 18,600 entries - between the 10,000-entry row
+// at 806ms and the 20,000-entry row at 2.69s.
+//
+// That is a typical-case bound and not a worst case, which matters to anyone who
+// later leans on it. The cap counts bytes; yaml.v3's cost tracks node count, and
+// 225 bytes per entry is what *lock-shaped* content costs. Measured while
+// writing this, best of five on one machine: 4 MiB of lock-shaped YAML is
+// 254,000 nodes and unmarshals in 251ms, while 4 MiB written for node count
+// instead - a flow sequence of one-byte scalars - is 2.1 million nodes and
+// unmarshals in 1.14s. Same byte budget, 8x the nodes, 4.6x the time. No search
+// was made for the worst shape, so read this cap as bounding the documents lnpm
+// actually reads rather than every 4 MiB document.
+//
 // Nothing legitimate comes near it: lnpm.lock records the packages a project has
 // *linked*, not a resolved dependency graph, so real files run to tens of
 // entries.
 //
 // One constant covers the lock file and pnpm-workspace.yaml both. A workspace
-// config is far smaller than a lock file, but a second number would need its own
-// justification and would bound nothing the first does not.
+// config is far smaller than a lock file, so a tighter second cap would refuse
+// things this one accepts - 64 KiB on the config would turn away a 3 MiB
+// pnpm-workspace.yaml that 4 MiB lets through. That is a real difference; it is
+// just not worth a second number. Neither figure is a size a legitimate
+// workspace config reaches, and a second constant would need its own
+// measurements to defend and its own reason when someone later asks why the two
+// disagree.
+//
+// It lives in fsutil rather than beside a caller because pkg/lockfile and
+// internal/workspace both need it and neither should depend on the other. It is
+// a property of yaml.v3's cost curve, not of the filesystem, which is why the
+// measurements are written down here instead of being left for a reader to
+// reconstruct.
 const MaxYAMLBytes = 4 << 20
 
 // ErrFileTooLarge is returned by ReadFileCapped when a file is over the limit.
-// Callers match on it to tell a refusal apart from a file that would not read.
+//
+// Nothing in production branches on it - the callers pass the refusal straight
+// up. The tests do, and that is what it is for. #323 asks that moving the size
+// check to after the unmarshal turn the refusal tests red, and the fixtures are
+// oversized *and* invalid YAML, so the only thing that tells the two placements
+// apart is whether what comes back is this error or a parse error. Matching on
+// the message instead would pin the wording rather than the behaviour.
 var ErrFileTooLarge = errors.New("file is over the size limit")
 
 // ReadFileCapped reads path, refusing files larger than max bytes.
@@ -44,10 +81,11 @@ var ErrFileTooLarge = errors.New("file is over the size limit")
 // What it is not is a hard bound. Stat and the read are two calls, so a writer
 // growing the file in between hands back more than max, and lnpm parses it. That
 // window is accepted rather than closed: reading through an io.LimitReader would
-// make the bound absolute and would cost a full read of every legitimate file to
-// do it, losing the free refusal above. The threat #323 describes is a repo that
-// ships an oversized file, not a writer racing the read, and this closes that
-// one.
+// make the bound absolute, but it would give up the free refusal above, opening
+// and reading an oversized file up to the limit instead of turning it away on
+// its stat. It would cost no more on legitimate files, which are already read in
+// full here. The threat #323 describes is a repo that ships an oversized file,
+// not a writer racing the read, and this closes that one.
 //
 // A missing file is reported as the *fs.PathError os.Stat produced, so
 // os.IsNotExist and errors.Is(err, fs.ErrNotExist) still recognise it -

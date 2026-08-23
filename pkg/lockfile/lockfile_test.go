@@ -544,6 +544,17 @@ func TestLoadRetreatRefusesAnOversizedSnapshot(t *testing.T) {
 // resolved dependency graph, so a few thousand entries is already far past any
 // project; the file it produces has to stay comfortably under the cap and parse
 // as it always did.
+//
+// What it does not do is cover the refusal, and it should not be counted as if
+// it did. It is not revert-sensitive in either direction: delete the cap and it
+// stays green, move the check after the unmarshal and it stays green, because
+// every file it builds is one the cap accepts. It is a floor under
+// MaxYAMLBytes - it goes red if that constant is ever lowered past what a
+// realistic lock file needs - and nothing more. The refusal is
+// TestLoadRefusesAnOversizedLockFile's job.
+//
+// Measured on this branch, 3,000 entries writes about 675KB, roughly a sixth of
+// the 4 MiB cap, so the headroom it proves is real but not large.
 func TestLoadParsesARealisticLockFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
