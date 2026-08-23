@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
@@ -16,6 +18,21 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/workspace"
 )
 
+// PublishOptions carries everything the publish command was asked for. It
+// exists so a new flag does not change a signature: RunPublish and
+// RunPublishTagged are called from about forty-five places across the test
+// suite, and every one of them would have had to be edited to add --dry-run as
+// a parameter.
+type PublishOptions struct {
+	Push           bool
+	All            bool
+	SkipHooks      bool
+	SkipValidation bool
+	// DryRun reports what would be packed and returns without writing.
+	DryRun bool
+	Tag    string
+}
+
 // RunPublish executes the publish command, moving the default tag onto what it
 // writes.
 func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error {
@@ -26,8 +43,20 @@ func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error 
 // default one. An empty tag means the default one, which is what the flag's own
 // default value carries.
 func RunPublishTagged(push bool, all bool, skipHooks bool, skipValidation bool, tag string) error {
-	if tag == "" {
-		tag = db.DefaultTag
+	return RunPublishWith(PublishOptions{
+		Push:           push,
+		All:            all,
+		SkipHooks:      skipHooks,
+		SkipValidation: skipValidation,
+		Tag:            tag,
+	})
+}
+
+// RunPublishWith is the publish entry point. RunPublish and RunPublishTagged
+// are convenience wrappers over it.
+func RunPublishWith(opts PublishOptions) error {
+	if opts.Tag == "" {
+		opts.Tag = db.DefaultTag
 	}
 
 	cwd, err := os.Getwd()
@@ -36,15 +65,15 @@ func RunPublishTagged(push bool, all bool, skipHooks bool, skipValidation bool, 
 	}
 
 	// Handle --all for monorepo publishing
-	if all {
-		return publishAll(cwd, push, skipHooks, skipValidation, tag)
+	if opts.All {
+		return publishAll(cwd, opts)
 	}
 
-	return publishSingle(cwd, push, skipHooks, skipValidation, tag)
+	return publishSingle(cwd, opts)
 }
 
 // publishAll publishes all packages in a monorepo workspace
-func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool, tag string) error {
+func publishAll(cwd string, opts PublishOptions) error {
 	ws, err := workspace.Detect(cwd)
 	if err != nil {
 		return fmt.Errorf("failed to detect workspace: %w", err)
@@ -93,7 +122,7 @@ func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool, tag 
 				fmt.Printf("%s %s@%s %s\n", sep, pkg.Name, pkg.Version, sep)
 				outputMu.Unlock()
 
-				err := publishSingle(pkg.Path, push, skipHooks, skipValidation, tag)
+				err := publishSingle(pkg.Path, opts)
 
 				outputMu.Lock()
 				if err != nil {
@@ -134,24 +163,36 @@ func publishAll(cwd string, push bool, skipHooks bool, skipValidation bool, tag 
 }
 
 // publishSingle publishes a single package
-func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation bool, tag string) error {
+func publishSingle(pkgPath string, opts PublishOptions) error {
 	// Validate package before proceeding
-	if !skipValidation {
+	if !opts.SkipValidation {
 		if err := validation.ValidatePackage(pkgPath); err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}
 	}
 
-	// Run custom pre_publish hook before packing
+	// Run custom pre_publish hook before packing.
+	//
+	// A dry run runs it too, deliberately. Those hooks are frequently what
+	// builds the files being packed, so skipping them would make the dry run
+	// report a set that differs from the real publish - the dry run would lie,
+	// which defeats the whole point of having one. --skip-hooks is already
+	// there for anyone who does not want them.
+	//
+	// npm does the same, which was run rather than assumed: with npm 11.16.0,
+	// `npm publish --dry-run` over a package carrying prepack and
+	// prepublishOnly ran both, and the file each wrote showed up in the tarball
+	// listing the dry run printed. (The same run also showed npm executing
+	// postpublish on a dry run. lnpm deliberately does not - see below.)
 	cfg := config.Get()
-	if !skipHooks {
+	if !opts.SkipHooks {
 		if err := hooks.RunCustom(pkgPath, cfg.Hooks.PrePublish, "pre_publish"); err != nil {
 			return fmt.Errorf("pre_publish hook failed: %w", err)
 		}
 	}
 
 	// Run prepare scripts before packing
-	if err := hooks.RunPrepare(pkgPath, skipHooks); err != nil {
+	if err := hooks.RunPrepare(pkgPath, opts.SkipHooks); err != nil {
 		return fmt.Errorf("prepare hook failed: %w", err)
 	}
 
@@ -175,6 +216,27 @@ func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation boo
 		return err
 	}
 
+	// A dry run stops here: everything that decides the packed set has run, and
+	// nothing that writes has. The rewritten manifest is already materialised,
+	// so the reported set is the one a real publish would store, and the defer
+	// above removes the temporary file it lives in on the way out.
+	//
+	// It stops here rather than immediately before finishPublish because the
+	// "already published with same content" short-circuit sits in between, and
+	// it returns. A dry run that fell into it would answer "already published"
+	// to the question "what would you ship?" - which is the question a user
+	// asks most often about a package they have already published.
+	//
+	// Returning above db.GetDB is also what keeps the guarantee cheap to state:
+	// the database is never opened, the store is never constructed (store.New
+	// creates its directory tree as a side effect of being called), and
+	// post_publish never runs. npm runs postpublish on a dry run; lnpm does
+	// not, because post_publish is for reacting to a release that happened.
+	if opts.DryRun {
+		reportDryRun(pkgJSON, files)
+		return nil
+	}
+
 	// Check if already published with same hash
 	database, err := db.GetDB()
 	if err != nil {
@@ -192,30 +254,60 @@ func publishSingle(pkgPath string, push bool, skipHooks bool, skipValidation boo
 	// skips finishPublish, which is the only place a tag is ever moved, so
 	// without it `publish --tag beta` over an unchanged working tree would print
 	// a reassuring line and leave beta pointing wherever it was - or nowhere.
-	tagged, err := database.ResolveTag(pkgJSON.Name, tag)
+	tagged, err := database.ResolveTag(pkgJSON.Name, opts.Tag)
 	if err != nil {
-		return fmt.Errorf("failed to read the %s tag of %s: %w", tag, pkgJSON.Name, err)
+		return fmt.Errorf("failed to read the %s tag of %s: %w", opts.Tag, pkgJSON.Name, err)
 	}
 
-	if existing != nil && !push && tagged != nil && tagged.ContentHash == contentHash {
+	if existing != nil && !opts.Push && tagged != nil && tagged.ContentHash == contentHash {
 		fmt.Printf("%s Package %s@%s already published with same content (hash: %s)\n",
 			iconWarn(), pkgJSON.Name, pkgJSON.Version, shortHash(contentHash))
 		fmt.Println("Use --push to update linked projects anyway")
 		return nil
 	}
 
-	if err := finishPublish(pkgPath, pkgJSON, files, database, push, tag); err != nil {
+	if err := finishPublish(pkgPath, pkgJSON, files, database, opts.Push, opts.Tag); err != nil {
 		return err
 	}
 
 	// Run custom post_publish hook after a successful publish
-	if !skipHooks {
+	if !opts.SkipHooks {
 		if err := hooks.RunCustom(pkgPath, cfg.Hooks.PostPublish, "post_publish"); err != nil {
 			return fmt.Errorf("post_publish hook failed: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// reportDryRun prints the packed set, one relative path per line.
+//
+// Sorted by RelPath, and not because the walk leaves them unsorted by accident:
+// filepath.Walk visits each directory's entries in lexical order, which puts
+// "a/inner.js" before "a.js" because it descends into "a" on reaching it, while
+// a sort by path puts "a.js" first ('.' is 0x2E, '/' is 0x2F). Diffing two dry
+// runs is the main reason to have one, so the order is pinned rather than
+// inherited.
+//
+// The whole report is built and printed with one call: --all publishes in
+// parallel and only brackets its per-package header with a mutex, so a report
+// emitted line by line would interleave with another package's.
+func reportDryRun(pkgJSON *pack.PackageJSON, files []*pack.FileInfo) {
+	paths := make([]string, len(files))
+	var totalSize int64
+	for i, f := range files {
+		paths[i] = f.RelPath
+		totalSize += f.Size
+	}
+	sort.Strings(paths)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Dry run: %s@%s would pack %d files (%s); nothing was written\n",
+		pkgJSON.Name, pkgJSON.Version, len(files), formatSize(totalSize))
+	for _, p := range paths {
+		fmt.Fprintf(&b, "  %s\n", p)
+	}
+	fmt.Print(b.String())
 }
 
 // finishPublish completes publishing with pre-packed data (used by push too),
@@ -276,6 +368,13 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 	fmt.Printf("  Files: %d\n", len(files))
 	fmt.Printf("  Size: %s\n", formatSize(totalSize))
 	fmt.Printf("  Store: %s\n", storePath)
+	// The count above is the only thing an ordinary publish says about the
+	// packed set, and a count cannot show that a secret was packed. The list
+	// itself is not printed here on purpose: publish is an inner-loop command
+	// run many times a day, and output that appears on every run is output
+	// users learn to skip, which serves detection worse than a pointer to the
+	// command that prints it on demand.
+	fmt.Printf("  %s Run 'lnpm publish --dry-run' to see the packed files\n", iconTip())
 
 	// If push requested, push to all linked projects
 	if push {
