@@ -55,6 +55,26 @@ func RunDoctor() error {
 	// reported by both checks, which is noise rather than a wrong finding.
 	checkedEntries := make(map[string]bool)
 
+	// Whether this store predates completeness markers, decided once and used
+	// by both store checks below.
+	//
+	// On such a store a missing marker says nothing about the entry: no release
+	// that wrote it had markers at all, so every entry lacks one and none of
+	// them is damaged. Checks 5 and 6 would otherwise fault the entire store and
+	// send the user to re-publish all of it, which is both alarming and wrong -
+	// the store is migrated in one pass the next time any command opens it, and
+	// doctor is the one command that never does.
+	//
+	// A failure to decide leaves this false, so the checks below report what
+	// they find. That is the loud direction, and the quiet one would let a
+	// single unreadable path suppress a genuine finding.
+	legacyStore := false
+	if storeUsable {
+		if pending, err := store.LegacyBackfillPending(); err == nil {
+			legacyStore = pending
+		}
+	}
+
 	// Check 2: Database integrity
 	fmt.Print("Checking database... ")
 	database, err := db.GetDB()
@@ -151,19 +171,37 @@ func RunDoctor() error {
 		// marker to read in a directory that does not exist — so nothing the
 		// stat caught is lost.
 		fmt.Print("Checking store file integrity... ")
-		damagedEntries := 0
+		var damaged []string
 		for _, pkg := range packages {
 			if pkg.StorePath == "" {
 				continue
 			}
 			checkedEntries[pkg.StorePath] = true
-			if err := store.CheckComplete(pkg.StorePath); err != nil {
-				damagedEntries++
+			// On an unmigrated store the marker cannot be asked about, so this
+			// falls back to the question doctor asked before it existed: is the
+			// entry there at all. Check 6 reports the migration itself.
+			//
+			// The directory is named per package rather than only counted,
+			// because for the entries that are still there the fix below cannot
+			// be carried out without it: Store never renames over an occupied
+			// destination, so a re-publish of unchanged content fails until the
+			// directory is gone.
+			var err error
+			if legacyStore {
+				_, err = os.Stat(pkg.StorePath)
+			} else {
+				err = store.CheckComplete(pkg.StorePath)
+			}
+			if err != nil {
+				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
 			}
 		}
-		if damagedEntries > 0 {
-			fmt.Printf("%s %d package(s) with missing or incomplete store entries\n", iconFail(), damagedEntries)
-			fmt.Println("  Fix: Re-publish affected packages")
+		if len(damaged) > 0 {
+			fmt.Printf("%s %d package(s) with missing or incomplete store entries\n", iconFail(), len(damaged))
+			for _, entry := range damaged {
+				fmt.Printf("  %s\n", entry)
+			}
+			fmt.Println("  Fix: Re-publish the affected packages; delete any directory listed above that is still there first, since lnpm will not overwrite or remove one")
 			issues++
 		} else {
 			fmt.Printf("%s OK\n", iconOK())
@@ -179,10 +217,12 @@ func RunDoctor() error {
 	// row names and Check 5 cannot see. An entry Check 5 looked at is skipped
 	// here, so one damaged directory counts once.
 	//
-	// It also covers entries written before completeness markers existed. A
-	// one-time backfill used to mark those, taking the hash from the directory
-	// name; that is what laundered gutted entries into complete ones in #330,
-	// so it is gone, and such entries are now listed here for re-publishing.
+	// A store written before markers existed is not swept at all: every entry
+	// in it would be listed, and the fix would be "re-publish your whole
+	// store", which is wrong. Such a store is marked once by the gated backfill
+	// in store.New, so what it needs is a command that opens the store — and
+	// doctor is the one command that never does, which is why it reports this
+	// rather than fixing it.
 	//
 	// Skipped when Check 1 found no usable store, as the checks above are:
 	// with no store there is nothing to sweep, and Check 1's own finding is
@@ -196,11 +236,17 @@ func RunDoctor() error {
 				unreported = append(unreported, entry)
 			}
 		}
+
 		switch {
 		case err != nil:
 			fmt.Printf("%s ERROR\n", iconFail())
 			fmt.Printf("  Failed to scan the store for incomplete entries: %v\n", err)
 			issues++
+		case legacyStore:
+			fmt.Printf("%s PENDING\n", iconWarn())
+			fmt.Println("  This store predates completeness markers and has not been migrated yet")
+			fmt.Println("  Fix: Run 'lnpm gc --dry-run' (or any command that opens the store)")
+			warnings++
 		case len(unreported) > 0:
 			fmt.Printf("%s %d incomplete store entry(ies)\n", iconFail(), len(unreported))
 			for _, entry := range unreported {

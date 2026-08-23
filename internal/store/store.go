@@ -54,6 +54,13 @@ func New() (*Store, error) {
 		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
+	// A store written before completeness markers existed carries none, and
+	// every entry in it would otherwise be refused on read. It is marked once,
+	// here, under a gate that leaves 2.x stores alone.
+	if err := backfillLegacyStore(storePath); err != nil {
+		return nil, err
+	}
+
 	return &Store{basePath: storePath}, nil
 }
 
@@ -298,6 +305,15 @@ func (s *Store) finalize(name, hash, destPath, finalPath string) (bool, error) {
 		// success is precisely what must not happen here.
 		if s.CheckComplete(name, hash) == nil {
 			return false, nil // temp dir cleaned up by deferred guard
+		}
+		// A destination that exists but is not a complete entry: the gutted
+		// directory of #330. It is not deleted here — lnpm cannot tell what is
+		// in it, and the write path is not where that gets decided — so the
+		// rename cannot be retried and the user has to remove it. Saying so is
+		// the difference between actionable and "rename ...: file exists",
+		// which is what push prints when it hits this.
+		if _, statErr := os.Stat(finalPath); statErr == nil {
+			return false, fmt.Errorf("cannot store %s: %s is in the way and is not a complete store entry; delete it and publish again", name, finalPath)
 		}
 		return false, fmt.Errorf("failed to finalize store package: %w", err)
 	}

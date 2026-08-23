@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -414,10 +415,7 @@ func linkTypeLabel(t link.LinkType) string {
 func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pack.FileInfo, error) {
 	files, err := s.GetFiles(pkg.Name, pkg.ContentHash)
 	if err != nil {
-		// The version is added here because the store does not have it: entries
-		// are addressed by name and content hash, and a user told only that
-		// "left-pad" is damaged still has to work out which build to re-publish.
-		return nil, fmt.Errorf("%s@%s: %w", pkg.Name, pkg.Version, err)
+		return nil, storeReadError(pkg, err)
 	}
 
 	entries, err := database.GetFilesForPackage(pkg.ID)
@@ -443,6 +441,33 @@ func storeFilesForLink(database *db.DB, s *store.Store, pkg *db.Package) ([]*pac
 		f.Mode = e.Mode
 	}
 	return files, nil
+}
+
+// storeReadError turns a failure to read pkg's store entry into something the
+// user can act on.
+//
+// Two things get added here rather than in the store. The version, because
+// entries are addressed by name and content hash and the store does not know
+// it - a user told only that "left-pad" is damaged still has to work out which
+// build to re-publish. And the remediation, because it depends on whether the
+// entry directory survives: Store never renames over an occupied destination,
+// so a damaged directory has to be removed before a re-publish of the same
+// content can land, while one that is simply gone needs nothing but the
+// re-publish. The store's own error stays a statement of the fault.
+//
+// The interrupted-gc wording is on the damaged branch only. A missing entry
+// has other everyday causes - a gc that finished, a store restored from a
+// backup - and naming one cause for it would be a guess.
+func storeReadError(pkg *db.Package, err error) error {
+	var incomplete *store.IncompleteEntryError
+	if !errors.As(err, &incomplete) {
+		return fmt.Errorf("%s@%s: %w", pkg.Name, pkg.Version, err)
+	}
+	if !incomplete.Present {
+		return fmt.Errorf("%s@%s: %w; re-publish %s to rebuild it", pkg.Name, pkg.Version, err, pkg.Name)
+	}
+	return fmt.Errorf("%s@%s: %w; an interrupted 'lnpm gc' or publish can leave one like this, and lnpm will not use or delete it: remove %s and re-publish %s to rebuild it",
+		pkg.Name, pkg.Version, err, incomplete.Path, pkg.Name)
 }
 
 // fileManifestHash is the package content hash the recorded file rows describe.

@@ -26,9 +26,12 @@ type marker struct {
 }
 
 // IncompleteEntryError is what a caller gets for a store entry lnpm cannot
-// vouch for. It is a distinct type so a caller can tell "this package was
-// never published" from "this package's store entry is damaged", which need
-// different things from the user.
+// vouch for. It is a distinct type so a caller can tell it from any other read
+// failure and say what the user has to do, which differs by Present below.
+//
+// The message is deliberately terse, in this package's error voice: it states
+// the fault and stops. Remediation is the CLI's, at the layer that knows which
+// command the user ran and can afford the words.
 type IncompleteEntryError struct {
 	// Name is the package the entry belongs to, empty when the entry was
 	// checked by path alone and the name was not passed in.
@@ -37,6 +40,15 @@ type IncompleteEntryError struct {
 	Path string
 	// Reason says what about the entry failed the check.
 	Reason string
+	// Present reports whether the entry directory is there at all.
+	//
+	// It decides what the user has to do, so it is not cosmetic. Store never
+	// renames over an occupied destination, so re-publishing byte-identical
+	// content over a directory that is still there fails on the rename with
+	// "file exists" — TestStoreRefusesToOverwriteAnIncompleteEntry pins that —
+	// and the user has to remove it first. A directory that is simply gone
+	// needs nothing but the re-publish.
+	Present bool
 }
 
 func (e *IncompleteEntryError) Error() string {
@@ -44,15 +56,7 @@ func (e *IncompleteEntryError) Error() string {
 	if e.Name != "" {
 		subject = "store entry for " + e.Name
 	}
-	// The closing clause is not decoration. Store never deletes an entry that
-	// is in its way, so re-publishing byte-identical content over a damaged
-	// entry fails on the rename with "file exists" — verified by
-	// TestStoreRefusesToOverwriteAnIncompleteEntry. Advice that stopped at
-	// "re-publish" would be wrong for exactly the case a user hits first.
-	return fmt.Sprintf("%s at %s is incomplete: %s. An interrupted 'lnpm gc' or publish leaves an entry in this state; "+
-		"lnpm cannot tell what is missing from it, so it will neither use it nor delete it. Re-publish the package to rebuild the entry, "+
-		"deleting that directory yourself first if the publish reports it is already there",
-		subject, e.Path, e.Reason)
+	return fmt.Sprintf("%s at %s is incomplete: %s", subject, e.Path, e.Reason)
 }
 
 // writeMarker writes the completeness marker into dir.
@@ -83,24 +87,38 @@ func RemoveEntry(entryPath string) error {
 	return os.RemoveAll(entryPath)
 }
 
+// hasMarker reports whether an entry carries a completeness marker file at all,
+// without reading it.
+//
+// This is the weaker of the two questions and it has exactly one caller: the
+// legacy backfill's gate, which asks "has this store ever been marked". For
+// that, the file's presence is the whole answer — a marker that is corrupt or
+// names the wrong hash still proves some version of lnpm wrote one here. Every
+// read of an entry goes through CheckComplete instead.
+func hasMarker(entryPath string) bool {
+	_, err := os.Stat(filepath.Join(entryPath, markerName))
+	return err == nil
+}
+
 // CheckComplete reports whether the store entry at entryPath is one the write
 // path committed, returning an *IncompleteEntryError describing the fault when
 // it is not.
 //
-// Two things make an entry fail. It carries no readable completeness marker,
-// which is what an interrupted deletion leaves: RemoveEntry unlinks the marker
-// before the tree, so a removal that dies partway leaves content behind that
-// nothing vouches for. Or its marker records a hash other than the directory
-// it sits in, which is what an entry copied or moved between hash directories
-// looks like.
+// Three things make an entry fail. The entry directory is not there at all. Or
+// it carries no readable completeness marker, which is what an interrupted
+// deletion leaves: RemoveEntry unlinks the marker before the tree, so a removal
+// that dies partway leaves content behind that nothing vouches for. Or its
+// marker records a hash other than the directory it sits in, which is what an
+// entry copied or moved between hash directories looks like.
 //
 // The hash comparison is nearly circular — the directory name *is* the hash —
 // and it is worth being exact about the two things it does buy. It catches an
 // entry whose marker does not belong to it, and it means a marker derived from
-// a directory name is no longer self-evidently valid, which is what let the old
-// backfill launder a gutted entry into a complete one. It is **not** content
-// verification: nothing here reads a single byte of the package, so an entry
-// whose files were edited in place passes. Re-hashing store content is #333.
+// a directory name is no longer self-evidently valid, which is what let a
+// backfill of every unmarked entry launder a gutted one into a complete one. It
+// is not content verification: nothing here reads a single byte of the package,
+// so an entry whose files were edited in place passes. Re-hashing store content
+// is #333.
 func CheckComplete(entryPath string) error {
 	return checkEntry(entryPath, "")
 }
@@ -108,8 +126,18 @@ func CheckComplete(entryPath string) error {
 // checkEntry is CheckComplete with the package name to put in the error, which
 // only a caller addressing the entry by name and hash knows.
 func checkEntry(entryPath, name string) error {
+	present := true
 	fail := func(reason string) error {
-		return &IncompleteEntryError{Name: name, Path: entryPath, Reason: reason}
+		return &IncompleteEntryError{Name: name, Path: entryPath, Reason: reason, Present: present}
+	}
+
+	// Whether the directory is there at all is asked separately, and not folded
+	// into the marker read below, because it is the difference between "this
+	// package was collected or never stored" and "something damaged this entry".
+	// They read the same through a missing marker and need different advice.
+	if _, err := os.Stat(entryPath); err != nil && os.IsNotExist(err) {
+		present = false
+		return fail("the entry directory is not there")
 	}
 
 	payload, err := os.ReadFile(filepath.Join(entryPath, markerName))

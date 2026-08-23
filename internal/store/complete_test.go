@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,10 +65,38 @@ func TestGetFilesRefusesGuttedEntry(t *testing.T) {
 	if err == nil {
 		t.Fatalf("GetFiles returned %d files for the gutted entry %s instead of refusing it; those files get linked into a consumer project", len(got), entry)
 	}
-	for _, want := range []string{"gutted-pkg", entry, "gc", "publish"} {
+	for _, want := range []string{"gutted-pkg", entry} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("GetFiles error does not mention %q, so it does not tell the user what is broken or how it got that way: %v", want, err)
+			t.Errorf("GetFiles error does not name %q, so a reader cannot tell which entry is broken: %v", want, err)
 		}
+	}
+	// The remediation is not asserted here: the store states the fault and
+	// stops, and what the user has to do is added by the CLI, which knows the
+	// command and the version. TestAddRefusesGuttedStoreEntry covers that half.
+	var incomplete *IncompleteEntryError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("GetFiles returned %T, want an *IncompleteEntryError the CLI can branch on", err)
+	}
+	if !incomplete.Present {
+		t.Error("the gutted entry was reported as absent; its directory is still there, and that is what decides whether a re-publish needs it removed first")
+	}
+}
+
+// TestGetFilesReportsAnAbsentEntryAsAbsent separates the two faults that used
+// to read alike. A collected entry needs a plain re-publish; a gutted one has
+// to be removed first, because Store will not rename over it. The CLI branches
+// on Present to say which.
+func TestGetFilesReportsAnAbsentEntryAsAbsent(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.GetFiles("never-published", "abc123")
+
+	var incomplete *IncompleteEntryError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("GetFiles returned %T for an entry that was never stored, want an *IncompleteEntryError", err)
+	}
+	if incomplete.Present {
+		t.Errorf("an entry directory that does not exist was reported as present: %v", err)
 	}
 }
 
@@ -128,10 +157,21 @@ func TestGetFilesServesAHealthyEntry(t *testing.T) {
 // Opening the store used to write a marker into every unmarked entry, taking
 // the hash from the directory name. That laundered a gutted entry into a
 // permanently complete one, and it is why the read path could not be made
-// strict without removing it first.
+// strict without fixing it.
+//
+// The store here holds a committed entry beside the gutted one, which is what
+// the reproduction's store looked like and what makes the fault reachable at
+// all: the marker's whole purpose is to distinguish those two, so an entry can
+// only be gutted in a store that has markers. That is also exactly the gate the
+// legacy backfill in New uses — a store with any marker is a 2.x store and
+// nothing in it is minted — so this and TestNewMarksAStoreThatNeverHadMarkers
+// pin the two sides of the same decision.
 func TestNewDoesNotMarkAnEntryItCannotVerify(t *testing.T) {
 	root := legacyStoreRoot(t)
 	entry := seedLegacyEntry(t, root, "gutted", "dead")
+	if err := writeMarker(seedLegacyEntry(t, root, "healthy", "beef"), "beef"); err != nil {
+		t.Fatalf("mark the committed entry: %v", err)
+	}
 
 	s, err := New()
 	if err != nil {
@@ -143,6 +183,9 @@ func TestNewDoesNotMarkAnEntryItCannotVerify(t *testing.T) {
 	}
 	if _, err := s.GetFiles("gutted", "dead"); err == nil {
 		t.Errorf("the unmarked entry %s still reads as a complete package", entry)
+	}
+	if _, err := s.GetFiles("healthy", "beef"); err != nil {
+		t.Errorf("the committed entry beside it stopped reading as complete: %v", err)
 	}
 }
 
@@ -172,6 +215,12 @@ func TestStoreRefusesToOverwriteAnIncompleteEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), entry) {
 		t.Errorf("the failure does not name the directory in the way, so the user cannot act on it: %v", err)
+	}
+	// And says what to do about it. The bare rename error names the path too,
+	// so a test that stopped above would pass on "rename …: file exists" — which
+	// is what push printed before, and what nobody can act on.
+	if !strings.Contains(err.Error(), "delete it and publish again") {
+		t.Errorf("the failure does not say the directory has to be removed, which is the only way out of this state: %v", err)
 	}
 }
 

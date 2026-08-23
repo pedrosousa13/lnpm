@@ -113,6 +113,11 @@ func newDoctorStoreConfig(t *testing.T) string {
 func TestRunDoctorReportsIncompleteStoreEntry(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
 	entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+	// A committed entry beside it, so the store reads as one lnpm 2.x wrote
+	// rather than one awaiting the legacy migration. Those are different
+	// findings with different fixes, and the unmarked entry only means
+	// "damaged" in a store that has markers.
+	writeCompletenessMarker(t, seedUnmarkedEntry(t, dir, "right-pad", "bbb222"), "bbb222")
 
 	out, err := runDoctor(t)
 	if err == nil {
@@ -140,6 +145,32 @@ func TestRunDoctorSkipsStoreSweepWithoutStore(t *testing.T) {
 
 	if strings.Contains(out, "completeness marker") {
 		t.Errorf("RunDoctor swept a store that does not exist, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorReportsALegacyStoreAsPending covers the store that predates
+// completeness markers. Every entry in it fails the completeness check, but the
+// fix is not "re-publish your whole store" - it is the one-time migration that
+// runs when any command opens the store, and doctor is the one command that
+// never does. Reporting it as a warning rather than an issue keeps
+// `lnpm doctor && ...` working on a store that is about to migrate itself.
+func TestRunDoctorReportsALegacyStoreAsPending(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+
+	out, err := runDoctor(t)
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a store awaiting its migration, want nil: that is a warning, not a broken install", err)
+	}
+
+	if !strings.Contains(out, "PENDING") {
+		t.Errorf("RunDoctor did not report the unmigrated store as pending, output was:\n%s", out)
+	}
+	if strings.Contains(out, entry) {
+		t.Errorf("RunDoctor listed %s as damaged; every entry of an unmigrated store would be listed, and none of them needs re-publishing", out)
+	}
+	if _, err := os.Stat(filepath.Join(entry, ".lnpm-complete")); err == nil {
+		t.Error("RunDoctor performed the migration; doctor must report without writing")
 	}
 }
 
@@ -306,7 +337,15 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 			name: "incomplete store entry",
 			setup: func(t *testing.T, dir string) string {
 				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+				writeCompletenessMarker(t, seedUnmarkedEntry(t, dir, "right-pad", "bbb222"), "bbb222")
 				return "incomplete store entry(ies)" // and the "x Found N issue(s)" summary
+			},
+		},
+		{
+			name: "legacy store awaiting migration",
+			setup: func(t *testing.T, dir string) string {
+				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+				return "PENDING" // and the "! Found N warning(s)" summary
 			},
 		},
 		{

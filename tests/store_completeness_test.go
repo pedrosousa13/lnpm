@@ -105,6 +105,11 @@ func TestDoctorReportsGuttedStoreEntry(t *testing.T) {
 func TestDoctorReportsIncompleteEntryNoPackageRowNames(t *testing.T) {
 	env := setupTest(t)
 
+	// A real published package first, so the store is one lnpm 2.x wrote. An
+	// unmarked entry only means "damaged" there; in a store that has never held
+	// a marker it means "not migrated yet", which doctor reports differently.
+	env.simplePkg("real-pkg")
+
 	orphan := filepath.Join(env.StoreDir, "store", "stray-pkg", "abc123")
 	if err := os.MkdirAll(orphan, 0755); err != nil {
 		t.Fatalf("seed store entry: %v", err)
@@ -122,6 +127,133 @@ func TestDoctorReportsIncompleteEntryNoPackageRowNames(t *testing.T) {
 	if !strings.Contains(out, orphan) {
 		t.Errorf("RunDoctor did not name the unmarked entry %s, output was:\n%s", orphan, out)
 	}
+}
+
+// unmigrateStore strips every completeness marker and the backfill sentinel
+// from the store, leaving it in the shape lnpm 1.x wrote: entries with content
+// and no bookkeeping. Markers shipped in 2.0.0, so this is what every store
+// upgrading from 1.12.0 or earlier looks like.
+func (te *TestEnvironment) unmigrateStore() {
+	te.t.Helper()
+
+	root := filepath.Join(te.StoreDir, "store")
+	stripped := 0
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case info.IsDir():
+			return nil
+		case info.Name() != ".lnpm-complete" && info.Name() != ".lnpm-markers-backfilled":
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		stripped++
+		return nil
+	})
+	if err != nil {
+		te.t.Fatalf("unmigrate store: %v", err)
+	}
+	if stripped < 2 {
+		te.t.Fatalf("unmigrate store: removed %d files, want at least an entry marker and the sentinel", stripped)
+	}
+}
+
+// TestAddMigratesAStoreWrittenBeforeMarkers is the upgrade from lnpm 1.x, and
+// it is the criterion that decides how strict the read path is allowed to be.
+// Markers shipped in 2.0.0; every store from 1.12.0 or earlier has none, and a
+// read path that refused an unmarked entry outright would fail every command
+// against a store lnpm itself wrote, with no recovery short of deleting the
+// store and re-publishing everything.
+func TestAddMigratesAStoreWrittenBeforeMarkers(t *testing.T) {
+	env := setupTest(t)
+
+	env.publishGuttable("legacy-pkg")
+	env.unmigrateStore()
+	projectDir := env.newProject("legacy-project")
+
+	env.addPkg(projectDir, "legacy-pkg", false, false)
+
+	env.AssertFileExists(filepath.Join(projectDir, ".lnpm", "legacy-pkg", "index.js"), true)
+	env.AssertFileExists(filepath.Join(projectDir, ".lnpm", "legacy-pkg", "lib", "util.js"), true)
+}
+
+// TestDoctorReportsAnUnmigratedStoreAsPending is the same store seen by the one
+// command that cannot fix it: doctor never opens the store, so the migration
+// does not run. Listing every entry as damaged and advising a re-publish would
+// be wrong on both counts, and failing the command would break
+// `lnpm doctor && ...` on a store that is one command away from being fine.
+func TestDoctorReportsAnUnmigratedStoreAsPending(t *testing.T) {
+	env := setupTest(t)
+
+	env.publishAndAdd("legacy-pkg")
+	env.unmigrateStore()
+
+	out := captureStdout(t, func() {
+		if err := cli.RunDoctor(); err != nil {
+			t.Errorf("RunDoctor() = %v for a store awaiting migration, want nil", err)
+		}
+	})
+
+	if !strings.Contains(out, "PENDING") {
+		t.Errorf("RunDoctor did not report the store as awaiting migration, output was:\n%s", out)
+	}
+	for _, unwanted := range []string{"incomplete store entry", "missing or incomplete"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("RunDoctor reported %q for a store that is merely unmigrated, output was:\n%s", unwanted, out)
+		}
+	}
+}
+
+// TestPushDoesNotReuseAnEntryItCannotVouchFor covers push's own completeness
+// check, which is the one read path that does not go through GetFiles: push
+// links the projects from the store path it decided to reuse, so an entry taken
+// on trust there is materialised with nothing else looking at it.
+//
+// The damage here is a marker naming another hash rather than a missing one.
+// push already re-stored when the marker was absent - that case was covered by
+// the presence test it had before #330 - so a marker that is present but does
+// not belong to the directory is the shape that separates the two behaviours.
+//
+// The outcome is a refusal and not a repair, and that is worth being plain
+// about: push cannot rebuild the entry, because Store never renames over an
+// occupied destination, so the command stops with the directory named. Blunt,
+// but the alternative it replaces is pushing a store entry lnpm cannot vouch
+// for into every linked project.
+func TestPushDoesNotReuseAnEntryItCannotVouchFor(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir, projectDir := env.publishAndAdd("push-suspect")
+	storePath := env.retagStoreMarker("push-suspect", "ffffffffffffffff")
+
+	env.chdir(pkgDir)
+	err := cli.RunPush(true)
+
+	if err == nil {
+		t.Fatalf("push reused the store entry %s, whose marker names another hash, and linked it into %s", storePath, projectDir)
+	}
+	if !strings.Contains(err.Error(), storePath) {
+		t.Errorf("the failure does not name the entry standing in the way, so the user cannot act on it: %v", err)
+	}
+}
+
+// retagStoreMarker rewrites a store entry's completeness marker so it records
+// hash instead of the directory it sits in - what an entry copied or moved
+// between hash directories looks like - and returns the entry's path.
+func (te *TestEnvironment) retagStoreMarker(packageName, hash string) string {
+	te.t.Helper()
+
+	pkg, err := te.Database.GetPackageByName(packageName)
+	if err != nil || pkg == nil {
+		te.t.Fatalf("look up %s: pkg = %v, err = %v", packageName, pkg, err)
+	}
+	payload := []byte(`{"schemaVersion":1,"hash":"` + hash + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(pkg.StorePath, ".lnpm-complete"), payload, 0644); err != nil {
+		te.t.Fatalf("rewrite completeness marker: %v", err)
+	}
+	return pkg.StorePath
 }
 
 // publishAndAddGuttable publishes a package with the shape gutStoreEntry needs

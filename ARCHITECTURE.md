@@ -281,17 +281,25 @@ otherwise leave the tag unmoved.
    inside the temporary directory and removed before the tree when `lnpm gc`
    deletes the entry. The marker records the entry's content hash. An entry
    counts as complete only when the marker is there and names the directory it
-   sits in, so a deletion interrupted partway reads as absent rather than as a
-   truncated package.
+   sits in, so a deletion interrupted partway reads as *incomplete* — the
+   directory is still there and lnpm says so, rather than serving a truncated
+   package or pretending it was never published.
 
    Both the write path and the read paths check it: `lnpm add`, `lnpm pull` and
    the relink after `lnpm publish --push` refuse an entry that fails, naming the
-   directory and telling the user to re-publish. lnpm never deletes such an
-   entry — it cannot tell what is inside one — so removing it is the user's
-   call. `lnpm doctor` lists them. That includes entries written before markers
-   existed: nothing can establish that those are whole without re-hashing their
-   content, so they are reported rather than grandfathered, and the packages
-   have to be published again.
+   directory and saying what to do. lnpm never deletes such an entry — it cannot
+   tell what is inside one — so removing it is the user's call, and it has to
+   happen before a re-publish of the same content can land, since the store
+   never renames over an occupied destination. `lnpm doctor` lists them.
+
+   Markers shipped in 2.0.0. A store in which nothing is marked therefore
+   predates them, and is marked once, the first time any command opens it;
+   `~/.lnpm/store/.lnpm-markers-backfilled` records that the decision was taken.
+   A store in which anything *is* marked is never backfilled — an unmarked entry
+   there is a damaged one, and marking it would be the laundering that made the
+   marker worthless. A backfill that cannot finish undoes itself and retries on
+   the next open, so the store stays recognisably un-migrated. `lnpm doctor`
+   reports an un-migrated store as pending rather than listing every entry.
 
 5. Record in bbolt database
 6. If `--push`, update all linked projects

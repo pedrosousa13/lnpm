@@ -163,7 +163,7 @@
 **Validation:**
 - package.json must have name and version fields
 - Database lookup validates package existence before operations
-- Store.Exists() checks before linking
+- Store.CheckComplete() / GetFiles() refuse an incomplete store entry before linking
 
 **Authentication:**
 - Not applicable (local tool)
