@@ -12,6 +12,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/internal/hooks"
 	"github.com/pedrosousa13/lnpm/internal/link"
@@ -1010,7 +1011,7 @@ func (p *packageJSONDeps) write(path string, packageName string, useLink bool) e
 		return err
 	}
 
-	return os.WriteFile(path, pkgjson.EnsureTrailingNewline(output), 0644)
+	return fsutil.WriteFileAtomic(path, pkgjson.EnsureTrailingNewline(output), 0644)
 }
 
 // writeLnpmReference points package.json at the linked copy of packageName.

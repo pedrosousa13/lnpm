@@ -7,6 +7,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
@@ -170,7 +171,7 @@ func restorePackageJSON(projectPath, packageName, originalVersion string) error 
 		}
 	}
 
-	return os.WriteFile(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
+	return fsutil.WriteFileAtomic(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
 }
 
 // removeFromPackageJSON removes a dependency from package.json, editing the
@@ -190,5 +191,5 @@ func removeFromPackageJSON(projectPath, packageName string) error {
 		}
 	}
 
-	return os.WriteFile(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
+	return fsutil.WriteFileAtomic(pkgJSONPath, pkgjson.EnsureTrailingNewline(output), 0644)
 }
