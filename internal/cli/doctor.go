@@ -49,6 +49,33 @@ func RunDoctor() error {
 		}
 	}
 
+	// Store entries Check 5 looked at, so that Check 6's store-wide sweep does
+	// not report the same directory a second time. Matched by path string: a
+	// store reached through a different spelling of the same directory would be
+	// reported by both checks, which is noise rather than a wrong finding.
+	checkedEntries := make(map[string]bool)
+
+	// Whether this store predates completeness markers, decided once and used
+	// by both store checks below.
+	//
+	// On such a store a missing marker says nothing about the entry: no release
+	// that wrote it had markers at all, so every entry lacks one and none of
+	// them is damaged. Checks 5 and 6 would otherwise fault the entire store and
+	// send the user to re-publish all of it, which is both alarming and wrong -
+	// the store is migrated in one pass the next time any command opens it, and
+	// doctor is the one command that never does.
+	//
+	// A failure to decide leaves this false, so the checks below report what
+	// they find. That is the loud direction, and the quiet one would let a
+	// single unreadable path suppress a genuine finding.
+	legacyStore := false
+	legacyBlockedBy := 0
+	if storeUsable {
+		if pending, unreadable, err := store.LegacyBackfillPending(); err == nil {
+			legacyStore, legacyBlockedBy = pending, unreadable
+		}
+	}
+
 	// Check 2: Database integrity
 	fmt.Print("Checking database... ")
 	database, err := db.GetDB()
@@ -134,45 +161,124 @@ func RunDoctor() error {
 			fmt.Printf("%s OK\n", iconOK())
 		}
 
-		// Check 5: Verify store files exist
+		// Check 5: Verify each package's store entry is one lnpm can serve.
+		//
+		// A directory stat used to be the whole test, and it is the weaker
+		// question of the two: an interrupted `lnpm gc` removes an entry's
+		// completeness marker before its tree, so a removal that dies partway
+		// leaves a directory that stats fine and holds part of a package. That
+		// is the state #330 was filed for, and doctor called it healthy. An
+		// entry that is gone entirely still fails this check — there is no
+		// marker to read in a directory that does not exist — so nothing the
+		// stat caught is lost.
 		fmt.Print("Checking store file integrity... ")
-		missingFiles := 0
+		var damaged []string
 		for _, pkg := range packages {
 			if pkg.StorePath == "" {
 				continue
 			}
-			if _, err := os.Stat(pkg.StorePath); os.IsNotExist(err) {
-				missingFiles++
+			checkedEntries[pkg.StorePath] = true
+			// On an unmigrated store the marker cannot be asked about, so this
+			// falls back to the question doctor asked before it existed: is the
+			// entry there at all. Check 6 reports the migration itself.
+			//
+			// The directory is named per package rather than only counted,
+			// because for the entries that are still there the fix below cannot
+			// be carried out without it: Store never renames over an occupied
+			// destination, so a re-publish of unchanged content fails until the
+			// directory is gone.
+			var err error
+			if legacyStore {
+				_, err = os.Stat(pkg.StorePath)
+			} else {
+				err = store.CheckComplete(pkg.StorePath)
+			}
+			if err != nil {
+				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
 			}
 		}
-		if missingFiles > 0 {
-			fmt.Printf("%s %d package(s) with missing files\n", iconFail(), missingFiles)
-			fmt.Println("  Fix: Re-publish affected packages")
+		if len(damaged) > 0 {
+			fmt.Printf("%s %d package(s) with missing or incomplete store entries\n", iconFail(), len(damaged))
+			for _, entry := range damaged {
+				fmt.Printf("  %s\n", entry)
+			}
+			fmt.Println("  Fix: Re-publish the affected packages; delete any directory listed above that is still there first, since lnpm will not overwrite or remove one")
 			issues++
 		} else {
 			fmt.Printf("%s OK\n", iconOK())
 		}
 	}
 
-	// Check 6: One-time backfill of completeness markers into entries written
-	// before markers existed. Reported only: the backfill runs when a command
-	// opens the store, and doctor never repairs what it finds. Skipped when
-	// Check 1 found no usable store — with no store there is nothing to
-	// backfill, and with an unwritable one the command named as the fix could
-	// not run either, so Check 1's own finding is the one worth acting on.
+	// Check 6: store entries that carry no usable completeness marker, swept
+	// from the store itself rather than from the database.
+	//
+	// This is the same fault Check 5 reports, reached from the other side, and
+	// both are needed. gc deletes a package's database row before its store
+	// entry, so the directory a failed removal leaves behind is one no package
+	// row names and Check 5 cannot see. An entry Check 5 looked at is skipped
+	// here, so one damaged directory counts once.
+	//
+	// A store written before markers existed is not swept at all: every entry
+	// in it would be listed, and the fix would be "re-publish your whole
+	// store", which is wrong. Such a store is marked once by the gated backfill
+	// in store.New, so what it needs is a command that opens the store — and
+	// doctor is the one command that never does, which is why it reports this
+	// rather than fixing it.
+	//
+	// Skipped when Check 1 found no usable store, as the checks above are:
+	// with no store there is nothing to sweep, and Check 1's own finding is
+	// the one worth acting on.
 	if storeUsable {
 		fmt.Print("Checking store completeness markers... ")
-		done, err := store.BackfillDone()
-		if err != nil {
+		incomplete, unreadable, err := store.IncompleteEntries()
+		var unreported []string
+		for _, entry := range incomplete {
+			if !checkedEntries[entry] {
+				unreported = append(unreported, entry)
+			}
+		}
+
+		switch {
+		case err != nil:
 			fmt.Printf("%s ERROR\n", iconFail())
-			fmt.Printf("  Failed to read the backfill status: %v\n", err)
+			fmt.Printf("  Failed to scan the store for incomplete entries: %v\n", err)
 			issues++
-		} else if !done {
+		case legacyStore && legacyBlockedBy > 0:
+			// The migration is not merely waiting for a command to run it: the
+			// backfill withholds its decision for as long as any directory
+			// cannot be read, so it will stay pending however many commands the
+			// user runs. That makes this an issue rather than a warning, and it
+			// is the unreadable directory that has to be named — advising "run
+			// any command" here would send the user somewhere that cannot help.
+			fmt.Printf("%s PENDING\n", iconFail())
+			fmt.Println("  This store predates completeness markers and has not been migrated yet")
+			fmt.Printf("  The migration cannot run: %d store directory(ies) could not be read, and it stays pending until they can\n", legacyBlockedBy)
+			fmt.Println("  Fix: Make them readable, then run 'lnpm gc --dry-run' (or any command that opens the store)")
+			issues++
+		case legacyStore:
 			fmt.Printf("%s PENDING\n", iconWarn())
-			fmt.Println("  Store entries have not been backfilled with completeness markers yet")
+			fmt.Println("  This store predates completeness markers and has not been migrated yet")
 			fmt.Println("  Fix: Run 'lnpm gc --dry-run' (or any command that opens the store)")
 			warnings++
-		} else {
+		case len(unreported) > 0:
+			fmt.Printf("%s %d incomplete store entry(ies)\n", iconFail(), len(unreported))
+			for _, entry := range unreported {
+				fmt.Printf("  %s\n", entry)
+			}
+			if unreadable > 0 {
+				fmt.Printf("  %d store directory(ies) could not be read and may hold more\n", unreadable)
+			}
+			fmt.Println("  Fix: Re-publish the affected packages; lnpm will not delete an entry it cannot read, so remove the directories above yourself")
+			issues++
+		case unreadable > 0:
+			// Reported as an issue rather than passed over. The sweep is the
+			// only thing that looks at entries no package row names, so a
+			// directory it could not read is a part of the store nothing has
+			// checked — which is the state this check exists to end.
+			fmt.Printf("%s %d store directory(ies) could not be read\n", iconFail(), unreadable)
+			fmt.Println("  Fix: Make them readable and run 'lnpm doctor' again; until then their entries are unchecked")
+			issues++
+		default:
 			fmt.Printf("%s OK\n", iconOK())
 		}
 	}

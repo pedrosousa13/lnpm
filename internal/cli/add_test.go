@@ -12,7 +12,14 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
-// seedStoreEntry writes a store entry holding one file and returns its path.
+// seedStoreEntry writes a committed store entry holding one file and returns
+// its path.
+//
+// The completeness marker is part of the fixture because it is part of what the
+// write path commits, and the read path refuses an entry without one. Spelling
+// the payload out rather than calling into the store keeps a change to the
+// marker's contents from quietly turning every test built on this helper into
+// one that exercises the refusal instead of what it was written for.
 func seedStoreEntry(t *testing.T, storeRoot, name, hash, relPath, content string) string {
 	t.Helper()
 
@@ -22,6 +29,10 @@ func seedStoreEntry(t *testing.T, storeRoot, name, hash, relPath, content string
 	}
 	if err := os.WriteFile(filepath.Join(entry, relPath), []byte(content), 0644); err != nil {
 		t.Fatalf("seed store file: %v", err)
+	}
+	marker := []byte(`{"schemaVersion":1,"hash":"` + hash + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(entry, ".lnpm-complete"), marker, 0644); err != nil {
+		t.Fatalf("seed completeness marker: %v", err)
 	}
 	return entry
 }

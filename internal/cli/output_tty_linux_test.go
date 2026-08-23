@@ -23,7 +23,6 @@ import (
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
-	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 	"golang.org/x/sys/unix"
 )
@@ -125,12 +124,7 @@ func runDoctorOnTTY(t *testing.T) string {
 	t.Helper()
 
 	dir := newDoctorStoreConfig(t)
-	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if _, err := store.New(); err != nil { // marks the backfill done
-		t.Fatalf("open store: %v", err)
-	}
+	newDoctorStore(t, dir)
 
 	db.ResetForTesting()
 	t.Cleanup(db.ResetForTesting)

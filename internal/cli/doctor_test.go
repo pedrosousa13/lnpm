@@ -9,7 +9,6 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
-	"github.com/pedrosousa13/lnpm/internal/store"
 )
 
 // TestRunDoctorChecksConfiguredStorePath pins that doctor inspects the store
@@ -106,66 +105,148 @@ func newDoctorStoreConfig(t *testing.T) string {
 	return dir
 }
 
-// TestRunDoctorReportsPendingBackfill covers both halves of doctor's job for
-// the completeness-marker backfill: it says whether the store has been
-// backfilled, and it does not do the backfilling. doctor reports and names the
-// command that fixes each problem; repairing is somebody else's job.
-func TestRunDoctorReportsPendingBackfill(t *testing.T) {
+// TestRunDoctorReportsIncompleteStoreEntry covers both halves of doctor's job
+// for a store entry lnpm cannot vouch for: it names the directory, and it does
+// not repair or delete it. doctor reports and names the fix; acting is somebody
+// else's job, and here nobody's but the user's - lnpm cannot tell what is
+// inside a gutted entry, so it must not destroy it either.
+func TestRunDoctorReportsIncompleteStoreEntry(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
-	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+	// A committed entry beside it, so the store reads as one lnpm 2.x wrote
+	// rather than one awaiting the legacy migration. Those are different
+	// findings with different fixes, and the unmarked entry only means
+	// "damaged" in a store that has markers.
+	writeCompletenessMarker(t, seedUnmarkedEntry(t, dir, "right-pad", "bbb222"), "bbb222")
 
 	out, err := runDoctor(t)
-	if err != nil {
-		t.Errorf("RunDoctor() = %v for a pending backfill, want nil: a backfill still to run is a warning", err)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for a store holding an incomplete entry, want an error; output was:\n%s", out)
 	}
 
-	if !strings.Contains(out, "completeness marker") {
-		t.Errorf("RunDoctor did not report the pending completeness-marker backfill, output was:\n%s", out)
+	if !strings.Contains(out, entry) {
+		t.Errorf("RunDoctor did not name the incomplete entry, output was:\n%s", out)
 	}
-
-	done, err := store.BackfillDone()
-	if err != nil {
-		t.Fatalf("backfill status: %v", err)
+	if _, err := os.Stat(filepath.Join(entry, "legacy.js")); err != nil {
+		t.Errorf("RunDoctor deleted the content of the entry it reported: %v", err)
 	}
-	if done {
-		t.Error("RunDoctor performed the backfill; doctor must report without writing")
+	if _, err := os.Stat(filepath.Join(entry, ".lnpm-complete")); err == nil {
+		t.Error("RunDoctor marked the entry it reported as complete; doctor must report without writing")
 	}
 }
 
-// TestRunDoctorSkipsBackfillCheckWithoutStore pins that the backfill report
-// stays behind its prerequisite. With no store on the machine there is nothing
-// to backfill, and the command doctor would name as the fix cannot run either,
-// so warning about it is noise pointing nowhere.
-func TestRunDoctorSkipsBackfillCheckWithoutStore(t *testing.T) {
+// TestRunDoctorSkipsStoreSweepWithoutStore pins that the sweep stays behind its
+// prerequisite. With no store on the machine there is nothing to sweep, and
+// Check 1 has already reported the only thing worth acting on.
+func TestRunDoctorSkipsStoreSweepWithoutStore(t *testing.T) {
 	newDoctorStoreConfig(t) // the configured store is deliberately not created
 
 	out := captureFailingDoctorStdout(t)
 
 	if strings.Contains(out, "completeness marker") {
-		t.Errorf("RunDoctor reported on the backfill for a store that does not exist, output was:\n%s", out)
+		t.Errorf("RunDoctor swept a store that does not exist, output was:\n%s", out)
 	}
 }
 
-// TestRunDoctorReportsCompletedBackfill is the same check read the other way
-// round: a store that has been backfilled must not be reported as pending.
-func TestRunDoctorReportsCompletedBackfill(t *testing.T) {
+// TestRunDoctorReportsALegacyStoreAsPending covers the store that predates
+// completeness markers. Every entry in it fails the completeness check, but the
+// fix is not "re-publish your whole store" - it is the one-time migration that
+// runs when any command opens the store, and doctor is the one command that
+// never does. Reporting it as a warning rather than an issue keeps
+// `lnpm doctor && ...` working on a store that is about to migrate itself.
+func TestRunDoctorReportsALegacyStoreAsPending(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
-	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
-		t.Fatalf("create store: %v", err)
+	entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+
+	out, err := runDoctor(t)
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a store awaiting its migration, want nil: that is a warning, not a broken install", err)
 	}
-	if _, err := store.New(); err != nil {
-		t.Fatalf("open store: %v", err)
+
+	if !strings.Contains(out, "PENDING") {
+		t.Errorf("RunDoctor did not report the unmigrated store as pending, output was:\n%s", out)
 	}
+	if strings.Contains(out, entry) {
+		t.Errorf("RunDoctor listed %s as damaged; every entry of an unmigrated store would be listed, and none of them needs re-publishing. Output was:\n%s", entry, out)
+	}
+	if _, err := os.Stat(filepath.Join(entry, ".lnpm-complete")); err == nil {
+		t.Error("RunDoctor performed the migration; doctor must report without writing")
+	}
+}
+
+// TestRunDoctorReportsAMigrationItCannotRun covers the overlap the branch above
+// would otherwise hide: a store that predates markers and holds a directory the
+// scan cannot read. The migration withholds its decision for as long as anything
+// is unreadable, so "run any command that opens the store" is advice that can
+// never work here. doctor has to name the directory count and fail, or the user
+// is sent round a loop with nothing telling them why it does not end.
+func TestRunDoctorReportsAMigrationItCannotRun(t *testing.T) {
+	requirePermissionEnforcement(t)
+
+	dir := newDoctorStoreConfig(t)
+	seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+	blocked := filepath.Dir(seedUnmarkedEntry(t, dir, "blocked-pkg", "bbb222"))
+	if err := os.Chmod(blocked, 0000); err != nil {
+		t.Fatalf("chmod %s: %v", blocked, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0755) })
+
+	out, err := runDoctor(t)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for a migration that cannot run, want an error; output was:\n%s", out)
+	}
+
+	if !strings.Contains(out, "could not be read") {
+		t.Errorf("RunDoctor did not say what is blocking the migration, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "Make them readable") {
+		t.Errorf("RunDoctor advised a fix without the step that unblocks it, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorPassesAStoreOfCommittedEntries is the same check read the other
+// way round: an entry the write path committed must not be reported.
+func TestRunDoctorPassesAStoreOfCommittedEntries(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+	writeCompletenessMarker(t, entry, "aaa111")
 
 	out, err := runDoctor(t)
 
-	if strings.Contains(out, "not been backfilled") {
-		t.Errorf("RunDoctor reported a backfilled store as pending, output was:\n%s", out)
+	if strings.Contains(out, "incomplete") {
+		t.Errorf("RunDoctor reported a committed entry as incomplete, output was:\n%s", out)
 	}
 	if err != nil {
-		t.Errorf("RunDoctor() = %v for a backfilled store, want nil", err)
+		t.Errorf("RunDoctor() = %v for a store of committed entries, want nil", err)
+	}
+}
+
+// seedUnmarkedEntry writes a store entry with content and no completeness
+// marker - the shape an interrupted gc leaves, and the shape every entry had
+// before markers existed - and returns its path.
+func seedUnmarkedEntry(t *testing.T, dir, name, hash string) string {
+	t.Helper()
+
+	entry := filepath.Join(dir, "mystore", "store", name, hash)
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("create store entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "legacy.js"), []byte("legacy"), 0644); err != nil {
+		t.Fatalf("write store entry file: %v", err)
+	}
+	return entry
+}
+
+// writeCompletenessMarker marks an entry the way the store's write path does.
+// The payload is spelled out rather than taken from the store package, so a
+// change to what the marker holds has to be made here too and cannot quietly
+// stop this test exercising the accepting branch.
+func writeCompletenessMarker(t *testing.T, entry, hash string) {
+	t.Helper()
+
+	payload := []byte(`{"schemaVersion":1,"hash":"` + hash + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(entry, ".lnpm-complete"), payload, 0644); err != nil {
+		t.Fatalf("write completeness marker: %v", err)
 	}
 }
 
@@ -192,12 +273,7 @@ func TestRunDoctorFailsWhenIssuesFound(t *testing.T) {
 // failed to reach the summary.
 func TestRunDoctorSucceedsWhenAllChecksPass(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
-	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if _, err := store.New(); err != nil { // marks the backfill done
-		t.Fatalf("open store: %v", err)
-	}
+	newDoctorStore(t, dir)
 
 	out, err := runDoctor(t)
 
@@ -211,12 +287,13 @@ func TestRunDoctorSucceedsWhenAllChecksPass(t *testing.T) {
 
 // TestRunDoctorSucceedsWithWarningsOnly pins the distinction the summary
 // already draws: warnings describe things worth cleaning up, not things that
-// are broken, so they must not fail the command. The store here exists but has
-// no completeness markers yet, which doctor reports as a warning.
+// are broken, so they must not fail the command. The package planted here was
+// published and never linked, which doctor reports as an orphan and a warning.
 func TestRunDoctorSucceedsWithWarningsOnly(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
-	if err := os.MkdirAll(filepath.Join(dir, "mystore", "store"), 0755); err != nil {
-		t.Fatalf("create store: %v", err)
+	newDoctorStore(t, dir)
+	if err := openDoctorDB(t).InsertPackage(&db.Package{Name: "orphan"}); err != nil {
+		t.Fatalf("insert package: %v", err)
 	}
 
 	out, err := runDoctor(t)
@@ -283,25 +360,43 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 			name: "everything healthy",
 			setup: func(t *testing.T, dir string) string {
 				newDoctorStore(t, dir)
-				if _, err := store.New(); err != nil { // marks the backfill done
-					t.Fatalf("open store: %v", err)
-				}
 				return "All checks passed"
 			},
 		},
 		{
-			name: "backfill pending",
+			name: "incomplete store entry",
 			setup: func(t *testing.T, dir string) string {
-				newDoctorStore(t, dir)
+				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+				writeCompletenessMarker(t, seedUnmarkedEntry(t, dir, "right-pad", "bbb222"), "bbb222")
+				return "incomplete store entry(ies)" // and the "x Found N issue(s)" summary
+			},
+		},
+		{
+			name: "legacy store awaiting migration",
+			setup: func(t *testing.T, dir string) string {
+				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
 				return "PENDING" // and the "! Found N warning(s)" summary
 			},
 		},
 		{
-			name:     "backfill status unreadable",
+			name:     "legacy migration blocked by an unreadable directory",
+			requires: requirePermissionEnforcement,
+			setup: func(t *testing.T, dir string) string {
+				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+				blocked := filepath.Dir(seedUnmarkedEntry(t, dir, "blocked-pkg", "bbb222"))
+				if err := os.Chmod(blocked, 0000); err != nil {
+					t.Fatalf("chmod %s: %v", blocked, err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(blocked, 0755) })
+				return "could not be read" // and the "x Found N issue(s)" summary
+			},
+		},
+		{
+			name:     "store cannot be swept",
 			requires: requireNotADirectoryError,
 			setup: func(t *testing.T, dir string) string {
-				// A file where the package store should be: the store is a
-				// usable directory, so the check runs, but reading the marker
+				// A file where the package store should be: the store root is a
+				// usable directory, so the sweep runs, but listing entries
 				// inside it fails.
 				if err := os.MkdirAll(filepath.Join(dir, "mystore"), 0755); err != nil {
 					t.Fatalf("create store: %v", err)
@@ -309,7 +404,7 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, "mystore", "store"), []byte("not a dir"), 0644); err != nil {
 					t.Fatalf("write store file: %v", err)
 				}
-				return "Failed to read the backfill status"
+				return "could not be read"
 			},
 		},
 		{
@@ -379,8 +474,7 @@ func requireNotADirectoryError(t *testing.T) {
 	}
 }
 
-// newDoctorStore creates the configured store directory, without the
-// completeness marker that store.New writes.
+// newDoctorStore creates the configured store directory, empty.
 func newDoctorStore(t *testing.T, dir string) {
 	t.Helper()
 

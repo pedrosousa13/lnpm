@@ -54,9 +54,10 @@ func New() (*Store, error) {
 		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
-	// Entries written before completeness markers existed carry none, and are
-	// marked once here rather than being grandfathered.
-	if err := backfillMarkers(storePath); err != nil {
+	// A store written before completeness markers existed carries none, and
+	// every entry in it would otherwise be refused on read. It is marked once,
+	// here, under a gate that leaves 2.x stores alone.
+	if err := backfillLegacyStore(storePath); err != nil {
 		return nil, err
 	}
 
@@ -78,12 +79,18 @@ func (s *Store) PackagePath(name, hash string) string {
 	return filepath.Join(s.basePath, name, hash)
 }
 
-// Exists reports whether a complete package with the given hash is in the
-// store. A directory alone is not enough: a deletion interrupted partway
+// CheckComplete reports whether a complete package with the given hash is in
+// the store. A directory alone is not enough: a deletion interrupted partway
 // leaves one behind, and linking it into a consumer would install a truncated
-// package. The entry must carry its completeness marker.
-func (s *Store) Exists(name, hash string) bool {
-	return hasMarker(s.PackagePath(name, hash))
+// package.
+//
+// It returns an error rather than a bool deliberately. The bool it replaces was
+// the shape of #330: every write path called it, no read path did, and nothing
+// about `if s.Exists(...)` announced that the answer had to be acted on. A
+// caller now has to handle the error, and gets one that names the entry and
+// tells the user how to rebuild it, which is what a read path has to print.
+func (s *Store) CheckComplete(name, hash string) error {
+	return checkEntry(s.PackagePath(name, hash), name)
 }
 
 // Store populates the store with the package's files, using reflink (CoW clone)
@@ -100,7 +107,7 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), finalPath)
 
 	// Same hash = same content, skip if already exists (race-safe)
-	if s.Exists(name, hash) {
+	if s.CheckComplete(name, hash) == nil {
 		debug.Logf("store: package already exists at %s, skipping", finalPath)
 		return finalPath, nil
 	}
@@ -292,21 +299,42 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 func (s *Store) finalize(name, hash, destPath, finalPath string) (bool, error) {
 	if err := os.Rename(destPath, finalPath); err != nil {
 		// A concurrent publish of the same hash may have already created it.
-		// Exists(name, hash) rather than a bare stat of finalPath, which is
-		// the weaker question of the two: a destination that exists without a
+		// CheckComplete(name, hash) rather than a bare stat of finalPath, which
+		// is the weaker question of the two: a destination that exists without a
 		// marker is a partial entry, and blessing a failed rename onto one as
 		// success is precisely what must not happen here.
-		if s.Exists(name, hash) {
+		if s.CheckComplete(name, hash) == nil {
 			return false, nil // temp dir cleaned up by deferred guard
+		}
+		// A destination that exists but is not a complete entry: the gutted
+		// directory of #330. It is not deleted here — lnpm cannot tell what is
+		// in it, and the write path is not where that gets decided — so the
+		// rename cannot be retried and the user has to remove it. Saying so is
+		// the difference between actionable and "rename ...: file exists",
+		// which is what push prints when it hits this.
+		if _, statErr := os.Stat(finalPath); statErr == nil {
+			return false, fmt.Errorf("cannot store %s: %s is in the way and is not a complete store entry; delete it and publish again", name, finalPath)
 		}
 		return false, fmt.Errorf("failed to finalize store package: %w", err)
 	}
 	return true, nil
 }
 
-// GetFiles returns all files in a stored package
+// GetFiles returns all files in a stored package.
+//
+// The completeness check is here, at the primitive, rather than at each of the
+// commands that read the store. What this returns is what gets materialised
+// into a consumer project, so a caller that skipped the check would link a
+// gutted entry — which is exactly what add, pull and publish's relink did
+// before #330, each of them having simply never asked. Walking a damaged entry
+// succeeds and returns the files that survived, so there is no failure further
+// down to fall back on.
 func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
 	storePath := s.PackagePath(name, hash)
+
+	if err := s.CheckComplete(name, hash); err != nil {
+		return nil, err
+	}
 
 	var files []*pack.FileInfo
 	err := filepath.Walk(storePath, func(path string, info os.FileInfo, err error) error {

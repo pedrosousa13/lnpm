@@ -223,9 +223,13 @@ func RunPushTagged(skipHooks bool, tag string) error {
 		return fmt.Errorf("failed to access store: %w", err)
 	}
 
-	// Check if we need to store (hash changed or doesn't exist)
+	// Check if we need to store (hash changed, or the entry is not one the
+	// store can vouch for). The second half is also what stops a damaged entry
+	// being reused: the files pushed to every linked project below are read
+	// straight off storePath, so an entry taken on trust here is linked without
+	// anything else looking at it.
 	var storePath string
-	if pkg.ContentHash != newHash || !s.Exists(pkgJSON.Name, newHash) {
+	if pkg.ContentHash != newHash || s.CheckComplete(pkgJSON.Name, newHash) != nil {
 		// Store the updated package
 		storePath, err = s.Store(pkgJSON.Name, newHash, files, cwd)
 		if err != nil {

@@ -279,14 +279,27 @@ otherwise leave the tag unmoved.
 
    Every entry carries a `.lnpm-complete` marker, written as the last file
    inside the temporary directory and removed before the tree when `lnpm gc`
-   deletes the entry. The store reports an entry as present only when the
-   marker is there, so a deletion interrupted partway reads as absent rather
-   than as a truncated package. Entries written before markers existed are
-   marked once, the first time a command opens the store, and
-   `~/.lnpm/store/.lnpm-markers-backfilled` records that the pass finished. An
-   entry that cannot be marked is skipped and the sentinel is withheld, so the
-   next store open retries it; `lnpm doctor` reports the backfill as pending
-   until it completes.
+   deletes the entry. The marker records the entry's content hash. An entry
+   counts as complete only when the marker is there and names the directory it
+   sits in, so a deletion interrupted partway reads as *incomplete* — the
+   directory is still there and lnpm says so, rather than serving a truncated
+   package or pretending it was never published.
+
+   Both the write path and the read paths check it: `lnpm add`, `lnpm pull` and
+   the relink after `lnpm publish --push` refuse an entry that fails, naming the
+   directory and saying what to do. lnpm never deletes such an entry — it cannot
+   tell what is inside one — so removing it is the user's call, and it has to
+   happen before a re-publish of the same content can land, since the store
+   never renames over an occupied destination. `lnpm doctor` lists them.
+
+   Markers shipped in 2.0.0. A store in which nothing is marked therefore
+   predates them, and is marked once, the first time any command opens it;
+   `~/.lnpm/store/.lnpm-markers-backfilled` records that the decision was taken.
+   A store in which anything *is* marked is never backfilled — an unmarked entry
+   there is a damaged one, and marking it would be the laundering that made the
+   marker worthless. A backfill that cannot finish undoes itself and retries on
+   the next open, so the store stays recognisably un-migrated. `lnpm doctor`
+   reports an un-migrated store as pending rather than listing every entry.
 
 5. Record in bbolt database
 6. If `--push`, update all linked projects
