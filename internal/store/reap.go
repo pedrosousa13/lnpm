@@ -56,8 +56,9 @@ func (s *Store) FindTempDirs() (dirs []TempDir, unreadable int) {
 // entry's hash, the infix, and the decimal tail os.MkdirTemp appends.
 //
 // The match is deliberately narrow rather than "anything dot-prefixed". The
-// completeness marker, the backfill sentinel and a package whose name begins
-// with a dot are all dot-prefixed and none of them is ours to delete.
+// completeness marker, the backfill sentinel and a dot-named package directory
+// stored before #325 made ValidatePackageName reject a leading dot are all
+// dot-prefixed, and none of them is ours to delete.
 func isTempDirName(name string) bool {
 	rest, ok := strings.CutPrefix(name, ".")
 	if !ok {

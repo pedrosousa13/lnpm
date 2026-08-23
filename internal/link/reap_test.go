@@ -99,17 +99,18 @@ func TestFindTempEntriesFindsScopedTempDirs(t *testing.T) {
 
 // TestFindTempEntriesLeavesRealPackagesAlone is the test that matters most.
 // ListLinked hides every dot-prefixed entry, so it is tempting to treat any
-// dot-prefixed entry as reclaimable — but a package name may legitimately begin
-// with a dot, and a scope directory must survive a temp directory inside it
-// being reclaimed. A sweep that matches any dot-prefixed entry passes every
-// other test in this file and destroys a real package here.
+// dot-prefixed entry as reclaimable — but a .lnpm populated before #325 rejected
+// dot-prefixed names can still hold one, and a scope directory must survive a
+// temp directory inside it being reclaimed. A sweep that matches any
+// dot-prefixed entry passes every other test in this file and destroys a real
+// package here.
 func TestFindTempEntriesLeavesRealPackagesAlone(t *testing.T) {
 	project := t.TempDir()
 	lnpm := filepath.Join(project, ".lnpm")
 
 	keep := []string{
 		filepath.Join(lnpm, "ordinary-pkg"),
-		// A package whose name legitimately begins with a dot.
+		// A dot-named package, from a project linked before #325.
 		filepath.Join(lnpm, ".hidden-pkg"),
 		// Close to the temp shape but not it: no hex tail, and a name that only
 		// looks like the retired form.

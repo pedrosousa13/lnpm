@@ -135,6 +135,185 @@ func TestLinkAndUnlink(t *testing.T) {
 	}
 }
 
+// TestUnlinkRemovesADotPrefixedPackageLinkedBeforeItWasInvalid is the exit for
+// the trap #325 would otherwise have set. Link still refuses a dot-prefixed
+// name, so this seeds the entry by hand: that is exactly the shape a project
+// linked before the rule already has on disk, and it is not reachable through
+// Link any more by design.
+//
+// Without the waiver, Unlink refuses it, 'lnpm remove' reports a failure and
+// leaves the lock entry, and 'lnpm remove --all' skips it on every future run —
+// the package becomes permanently unremovable by lnpm.
+func TestUnlinkRemovesADotPrefixedPackageLinkedBeforeItWasInvalid(t *testing.T) {
+	projectPath := t.TempDir()
+	const name = ".hidden-pkg"
+
+	pkgDir := filepath.Join(projectPath, ".lnpm", name)
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	nodeModules := filepath.Join(projectPath, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The node_modules half is Unix-only: creating a symlink directly needs a
+	// privilege the test process may not hold on Windows, the same reason
+	// TestLinkPreservesSymlinks skips there. The .lnpm half below is what the
+	// waiver is actually about and it runs on every platform.
+	linkSeeded := runtime.GOOS != "windows"
+	if linkSeeded {
+		if err := os.Symlink(filepath.Join("..", ".lnpm", name), filepath.Join(nodeModules, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	linker := New(projectPath)
+	if err := linker.Unlink(name); err != nil {
+		t.Fatalf("Unlink(%q) error: %v", name, err)
+	}
+
+	if _, err := os.Stat(pkgDir); !os.IsNotExist(err) {
+		t.Errorf(".lnpm/%s still exists after unlink (stat err = %v)", name, err)
+	}
+	if linkSeeded {
+		if _, err := os.Lstat(filepath.Join(nodeModules, name)); !os.IsNotExist(err) {
+			t.Errorf("node_modules/%s still exists after unlink (stat err = %v)", name, err)
+		}
+	}
+}
+
+// TestUnlinkStillRefusesATraversingName pins the other half of the waiver. The
+// name is joined into .lnpm/{name} for an os.RemoveAll, so if the removal path
+// stopped validating at all, this deletes a directory outside the project.
+func TestUnlinkStillRefusesATraversingName(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".lnpm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real directory beside the project, which the traversing name resolves to.
+	victim := filepath.Join(tmpDir, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	linker := New(projectPath)
+	for _, name := range []string{"../../victim", "..", "/etc", "a\\b"} {
+		if err := linker.Unlink(name); err == nil {
+			t.Errorf("Unlink(%q) = nil, want error", name)
+		}
+	}
+
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("Unlink deleted a directory outside the project: %v", err)
+	}
+}
+
+// TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm pins the
+// widest consequence of the removal waiver, which is not obvious from the name
+// of the rule it waives.
+//
+// "@../pkg" is rejected by the strict validator, but only incidentally by the
+// dot rule: the "."/".." segment check does not fire, because the segment is
+// "@..", not "..". So waiving the dot rule on the removal path lets it through,
+// and lnpm.lock keys are attacker-controlled in any repository the developer did
+// not write.
+//
+// It is contained because "@.." is a literal path component: Clean collapses
+// "..", and "@.." is not that, so the component survives and the path stays
+// under .lnpm. That is a pure path-handling property, so it is asserted here
+// without touching a filesystem and runs on every platform - which matters,
+// because the filesystem half below cannot run on Windows at all. The dot rule
+// itself is covered in pack's name_test.go.
+func TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm(t *testing.T) {
+	const name = "@../pkg"
+
+	// The asymmetry the waiver creates, which is the reason containment has to
+	// be pinned at all.
+	if err := pack.ValidatePackageName(name); err == nil {
+		t.Errorf("ValidatePackageName(%q) = nil; this test assumes the strict form rejects it", name)
+	}
+	if err := pack.ValidatePackageNameForRemoval(name); err != nil {
+		t.Fatalf("ValidatePackageNameForRemoval(%q) = %v, want nil", name, err)
+	}
+
+	// Exactly the two joins Unlink performs. Asserting the full expected path,
+	// rather than "is under .lnpm", is what makes this fail loudly if Clean ever
+	// did collapse the component: the joined path would lose "@.." and become
+	// lnpmDir/pkg.
+	// The expected paths are built by concatenation, not by filepath.Join. Using
+	// Join on both sides would compare Clean's output with Clean's output, so a
+	// Clean that did collapse "@.." would change both and the assertion would
+	// pass vacuously.
+	sep := string(filepath.Separator)
+	lnpmDir := filepath.Join("/project", ".lnpm")
+
+	joined := filepath.Join(lnpmDir, name)
+	if want := lnpmDir + sep + "@.." + sep + "pkg"; joined != want {
+		t.Errorf("Join(%q, %q) = %q, want %q", lnpmDir, name, joined, want)
+	}
+	if got, want := filepath.Dir(joined), lnpmDir+sep+"@.."; got != want {
+		t.Errorf("Dir(%q) = %q, want %q", joined, got, want)
+	}
+}
+
+// TestUnlinkContainsAScopeNamedLikeATraversal is the filesystem half of the
+// property above: a real Unlink of "@../pkg" takes the entry under .lnpm and
+// nothing else. It runs on Unix only.
+//
+// Verified by running it, not inferred - on Unix. On Windows the fixture cannot
+// be built: Win32 path parsing strips trailing dots from a path component, so
+// "@.." is not a creatable directory name there and MkdirAll fails with "The
+// system cannot find the path specified" before the test reaches Unlink. That is
+// a limitation of the fixture rather than of the production behaviour, and it
+// happens to confirm the same property from the opposite direction - Windows
+// will not even let a directory be named that. The path-handling assertions in
+// TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm cover Windows.
+func TestUnlinkContainsAScopeNamedLikeATraversal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - Win32 path parsing strips trailing dots from a " +
+			"path component, so a directory named \"@..\" cannot be created and the " +
+			"fixture cannot be built (see #326 for trailing-dot names generally)")
+	}
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	const name = "@../pkg"
+
+	pkgDir := filepath.Join(projectPath, ".lnpm", "@..", "pkg")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A directory that a real traversal would reach: the sibling of .lnpm that
+	// "@.." would name if it were collapsed rather than treated as a literal.
+	victim := filepath.Join(projectPath, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	linker := New(projectPath)
+	if err := linker.Unlink(name); err != nil {
+		t.Fatalf("Unlink(%q) error: %v", name, err)
+	}
+
+	if _, err := os.Stat(pkgDir); !os.IsNotExist(err) {
+		t.Errorf(".lnpm/@../pkg still exists after unlink (stat err = %v)", err)
+	}
+	for _, dir := range []string{victim, outside} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("Unlink(%q) removed %s, which is outside .lnpm: %v", name, dir, err)
+		}
+	}
+}
+
 func TestLinkScopedPackage(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := filepath.Join(tmpDir, "store", "@org", "my-package", "abc123")

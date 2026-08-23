@@ -508,8 +508,14 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 }
 
 // Unlink removes a linked package from the project
+//
+// The name is validated through the removal entry point, which waives only the
+// leading-dot reservation #325 added. A project linked before that rule can hold
+// a dot-named package, and refusing to unlink it would leave it with no
+// supported way out. Every traversal check still applies: packageName is joined
+// into .lnpm/{name} for a RemoveAll below.
 func (l *Linker) Unlink(packageName string) error {
-	if err := pack.ValidatePackageName(packageName); err != nil {
+	if err := pack.ValidatePackageNameForRemoval(packageName); err != nil {
 		return err
 	}
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
@@ -546,9 +552,11 @@ func (l *Linker) Unlink(packageName string) error {
 // package, a .lnpm/{scope} - that is anything other than a directory in the
 // project.
 //
-// pack.ValidatePackageName guards the segments the package name contributes, but
-// nothing guarded their ancestors, and a repository can commit .lnpm itself as a
-// symlink at any directory it likes. .gitignore does not save anyone from that:
+// The package-name validators guard the segments the package name contributes -
+// ValidatePackageName on the link paths, ValidatePackageNameForRemoval on
+// Unlink, which differ only in #325's leading-dot reservation and share every
+// path check. But nothing guarded their ancestors, and a repository can commit
+// .lnpm itself as a symlink at any directory it likes. .gitignore does not save anyone from that:
 // a tracked symlink is checked out regardless. Every path the linker builds
 // under it then lands wherever it points, so a link writes outside the project
 // and an unlink deletes outside it.
@@ -762,9 +770,10 @@ func (l *Linker) ListLinked() ([]string, error) {
 	for _, entry := range entries {
 		// Skip dot-prefixed entries: they are in-progress or crash-orphaned
 		// relink temp directories, not linked packages. This also skips a
-		// package whose name starts with a dot, which is safe in practice: npm
-		// forbids such names, so one can never have been linked here
-		// (ValidatePackageName itself only rejects "." and "..").
+		// package whose name starts with a dot. #325 made ValidatePackageName
+		// reject a leading dot on either segment, so nothing linked after it
+		// can land here — but a .lnpm populated before it is not revalidated,
+		// and such an entry stays hidden from this listing.
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}

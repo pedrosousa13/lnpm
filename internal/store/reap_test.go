@@ -84,7 +84,7 @@ func TestFindTempDirsLeavesStoreEntriesAlone(t *testing.T) {
 	keep := []string{
 		filepath.Join(s.Root(), "my-pkg", "0123456789abcdef"),
 		filepath.Join(s.Root(), "@org", "pkg", "fedcba9876543210"),
-		// A package whose name legitimately begins with a dot.
+		// A dot-named package, stored before #325 rejected such names.
 		filepath.Join(s.Root(), ".hidden-pkg", "0011223344556677"),
 		// Close to the temp shape but not it: a non-numeric random tail, and a
 		// hash portion that is not hex.
