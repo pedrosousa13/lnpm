@@ -15,6 +15,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	bolt "go.etcd.io/bbolt"
 	bolterrors "go.etcd.io/bbolt/errors"
 )
@@ -100,12 +101,29 @@ type Package struct {
 
 // Project represents a project that consumes packages
 type Project struct {
-	ID             int64     `json:"id"`
-	Path           string    `json:"path"`
-	Name           string    `json:"name"`
-	PackageManager string    `json:"package_manager"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             int64  `json:"id"`
+	Path           string `json:"path"`
+	Name           string `json:"name"`
+	PackageManager string `json:"package_manager"`
+	// Device identifies the filesystem Path was on when this record was last
+	// written while the path could be read - st_dev on Unix, the volume serial
+	// number on Windows. Zero means unknown, which is what every record written
+	// before #335 holds and what a platform reporting no device leaves behind.
+	//
+	// It exists so gc can tell a deleted project directory from one whose
+	// filesystem is not mounted right now. Both stat ENOENT and are otherwise
+	// indistinguishable: an unmounted drive leaves its mount point present and
+	// empty on the parent filesystem, so neither the path, its ancestry, nor
+	// anything inside the project carries the difference. Comparing the
+	// filesystem the project was last seen on against the one now mounted where
+	// it should be is the only signal left, and it needs a value recorded
+	// earlier to compare against.
+	//
+	// It is a heuristic and not a proof; classifyProjectDir documents where it
+	// gives a wrong answer.
+	Device    uint64    `json:"device,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Link represents a link between a package and a project
@@ -1082,12 +1100,28 @@ func (db *DB) GetProjectByID(id int64) (*Project, error) {
 // --- Project operations ---
 
 // InsertProject inserts or updates a project
+//
+// It records the device of the project path, which is the write half of the
+// #335 fix. Doing it here rather than at the call sites that build a Project is
+// deliberate: there are four of them across add, restore and push, and a fifth
+// added later would otherwise opt out of the protection without anyone noticing.
+// The function already consults the filesystem through normalizePath, so this
+// costs one stat on a path it has just resolved.
+//
+// A path that will not stat yields zero, and zero is never written over a value
+// already recorded - see the update branch below. Zeroing on the way past would
+// discard the only evidence gc has at precisely the moment the project became
+// unreachable, which is the case the field exists for.
 func (db *DB) InsertProject(proj *Project) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	// Normalize path to avoid symlink issues (e.g., /var vs /private/var on macOS)
 	proj.Path = normalizePath(proj.Path)
+	observed := fsutil.DeviceIDOfPath(proj.Path)
+	if observed != 0 {
+		proj.Device = observed
+	}
 
 	return db.db.Update(func(tx *bolt.Tx) error {
 		projects := tx.Bucket(bucketProjects)
@@ -1101,6 +1135,17 @@ func (db *DB) InsertProject(proj *Project) error {
 				if err := json.Unmarshal(data, &existing); err == nil {
 					existing.Name = proj.Name
 					existing.PackageManager = proj.PackageManager
+					// Only a device actually observed above overwrites the
+					// recorded one. This branch copies named fields onto the
+					// record it found rather than replacing it, so a field
+					// left out of this list is written once and never
+					// refreshed - and a device never refreshed goes stale the
+					// first time the filesystem is remounted, after which gc
+					// declines to collect that project for good.
+					if observed != 0 {
+						existing.Device = observed
+					}
+					proj.Device = existing.Device
 					existing.UpdatedAt = time.Now()
 					proj.ID = existing.ID
 
@@ -1132,6 +1177,54 @@ func (db *DB) InsertProject(proj *Project) error {
 		}
 
 		return byPath.Put([]byte(proj.Path), itob(id))
+	})
+}
+
+// SetProjectDevice records which filesystem a project path was seen on, without
+// touching any other field of the record.
+//
+// gc calls this whenever it stats a project directory successfully, which is
+// what bounds how stale a recorded device can get. Without a refresh the value
+// is only as good as the mount that was in place when the project was first
+// added, and an anonymous device number - which is what tmpfs, btrfs, overlayfs,
+// FUSE and NFS all get - is not stable across a remount. Measured on Linux
+// 6.12: unmounting a tmpfs and remounting it after two other mounts had taken
+// slots moved it from 163 to 214. A project whose recorded device drifted that
+// way is declined rather than collected, which is the safe direction but leaks
+// space, so the refresh is what keeps the leak bounded rather than permanent.
+//
+// It writes exactly the value it is given, including zero. Zero means unknown
+// and sends gc back to its pre-#335 behaviour for that project, so a caller must
+// not pass an unobserved device here; the one production caller checks first.
+// The setter does not enforce it, because a test needs to be able to construct
+// a record that has no device.
+//
+// A project ID that names no record is not an error: the record can have been
+// deleted between the read and this write, and re-creating it from an ID and a
+// device would invent a project with no path.
+func (db *DB) SetProjectDevice(id int64, device uint64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	return db.db.Update(func(tx *bolt.Tx) error {
+		projects := tx.Bucket(bucketProjects)
+		data := projects.Get(itob(id))
+		if data == nil {
+			return nil
+		}
+		var proj Project
+		if err := json.Unmarshal(data, &proj); err != nil {
+			return fmt.Errorf("the record of project %d will not parse: %w", id, err)
+		}
+		if proj.Device == device {
+			return nil
+		}
+		proj.Device = device
+		updated, err := json.Marshal(&proj)
+		if err != nil {
+			return err
+		}
+		return projects.Put(itob(id), updated)
 	})
 }
 

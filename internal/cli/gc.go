@@ -58,6 +58,13 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	// Project directories still on disk, deduplicated: the temp-directory sweep
 	// reads each one once, however many packages are linked into it.
 	projectPaths := make(map[string]struct{})
+	// Links gc declined to judge, because the project directory does not stat
+	// and the filesystem it was recorded on is not mounted where it should be.
+	// Reported rather than only counted: these are the links that kept a version
+	// alive, so a user wondering why gc reclaimed nothing needs to see which
+	// ones, and a user whose drive is genuinely gone for good needs to know
+	// there is something to clean up once they say so.
+	var skippedLinks []skippedLink
 
 	for _, pkg := range packages {
 		// A failure to read the links stops the run, for the reason the tag read
@@ -121,16 +128,65 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 				})
 				continue
 			}
-			// Check if project directory still exists
-			if _, err := os.Stat(proj.Path); os.IsNotExist(err) {
+			// Decide whether the project directory was deleted or is merely out
+			// of reach. A bare not-exist test used to be the whole answer, and
+			// it cannot tell the two apart: an unmounted drive stats ENOENT
+			// exactly like a deleted directory, so a drive left unplugged made
+			// gc drop the link, take validLinks to zero, and delete the store
+			// entry of a package the project was still consuming. Re-mounting
+			// could not bring it back. classifyProjectDir documents how the two
+			// are separated and, more importantly, the five cases where it
+			// still gets the answer wrong.
+			state, device := classifyProjectDir(proj.Path, proj.Device)
+			switch state {
+			case projectGone:
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID:   pkg.ID,
 					projectID:   lnk.ProjectID,
 					projectPath: proj.Path,
 					reason:      "project directory no longer exists",
 				})
-			} else {
+			case projectUnreachable:
+				// Declined, not judged. The link stays out of linksToRemove, so
+				// it still counts toward validLinks below and the version is
+				// not collected. The direction is what decides, by the
+				// principle ADR-0001 argues for on the publish paths: this
+				// narrows what a destructive pass removes rather than widening
+				// it. That ADR is scoped to swallowed errors in publish, so it
+				// is the reasoning being borrowed here and not the ruling.
+				//
+				// The path is deliberately not added to projectPaths. The
+				// temp-directory sweep reads each one, and this directory does
+				// not exist - it would only be counted as unreadable and
+				// reported as a second, unrelated warning.
+				skippedLinks = append(skippedLinks, skippedLink{
+					projectPath:  proj.Path,
+					packageLabel: fmt.Sprintf("%s@%s", pkg.Name, pkg.Version),
+				})
+			case projectLive:
 				projectPaths[proj.Path] = struct{}{}
+				// Re-stamp what the project is on now. Without this the
+				// recorded device is only as good as the mount in place when
+				// the project was added, and an anonymous device number - tmpfs,
+				// btrfs, overlayfs, FUSE and NFS all get one - is not stable
+				// across a remount. A record left to drift makes gc decline
+				// that project for good, which is safe but leaks space.
+				//
+				// It is skipped on a dry run. This is the one write the orphan
+				// scan makes, and a dry run has already printed that it will
+				// change nothing - the other three mutations in this function
+				// are all behind the same flag. Declining to re-stamp costs
+				// only that the record stays stale until a real run, which is
+				// the state it was already in.
+				//
+				// A failure here is reported and not fatal, for the reason
+				// removeOrphanedLinks gives: it leaves a stale device, and a
+				// stale device makes gc decline rather than delete.
+				if !dryRun && device != 0 && device != proj.Device {
+					if err := database.SetProjectDevice(proj.ID, device); err != nil {
+						fmt.Printf("  %s Failed to record which filesystem %s is on: %v\n", iconWarn(), proj.Path, err)
+					}
+				}
 			}
 		}
 
@@ -183,6 +239,28 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	}
 
 	// Report findings
+	//
+	// The skipped links are reported before anything else and outside the
+	// fixLinks branch, because they explain the rest of the report: a version
+	// gc did not collect may be uncollectable only because a link below could
+	// not be judged. Gating this on a flag would hide the reason a destructive
+	// command declined to act.
+	if len(skippedLinks) > 0 {
+		fmt.Printf("%s Skipped %d link(s): the project directory is missing and the filesystem it was on is not mounted there\n", iconWarn(), len(skippedLinks))
+		for _, s := range skippedLinks {
+			fmt.Printf("  - %s (consumes %s)\n", s.projectPath, s.packageLabel)
+		}
+		// No remedy is suggested, and the omission is deliberate. --fix-links
+		// would not collect these: the flag gates reporting and deleting the
+		// rows that were already classified as orphaned, and these were never
+		// classified at all. Nor would re-running with the filesystem mounted,
+		// which makes the project exist again and the link plainly live. There
+		// is currently no way to tell lnpm that a drive is gone for good, so
+		// saying "run X" would send the user somewhere that does nothing.
+		fmt.Println("  These links were kept, so the versions they name were not collected.")
+		fmt.Println()
+	}
+
 	if fixLinks && len(linksToRemove) > 0 {
 		fmt.Printf("Found %d orphaned link(s):\n", len(linksToRemove))
 		for _, l := range linksToRemove {
@@ -497,6 +575,15 @@ type linkToRemove struct {
 	projectID   int64
 	projectPath string
 	reason      string
+}
+
+// skippedLink is one link gc declined to judge. It carries the package label as
+// well as the path because the two ends answer different questions: the path is
+// what the user has to go and plug back in, and the package is what stayed in
+// the store because of it.
+type skippedLink struct {
+	projectPath  string
+	packageLabel string
 }
 
 // label names the project end of the link, which is what the findings report has
