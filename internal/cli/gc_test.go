@@ -722,7 +722,15 @@ func seededProjectID(t *testing.T, database *db.DB) int64 {
 // --fix-links deletes link rows on a pass of its own. Keeping them separate is
 // what lets the dangling-link test assert that gc removed one link and kept the
 // other, which a merged helper could not express.
-func assertLinkSurvived(t *testing.T) {
+// remainingLinks counts the link rows the seeded package still has, read back
+// through a fresh handle so it sees what gc committed rather than what the
+// test's own handle remembers.
+//
+// assertLinkSurvived is the one-link case of it, kept as a named assertion
+// because that is the case most of these tests want and the message it prints
+// says what the count means. Tests that expect some other number call this
+// directly.
+func remainingLinks(t *testing.T) int {
 	t.Helper()
 
 	database, err := db.GetDB()
@@ -737,8 +745,14 @@ func assertLinkSurvived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read links back: %v", err)
 	}
-	if len(links) != 1 {
-		t.Errorf("gc removed the live link of linked-pkg@1.0.0, %d link(s) left", len(links))
+	return len(links)
+}
+
+func assertLinkSurvived(t *testing.T) {
+	t.Helper()
+
+	if got := remainingLinks(t); got != 1 {
+		t.Errorf("gc removed the live link of linked-pkg@1.0.0, %d link(s) left", got)
 	}
 }
 
@@ -822,6 +836,47 @@ func TestRunGCAbortsWhenAProjectRowHoldsAWrongTypedValue(t *testing.T) {
 	assertAbortedOnProject(t, entry, projectID, false)
 }
 
+// TestRunGCReportsALinkToAMissingProjectAsOrphaned is the other side of the same
+// branch, and the reason the fix is an error check rather than a wider guard.
+//
+// A lookup that succeeds and finds no record has established what the reason
+// string says, so that link stays orphaned and stays removable. The package
+// keeps its other link and so is not collected, which is what separates this
+// from the abort above.
+func TestRunGCReportsALinkToAMissingProjectAsOrphaned(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	// A link naming a project ID no record answers for. InsertLink keeps one row
+	// per project and package name, so this adds a row rather than replacing the
+	// live one.
+	if err := database.InsertLink(&db.Link{PackageID: packages[0].ID, ProjectID: 4242, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert the dangling link: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", true, true); err != nil {
+			t.Fatalf("RunGC() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "project not found in database") {
+		t.Errorf("gc did not report the dangling link under its own reason, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "Found 1 orphaned link(s)") {
+		t.Errorf("gc did not report exactly one orphaned link, output was:\n%s", out)
+	}
+	if strings.Contains(out, "orphaned package") {
+		t.Errorf("gc collected a package a live link still names, output was:\n%s", out)
+	}
+	assertGCDeletedNothing(t, entry)
+	assertLinkSurvived(t)
+}
+
 // --- Confirming and reporting orphaned-link deletion -------------------------
 
 // seedOrphanedLink adds a second link to the package seedCollectableLink
@@ -840,27 +895,6 @@ func seedOrphanedLink(t *testing.T, database *db.DB) {
 	if err := database.InsertLink(&db.Link{PackageID: packages[0].ID, ProjectID: 4242, LinkType: "hardlink"}); err != nil {
 		t.Fatalf("insert the dangling link: %v", err)
 	}
-}
-
-// remainingLinks counts the link rows the seeded package still has, read back
-// through a fresh handle so it sees what gc committed rather than what the
-// test's own handle remembers.
-func remainingLinks(t *testing.T) int {
-	t.Helper()
-
-	database, err := db.GetDB()
-	if err != nil {
-		t.Fatalf("reopen database: %v", err)
-	}
-	packages, err := database.ListPackages()
-	if err != nil || len(packages) != 1 {
-		t.Fatalf("list packages: %v (%d found)", err, len(packages))
-	}
-	links, err := database.GetLinksForPackage(packages[0].ID)
-	if err != nil {
-		t.Fatalf("read links back: %v", err)
-	}
-	return len(links)
 }
 
 // TestRunGCDeclinedKeepsOrphanedLinks pins that --fix-links asks before it
@@ -915,9 +949,8 @@ func TestRunGCConfirmedRemovesOrphanedLinks(t *testing.T) {
 	if strings.Contains(out, "Skipped deleting orphaned links") {
 		t.Errorf("--yes was treated as a refusal, output was:\n%s", out)
 	}
-	if got := remainingLinks(t); got != 1 {
-		t.Errorf("%d link(s) left after --fix-links --yes, want 1 (the live one)", got)
-	}
+	// One link left, and it is the live one: assertLinkSurvived is exactly that
+	// count, so asserting it again here would only say the same thing twice.
 	assertLinkSurvived(t)
 	assertGCDeletedNothing(t, entry)
 }
@@ -955,13 +988,18 @@ func TestRunGCDryRunKeepsOrphanedLinks(t *testing.T) {
 // success and the rows it had not touched were never mentioned again.
 //
 // The failure is driven by closing the database handle before the deletes, which
-// is the same device TestReapTempDirsRequiresTheDatabaseLock uses. It is the only
-// failure DeleteLink has: the function it hands to bolt.Update always returns
-// nil, so every error it can return comes from the transaction rather than from
-// one link. Damaging a link row or its index entry was tried and returns a nil
-// error - the damaged row is skipped by the ForEach that looks the ID up, and a
-// link ID that is not found is not an error - so there is no per-link failure to
-// drive, and a partial one cannot be produced without a fake database.
+// is the same device TestReapTempDirsRequiresTheDatabaseLock uses. It is not the
+// only failure DeleteLink has - bolt.Update also returns what its Commit returns
+// - but it is the only one a test can drive, and every one of them is
+// transaction-level and so all-or-nothing across the pass.
+//
+// No per-link failure exists to drive. Damaging a link row and damaging its
+// index entry were both tried and both return a nil error: the damaged row is
+// skipped by the ForEach that looks the ID up, and a link ID that is not found
+// is not an error. That is why this test covers a total failure and there is no
+// partial one beside it - a partial failure cannot be constructed without a fake
+// database, and a fake database here would be scaffolding that distorts the
+// code it is meant to test.
 func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 	seedCollectableLink(t, database, storeRoot)
@@ -1000,45 +1038,4 @@ func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
 	if strings.Contains(out, iconOK()) {
 		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
 	}
-}
-
-// TestRunGCReportsALinkToAMissingProjectAsOrphaned is the other side of the same
-// branch, and the reason the fix is an error check rather than a wider guard.
-//
-// A lookup that succeeds and finds no record has established what the reason
-// string says, so that link stays orphaned and stays removable. The package
-// keeps its other link and so is not collected, which is what separates this
-// from the abort above.
-func TestRunGCReportsALinkToAMissingProjectAsOrphaned(t *testing.T) {
-	storeRoot, database := newGCStore(t)
-	entry, _ := seedCollectableLink(t, database, storeRoot)
-
-	packages, err := database.ListPackages()
-	if err != nil || len(packages) != 1 {
-		t.Fatalf("list packages: %v (%d found)", err, len(packages))
-	}
-	// A link naming a project ID no record answers for. InsertLink keeps one row
-	// per project and package name, so this adds a row rather than replacing the
-	// live one.
-	if err := database.InsertLink(&db.Link{PackageID: packages[0].ID, ProjectID: 4242, LinkType: "hardlink"}); err != nil {
-		t.Fatalf("insert the dangling link: %v", err)
-	}
-
-	out := captureStdout(t, func() {
-		if err := RunGC(false, "", true, true); err != nil {
-			t.Fatalf("RunGC() error = %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "project not found in database") {
-		t.Errorf("gc did not report the dangling link under its own reason, output was:\n%s", out)
-	}
-	if !strings.Contains(out, "Found 1 orphaned link(s)") {
-		t.Errorf("gc did not report exactly one orphaned link, output was:\n%s", out)
-	}
-	if strings.Contains(out, "orphaned package") {
-		t.Errorf("gc collected a package a live link still names, output was:\n%s", out)
-	}
-	assertGCDeletedNothing(t, entry)
-	assertLinkSurvived(t)
 }

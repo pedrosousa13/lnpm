@@ -286,31 +286,43 @@ func pinnedByTag(tags map[string]string, hash string) bool {
 // removeOrphanedLinks deletes the database row of each orphaned link and reports
 // how many rows it actually removed.
 //
-// It counts successes rather than candidates, which is the rule #233 set for the
-// two blocks below: gc must not claim what it did not reclaim. The count printed
-// here used to be len(links), and the error was discarded on the way, so a run
-// where every delete failed printed a clean success and the rows it had left
-// behind were never named.
-//
-// The summary is skipped entirely when nothing was removed, which is where this
-// differs from removePackages and reapTempDirs - they print their line with a
-// count of zero. The difference is that a failure here leaves no other trace: no
-// bytes are freed and no directory disappears, so "Removed 0 orphaned link(s)"
-// under a success icon would be the only thing said about a run that achieved
-// nothing. The per-link failure lines above it are the report in that case.
+// It counts successes rather than candidates: gc must not claim what it did not
+// reclaim. That rule comes from #273, which stopped the package block discarding
+// the error from removing a store entry and made it count what it had actually
+// removed; #233 is a different rule, cited at the call site, and decoupled the
+// prompts rather than the counting. The count printed here used to be
+// len(links), and the error was discarded on the way, so a run where every
+// delete failed printed a clean success and the rows it had left behind were
+// never named.
 //
 // The failure is not fatal to the run for the reason ADR-0001 gives: skipping a
 // row narrows what this pass removes and leaves it for the next run, and the row
 // it could not delete is a stale record rather than anything a project depends
 // on.
 //
+// The failure line says "the link to X" where removePackages and reapTempDirs
+// say only "X". That is deliberate and not drift: the findings printed above
+// read "- Link to X", and a user matching a failure to a finding should see the
+// same words.
+//
+// The summary is skipped entirely when nothing was removed, and that is a
+// divergence from the two blocks below, which print theirs with a count of zero:
+// removePackages prints "Removed 0 package(s), freed 0 B" under a success icon
+// when every removal failed. This block is the one being fixed today, so it
+// diverges rather than repeating that - a clean success over nothing achieved is
+// the defect, not a house style. #358 tracks the same defects in the package
+// block. The per-link failure lines above are the report in this case.
+//
 // It is a function rather than an inline block for the reason removePackages is
-// one, and for a second: DeleteLink's only failure is the transaction, because
-// the function it hands to bolt.Update always returns nil. So the failure path
-// cannot be reached through RunGC at all - a damaged link row or index entry
-// does not reach it, they are skipped and return a nil error - and the only way
-// to drive it is to call this with a closed handle, as
-// TestReapTempDirsRequiresTheDatabaseLock calls the sweep.
+// one, and for a second: no damage to the link buckets can drive a failure here.
+// Every error DeleteLink meets inside its transaction is swallowed - a link row
+// that will not parse is skipped by the lookup, and a link ID that is not found
+// returns nil - which was confirmed by damaging both a row and an index entry
+// and getting a nil error back. What is left is transaction-level, from
+// bolt.Update's Begin or its Commit, and that is all-or-nothing across the pass.
+// So a total failure is drivable by calling this with a closed handle, as
+// TestReapTempDirsRequiresTheDatabaseLock calls the sweep, and a partial one
+// cannot be constructed at all without a fake database.
 func removeOrphanedLinks(database *db.DB, links []linkToRemove) {
 	removed := 0
 	for _, l := range links {
