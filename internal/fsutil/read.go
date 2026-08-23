@@ -70,13 +70,21 @@ const MaxYAMLBytes = 4 << 20
 // the message instead would pin the wording rather than the behaviour.
 var ErrFileTooLarge = errors.New("file is over the size limit")
 
-// ReadFileCapped reads path, refusing files larger than max bytes.
+// ReadFileCapped reads path, refusing anything that is not a regular file and
+// any regular file larger than max bytes.
 //
 // The size is taken from os.Stat before any read, which is what makes the
 // refusal free: an oversized file is never read into memory and never reaches a
 // parser, so the cost the cap exists to bound is never paid. It is also what
 // lets a test build the oversized case with os.Truncate instead of writing
 // megabytes.
+//
+// The regular-file check is what makes the size check mean anything. os.Stat
+// reports Size() == 0 for a FIFO, a device node and their like, so without the
+// check such a path sails past the comparison and reaches os.ReadFile
+// unbounded - and a FIFO with no writer blocks there rather than yielding a
+// small file, which is the opposite of what a size of 0 suggested. A zero size
+// from a non-regular file is not the same fact as a zero size from a small one.
 //
 // What it is not is a hard bound. Stat and the read are two calls, so a writer
 // growing the file in between hands back more than max, and lnpm parses it. That
@@ -97,6 +105,9 @@ func ReadFileCapped(path string, max int64) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
 	if info.Size() > max {
 		return nil, fmt.Errorf("%s is %d bytes, over the %d-byte limit: %w", path, info.Size(), max, ErrFileTooLarge)
