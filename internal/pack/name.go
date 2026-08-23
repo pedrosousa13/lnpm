@@ -41,13 +41,32 @@ func ValidatePackageName(name string) error {
 // future run, with no supported way to get rid of it.
 //
 // Waiving it cannot widen the path surface, because the dot rule never guarded
-// that surface. What a removal does with the name is join it into .lnpm/{name}
-// for an os.RemoveAll and node_modules/{name} for an os.Remove, and what keeps
-// those inside the project is the "."/".." segment check, the absolute-path
-// check, the backslash check and the two-segment limit — every one of which
-// still runs here. A leading dot on a segment is a name lnpm reserves for
-// itself, not a name that escapes anywhere: ".hidden-pkg" resolves to a child of
-// .lnpm exactly like "hidden-pkg" does.
+// that surface. What keeps a removal inside the project is the "."/".." segment
+// check, the absolute-path check, the backslash check and the two-segment limit,
+// and every one of those still runs here. A leading dot on a segment is a name
+// lnpm reserves for itself, not a name that escapes anywhere: ".hidden-pkg"
+// resolves to a child of .lnpm exactly like "hidden-pkg" does.
+//
+// The waiver is wider than "dot-prefixed package names", though, and the extra
+// case is worth naming because it is not obvious: "@../pkg" is rejected by the
+// strict form via this same dot rule, since the "."/".." segment check sees the
+// segment as "@.." rather than "..". Removal therefore accepts it. It stays
+// contained because "@.." is a literal directory name that filepath.Clean does
+// not collapse, so it resolves to a child of .lnpm like any other scope - run
+// and confirmed, and pinned by TestUnlinkContainsAScopeNamedLikeATraversal.
+//
+// The full list of what a removal then does with the name, so the reasoning can
+// be checked rather than taken on trust:
+//   - joins it into .lnpm/{name} for an os.RemoveAll, and node_modules/{name}
+//     for an os.Remove;
+//   - for a scoped name, calls removeDirIfEmpty on the parent of each of those.
+//     That parent is .lnpm/{scope} or node_modules/{scope}, never higher: a
+//     two-segment name is only accepted when its first segment begins with "@",
+//     and a one-segment name skips this entirely;
+//   - writes it as a package.json dependency key, on retreat's path.
+//
+// None of those is reached by a dot that the other checks would not already have
+// caught.
 //
 // That is the whole claim. This is not a "safer because removal is safer"
 // argument — an unlink is a destructive operation and the traversal checks are

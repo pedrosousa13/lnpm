@@ -213,6 +213,54 @@ func TestUnlinkStillRefusesATraversingName(t *testing.T) {
 	}
 }
 
+// TestUnlinkContainsAScopeNamedLikeATraversal pins the widest consequence of the
+// removal waiver, which is not obvious from the name of the rule it waives.
+//
+// "@../pkg" is rejected by the strict validator, but only incidentally by the
+// dot rule: the "."/".." segment check does not fire, because the segment is
+// "@..", not "..". So waiving the dot rule on the removal path lets it through,
+// and lnpm.lock keys are attacker-controlled in any repository the developer did
+// not write.
+//
+// It is contained, and this is why: "@.." is a literal directory name, so
+// filepath.Join and Clean do not collapse it the way they collapse "..".
+// Verified by running it, not inferred - Join("/p/.lnpm", "@../pkg") is
+// "/p/.lnpm/@../pkg" and its Dir is "/p/.lnpm/@..", both still under .lnpm.
+func TestUnlinkContainsAScopeNamedLikeATraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	const name = "@../pkg"
+
+	pkgDir := filepath.Join(projectPath, ".lnpm", "@..", "pkg")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// A directory that a real traversal would reach: the sibling of .lnpm that
+	// "@.." would name if it were collapsed rather than treated as a literal.
+	victim := filepath.Join(projectPath, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	linker := New(projectPath)
+	if err := linker.Unlink(name); err != nil {
+		t.Fatalf("Unlink(%q) error: %v", name, err)
+	}
+
+	if _, err := os.Stat(pkgDir); !os.IsNotExist(err) {
+		t.Errorf(".lnpm/@../pkg still exists after unlink (stat err = %v)", err)
+	}
+	for _, dir := range []string{victim, outside} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("Unlink(%q) removed %s, which is outside .lnpm: %v", name, dir, err)
+		}
+	}
+}
+
 func TestLinkScopedPackage(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := filepath.Join(tmpDir, "store", "@org", "my-package", "abc123")

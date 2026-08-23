@@ -268,6 +268,75 @@ func TestRunRetreatWithOnlyValidEntriesIsUnchanged(t *testing.T) {
 	}
 }
 
+// TestRunRetreatTakesADotPrefixedEntryLinkedBeforeItWasInvalid covers the
+// removal-side waiver at the retreat loop. #325 made a leading dot invalid, but
+// a project linked before it can hold .lnpm/.hidden-pkg and a lock entry naming
+// it, and retreat is the documented way out of lnpm — so it has to take that
+// entry rather than refuse it.
+//
+// Refusing would be worse than pointless here: the RemoveAll of .lnpm at the end
+// of the retreat takes the package's files whatever the loop decided, so a
+// refusal leaves a node_modules entry and a package.json "file:.lnpm/.hidden-pkg"
+// reference both pointing at a directory that is now gone.
+func TestRunRetreatTakesADotPrefixedEntryLinkedBeforeItWasInvalid(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	const dotted = ".hidden-pkg"
+	writeRetreatLock(t, project, map[string]string{dotted: "^1.0.0"})
+
+	// What the loop deletes per entry. The .lnpm tree is not asserted on: it is
+	// removed wholesale at the end of the retreat either way, so it cannot tell
+	// a taken entry from a refused one.
+	nodeModulesEntry := filepath.Join(project, "node_modules", dotted)
+	writeFile(t, nodeModulesEntry, "module.exports = {}\n")
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	if err != nil {
+		t.Errorf("RunRetreat() = %v for a dot-named lock entry, want nil", err)
+	}
+	if strings.Contains(out, "not a valid package name") {
+		t.Errorf("retreat refused the dot-named entry %q, output was:\n%s", dotted, out)
+	}
+	if _, statErr := os.Lstat(nodeModulesEntry); !os.IsNotExist(statErr) {
+		t.Errorf("retreat left node_modules/%s behind (%v); the entry was not taken", dotted, statErr)
+	}
+	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
+	if !strings.Contains(pkgJSON, `".hidden-pkg":"^1.0.0"`) {
+		t.Errorf("retreat did not restore the dot-named entry's original version, package.json is now:\n%s", pkgJSON)
+	}
+	if !strings.Contains(out, "Retreat complete!") {
+		t.Errorf("retreat did not report completion, output was:\n%s", out)
+	}
+}
+
+// TestRunRetreatPreviewShowsADotPrefixedEntryAsRetreatable is the preview's own
+// assertion, and it is separate on purpose: the preview and the loop agreeing is
+// the stated reason that call site was waived, so each site has to be pinned
+// where reverting only that one turns this red.
+func TestRunRetreatPreviewShowsADotPrefixedEntryAsRetreatable(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	const dotted = ".hidden-pkg"
+	writeRetreatLock(t, project, map[string]string{dotted: "^1.0.0"})
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(false, false) })
+
+	if err != nil {
+		t.Errorf("RunRetreat(force=false) = %v, want nil: a preview changes nothing", err)
+	}
+	if strings.Contains(out, "will be skipped") {
+		t.Errorf("the preview said the dot-named entry would be skipped, output was:\n%s", out)
+	}
+	// The same line every ordinary entry gets. Asserting the whole line, not
+	// just the name, keeps a "will be skipped" line that happens to name the
+	// package from satisfying this.
+	want := dotted + ": file:.lnpm/" + dotted + " → ^1.0.0"
+	if !strings.Contains(out, want) {
+		t.Errorf("the preview did not describe the dot-named entry as an ordinary retreat;\nwant a line containing %q, output was:\n%s", want, out)
+	}
+}
+
 // TestRunRetreatPreviewFlagsAnUnsafeLockEntry covers the branch that runs
 // without --force. It exists to tell the developer what retreat is about to do,
 // so listing a hostile key as though it were an ordinary package is its own

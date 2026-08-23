@@ -552,9 +552,11 @@ func (l *Linker) Unlink(packageName string) error {
 // package, a .lnpm/{scope} - that is anything other than a directory in the
 // project.
 //
-// pack.ValidatePackageName guards the segments the package name contributes, but
-// nothing guarded their ancestors, and a repository can commit .lnpm itself as a
-// symlink at any directory it likes. .gitignore does not save anyone from that:
+// The package-name validators guard the segments the package name contributes -
+// ValidatePackageName on the link paths, ValidatePackageNameForRemoval on
+// Unlink, which differ only in #325's leading-dot reservation and share every
+// path check. But nothing guarded their ancestors, and a repository can commit
+// .lnpm itself as a symlink at any directory it likes. .gitignore does not save anyone from that:
 // a tracked symlink is checked out regardless. Every path the linker builds
 // under it then lands wherever it points, so a link writes outside the project
 // and an unlink deletes outside it.
