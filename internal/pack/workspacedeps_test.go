@@ -508,15 +508,31 @@ func TestRewriteWorkspaceDepsRemovesTempFileWhenMaterializationFails(t *testing.
 
 // A package.json kept out of the published files leaves nothing to rewrite the
 // specifier in, which must be reported rather than silently published.
+//
+// The manifest-free set is built by dropping the entry from what Pack returned,
+// not by writing an .npmignore that names it. That was how this fixture worked
+// until #301, and it worked only because of the bug #301 fixes: an .npmignore
+// line reading "package.json" really did remove the manifest from the pack. It
+// cannot now — collectFiles force-includes it and Pack refuses a set without it —
+// so the old fixture asserted a behaviour that no longer exists.
+//
+// RewriteWorkspaceDeps takes the file slice as a parameter, so filtering it is
+// not a seam invented for the test: it is the same value any caller hands over,
+// and the guard under test is a defensive check on that parameter rather than on
+// anything Pack decided.
 func TestRewriteWorkspaceDepsWithoutPackedManifestFails(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
-	writeTestFile(t, filepath.Join(libDir, ".npmignore"), "package.json\n")
 
-	files := packWorkspacePkg(t, libDir)
+	var files []*FileInfo
+	for _, f := range packWorkspacePkg(t, libDir) {
+		if f.RelPath != "package.json" {
+			files = append(files, f)
+		}
+	}
 	if packageJSONEntryOrNil(files) != nil {
-		t.Fatal("Expected .npmignore to keep package.json out of the packed files")
+		t.Fatal("Expected the filtered set to hold no package.json")
 	}
 
 	cleanup, err := RewriteWorkspaceDeps(libDir, files)

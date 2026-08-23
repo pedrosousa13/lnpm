@@ -43,6 +43,17 @@ type FileInfo struct {
 	ModTime     int64       // Unix nano timestamp
 }
 
+// manifestFileName is the package root's own manifest, the one path no selection
+// rule may remove from a pack.
+//
+// It is spelled once here because the rule is asserted in three places —
+// collectFiles' two selection sites and Pack's backstop — and a package that
+// disagrees with itself about which of them is the manifest is worse than one
+// that hard-codes the string once. readPackageJSON keeps its own literal because
+// it joins a directory rather than comparing a relative path; that is a different
+// use of the same name.
+const manifestFileName = "package.json"
+
 // defaultIncludes are files always included regardless of config
 var defaultIncludes = []string{
 	"package.json",
@@ -143,9 +154,58 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 
 	debug.Logf("pack: collected %d files (after safety filters)", len(files))
 
+	if err := requireManifestPacked(files); err != nil {
+		return nil, nil, err
+	}
+
 	warnMainEntryNotPacked(pkgJSON.Main, mainEntry, files)
 
 	return pkgJSON, files, nil
+}
+
+// requireManifestPacked refuses a packed set with no package.json in it. It is
+// #301's backstop rather than its mechanism: collectFiles force-includes the
+// manifest past every selection rule, and this catches the routes that never
+// reach a selection rule at all.
+//
+// One such route exists today and is reachable without contrivance. A symlinked
+// package.json reads and parses fine — readPackageJSON goes through os.ReadFile,
+// which follows the link — while collectFiles skips every symlink near the top of
+// the walk, above any include check, so the force-include cannot put it back.
+// Run and confirmed before the force-include existed and again after: Pack
+// returned a nil error and a packed set of [index.js].
+// TestPackFailsWhenManifestIsNotPacked is the fixture.
+//
+// An error, where the sibling check warnMainEntryNotPacked makes a warning of the
+// same shape, and docs/adr/0004 rejected an abort for its case in as many words.
+// The two cases differ in what is left behind. A package missing the file "main"
+// names is a package that does not load, and validation.ValidatePackage already
+// refuses that before an ordinary publish packs anything, so an abort here would
+// have duplicated a check and changed pack.Pack's contract for callers with no
+// publish semantics. A package missing its manifest is not a package: no consumer
+// can resolve its name or version, and no existing check catches it, because
+// readPackageJSON reads the manifest from disk rather than from the packed set
+// and therefore passes in exactly this case. #301 asks for the refusal directly.
+//
+// It lives in Pack, not in the publish command, for the reason
+// warnMainEntryNotPacked does: internal/cli/publish.go:159 is one of three
+// callers, and internal/cli/push.go:169 and push.go:194 pack with no validation
+// at all. An error is the right answer on all three — none of them can do
+// anything useful with a package that has no manifest.
+//
+// It runs after filterGitFiles so it sees the set the caller receives, not an
+// earlier one. filterGitFiles cannot itself remove the manifest —
+// isGitRelatedPath("package.json") is false — but the check is worth nothing if
+// it is not asked of the final set.
+func requireManifestPacked(files []*FileInfo) error {
+	for _, f := range files {
+		if f.RelPath == manifestFileName {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("refusing to pack: no %s in the packed set; a package "+
+		"without its manifest cannot be installed", manifestFileName)
 }
 
 // warnMainEntryNotPacked reports a manifest whose "main" is not in the packed
@@ -364,6 +424,62 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 			return nil
 		}
 
+		// The package root's own manifest is not the package's to exclude
+		// (#301). An .npmignore line reading "package.json" dropped it, and so
+		// did a "files" field that did not list it, in both cases producing a
+		// tarball that is not an installable package at all: nothing downstream
+		// can read its name or version. npm permits neither, and lnpm's store
+		// already reserves names on the same grounds — .lnpm-complete in
+		// internal/store/marker.go, .lnpm-linked in internal/link — that a file
+		// belonging to the tool is not the package's to control.
+		//
+		// The flag is consulted at both of the two sites that dropped it. The
+		// prune just below decides the whole tree when there is no whitelist;
+		// the isDefaultInclude arm of the switch further down re-consults the
+		// same patterns when there is one. Fixing one leaves the other
+		// reachable — TestPackManifestSurvivesIgnorePatterns carries a row for
+		// each, and its first two rows and its third fail separately.
+		//
+		// Exact equality, not a basename test, so only the package root's
+		// manifest is covered. A sub/package.json is another package's manifest
+		// or a fixture, and an ignore pattern still drops it. That matches the
+		// root anchoring isDefaultInclude already applies after #320;
+		// TestPackManifestForceIncludeIsRootAnchored pins it.
+		//
+		// Narrow to the manifest rather than to all of defaultIncludes. #301
+		// puts the rest of the set out of scope in as many words, and the two
+		// are not the same question: a package missing its README is poorer, a
+		// package missing its manifest does not resolve. docs/adr/0004 makes the
+		// same call for "main" and says why the inconsistency is deliberate.
+		//
+		// This sits below the isDefaultExcluded check above, never above it, for
+		// the reason docs/adr/0004 records for the "main" force-include: the
+		// built-in list is a guard lnpm applies on the user's behalf, and a
+		// guard anything can step around is not a guard.
+		//
+		// No test pins that placement, and the honest reason is that no test
+		// can. package.json is not in defaultExcludes, so hoisting this above
+		// the guard changes nothing any fixture can observe: run at the time of
+		// writing, the hoist left the whole package green — 358 passing test and
+		// subtest results, no failures — TestPackMainCannotDefeatDefaultExcludes
+		// included. Do not read that test as covering this force-include.
+		// Hoisting the *main* one instead does turn it red, packing
+		// [.env dist/a.js package.json], which is what establishes the test is
+		// alive rather than vacuous. Both runs are recorded here because a
+		// reader who assumed the guard test spanned both force-includes would
+		// be wrong.
+		//
+		// The ordering is load-bearing under the one condition that could make
+		// it visible, and that was checked directly rather than argued. With
+		// "package.json" temporarily added to defaultExcludes, this placement
+		// lets the guard win — the manifest is dropped and requireManifestPacked
+		// then refuses the pack — while the hoisted placement ships
+		// [index.js package.json] past it. So the two are not equivalent; they
+		// are only indistinguishable given today's defaultExcludes. Keeping the
+		// ordering uniform is what stops a reader finding one force-include on
+		// each side of the guard and concluding the side does not matter.
+		isManifest := relPath == manifestFileName
+
 		// The user's ignore patterns decide the whole tree only when there is no
 		// whitelist. With one they drop nothing here, and are consulted again
 		// further down for default includes alone — a "files" entry may be a
@@ -372,7 +488,7 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 		// Walking into ignored directories costs something in whitelist mode;
 		// publishing an empty package because .gitignore held the build output
 		// costs more.
-		if !useWhitelist {
+		if !useWhitelist && !isManifest {
 			if ignores.excludes(relPath) {
 				if info.IsDir() {
 					// Pruning is the one place last-match-wins does not hold
@@ -392,6 +508,11 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 		// Check if included
 		if useWhitelist {
 			switch {
+			case isManifest:
+				// Ahead of the isDefaultInclude arm below on purpose. That arm
+				// also matches "package.json" — it is defaultIncludes' first
+				// entry — and then re-consults the user's ignore patterns and
+				// drops it, which is the whitelist-mode half of #301.
 			case mainEntry != "" && relPath == mainEntry:
 				// The manifest's entry point, which ships whatever the
 				// whitelist says (#319).
