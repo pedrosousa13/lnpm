@@ -1,10 +1,17 @@
 package lockfile
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 )
 
 func TestLoadNonExistent(t *testing.T) {
@@ -434,5 +441,151 @@ func TestSaveRefusesAReadOnlyLockFile(t *testing.T) {
 	}
 	if got.Has("second-package") {
 		t.Errorf("the refused Save() landed anyway; lock file holds %v", got.List())
+	}
+}
+
+// writeOversizedLockFile creates a file at path whose first bytes are invalid
+// YAML and whose length is one byte over the cap, by writing the bad bytes and
+// extending the file with os.Truncate rather than writing megabytes out.
+//
+// Both properties matter, so both are read back rather than assumed. The length
+// is what the cap sees. The invalid YAML is the discriminator for where the cap
+// sits: checked before the unmarshal, the caller gets the size refusal; checked
+// after it, yaml.Unmarshal reports a syntax error first and the size is never
+// mentioned. Asserting which error comes back pins the placement without
+// measuring how long anything takes.
+func writeOversizedLockFile(t *testing.T, path string) int64 {
+	t.Helper()
+
+	const head = "packages: {not valid yaml"
+	size := int64(fsutil.MaxYAMLBytes) + 1
+
+	if err := os.WriteFile(path, []byte(head), 0644); err != nil {
+		t.Fatalf("WriteFile(%s) error: %v", path, err)
+	}
+	if err := os.Truncate(path, size); err != nil {
+		t.Fatalf("Truncate(%s, %d) error: %v", path, size, err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%s) error: %v", path, err)
+	}
+	if info.Size() != size {
+		t.Fatalf("built %s at %d bytes, want %d", path, info.Size(), size)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open(%s) error: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	got := make([]byte, len(head))
+	if _, err := io.ReadFull(f, got); err != nil {
+		t.Fatalf("reading back the head of %s: %v", path, err)
+	}
+	if string(got) != head {
+		t.Fatalf("head of %s = %q, want the invalid YAML %q", path, got, head)
+	}
+
+	return size
+}
+
+// TestLoadRefusesAnOversizedLockFile covers the cap on the lock file. The error
+// has to name the file, its size and the limit: a user who hits this decides
+// whether the file is corrupt or the limit is wrong, and cannot do either
+// without all three.
+//
+// The assertion that the message is not a parse error is what pins the cap
+// *before* the unmarshal - see writeOversizedLockFile for why the fixture is
+// invalid YAML as well as oversized.
+func TestLoadRefusesAnOversizedLockFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	size := writeOversizedLockFile(t, Path(tmpDir))
+
+	lock, err := Load(tmpDir)
+	if err == nil {
+		t.Fatalf("Load() error = nil, want a refusal; got %+v", lock)
+	}
+	if !errors.Is(err, fsutil.ErrFileTooLarge) {
+		t.Errorf("Load() error = %v, want it to wrap fsutil.ErrFileTooLarge", err)
+	}
+
+	msg := err.Error()
+	for _, want := range []string{
+		Path(tmpDir),
+		strconv.FormatInt(size, 10),
+		strconv.FormatInt(fsutil.MaxYAMLBytes, 10),
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Load() error = %q, want it to name %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "failed to parse") {
+		t.Errorf("Load() error = %q, want a size refusal; a parse error means the file was unmarshalled before the cap was checked", msg)
+	}
+}
+
+// TestLoadRetreatRefusesAnOversizedSnapshot covers the other file that shares
+// the reader. The snapshot is written by lnpm itself, so it is bounded for the
+// same reason the lock file is: it is a file in the project that anything could
+// have replaced.
+func TestLoadRetreatRefusesAnOversizedSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeOversizedLockFile(t, RetreatPath(tmpDir))
+
+	if _, err := LoadRetreat(tmpDir); !errors.Is(err, fsutil.ErrFileTooLarge) {
+		t.Errorf("LoadRetreat() error = %v, want it to wrap fsutil.ErrFileTooLarge", err)
+	}
+}
+
+// TestLoadParsesARealisticLockFile checks the cap is not in the way of anything
+// real. lnpm.lock records the packages a project has linked rather than a
+// resolved dependency graph, so a few thousand entries is already far past any
+// project; the file it produces has to stay comfortably under the cap and parse
+// as it always did.
+//
+// What it does not do is cover the refusal, and it should not be counted as if
+// it did. It is not revert-sensitive in either direction: delete the cap and it
+// stays green, move the check after the unmarshal and it stays green, because
+// every file it builds is one the cap accepts. It is a floor under
+// MaxYAMLBytes - it goes red if that constant is ever lowered past what a
+// realistic lock file needs - and nothing more. The refusal is
+// TestLoadRefusesAnOversizedLockFile's job.
+//
+// Measured on this branch, 3,000 entries writes about 675KB, roughly a sixth of
+// the 4 MiB cap, so the headroom it proves is real but not large.
+func TestLoadParsesARealisticLockFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	const entries = 3000
+	lock := &LockFile{Version: currentVersion, Packages: make(map[string]Package)}
+	for i := 0; i < entries; i++ {
+		lock.Add(fmt.Sprintf("@scope/package-%05d", i), Package{
+			Version:         "1.2.3",
+			Hash:            "0123456789abcdef0123456789abcdef01234567",
+			Source:          fmt.Sprintf("/home/user/src/package-%05d", i),
+			Linked:          time.Now().Truncate(time.Second),
+			OriginalVersion: "^1.2.0",
+		})
+	}
+	if err := lock.Save(tmpDir); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	info, err := os.Stat(Path(tmpDir))
+	if err != nil {
+		t.Fatalf("Stat() error: %v", err)
+	}
+	if info.Size() >= fsutil.MaxYAMLBytes {
+		t.Fatalf("%d entries wrote %d bytes, at or over the %d-byte cap; the cap is too small for a realistic lock file", entries, info.Size(), int64(fsutil.MaxYAMLBytes))
+	}
+
+	got, err := Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if len(got.Packages) != entries {
+		t.Errorf("len(Packages) = %d, want %d", len(got.Packages), entries)
 	}
 }

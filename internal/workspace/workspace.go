@@ -10,6 +10,8 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"gopkg.in/yaml.v3"
+
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 )
 
 // Workspace represents a monorepo workspace
@@ -97,10 +99,14 @@ func detectWorkspaceAt(dir string) (*Workspace, error) {
 //
 // The parse error is wrapped with the path because yaml.Unmarshal describes
 // only the syntax problem and never says which file it was reading. The read
-// error is not: os.ReadFile returns a *fs.PathError, which already names the
-// file, and wrapping would give one file two spellings in one message.
+// error is not: it is a *fs.PathError, or a refusal that names the file itself,
+// and wrapping would give one file two spellings in one message.
+//
+// The read is capped before the unmarshal, because yaml.v3's parse cost is
+// superlinear and this file comes from the repository being worked in - see
+// fsutil.MaxYAMLBytes, whose comment carries the measurements.
 func parsePnpmWorkspace(root, path string) (*Workspace, error) {
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadFileCapped(path, fsutil.MaxYAMLBytes)
 	if err != nil {
 		return nil, err
 	}
