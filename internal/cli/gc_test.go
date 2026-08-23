@@ -822,6 +822,186 @@ func TestRunGCAbortsWhenAProjectRowHoldsAWrongTypedValue(t *testing.T) {
 	assertAbortedOnProject(t, entry, projectID, false)
 }
 
+// --- Confirming and reporting orphaned-link deletion -------------------------
+
+// seedOrphanedLink adds a second link to the package seedCollectableLink
+// recorded, naming a project ID no record answers for, so the orphan scan files
+// exactly one link as orphaned and leaves the package's live link alone.
+//
+// InsertLink keeps one row per project and package name, so this adds a row
+// rather than replacing the live one.
+func seedOrphanedLink(t *testing.T, database *db.DB) {
+	t.Helper()
+
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	if err := database.InsertLink(&db.Link{PackageID: packages[0].ID, ProjectID: 4242, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert the dangling link: %v", err)
+	}
+}
+
+// remainingLinks counts the link rows the seeded package still has, read back
+// through a fresh handle so it sees what gc committed rather than what the
+// test's own handle remembers.
+func remainingLinks(t *testing.T) int {
+	t.Helper()
+
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	links, err := database.GetLinksForPackage(packages[0].ID)
+	if err != nil {
+		t.Fatalf("read links back: %v", err)
+	}
+	return len(links)
+}
+
+// TestRunGCDeclinedKeepsOrphanedLinks pins that --fix-links asks before it
+// deletes, like every other destructive step in gc.
+//
+// The block deleted link rows the moment the flag was set. It honoured
+// --dry-run, but --yes was meaningless because nothing ever asked, so there was
+// no answer a user could give that stopped it.
+func TestRunGCDeclinedKeepsOrphanedLinks(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+	seedOrphanedLink(t, database)
+
+	// yes=false with a non-interactive stdin is how confirm reports a refusal,
+	// so this is the "the user did not agree" case.
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", true, false); err != nil {
+			t.Fatalf("RunGC() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Found 1 orphaned link(s)") {
+		t.Errorf("gc did not report the orphaned link before asking, output was:\n%s", out)
+	}
+	if strings.Contains(out, "Removed") {
+		t.Errorf("gc claimed it removed a link the user did not agree to, output was:\n%s", out)
+	}
+	if got := remainingLinks(t); got != 2 {
+		t.Errorf("gc deleted a link without confirmation, %d link(s) left, want 2", got)
+	}
+	assertGCDeletedNothing(t, entry)
+}
+
+// TestRunGCConfirmedRemovesOrphanedLinks is the other side of the gate: --yes
+// satisfies the confirmation, so the orphaned row goes and the live one stays.
+//
+// Without this the gate could be satisfied by never deleting anything at all.
+func TestRunGCConfirmedRemovesOrphanedLinks(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+	seedOrphanedLink(t, database)
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", true, true); err != nil {
+			t.Fatalf("RunGC() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Removed 1 orphaned link(s)") {
+		t.Errorf("gc did not report removing the orphaned link, output was:\n%s", out)
+	}
+	if strings.Contains(out, "Skipped deleting orphaned links") {
+		t.Errorf("--yes was treated as a refusal, output was:\n%s", out)
+	}
+	if got := remainingLinks(t); got != 1 {
+		t.Errorf("%d link(s) left after --fix-links --yes, want 1 (the live one)", got)
+	}
+	assertLinkSurvived(t)
+	assertGCDeletedNothing(t, entry)
+}
+
+// TestRunGCDryRunKeepsOrphanedLinks pins that adding the gate did not change
+// what a dry run prints or leaves behind. A dry run reports its findings and
+// stops before the question, so it must not print the prompt's refusal line
+// either — a dry run has nothing to refuse.
+func TestRunGCDryRunKeepsOrphanedLinks(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+	seedOrphanedLink(t, database)
+
+	out := captureStdout(t, func() {
+		if err := RunGC(true, "", true, true); err != nil {
+			t.Fatalf("RunGC() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Found 1 orphaned link(s)") {
+		t.Errorf("a dry run did not report the orphaned link, output was:\n%s", out)
+	}
+	if strings.Contains(out, "Removed") || strings.Contains(out, "Skipped deleting orphaned links") {
+		t.Errorf("a dry run reached the deletion step, output was:\n%s", out)
+	}
+	if got := remainingLinks(t); got != 2 {
+		t.Errorf("a dry run deleted a link, %d link(s) left, want 2", got)
+	}
+	assertGCDeletedNothing(t, entry)
+}
+
+// TestRemoveOrphanedLinksReportsEveryFailedDelete pins the other half of #291:
+// the delete's error was discarded, and the summary counted the candidates
+// rather than the successes, so a run where every delete failed printed a clean
+// success and the rows it had not touched were never mentioned again.
+//
+// The failure is driven by closing the database handle before the deletes, which
+// is the same device TestReapTempDirsRequiresTheDatabaseLock uses. It is the only
+// failure DeleteLink has: the function it hands to bolt.Update always returns
+// nil, so every error it can return comes from the transaction rather than from
+// one link. Damaging a link row or its index entry was tried and returns a nil
+// error - the damaged row is skipped by the ForEach that looks the ID up, and a
+// link ID that is not found is not an error - so there is no per-link failure to
+// drive, and a partial one cannot be produced without a fake database.
+func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	seedCollectableLink(t, database, storeRoot)
+
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	links := []linkToRemove{
+		{packageID: packages[0].ID, projectID: 4242, reason: "project not found in database"},
+		{packageID: packages[0].ID, projectID: 77, projectPath: filepath.Join("gone", "project"), reason: "project directory no longer exists"},
+	}
+	out := captureStdout(t, func() {
+		removeOrphanedLinks(database, links)
+	})
+
+	// Both failures named, so a user knows which rows are still there.
+	if !strings.Contains(out, "4242") {
+		t.Errorf("the failed delete of the link to project 4242 was not reported, output was:\n%s", out)
+	}
+	if !strings.Contains(out, filepath.Join("gone", "project")) {
+		t.Errorf("the failed delete of the link to %s was not reported, output was:\n%s", filepath.Join("gone", "project"), out)
+	}
+	// The reason each one failed, not just that it did.
+	if !strings.Contains(out, "database not open") {
+		t.Errorf("gc swallowed the error DeleteLink returned, output was:\n%s", out)
+	}
+	// And no claim about what was removed: nothing was.
+	if strings.Contains(out, "Removed") {
+		t.Errorf("gc claimed it removed links it did not remove, output was:\n%s", out)
+	}
+	if strings.Contains(out, iconOK()) {
+		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
+	}
+}
+
 // TestRunGCReportsALinkToAMissingProjectAsOrphaned is the other side of the same
 // branch, and the reason the fix is an error check rather than a wider guard.
 //
