@@ -135,6 +135,84 @@ func TestLinkAndUnlink(t *testing.T) {
 	}
 }
 
+// TestUnlinkRemovesADotPrefixedPackageLinkedBeforeItWasInvalid is the exit for
+// the trap #325 would otherwise have set. Link still refuses a dot-prefixed
+// name, so this seeds the entry by hand: that is exactly the shape a project
+// linked before the rule already has on disk, and it is not reachable through
+// Link any more by design.
+//
+// Without the waiver, Unlink refuses it, 'lnpm remove' reports a failure and
+// leaves the lock entry, and 'lnpm remove --all' skips it on every future run —
+// the package becomes permanently unremovable by lnpm.
+func TestUnlinkRemovesADotPrefixedPackageLinkedBeforeItWasInvalid(t *testing.T) {
+	projectPath := t.TempDir()
+	const name = ".hidden-pkg"
+
+	pkgDir := filepath.Join(projectPath, ".lnpm", name)
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	nodeModules := filepath.Join(projectPath, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The node_modules half is Unix-only: creating a symlink directly needs a
+	// privilege the test process may not hold on Windows, the same reason
+	// TestLinkPreservesSymlinks skips there. The .lnpm half below is what the
+	// waiver is actually about and it runs on every platform.
+	linkSeeded := runtime.GOOS != "windows"
+	if linkSeeded {
+		if err := os.Symlink(filepath.Join("..", ".lnpm", name), filepath.Join(nodeModules, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	linker := New(projectPath)
+	if err := linker.Unlink(name); err != nil {
+		t.Fatalf("Unlink(%q) error: %v", name, err)
+	}
+
+	if _, err := os.Stat(pkgDir); !os.IsNotExist(err) {
+		t.Errorf(".lnpm/%s still exists after unlink (stat err = %v)", name, err)
+	}
+	if linkSeeded {
+		if _, err := os.Lstat(filepath.Join(nodeModules, name)); !os.IsNotExist(err) {
+			t.Errorf("node_modules/%s still exists after unlink (stat err = %v)", name, err)
+		}
+	}
+}
+
+// TestUnlinkStillRefusesATraversingName pins the other half of the waiver. The
+// name is joined into .lnpm/{name} for an os.RemoveAll, so if the removal path
+// stopped validating at all, this deletes a directory outside the project.
+func TestUnlinkStillRefusesATraversingName(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, ".lnpm"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real directory beside the project, which the traversing name resolves to.
+	victim := filepath.Join(tmpDir, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	linker := New(projectPath)
+	for _, name := range []string{"../../victim", "..", "/etc", "a\\b"} {
+		if err := linker.Unlink(name); err == nil {
+			t.Errorf("Unlink(%q) = nil, want error", name)
+		}
+	}
+
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("Unlink deleted a directory outside the project: %v", err)
+	}
+}
+
 func TestLinkScopedPackage(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := filepath.Join(tmpDir, "store", "@org", "my-package", "abc123")

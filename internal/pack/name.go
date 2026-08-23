@@ -22,17 +22,45 @@ const maxPackageNameLen = 214
 // .lnpm and in the store are dot-prefixed, so a package free to call itself
 // ".tmp-deadbeef" collides with the temp shape gc reclaims (#325).
 //
-// The dot rule applies at the boundary only, and nothing revalidates what is
-// already on disk, so a project linked before it keeps its .lnpm/{name} entry
-// and its lock entry — 'lnpm list' and 'lnpm status' still show it, because both
-// read the lock file rather than the directory. Every command that puts the name
-// back through here now refuses that one package — add, pull, remove and retreat
-// each report it, and the ones that handle several packages carry on with the
-// rest rather than aborting. Clearing one out means deleting .lnpm/{name} and
-// its lock entry by hand. No migration is provided, deliberately — the entry is
-// left where its owner can see it rather than removed by a tool that has just
-// declared it invalid.
+// This validates a name at the boundary it is presented at; it revalidates
+// nothing already on disk. A .lnpm or a store populated before the dot rule can
+// still hold a dot-named entry, which is why the reap sweeps stay narrow and why
+// removal goes through ValidatePackageNameForRemoval.
 func ValidatePackageName(name string) error {
+	return validatePackageName(name, true)
+}
+
+// ValidatePackageNameForRemoval is ValidatePackageName with the leading-dot
+// reservation waived, and nothing else changed. Use it on paths that take a
+// package away; creation, publish, store and pack paths use the strict form.
+//
+// The waiver exists because the dot rule is not retroactive. A project linked
+// before #325 can hold .lnpm/.hidden-pkg and a lock entry naming it, and
+// enforcing the new rule on the way out would make that entry permanent:
+// 'lnpm remove' would refuse it and 'lnpm remove --all' would skip it on every
+// future run, with no supported way to get rid of it.
+//
+// Waiving it cannot widen the path surface, because the dot rule never guarded
+// that surface. What a removal does with the name is join it into .lnpm/{name}
+// for an os.RemoveAll and node_modules/{name} for an os.Remove, and what keeps
+// those inside the project is the "."/".." segment check, the absolute-path
+// check, the backslash check and the two-segment limit — every one of which
+// still runs here. A leading dot on a segment is a name lnpm reserves for
+// itself, not a name that escapes anywhere: ".hidden-pkg" resolves to a child of
+// .lnpm exactly like "hidden-pkg" does.
+//
+// That is the whole claim. This is not a "safer because removal is safer"
+// argument — an unlink is a destructive operation and the traversal checks are
+// load-bearing here, which is what TestValidatePackageNameForRemovalStillRejectsUnsafeNames
+// and TestUnlinkStillRefusesATraversingName assert.
+func ValidatePackageNameForRemoval(name string) error {
+	return validatePackageName(name, false)
+}
+
+// validatePackageName is the single implementation behind both entry points, so
+// the two cannot drift. reserveDotPrefix selects the only difference between
+// them: whether a segment beginning with a dot is refused.
+func validatePackageName(name string, reserveDotPrefix bool) error {
 	if name == "" {
 		return fmt.Errorf("package name is empty")
 	}
@@ -61,6 +89,10 @@ func ValidatePackageName(name string) error {
 	for i, p := range parts {
 		if p == "" || p == "." || p == ".." {
 			return fmt.Errorf("invalid package name %q: bad path segment", name)
+		}
+
+		if !reserveDotPrefix {
+			continue
 		}
 
 		// The scope segment carries a leading "@", which hides a dot from a

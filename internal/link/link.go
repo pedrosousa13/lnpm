@@ -508,8 +508,14 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 }
 
 // Unlink removes a linked package from the project
+//
+// The name is validated through the removal entry point, which waives only the
+// leading-dot reservation #325 added. A project linked before that rule can hold
+// a dot-named package, and refusing to unlink it would leave it with no
+// supported way out. Every traversal check still applies: packageName is joined
+// into .lnpm/{name} for a RemoveAll below.
 func (l *Linker) Unlink(packageName string) error {
-	if err := pack.ValidatePackageName(packageName); err != nil {
+	if err := pack.ValidatePackageNameForRemoval(packageName); err != nil {
 		return err
 	}
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
@@ -762,10 +768,10 @@ func (l *Linker) ListLinked() ([]string, error) {
 	for _, entry := range entries {
 		// Skip dot-prefixed entries: they are in-progress or crash-orphaned
 		// relink temp directories, not linked packages. This also skips a
-		// package whose name starts with a dot. Since #325 ValidatePackageName
-		// rejects a leading dot on either segment, so nothing linked after that
-		// change can land here — but a .lnpm populated before it is not
-		// revalidated, and such an entry stays hidden from this listing.
+		// package whose name starts with a dot. #325 made ValidatePackageName
+		// reject a leading dot on either segment, so nothing linked after it
+		// can land here — but a .lnpm populated before it is not revalidated,
+		// and such an entry stays hidden from this listing.
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}

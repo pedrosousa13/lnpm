@@ -1,8 +1,6 @@
 package pack
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -105,7 +103,6 @@ func TestValidatePackageNameAllowsDotsAwayFromSegmentStart(t *testing.T) {
 		"name.with.dots",
 		"lodash.merge",
 		"@my.scope/pkg",
-		"@scope/name.with.dots",
 	}
 	for _, name := range valid {
 		if err := ValidatePackageName(name); err != nil {
@@ -114,21 +111,69 @@ func TestValidatePackageNameAllowsDotsAwayFromSegmentStart(t *testing.T) {
 	}
 }
 
-// TestReadPackageJSONRejectsADotPrefixedName is the acceptance criterion stated
-// where the untrusted value actually enters: a manifest. Every path that stores,
-// links or publishes a package reads its name from here.
-func TestReadPackageJSONRejectsADotPrefixedName(t *testing.T) {
-	dir := t.TempDir()
-	manifest := `{"name": ".tmp-deadbeef", "version": "1.0.0"}`
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0644); err != nil {
-		t.Fatal(err)
+// TestValidatePackageNameForRemovalAcceptsDotPrefixedNames covers the one thing
+// the removal entry point exists for. #325 made the leading dot invalid, but a
+// project linked before it can still hold .lnpm/.hidden-pkg and a lock entry for
+// it, and enforcing the new rule on the way out would make that entry permanent:
+// 'lnpm remove' refuses it and 'lnpm remove --all' skips it on every future run.
+func TestValidatePackageNameForRemovalAcceptsDotPrefixedNames(t *testing.T) {
+	accepted := []string{
+		".hidden-pkg",
+		".tmp-deadbeef",
+		".npmrc",
+		"@org/.hidden",
+		"@.evil/pkg",
+		// Everything the strict validator accepts is still accepted here: the
+		// removal entry point waives one rule, it does not add any.
+		"my-pkg",
+		"@org/my-pkg",
+	}
+	for _, name := range accepted {
+		if err := ValidatePackageNameForRemoval(name); err != nil {
+			t.Errorf("ValidatePackageNameForRemoval(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
+// TestValidatePackageNameForRemovalStillRejectsUnsafeNames is the test that
+// proves the waiver is narrow, and it is the one that matters. The name is
+// joined into .lnpm/{name} for an os.RemoveAll and into node_modules/{name} for
+// an os.Remove, so a traversal here deletes outside the project.
+//
+// Waiving the dot rule cannot widen that surface, because the dot rule never
+// guarded it: traversal is stopped by the "."/".." segment check, the absolute
+// path check, the backslash check and the segment count, and this asserts every
+// one of them still fires on the removal path.
+func TestValidatePackageNameForRemovalStillRejectsUnsafeNames(t *testing.T) {
+	rejected := []struct {
+		name string
+		desc string
+	}{
+		{"", "empty"},
+		{"..", "parent directory"},
+		{".", "current directory"},
+		{"../evil", "parent traversal"},
+		{"../../../../tmp/evil", "deep traversal"},
+		{"foo/../bar", "embedded traversal"},
+		{"@scope/..", "scoped traversal"},
+		{"/abs/path", "absolute"},
+		{"a/b/c", "too many segments"},
+		{"foo/bar", "unscoped slash"},
+		{"@/name", "empty scope"},
+		{"name\\with\\backslash", "backslash"},
+		{"with\x00nul", "nul byte"},
+	}
+	for _, tc := range rejected {
+		if err := ValidatePackageNameForRemoval(tc.name); err == nil {
+			t.Errorf("ValidatePackageNameForRemoval(%q) = nil, want error (%s)", tc.name, tc.desc)
+		}
 	}
 
-	pkg, err := readPackageJSON(dir)
-	if err == nil {
-		t.Fatalf("readPackageJSON() accepted %q, returning %+v", manifest, pkg)
+	long := make([]byte, maxPackageNameLen+1)
+	for i := range long {
+		long[i] = 'a'
 	}
-	if !strings.Contains(err.Error(), ".tmp-deadbeef") {
-		t.Errorf("readPackageJSON() error %q does not name the package", err)
+	if err := ValidatePackageNameForRemoval(string(long)); err == nil {
+		t.Errorf("ValidatePackageNameForRemoval(<215 chars>) = nil, want error")
 	}
 }

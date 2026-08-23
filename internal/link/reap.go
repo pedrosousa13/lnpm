@@ -127,13 +127,19 @@ func FindTempEntries(projectPath string) (entries []TempEntry, unreadable int) {
 //
 // The match is deliberately narrow, and stays narrow. ListLinked hides every
 // dot-prefixed entry, but "dot-prefixed" is still not the same thing as "ours".
-// Since #325 ValidatePackageName rejects a leading dot on either segment, so no
-// package linked after that change can own one of these names — but nothing
-// revalidates a .lnpm populated before it, and nothing stops a user putting
-// something else dot-named in there either. Reclaiming a directory that is not
-// ours would be a far worse bug than the leak this sweep exists to fix. Only the
-// exact shape the constructors produce is matched: the prefix, then the
-// lowercase hex of a uint64, optionally followed by the retired suffix.
+// #325 made ValidatePackageName reject a leading dot on either segment, so no
+// package linked after it can own a dot-prefixed name — but nothing revalidates
+// a .lnpm populated before it, and nothing stops a user putting something else
+// dot-named in there either. Reclaiming a directory that is not ours would be a
+// far worse bug than the leak this sweep exists to fix.
+//
+// #325 narrowed what can arrive; it did not narrow what this matches, and it
+// does not rescue a name already on disk that happens to fit the temp grammar.
+// ".tmp-deadbeef" is still reclaimed here, which is exactly the collision #325
+// was filed about — the fix stops a new one being created, it does not make an
+// existing one safe. Only the exact shape the constructors produce is matched:
+// the prefix, then the lowercase hex of a uint64, optionally followed by the
+// retired suffix.
 func isTempEntryName(name string) (retired, ok bool) {
 	rest, retired := strings.CutSuffix(name, retiredSuffix)
 	rest, hasPrefix := strings.CutPrefix(rest, tempPrefix)

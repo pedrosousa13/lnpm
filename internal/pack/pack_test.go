@@ -88,6 +88,26 @@ func TestReadPackageJSON(t *testing.T) {
 	}
 }
 
+// TestReadPackageJSONRejectsADotPrefixedName states #325's acceptance criterion
+// where the untrusted value actually enters: a manifest. Every path that stores,
+// links or publishes a package reads its name from here, so this is the boundary
+// the dot rule has to hold at. The rule itself is exercised in name_test.go.
+func TestReadPackageJSONRejectsADotPrefixedName(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"name": ".tmp-deadbeef", "version": "1.0.0"}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkg, err := readPackageJSON(dir)
+	if err == nil {
+		t.Fatalf("readPackageJSON() accepted %q, returning %+v", manifest, pkg)
+	}
+	if !strings.Contains(err.Error(), ".tmp-deadbeef") {
+		t.Errorf("readPackageJSON() error %q does not name the package", err)
+	}
+}
+
 func TestIsExcluded(t *testing.T) {
 	tests := []struct {
 		path     string

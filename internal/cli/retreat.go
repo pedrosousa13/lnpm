@@ -57,7 +57,11 @@ func RunRetreat(force bool, runInstall bool) error {
 				// that is not a package name as though it were an ordinary
 				// dependency would describe a retreat that is not going to
 				// happen, at the one moment the developer is reading.
-				if err := pack.ValidatePackageName(name); err != nil {
+				//
+				// Same entry point as the retreat loop below, so the preview and
+				// the action agree on which keys are refused. A dot-named
+				// package from before #325 is retreated, not refused.
+				if err := pack.ValidatePackageNameForRemoval(name); err != nil {
 					fmt.Printf("    %s %s: will be skipped, not a valid package name: %v\n", iconWarn(), name, err)
 					continue
 				}
@@ -136,8 +140,16 @@ func RunRetreat(force bool, runInstall bool) error {
 		//
 		// The refused entry is still carried into lnpm.lock.retreat with the
 		// rest. It is a record, not an instruction, and 'lnpm restore' links
-		// through Link, which validates the name again.
-		if err := pack.ValidatePackageName(name); err != nil {
+		// through Link, which validates the name again - strictly, so a
+		// dot-named entry retreated here cannot be restored.
+		//
+		// Removal entry point, which waives only #325's leading-dot
+		// reservation. Every check above that keeps the node_modules delete
+		// inside the project still runs. Refusing a dot-named package here
+		// would be worse than pointless: the RemoveAll of .lnpm below takes its
+		// files anyway, leaving a node_modules symlink and a package.json
+		// file:.lnpm/{name} reference pointing at nothing.
+		if err := pack.ValidatePackageNameForRemoval(name); err != nil {
 			fmt.Printf("  %s Refused %s: not a valid package name: %v\n", iconWarn(), name, err)
 			refused = append(refused, name)
 			continue
