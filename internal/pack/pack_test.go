@@ -310,16 +310,18 @@ func TestIsIncludedDegeneratePattern(t *testing.T) {
 // was force-included past a "files" whitelist. Regression test for #320.
 //
 // The nested rows are also the platform guard, and the Windows CI job is where
-// they earn their keep. collectFiles hands this function a relPath already
-// through filepath.ToSlash, so its separator is always "/", but filepath.Match
-// reads its separator from the platform. On Linux,
+// they earn their keep — on Linux and macOS they were already true. Both build
+// path_unix.go, so filepath.Separator is "/" on each and the two candidate
+// spellings cannot be told apart there. collectFiles hands this function a
+// relPath already through filepath.ToSlash, so its separator is always "/", but
+// filepath.Match reads its separator from the platform: on Linux
 // filepath.Match("readme*", "dist/readme.md") is false — run and confirmed — so
 // on Linux alone, dropping filepath.Base would be enough to pass these rows.
-// filepath.Separator is "\" on Windows, where "/" is an ordinary character;
-// TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform below pins the same
-// split biting the ignore matcher. isDefaultInclude therefore rejects a
-// separator itself, before filepath.Match ever sees the path, and these rows are
-// what check that on the platforms this machine cannot run.
+// Windows builds path_windows.go, where the separator is "\" and "/" is an
+// ordinary character; TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform
+// below pins the same split biting the ignore matcher. isDefaultInclude
+// therefore rejects a separator itself, before filepath.Match ever sees the
+// path, and only the Windows job can show that the check is load-bearing.
 func TestIsDefaultInclude(t *testing.T) {
 	tests := []struct {
 		path string
@@ -338,10 +340,14 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"README.anything", true},
 		{"src/index.ts", false},
 		{"dist/index.js", false},
-		// "package.json" carries no "*", so it is the one entry that must
-		// match exactly. This row rules out anchoring the set with
-		// strings.HasPrefix(relPath, pattern), which would ship a
-		// package.jsonc past the whitelist.
+		// "package.json" is the only entry carrying no "*", so it is the only
+		// one a literal strings.HasPrefix(relPath, pattern) anchor could ever
+		// fire on: HasPrefix compares "*" as an ordinary byte, so every other
+		// entry matches nothing. Run against that spelling, the glob rows above
+		// fail for under-matching — a root README.md stops being included at
+		// all — and this row is the only one that catches it over-including:
+		// strings.HasPrefix("package.jsonc", "package.json") is true, so a
+		// package.jsonc would ship past the whitelist.
 		{"package.jsonc", false},
 
 		// Below the root, no longer force-included. Every one of these was
@@ -353,9 +359,15 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"vendor/foo/LICENSE", false},
 		{"vendor/foo/package.json", false},
 		{"a/b/c/CHANGELOG.md", false},
-		// A directory whose own name is an always-included name. This is the
-		// row that catches strings.HasPrefix(relPath, pattern) admitting a
-		// nested path, which the package.jsonc row above does not.
+		// A nested path whose *directory* carries an always-included name,
+		// where every row above carries it in the basename. This does not
+		// catch the literal HasPrefix spelling — run and confirmed,
+		// strings.HasPrefix("changes/secret.txt", "changes*") is false, so
+		// that spelling never reaches it and package.jsonc above is what
+		// holds it. What this row catches is the obvious repair to that
+		// spelling: strip the "*" and prefix-match the stem, at which point
+		// strings.HasPrefix("changes/secret.txt", "changes") is true and
+		// nested paths are admitted again.
 		{"changes/secret.txt", false},
 	}
 
@@ -1753,7 +1765,9 @@ func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
 	}
 
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("packed set mismatch\n got: %v\nwant: %v", got, want)
+		t.Errorf("packed set mismatch: the always-included set must match at the "+
+			"package root only, so a \"files\" whitelist of [\"dist\"] ships nothing "+
+			"below the root that it did not name\n got: %v\nwant: %v", got, want)
 	}
 }
 
@@ -1771,6 +1785,16 @@ func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
 // defaultIncludes at any depth — so isDefaultInclude answered false for it
 // before the fix and answers false after. The last case below pins that, so the
 // claim is checked rather than asserted.
+//
+// The nested cases are deliberately outside ExcludedByProjectRules' documented
+// contract. Its doc comment says it reads the root ignore file only, so a caller
+// passing a nested path gets an answer that ignores the ignore file next to it.
+// The assertions still hold because this fixture has no ignore file anywhere —
+// only a package.json — so there is no per-directory rule for the root-only read
+// to miss, and the "files" field is the sole thing deciding. That is what makes
+// it a clean probe of the change under test: it isolates isDefaultInclude's
+// anchoring from the ignore-file gap. A fixture with a docs/.npmignore in it
+// would be testing the documented gap instead, and #320 does not close that gap.
 func TestExcludedByProjectRulesAnchorsDefaultIncludesToRoot(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(`{"name":"x","version":"1.0.0"}`), 0644); err != nil {
