@@ -36,11 +36,29 @@ const sentinelName = ".lnpm-markers-backfilled"
 // rather than the entry, and only ever runs before the store's first marker
 // exists.
 //
-// A pass that cannot finish marks nothing: the markers it did write are removed
-// again and the sentinel is withheld, so the store is still recognisably
+// A pass that cannot finish tries to mark nothing: the markers it did write are
+// removed again and the sentinel is withheld, so the store is still recognisably
 // never-marked and the next open retries the lot. Leaving them would make the
-// store look 2.x to the gate above, and the entries it had not reached yet
-// would be refused forever.
+// store look 2.x to the gate above, and the entries it had not reached yet would
+// be refused forever.
+//
+// That undo is best-effort — each os.Remove's error is ignored, because there is
+// nothing better to do with it here. If one fails, the store is left half-marked
+// with no sentinel, the next open reads it as 2.x, and the entries this pass
+// never reached are refused until their packages are re-published. The failure
+// modes correlate (a directory that would not accept a marker is usually one
+// that will not give it up either), so this is unlikely rather than impossible,
+// and it is stated because the gate's premise depends on it.
+//
+// One entry the pass can still mark wrongly, inherited from the version this
+// replaces and now narrowed to legacy stores: a deletion in progress. `lnpm gc`
+// removes an entry's marker before its tree, and nothing serialises a store open
+// against a running gc, so a gc racing the very first open of a 1.x store can
+// present a marker-less entry that this pass then marks. The window is bounded —
+// it exists only before the sentinel is written, once in a store's life, and
+// only in a store that has no markers at all — and it leaves something behind
+// only if that gc's tree removal also fails, since a removal that finishes takes
+// the directory and the freshly written marker with it.
 func backfillLegacyStore(storeRoot string) error {
 	sentinel := filepath.Join(storeRoot, sentinelName)
 	if _, err := os.Stat(sentinel); err == nil {
@@ -101,34 +119,43 @@ func recordBackfillDecision(sentinel string) {
 }
 
 // LegacyBackfillPending reports whether the configured store is still waiting
-// for its one-time legacy marking: it holds entries, none of them is marked,
-// and the decision has not been recorded.
+// for its one-time legacy marking - it holds entries, none of them is marked,
+// and the decision has not been recorded - and how many directories the scan
+// could not read.
 //
 // `lnpm doctor` asks so it can say "run any command that opens the store"
 // instead of listing every entry as damaged and sending the user to re-publish
 // their whole store. doctor never opens the store itself, so on a 1.x store it
 // is the one command that can see this state and do nothing about it.
-func LegacyBackfillPending() (bool, error) {
+//
+// The unreadable count is returned rather than dropped because it decides
+// whether that advice is true. backfillLegacyStore withholds the sentinel for
+// as long as any directory cannot be read, so on such a store the migration is
+// not merely pending, it is blocked: running a command that opens the store
+// will not resolve it, this time or ever. Reporting "pending" and stopping there
+// would send the user to a fix that cannot work and never mention the directory
+// that is actually in the way.
+func LegacyBackfillPending() (pending bool, unreadable int, err error) {
 	storeRoot, err := config.GetPackageStorePath()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if _, err := os.Stat(filepath.Join(storeRoot, sentinelName)); err == nil {
-		return false, nil
+		return false, 0, nil
 	} else if !os.IsNotExist(err) {
-		return false, err
+		return false, 0, err
 	}
 
-	entries, _ := listEntries(storeRoot)
+	entries, unreadable := listEntries(storeRoot)
 	if len(entries) == 0 {
-		return false, nil
+		return false, unreadable, nil
 	}
 	for _, entry := range entries {
 		if hasMarker(entry) {
-			return false, nil
+			return false, unreadable, nil
 		}
 	}
-	return true, nil
+	return true, unreadable, nil
 }
 
 // IncompleteEntries returns every entry of the configured store that a read

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -82,7 +83,7 @@ func TestIncompleteEntriesPassesACommittedEntry(t *testing.T) {
 // nothing, and reporting the store clean would be a claim the sweep did not
 // establish.
 func TestIncompleteEntriesReportsDirectoriesItCannotRead(t *testing.T) {
-	requireUnreadableDirectories(t)
+	requireDirectoryModeEnforcement(t)
 
 	root := legacyStoreRoot(t)
 	blocked := filepath.Dir(seedLegacyEntry(t, root, "blocked-pkg", "aaa111"))
@@ -128,9 +129,16 @@ func TestNewMarksAStoreThatNeverHadMarkers(t *testing.T) {
 	}
 }
 
-// TestNewMarksALegacyStoreOnlyOnce pins the sentinel as the guard. Once the
-// decision is recorded, a directory that appears later without a marker is an
-// interrupted deletion, and marking it would be the laundering of #330.
+// TestNewMarksALegacyStoreOnlyOnce pins that a directory appearing after the
+// migration is not marked: it is an interrupted deletion, and marking it would
+// be the laundering of #330.
+//
+// It does not pin the sentinel, though the sequence runs through one. The
+// second open is stopped by the marker the first one wrote on left-pad, so
+// deleting the sentinel check entirely leaves this test green - checked by
+// reverting it. The store still holds a marked entry here, and the marker gate
+// alone answers for it. TestNewDoesNotRemintTheLastEntryOfAStore is the case
+// where only the sentinel can.
 func TestNewMarksALegacyStoreOnlyOnce(t *testing.T) {
 	root := legacyStoreRoot(t)
 	seedLegacyEntry(t, root, "left-pad", "aaa111")
@@ -152,6 +160,46 @@ func TestNewMarksALegacyStoreOnlyOnce(t *testing.T) {
 	}
 }
 
+// TestNewDoesNotRemintTheLastEntryOfAStore is the sequence only the sentinel
+// stops, and it is reachable in one gc:
+//
+//	a fresh store is opened, and the decision is recorded over zero entries;
+//	a package is published, so the store holds one marked entry;
+//	an interrupted gc unlinks that entry's marker and fails to remove its tree.
+//
+// The store now holds zero markers and reads whole. The gate's other test —
+// "does any entry carry a marker" — therefore answers *no*, exactly as it does
+// for a 1.x store, and without the sentinel this open would mint a marker for
+// the gutted entry. That is the laundering #330 was filed about, arrived at
+// from a store that never had more than one package in it.
+func TestNewDoesNotRemintTheLastEntryOfAStore(t *testing.T) {
+	s := newTestStore(t)
+
+	// The premise: opening an empty store records the decision. Asserted rather
+	// than assumed, because if it stopped being true this test would still pass
+	// while exercising the marker gate instead of the sentinel.
+	root := s.Root()
+	if _, err := os.Stat(filepath.Join(root, sentinelName)); err != nil {
+		t.Fatalf("opening an empty store did not record the backfill decision, so this test no longer reaches the sentinel: %v", err)
+	}
+
+	src, files := makeSource(t, 3)
+	entry, err := s.Store("solo-pkg", "abc123", files, src)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	gutEntry(t, entry)
+
+	if _, err := New(); err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+
+	if err := CheckComplete(entry); err == nil {
+		payload, _ := os.ReadFile(filepath.Join(entry, markerName))
+		t.Errorf("reopening the store re-minted a marker for the gutted entry %s: %s", entry, strings.TrimSpace(string(payload)))
+	}
+}
+
 // TestNewLeavesAStoreItCannotClassify pins the gate's safe direction. The gate
 // asks whether the store has ever been marked, so a package directory the scan
 // cannot open makes the answer unknown - a marked entry could be sitting in it.
@@ -162,7 +210,7 @@ func TestNewMarksALegacyStoreOnlyOnce(t *testing.T) {
 // never fail because one directory is unreadable, or a single bad mode would
 // take every lnpm command down with it.
 func TestNewLeavesAStoreItCannotClassify(t *testing.T) {
-	requireUnreadableDirectories(t)
+	requireDirectoryModeEnforcement(t)
 
 	root := legacyStoreRoot(t)
 	reachable := seedLegacyEntry(t, root, "left-pad", "aaa111")
@@ -191,13 +239,52 @@ func TestNewLeavesAStoreItCannotClassify(t *testing.T) {
 	}
 }
 
+// TestLegacyBackfillPendingReportsWhatBlocksIt covers the overlap of the two
+// states doctor reports on, which neither of the tests above reaches: a store
+// that predates markers *and* holds a directory the scan cannot read.
+//
+// The count has to come back with the verdict. backfillLegacyStore withholds
+// its decision for as long as anything is unreadable, so on this store the
+// migration is not waiting for a command to run it - it is blocked, and running
+// commands will not help. A caller told only "pending" would advise a fix that
+// cannot work and never mention the directory in the way.
+func TestLegacyBackfillPendingReportsWhatBlocksIt(t *testing.T) {
+	requireDirectoryModeEnforcement(t)
+
+	root := legacyStoreRoot(t)
+	seedLegacyEntry(t, root, "left-pad", "aaa111")
+	blocked := filepath.Dir(seedLegacyEntry(t, root, "blocked-pkg", "bbb222"))
+	chmodForTest(t, blocked, 0000)
+
+	pending, unreadable, err := LegacyBackfillPending()
+	if err != nil {
+		t.Fatalf("read the backfill state: %v", err)
+	}
+
+	if !pending {
+		t.Error("a store with no markers at all was not reported as awaiting its migration")
+	}
+	if unreadable != 1 {
+		t.Errorf("the verdict came back with %d unreadable directories, want the 1 that is blocking it (%s)", unreadable, blocked)
+	}
+
+	// And the block is real, not just reported: opening the store leaves the
+	// migration exactly where it was.
+	if _, err := New(); err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	if stillPending, _, err := LegacyBackfillPending(); err != nil || !stillPending {
+		t.Errorf("opening the store resolved a migration that cannot run (pending = %v, err = %v)", stillPending, err)
+	}
+}
+
 // TestNewUndoesAMigrationItCannotFinish pins the rollback, which is what keeps
 // the gate's premise true. The gate reads "no entry is marked" as "this store
 // predates 2.0.0"; a half-marked store would answer that question wrongly on
 // the next open, and every entry the pass had not reached would be refused
 // forever. So a pass that cannot mark everything marks nothing.
 func TestNewUndoesAMigrationItCannotFinish(t *testing.T) {
-	requireUnreadableDirectories(t)
+	requireDirectoryModeEnforcement(t)
 
 	root := legacyStoreRoot(t)
 	writable := seedLegacyEntry(t, root, "aaa-first", "aaa111")
@@ -216,11 +303,12 @@ func TestNewUndoesAMigrationItCannotFinish(t *testing.T) {
 	}
 }
 
-// requireUnreadableDirectories skips tests that inject a fault with a directory
-// mode. Windows maps a mode like 0000 to the read-only file attribute, which
-// still permits reading the directory and creating files inside it; denying
-// that needs ACL editing. Root ignores the mode outright.
-func requireUnreadableDirectories(t *testing.T) {
+// requireDirectoryModeEnforcement skips tests that inject a fault with a
+// directory mode, whether to deny reading it (0000) or writing into it (0555).
+// Windows maps either to the read-only file attribute, which still permits
+// reading the directory and creating files inside it; denying that needs ACL
+// editing. Root ignores the mode outright.
+func requireDirectoryModeEnforcement(t *testing.T) {
 	t.Helper()
 
 	if runtime.GOOS == "windows" {

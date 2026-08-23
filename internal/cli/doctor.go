@@ -69,9 +69,10 @@ func RunDoctor() error {
 	// they find. That is the loud direction, and the quiet one would let a
 	// single unreadable path suppress a genuine finding.
 	legacyStore := false
+	legacyBlockedBy := 0
 	if storeUsable {
-		if pending, err := store.LegacyBackfillPending(); err == nil {
-			legacyStore = pending
+		if pending, unreadable, err := store.LegacyBackfillPending(); err == nil {
+			legacyStore, legacyBlockedBy = pending, unreadable
 		}
 	}
 
@@ -241,6 +242,18 @@ func RunDoctor() error {
 		case err != nil:
 			fmt.Printf("%s ERROR\n", iconFail())
 			fmt.Printf("  Failed to scan the store for incomplete entries: %v\n", err)
+			issues++
+		case legacyStore && legacyBlockedBy > 0:
+			// The migration is not merely waiting for a command to run it: the
+			// backfill withholds its decision for as long as any directory
+			// cannot be read, so it will stay pending however many commands the
+			// user runs. That makes this an issue rather than a warning, and it
+			// is the unreadable directory that has to be named — advising "run
+			// any command" here would send the user somewhere that cannot help.
+			fmt.Printf("%s PENDING\n", iconFail())
+			fmt.Println("  This store predates completeness markers and has not been migrated yet")
+			fmt.Printf("  The migration cannot run: %d store directory(ies) could not be read, and it stays pending until they can\n", legacyBlockedBy)
+			fmt.Println("  Fix: Make them readable, then run 'lnpm gc --dry-run' (or any command that opens the store)")
 			issues++
 		case legacyStore:
 			fmt.Printf("%s PENDING\n", iconWarn())

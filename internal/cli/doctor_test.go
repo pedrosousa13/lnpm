@@ -167,10 +167,40 @@ func TestRunDoctorReportsALegacyStoreAsPending(t *testing.T) {
 		t.Errorf("RunDoctor did not report the unmigrated store as pending, output was:\n%s", out)
 	}
 	if strings.Contains(out, entry) {
-		t.Errorf("RunDoctor listed %s as damaged; every entry of an unmigrated store would be listed, and none of them needs re-publishing", out)
+		t.Errorf("RunDoctor listed %s as damaged; every entry of an unmigrated store would be listed, and none of them needs re-publishing. Output was:\n%s", entry, out)
 	}
 	if _, err := os.Stat(filepath.Join(entry, ".lnpm-complete")); err == nil {
 		t.Error("RunDoctor performed the migration; doctor must report without writing")
+	}
+}
+
+// TestRunDoctorReportsAMigrationItCannotRun covers the overlap the branch above
+// would otherwise hide: a store that predates markers and holds a directory the
+// scan cannot read. The migration withholds its decision for as long as anything
+// is unreadable, so "run any command that opens the store" is advice that can
+// never work here. doctor has to name the directory count and fail, or the user
+// is sent round a loop with nothing telling them why it does not end.
+func TestRunDoctorReportsAMigrationItCannotRun(t *testing.T) {
+	requirePermissionEnforcement(t)
+
+	dir := newDoctorStoreConfig(t)
+	seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+	blocked := filepath.Dir(seedUnmarkedEntry(t, dir, "blocked-pkg", "bbb222"))
+	if err := os.Chmod(blocked, 0000); err != nil {
+		t.Fatalf("chmod %s: %v", blocked, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0755) })
+
+	out, err := runDoctor(t)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for a migration that cannot run, want an error; output was:\n%s", out)
+	}
+
+	if !strings.Contains(out, "could not be read") {
+		t.Errorf("RunDoctor did not say what is blocking the migration, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "Make them readable") {
+		t.Errorf("RunDoctor advised a fix without the step that unblocks it, output was:\n%s", out)
 	}
 }
 
@@ -346,6 +376,19 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 			setup: func(t *testing.T, dir string) string {
 				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
 				return "PENDING" // and the "! Found N warning(s)" summary
+			},
+		},
+		{
+			name:     "legacy migration blocked by an unreadable directory",
+			requires: requirePermissionEnforcement,
+			setup: func(t *testing.T, dir string) string {
+				seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+				blocked := filepath.Dir(seedUnmarkedEntry(t, dir, "blocked-pkg", "bbb222"))
+				if err := os.Chmod(blocked, 0000); err != nil {
+					t.Fatalf("chmod %s: %v", blocked, err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(blocked, 0755) })
+				return "could not be read" // and the "x Found N issue(s)" summary
 			},
 		},
 		{
