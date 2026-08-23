@@ -50,7 +50,7 @@ my-monorepo/                    external-app/
 ├── packages/                   └── node_modules/
 │   └── ui/                         └── @my/ui ← linked from monorepo
 │       ├── package.json
-│       └── src/
+│       └── src/index.js
 └── apps/
     └── web/
         └── package.json
@@ -555,22 +555,20 @@ The root `package.json` of a monorepo is itself a package as far as lnpm is conc
 $ cd ~/my-monorepo
 $ lnpm push
 Package my-monorepo not published yet, publishing...
-Publishing my-monorepo@0.0.0 (6 files)...
+Publishing my-monorepo@0.0.0 (4 files)...
 ✓ Published my-monorepo@0.0.0
-  Hash: 6d4af6eb
-  Files: 6
-  Size: 247 B
-  Store: /home/you/.lnpm/store/my-monorepo/6d4af6eb7a14a98a
+  Hash: 10618390
+  Files: 4
+  Size: 334 B
+  Store: /home/you/.lnpm/store/my-monorepo/10618390ed098b47
   Packed:
-    README.md
-    index.js
+    apps/web/package.json
     package.json
-    packages/ui/index.js
     packages/ui/package.json
-    tsconfig.json
+    packages/ui/src/index.js
 ```
 
-That exits 0 and nothing warns you. The `Packed:` list is the tell: it holds the root's own files, and your library's sources only appear under `packages/`, as data carried along rather than as the package being shipped. `cd` into the package you actually changed and push from there:
+That exits 0 and nothing warns you. The `Packed:` list is the tell — it is the whole workspace laid out above, not your library. `@my/ui`'s sources are in there under `packages/ui/`, but as data inside `my-monorepo`, and an app that ran `lnpm add @my/ui` resolves that name and never sees them. `cd` into the package you actually changed and push from there:
 
 ```bash
 $ cd packages/ui

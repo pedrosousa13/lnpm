@@ -33,16 +33,18 @@ type PublishOptions struct {
 
 // RunPublish executes the publish command, moving the default tag onto what it
 // writes.
+//
+// It and RunPublishTagged below are both test-only now: cobra builds a
+// PublishOptions and calls RunPublishWith directly, so nothing in the command
+// path reaches either. They stay because the tests that call them name only
+// the fields they care about, which reads better than a struct literal
+// repeated across every call site.
 func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error {
 	return RunPublishTagged(push, all, skipHooks, skipValidation, db.DefaultTag)
 }
 
 // RunPublishTagged is RunPublish, moving tag onto what it writes instead of the
 // default one. An empty tag means the default one.
-//
-// The command no longer reaches it - cobra builds a PublishOptions and calls
-// RunPublishWith - so its only callers are tests that want a tag without
-// naming the other fields.
 func RunPublishTagged(push bool, all bool, skipHooks bool, skipValidation bool, tag string) error {
 	return RunPublishWith(PublishOptions{
 		Push:           push,
@@ -399,8 +401,18 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 	// The packed set itself, not only the count above. A count cannot show that
 	// a secret was packed, and this is the one place that can say what was
 	// actually stored: `publish --dry-run` re-packs the working tree, so it
-	// answers "what would ship now", never "what did ship". push reaches this
-	// same summary and gets the same list, which is what it needs too.
+	// answers "what would ship now", never "what did ship".
+	//
+	// Uncapped, deliberately. A dist-heavy package puts thousands of lines on
+	// every publish, which is real, but a list truncated at N is worthless for
+	// the thing the list is for - the packed secret is as likely to be at
+	// position 900 as position 9, and a reader who cannot trust the list to be
+	// complete has to go and check by hand anyway.
+	//
+	// push reaches this only through RunPushTagged's "not published yet"
+	// branch, which delegates the first publish here. A steady-state push does
+	// its own packing and storing and prints no list; #322 is about publish, so
+	// that half is left as it is.
 	var listing strings.Builder
 	listing.WriteString("  Packed:\n")
 	writePackedPaths(&listing, files, "    ")

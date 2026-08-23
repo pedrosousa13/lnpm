@@ -6,17 +6,21 @@ Quick example showing lnpm with Turborepo.
 
 ```
 my-turborepo/
-├── package.json         # Root workspace config (lnpm is a system binary, not a dependency)
-├── turbo.json          # Turborepo config
+├── package.json              # Root workspace config (lnpm is a system binary, not a dependency)
+├── turbo.json                # Turborepo config
 ├── packages/
 │   └── ui/
 │       ├── package.json
 │       ├── src/
-│       └── dist/       # Built output
+│       │   └── index.ts
+│       └── dist/
+│           └── index.js      # Built output, and the package's main
 └── apps/
     └── web/
         └── package.json
 ```
+
+Six files, and the count matters later: `lnpm push` from the root packs all of them.
 
 ## Setup
 
@@ -232,7 +236,7 @@ Publishing my-turborepo@0.0.0 (6 files)...
     turbo.json
 ```
 
-Read the `Packed:` list when you are not sure which package you just shipped. `@my/ui`'s files are in there, but under `packages/ui/`, as data inside `my-turborepo` — an app that ran `lnpm add @my/ui` resolves `@my/ui` and never sees them.
+That is every file in the Structure section at the top of this page — the whole workspace, swept up as one package. Read the `Packed:` list when you are not sure which package you just shipped: `@my/ui`'s files are in there, but under `packages/ui/`, as data inside `my-turborepo`, and an app that ran `lnpm add @my/ui` resolves `@my/ui` and never sees them.
 
 Run it from the package instead:
 ```bash

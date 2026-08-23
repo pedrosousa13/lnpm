@@ -6,20 +6,29 @@ Quick example showing lnpm with Nx monorepo.
 
 ```
 my-nx-workspace/
-├── package.json         # Root workspace config (lnpm is a system binary, not a dependency)
-├── nx.json             # Nx config
+├── package.json                  # Root workspace config (lnpm is a system binary, not a dependency)
+├── nx.json                       # Nx config
 ├── libs/
 │   ├── feature-auth/
+│   │   ├── package.json          # What lnpm publishes: @my-org/feature-auth
 │   │   ├── project.json
+│   │   ├── tsconfig.lib.json     # The build target's tsConfig
 │   │   ├── src/
+│   │   │   ├── index.ts
+│   │   │   └── auth.service.ts
 │   │   └── dist/
+│   │       └── index.js          # Built output, and the package's main
 │   └── ui/
+│       ├── package.json          # @my-org/ui, no build step
 │       ├── project.json
 │       └── src/
+│           └── index.ts
 └── apps/
     └── web/
         └── project.json
 ```
+
+Twelve files, and the count matters later: `lnpm push` from the root packs all of them.
 
 ## Setup
 
@@ -304,12 +313,12 @@ Check your project.json outputs configuration:
 $ cd ~/projects/my-nx-workspace
 $ lnpm push
 Package my-nx-workspace not published yet, publishing...
-Publishing my-nx-workspace@1.0.0 (10 files)...
+Publishing my-nx-workspace@1.0.0 (12 files)...
 ✓ Published my-nx-workspace@1.0.0
-  Hash: b0901fd9
-  Files: 10
-  Size: 1.54 KB
-  Store: /home/you/.lnpm/store/my-nx-workspace/b0901fd9859c76c9
+  Hash: beb035af
+  Files: 12
+  Size: 1.74 KB
+  Store: /home/you/.lnpm/store/my-nx-workspace/beb035af7d44461d
   Packed:
     apps/web/project.json
     libs/feature-auth/dist/index.js
@@ -317,13 +326,15 @@ Publishing my-nx-workspace@1.0.0 (10 files)...
     libs/feature-auth/project.json
     libs/feature-auth/src/auth.service.ts
     libs/feature-auth/src/index.ts
+    libs/feature-auth/tsconfig.lib.json
+    libs/ui/package.json
     libs/ui/project.json
     libs/ui/src/index.ts
     nx.json
     package.json
 ```
 
-Read the `Packed:` list when you are not sure which project you just shipped. Every lib in the workspace is in there, `libs/feature-auth/dist/index.js` included, but as data inside `my-nx-workspace` — an app that ran `lnpm add @my-org/feature-auth` resolves that name and never sees them.
+That is every file in the Structure section at the top of this page — the whole workspace, swept up as one package. Read the `Packed:` list when you are not sure which project you just shipped: `libs/feature-auth/dist/index.js` is in there, but as data inside `my-nx-workspace`, and an app that ran `lnpm add @my-org/feature-auth` resolves that name and never sees it.
 
 Run it from the library instead:
 ```bash

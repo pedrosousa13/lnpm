@@ -552,6 +552,10 @@ func TestPublishPrintsThePackedFileList(t *testing.T) {
 // yet, and it gets the same list. This is the half a command-specific pointer
 // could not serve: telling a `lnpm push` user to run `lnpm publish --dry-run`
 // is advice about a command they did not run.
+//
+// Only that branch. A steady-state push - package already in the store - packs
+// and stores on its own and never calls finishPublish, so it prints no list.
+// The fixture publishes nothing first for exactly that reason.
 func TestPushPrintsThePackedFileList(t *testing.T) {
 	env := setupTest(t)
 
