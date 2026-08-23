@@ -722,11 +722,54 @@ func isIncluded(relPath string, patterns []string) bool {
 	return false
 }
 
-// isDefaultInclude checks if the file is a default include
+// isDefaultInclude reports whether relPath is in the always-included set: the
+// files that ship whatever the package.json "files" whitelist says.
+//
+// The set is anchored to the package root, as npm's is. It used to match
+// filepath.Base(relPath), so any depth qualified, and a whitelist the developer
+// wrote as ["dist"] still shipped internal-docs/README.private,
+// notes/changes.txt and vendor/foo/LICENSE — each basename matched an entry
+// somewhere below the root. #320.
+//
+// The separator check is deliberately made before filepath.Match rather than
+// left to it. defaultIncludes entries are globs ("README*"), and filepath.Match
+// reads its separator from the platform. On Linux, "*" stops at "/", so
+// filepath.Match("readme*", "dist/readme.md") is false — run and confirmed — and
+// dropping filepath.Base alone would look sufficient here. It would only be
+// sufficient here: Windows builds path_windows.go, where the separator is "\"
+// and "/" is an ordinary character.
+// TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform pins that same
+// split biting the ignore matcher, where a single "*" did cross a "/" on Windows
+// and not elsewhere from identical inputs. Rather than depend on which way
+// filepath.Match resolves it, this rejects a separator before filepath.Match
+// sees the path, so the answer cannot differ by platform. TestIsDefaultInclude
+// carries the nested rows, and the Windows CI job is the only one that can show
+// the check is load-bearing: Linux and macOS both build path_unix.go, so
+// filepath.Separator is "/" on each and the two spellings agree there anyway.
+//
+// Rejected: anchoring with strings.HasPrefix(relPath, pattern). It cannot
+// express the "*" the entries are written with — HasPrefix compares "*" as an
+// ordinary byte, so only the "package.json" entry could ever fire, and it would
+// fire on "package.jsonc" too. Stripping the "*" and prefix-matching the stem
+// repairs that and reintroduces the bug this function exists to fix: "changes"
+// then prefix-matches "changes/secret.txt". Both spellings were run against the
+// table in TestIsDefaultInclude; the package.jsonc and changes/secret.txt rows
+// are what fail them.
 func isDefaultInclude(relPath string) bool {
-	baseName := filepath.Base(relPath)
+	// collectFiles hands over a relPath already through filepath.ToSlash, so
+	// "/" is the separator it will carry. The filepath.Separator half defends
+	// no caller that exists today and is here on purpose: both current callers
+	// are covered by the "/" test alone — collectFiles has already run ToSlash,
+	// and ExcludedByProjectRules' only caller passes a bare root filename. This
+	// is an exported package's helper, so a future caller handing over a native
+	// Windows path would otherwise get every nested path force-included. Do not
+	// read the two tests as redundant because they are identical on Linux:
+	// filepath.Separator is "\" only on Windows, which is where this half acts.
+	if strings.ContainsRune(relPath, '/') || strings.ContainsRune(relPath, filepath.Separator) {
+		return false
+	}
 	for _, pattern := range defaultIncludes {
-		matched, _ := filepath.Match(strings.ToLower(pattern), strings.ToLower(baseName))
+		matched, _ := filepath.Match(strings.ToLower(pattern), strings.ToLower(relPath))
 		if matched {
 			return true
 		}
