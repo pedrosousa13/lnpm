@@ -304,13 +304,26 @@ Check your project.json outputs configuration:
 $ cd ~/projects/my-nx-workspace
 $ lnpm push
 Package my-nx-workspace not published yet, publishing...
-Publishing my-nx-workspace@1.0.0 (6 files)...
+Publishing my-nx-workspace@1.0.0 (10 files)...
 ✓ Published my-nx-workspace@1.0.0
-  Hash: 0322bedf
-  Files: 6
-  Size: 480 B
-  Store: /home/you/.lnpm/store/my-nx-workspace/0322bedfad632406
+  Hash: b0901fd9
+  Files: 10
+  Size: 1.54 KB
+  Store: /home/you/.lnpm/store/my-nx-workspace/b0901fd9859c76c9
+  Packed:
+    apps/web/project.json
+    libs/feature-auth/dist/index.js
+    libs/feature-auth/package.json
+    libs/feature-auth/project.json
+    libs/feature-auth/src/auth.service.ts
+    libs/feature-auth/src/index.ts
+    libs/ui/project.json
+    libs/ui/src/index.ts
+    nx.json
+    package.json
 ```
+
+Read the `Packed:` list when you are not sure which project you just shipped. Every lib in the workspace is in there, `libs/feature-auth/dist/index.js` included, but as data inside `my-nx-workspace` — an app that ran `lnpm add @my-org/feature-auth` resolves that name and never sees them.
 
 Run it from the library instead:
 ```bash

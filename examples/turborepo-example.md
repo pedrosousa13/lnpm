@@ -219,11 +219,20 @@ $ lnpm push
 Package my-turborepo not published yet, publishing...
 Publishing my-turborepo@0.0.0 (6 files)...
 ✓ Published my-turborepo@0.0.0
-  Hash: 37e17a1b
+  Hash: d49407af
   Files: 6
-  Size: 590 B
-  Store: /home/you/.lnpm/store/my-turborepo/37e17a1bf0121ca4
+  Size: 929 B
+  Store: /home/you/.lnpm/store/my-turborepo/d49407af3568da7d
+  Packed:
+    apps/web/package.json
+    package.json
+    packages/ui/dist/index.js
+    packages/ui/package.json
+    packages/ui/src/index.ts
+    turbo.json
 ```
+
+Read the `Packed:` list when you are not sure which package you just shipped. `@my/ui`'s files are in there, but under `packages/ui/`, as data inside `my-turborepo` — an app that ran `lnpm add @my/ui` resolves `@my/ui` and never sees them.
 
 Run it from the package instead:
 ```bash
