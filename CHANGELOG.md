@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.2.1](https://github.com/pedrosousa13/lnpm/compare/v2.2.0...v2.2.1) (2026-08-23)
+
+> **Relocated your `node_modules`?** lnpm now refuses to link or unlink through a
+> `node_modules` — or a `node_modules/@scope` — that is not a real directory,
+> because a symlink there redirects lnpm's writes and deletes outside your
+> project. If you relocate `node_modules` deliberately, set
+> `follow_symlinked_node_modules: true` in `~/.lnpm/config.yaml` to restore the
+> previous behaviour. The refusal message names the file and the key. See
+> [#339](https://github.com/pedrosousa13/lnpm/issues/339).
+>
+> **Upgrading from 1.x?** Store entries written before 2.0.0 carry no
+> completeness marker, and lnpm now checks that marker before serving an entry.
+> The first command that opens your store migrates it in one pass; until then
+> `lnpm doctor` reports the store as pending rather than damaged. If it reports
+> that the migration cannot run, a directory in your store could not be read —
+> make it readable and run any command again. See
+> [#330](https://github.com/pedrosousa13/lnpm/issues/330).
+>
+> **`lnpm gc` is now more conservative.** It will not collect a package whose
+> only consuming project sits on a filesystem that is not mounted where it was
+> linked — an unplugged drive or an unmounted network share no longer costs you
+> the store entry. Those links are reported as skipped. The trade is that a
+> drive gone for good leaves its entries uncollectable for now; see
+> [#382](https://github.com/pedrosousa13/lnpm/issues/382).
+
+
+### Bug Fixes
+
+* **cli:** write package.json through a temp file and rename ([#377](https://github.com/pedrosousa13/lnpm/issues/377)) ([fb6bbe5](https://github.com/pedrosousa13/lnpm/commit/fb6bbe51bc67c0cd7c5cdf426aab1063826b298a)), closes [#324](https://github.com/pedrosousa13/lnpm/issues/324)
+* **gc:** do not collect when a project's filesystem is not mounted ([#383](https://github.com/pedrosousa13/lnpm/issues/383)) ([9e3ccf6](https://github.com/pedrosousa13/lnpm/commit/9e3ccf6be3574eafe2aaef238a32204d3930f756)), closes [#335](https://github.com/pedrosousa13/lnpm/issues/335)
+* **link:** refuse a symlinked node_modules or scope directory ([#388](https://github.com/pedrosousa13/lnpm/issues/388)) ([4ad8ffb](https://github.com/pedrosousa13/lnpm/commit/4ad8ffb8f6ef6241d93219a5306a4a946c5ff72a)), closes [#339](https://github.com/pedrosousa13/lnpm/issues/339)
+* **pack:** reject package names whose segments begin with a dot ([#379](https://github.com/pedrosousa13/lnpm/issues/379)) ([7f1b524](https://github.com/pedrosousa13/lnpm/commit/7f1b52485ac1523af20720c3dc15040882ef8466)), closes [#325](https://github.com/pedrosousa13/lnpm/issues/325)
+* **store:** check the completeness marker on the read path ([#381](https://github.com/pedrosousa13/lnpm/issues/381)) ([68b3cb8](https://github.com/pedrosousa13/lnpm/commit/68b3cb8ca29144c39ae84601fa0635ac7faaf621)), closes [#330](https://github.com/pedrosousa13/lnpm/issues/330)
+
 ## [2.2.0](https://github.com/pedrosousa13/lnpm/compare/v2.1.0...v2.2.0) (2026-08-23)
 
 > **Packages that excluded `package.json`**: lnpm now always packs the package
