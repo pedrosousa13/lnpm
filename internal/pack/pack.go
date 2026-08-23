@@ -722,11 +722,42 @@ func isIncluded(relPath string, patterns []string) bool {
 	return false
 }
 
-// isDefaultInclude checks if the file is a default include
+// isDefaultInclude reports whether relPath is in the always-included set: the
+// files that ship whatever the package.json "files" whitelist says.
+//
+// The set is anchored to the package root, as npm's is. It used to match
+// filepath.Base(relPath), so any depth qualified, and a whitelist the developer
+// wrote as ["dist"] still shipped internal-docs/README.private,
+// notes/changes.txt and vendor/foo/LICENSE — each basename matched an entry
+// somewhere below the root. #320.
+//
+// The separator check is deliberately made before filepath.Match rather than
+// left to it. defaultIncludes entries are globs ("README*"), and filepath.Match
+// reads its separator from the platform. On Linux, "*" stops at "/", so
+// filepath.Match("readme*", "dist/readme.md") is false — run and confirmed — and
+// dropping filepath.Base alone would look sufficient here. It would only be
+// sufficient here: filepath.Separator is "\" on Windows, where "/" is an
+// ordinary character. TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform
+// pins that same split biting the ignore matcher, where a single "*" did cross a
+// "/" on Windows and not elsewhere from identical inputs. Rather than depend on
+// which way filepath.Match resolves it, this rejects a separator before
+// filepath.Match sees the path, so the answer cannot differ by platform.
+// TestIsDefaultInclude carries the nested rows that hold this on the Windows and
+// macOS CI jobs, which is where it is checked rather than reasoned about.
+//
+// Rejected: anchoring with strings.HasPrefix(relPath, pattern). That still
+// admits nested paths whenever the pattern is a prefix of a directory name, and
+// it cannot express the "*" the entries are written with.
 func isDefaultInclude(relPath string) bool {
-	baseName := filepath.Base(relPath)
+	// collectFiles hands over a relPath already through filepath.ToSlash, so
+	// "/" is the separator it will carry; filepath.Separator covers a caller
+	// that passes a native path instead. Checking only the platform separator
+	// would miss the ToSlash form on Windows.
+	if strings.ContainsRune(relPath, '/') || strings.ContainsRune(relPath, filepath.Separator) {
+		return false
+	}
 	for _, pattern := range defaultIncludes {
-		matched, _ := filepath.Match(strings.ToLower(pattern), strings.ToLower(baseName))
+		matched, _ := filepath.Match(strings.ToLower(pattern), strings.ToLower(relPath))
 		if matched {
 			return true
 		}

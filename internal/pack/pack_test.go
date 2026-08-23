@@ -3,6 +3,7 @@ package pack
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -302,19 +303,60 @@ func TestIsIncludedDegeneratePattern(t *testing.T) {
 	}
 }
 
+// TestIsDefaultInclude pins the always-included set to the package root.
+//
+// The nested rows below all used to answer true: isDefaultInclude matched
+// filepath.Base(relPath), so a README, LICENSE or CHANGES anywhere in the tree
+// was force-included past a "files" whitelist. Regression test for #320.
+//
+// The nested rows are also the platform guard, and the Windows CI job is where
+// they earn their keep. collectFiles hands this function a relPath already
+// through filepath.ToSlash, so its separator is always "/", but filepath.Match
+// reads its separator from the platform. On Linux,
+// filepath.Match("readme*", "dist/readme.md") is false — run and confirmed — so
+// on Linux alone, dropping filepath.Base would be enough to pass these rows.
+// filepath.Separator is "\" on Windows, where "/" is an ordinary character;
+// TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform below pins the same
+// split biting the ignore matcher. isDefaultInclude therefore rejects a
+// separator itself, before filepath.Match ever sees the path, and these rows are
+// what check that on the platforms this machine cannot run.
 func TestIsDefaultInclude(t *testing.T) {
 	tests := []struct {
 		path string
 		want bool
 	}{
+		// At the root, unchanged — including the case-folding.
 		{"package.json", true},
 		{"README.md", true},
 		{"readme.txt", true},
 		{"LICENSE", true},
 		{"license.md", true},
+		{"LICENCE", true},
 		{"CHANGELOG.md", true},
+		{"changes.txt", true},
+		{"HISTORY.md", true},
+		{"README.anything", true},
 		{"src/index.ts", false},
 		{"dist/index.js", false},
+		// "package.json" carries no "*", so it is the one entry that must
+		// match exactly. This row rules out anchoring the set with
+		// strings.HasPrefix(relPath, pattern), which would ship a
+		// package.jsonc past the whitelist.
+		{"package.jsonc", false},
+
+		// Below the root, no longer force-included. Every one of these was
+		// true before #320.
+		{"docs/README.md", false},
+		{"dist/README.md", false},
+		{"internal-docs/README.private", false},
+		{"notes/changes.txt", false},
+		{"vendor/foo/LICENSE", false},
+		{"vendor/foo/package.json", false},
+		{"a/b/c/CHANGELOG.md", false},
+		// A directory whose own name is an always-included name. This is the
+		// row that catches strings.HasPrefix(relPath, pattern) admitting a
+		// nested path, which the package.jsonc row above does not.
+		{"changes/secret.txt", false},
 	}
 
 	for _, tt := range tests {
@@ -1625,5 +1667,139 @@ func TestUserIgnorePatternsStayCaseSensitive(t *testing.T) {
 	})
 	if !upper["SECRET.TXT"] {
 		t.Errorf("%q was not packed: a user ignore pattern must not fold case, packed set was %v", "SECRET.TXT", upper)
+	}
+}
+
+// TestPackDefaultIncludesAnchoredToRoot packs the audit fixture from #320 and
+// asserts the exact packed set, not just the absence of the paths the issue
+// names. The whitelist is "files": ["dist"], and the fixture salts the tree with
+// files whose basenames sit in defaultIncludes. Every one of them shipped before
+// the fix, because isDefaultInclude matched filepath.Base at any depth, so a
+// whitelist the developer wrote as ["dist"] did not narrow the package the way
+// it looks like it does.
+//
+// Two entries in the expected set need saying out loud:
+//
+//   - "dist/README.md" ships, and is meant to. It arrives through the whitelist
+//     — isIncluded("dist/README.md", ["dist"]) is true — not through
+//     defaultIncludes. It is in the fixture so that a fix which anchored by
+//     rejecting every path with a separator *after* the whitelist had already
+//     spoken would be caught here.
+//   - "history.db" at the root ships. #320 lists it among the four paths a
+//     ["dist"] whitelist wrongly shipped, but at the root it is not an instance
+//     of the depth bug: it matches the "history*" entry in defaultIncludes as a
+//     root path, and root paths are exactly what the always-included set is for.
+//     Whether "HISTORY*" belongs in that set at all — npm's does not contain it,
+//     as README's divergence list records — is out of scope for #320, which the
+//     brief states in those words. "data/history.db" below is the same name at
+//     depth and is dropped, which is the part #320 is about.
+func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("package.json", `{
+		"name": "anchored-includes",
+		"version": "1.0.0",
+		"main": "dist/index.js",
+		"files": ["dist"]
+	}`)
+
+	// Root: the always-included set, which must keep working.
+	write("README.md", "# anchored-includes")
+	write("LICENSE", "MIT")
+	write("history.db", "root history")
+
+	// Whitelisted.
+	write("dist/index.js", "module.exports = {}")
+	write("dist/README.md", "# built")
+
+	// The four paths #320 names, plus the same names at depth.
+	write("internal-docs/README.private", "internal only")
+	write("notes/changes.txt", "internal changelog")
+	write("vendor/foo/LICENSE", "vendored MIT")
+	write("data/history.db", "nested history")
+
+	// Outside the whitelist and not an always-included name, as a control.
+	write("src/index.ts", "export const x = 1")
+
+	_, files, err := Pack(tmpDir)
+	if err != nil {
+		t.Fatalf("Pack() error: %v", err)
+	}
+
+	got := make([]string, 0, len(files))
+	for _, f := range files {
+		got = append(got, f.RelPath)
+	}
+	sort.Strings(got)
+
+	want := []string{
+		"LICENSE",
+		"README.md",
+		"dist/README.md",
+		"dist/index.js",
+		"history.db",
+		"package.json",
+	}
+
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("packed set mismatch\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// TestExcludedByProjectRulesAnchorsDefaultIncludesToRoot records what anchoring
+// isDefaultInclude did to the other call site.
+//
+// ExcludedByProjectRules answers "would a tool that reads only this project's
+// own rules ship relPath?", which is what `npm publish` is. npm's always-
+// included set is root-only, so anchoring makes this function *more* faithful,
+// not less: before the fix it reported a nested docs/README.md as shipped under
+// a ["dist"] whitelist, which npm would not do.
+//
+// For the only caller today the answer is unchanged. internal/cli/check.go:256
+// passes lockfile.RetreatFileName, a root-level name, and it matches nothing in
+// defaultIncludes at any depth — so isDefaultInclude answered false for it
+// before the fix and answers false after. The last case below pins that, so the
+// claim is checked rather than asserted.
+func TestExcludedByProjectRulesAnchorsDefaultIncludesToRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(`{"name":"x","version":"1.0.0"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	filesField := []string{"dist"}
+
+	tests := []struct {
+		relPath string
+		want    bool
+		why     string
+	}{
+		{"README.md", false, "a root README is always included, as it is for npm"},
+		{"LICENSE", false, "a root LICENSE is always included, as it is for npm"},
+		{"docs/README.md", true, "npm does not force-include a README below the root"},
+		{"vendor/foo/LICENSE", true, "npm does not force-include a LICENSE below the root"},
+		{"dist/index.js", false, "the whitelist selects it"},
+		{"src/index.ts", true, "outside the whitelist and not an always-included name"},
+		{lockfile.RetreatFileName, true, "the only caller's path: unchanged by #320"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.relPath, func(t *testing.T) {
+			got := ExcludedByProjectRules(tmpDir, filesField, tt.relPath)
+			if got != tt.want {
+				t.Errorf("ExcludedByProjectRules(dir, %v, %q) = %v, want %v (%s)",
+					filesField, tt.relPath, got, tt.want, tt.why)
+			}
+		})
 	}
 }
