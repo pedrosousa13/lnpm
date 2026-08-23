@@ -3,12 +3,16 @@ package workspace
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 )
 
 // writePackage creates a directory under root containing a minimal package.json
@@ -543,5 +547,81 @@ func TestListPackagesNamelessMemberFails(t *testing.T) {
 				t.Errorf("Expected no packages alongside the error, got %v", packages)
 			}
 		})
+	}
+}
+
+// TestDetectRefusesAnOversizedPnpmWorkspace covers the cap on the workspace
+// config, which shares its reason and its constant with the lock file's:
+// yaml.v3's parse cost is superlinear, so an oversized document has to be
+// refused rather than parsed.
+//
+// The fixture is invalid YAML as well as oversized, and that is the point. With
+// the cap before the unmarshal the caller gets the size refusal; with it after,
+// yaml.Unmarshal reports the syntax error first and the size is never
+// mentioned. Asserting which error comes back distinguishes the two placements
+// without measuring how long anything takes.
+//
+// os.Truncate extends the file instead of writing four megabytes out, so the
+// oversized case costs nothing to build. Both properties are read back rather
+// than assumed - the length, which is what the cap sees, and the leading bytes,
+// which are what a misplaced cap would trip over.
+func TestDetectRefusesAnOversizedPnpmWorkspace(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "packages/package-a")
+
+	config := filepath.Join(root, "pnpm-workspace.yaml")
+	const head = "packages: [packages/*\n"
+	size := int64(fsutil.MaxYAMLBytes) + 1
+
+	if err := os.WriteFile(config, []byte(head), 0644); err != nil {
+		t.Fatalf("Failed to write pnpm-workspace.yaml: %v", err)
+	}
+	if err := os.Truncate(config, size); err != nil {
+		t.Fatalf("Truncate(%s, %d) error: %v", config, size, err)
+	}
+	info, err := os.Stat(config)
+	if err != nil {
+		t.Fatalf("Stat(%s) error: %v", config, err)
+	}
+	if info.Size() != size {
+		t.Fatalf("built %s at %d bytes, want %d", config, info.Size(), size)
+	}
+	built, err := os.Open(config)
+	if err != nil {
+		t.Fatalf("Open(%s) error: %v", config, err)
+	}
+	gotHead := make([]byte, len(head))
+	if _, err := io.ReadFull(built, gotHead); err != nil {
+		_ = built.Close()
+		t.Fatalf("reading back the head of %s: %v", config, err)
+	}
+	_ = built.Close()
+	if string(gotHead) != head {
+		t.Fatalf("head of %s = %q, want the invalid YAML %q", config, gotHead, head)
+	}
+
+	ws, err := Detect(root)
+	if err == nil {
+		t.Fatalf("Expected a refusal for the oversized pnpm-workspace.yaml, got nil and workspace %+v", ws)
+	}
+	if ws != nil {
+		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+	if !errors.Is(err, fsutil.ErrFileTooLarge) {
+		t.Errorf("Detect() error = %v, want it to wrap fsutil.ErrFileTooLarge", err)
+	}
+
+	msg := err.Error()
+	for _, want := range []string{
+		config,
+		strconv.FormatInt(size, 10),
+		strconv.FormatInt(fsutil.MaxYAMLBytes, 10),
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Detect() error = %q, want it to name %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "failed to parse") {
+		t.Errorf("Detect() error = %q, want a size refusal; a parse error means the file was unmarshalled before the cap was checked", msg)
 	}
 }

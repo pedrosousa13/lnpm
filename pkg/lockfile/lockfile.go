@@ -1,12 +1,15 @@
 package lockfile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/pedrosousa13/lnpm/internal/fsutil"
 )
 
 // LockFile represents the lnpm.lock file format
@@ -75,11 +78,20 @@ func LoadRetreat(projectPath string) (*LockFile, error) {
 // file": the snapshot shares this reader, and a message that named the format
 // instead of the file would send a user whose snapshot is corrupt to inspect a
 // lock file that is perfectly fine.
+//
+// The read is capped before the unmarshal, because yaml.v3's parse cost is
+// superlinear and a project can ship whatever lock file it likes - see
+// fsutil.MaxYAMLBytes. The refusal is passed through unwrapped: it already names
+// the file, and "failed to read X: X is N bytes" would give one file two
+// spellings in one message.
 func read(path string) (*LockFile, error) {
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadFileCapped(path, fsutil.MaxYAMLBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
+		}
+		if errors.Is(err, fsutil.ErrFileTooLarge) {
+			return nil, err
 		}
 		return nil, fmt.Errorf("failed to read %s: %w", path, err)
 	}
