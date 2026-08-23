@@ -364,6 +364,17 @@ link_mode: hardlink
 # Default: true
 manage_gitignore: true
 
+# Work through a node_modules — or a node_modules/@scope — that is not a real
+# directory. Off by default: lnpm creates directories and deletes entries
+# there, and a symlink committed to a repository aims both at whatever it
+# points at. Turn it on only where the relocation is yours.
+#
+# It is named for the symlink because that is the case it exists for, but it
+# switches the whole check off: a regular file or a device at either path is
+# accepted too, exactly as it was before the check existed.
+# Default: false
+follow_symlinked_node_modules: false
+
 # Build scripts and hooks
 hooks:
   # Skip prepare scripts (prepare, prepublishOnly, prepack) on publish/push

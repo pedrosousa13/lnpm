@@ -107,6 +107,13 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
 		return Result{}, err
 	}
+	// And node_modules, which the link created at the end of this function needs.
+	// Checked up here and not only down there: by the time createNodeModulesSymlink
+	// runs, .lnpm/{package} has been built and renamed into place, so refusing
+	// there would leave the project holding half of what it asked for.
+	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
+		return Result{}, err
+	}
 
 	// The manifest's name is reserved before anything else reads the file set,
 	// so nothing below has to consider a package's file competing for it.
@@ -425,6 +432,11 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
 		return "", err
 	}
+	// Same reason as in Link: .lnpm/{package} is renamed into place before the
+	// node_modules link is made, so the refusal has to come before either.
+	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
+		return "", err
+	}
 
 	// An empty source path is rejected before it is resolved, because
 	// filepath.Abs("") returns the working directory and a working directory
@@ -519,6 +531,15 @@ func (l *Linker) Unlink(packageName string) error {
 		return err
 	}
 	if err := l.requireRealLnpmDirs(packageName); err != nil {
+		return err
+	}
+	// And the same for node_modules, whose entry is removed below. That delete
+	// is a single os.Remove rather than createNodeModulesSymlink's RemoveAll, so
+	// it cannot empty a tree - but it was measured deleting a plain file outside
+	// the project through a symlinked node_modules, which is enough. Refusing
+	// here, above the .lnpm RemoveAll, is what keeps a refused unlink from
+	// removing half the package first.
+	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
 		return err
 	}
 
@@ -621,6 +642,66 @@ func requireRealDir(kind, path string) error {
 	return nil
 }
 
+// requireRealNodeModulesDirs refuses to work through a node_modules - or, for a
+// scoped package, a node_modules/{scope} - that is anything other than a
+// directory in the project, unless the user has opted in.
+//
+// It is requireRealLnpmDirs' hole one directory over, and it was reproduced
+// against the unguarded build rather than argued from the code. With
+// node_modules committed as a link to a directory outside the project,
+// Link("my-package") destroyed an unrelated my-package/taxes.txt there and left
+// its own symlink in its place; with node_modules/@org committed as one,
+// Link("@org/scoped") did the same to scoped/taxes.txt; and a scoped package
+// under a symlinked node_modules also created an @org directory outside the
+// project outright. Every one of those came back Result{Changed: 1}, err = nil.
+//
+// The override is what makes this different from .lnpm, which has none.
+// Nobody relocates a project's .lnpm, but people do relocate node_modules - to
+// another volume, to a RAM disk, out of a synced folder - so refusing outright
+// would break a real setup with no way forward. follow_symlinked_node_modules is
+// off by default and named for what turning it on does: lnpm follows the link,
+// and the MkdirAll and the RemoveAll below land wherever it points.
+//
+// The override is checked before requireRealDir rather than inside it, so it
+// waives every refusal that check makes and not only the link it is named for:
+// a regular file, a fifo or a device at either path is let through too. That is
+// deliberate and it is what "behaves as it did before the guard" means - all of
+// them reached MkdirAll's ENOTDIR before, and the override's job is to restore
+// exactly that, not to substitute a different opinion about which of them is
+// tolerable.
+//
+// A config that cannot be read leaves the guard on, per docs/adr/0001: an
+// override nobody could confirm was set is not one to act on.
+func (l *Linker) requireRealNodeModulesDirs(packageName string) error {
+	if cfg, err := config.LoadConfig(); err == nil && cfg != nil && cfg.FollowSymlinkedNodeModules {
+		return nil
+	}
+
+	nodeModulesDir := filepath.Join(l.projectPath, "node_modules")
+	if err := requireRealDir("project's node_modules", nodeModulesDir); err != nil {
+		return withNodeModulesOverride(err)
+	}
+
+	if scope, _, scoped := strings.Cut(packageName, "/"); scoped {
+		if err := requireRealDir("node_modules scope", filepath.Join(nodeModulesDir, scope)); err != nil {
+			return withNodeModulesOverride(err)
+		}
+	}
+
+	return nil
+}
+
+// withNodeModulesOverride names the escape hatch in a refusal requireRealDir
+// wrote.
+//
+// requireRealDir's own remedy - remove it and re-run - is the only one .lnpm
+// has, and it is the wrong advice on its own here: the link may be exactly what
+// its owner arranged. Naming the config key alongside it is what turns the
+// refusal into a choice rather than a wall.
+func withNodeModulesOverride(err error) error {
+	return fmt.Errorf("%w, or set follow_symlinked_node_modules: true in %s to let lnpm create and delete through it", err, config.GetConfigPath())
+}
+
 // removeDirIfEmpty removes dir when it holds no entries at all.
 //
 // Emptiness is literal, deliberately unlike ListLinked's report: a relink
@@ -643,6 +724,21 @@ func removeDirIfEmpty(dir string) {
 
 // createNodeModulesSymlink creates a symlink from node_modules/{pkg} to .lnpm/{pkg}
 func (l *Linker) createNodeModulesSymlink(packageName string) error {
+	// Every caller in this package checks the same thing before it starts work,
+	// so for all of them this is a repeat and no test can red on it alone. It
+	// stays because it is the single point all of them funnel through: a caller
+	// added later is covered whether or not its author remembers, which is the
+	// case the entry-point copies cannot make.
+	//
+	// It sits above rather than below the three calls that follow the link - the
+	// two MkdirAlls, which create node_modules and the scope directory, and the
+	// RemoveAll after them. Measured while it was the only copy: placed just
+	// below that RemoveAll it returned the same refusal, with the file outside
+	// the project already deleted and the directory outside it already created.
+	if err := l.requireRealNodeModulesDirs(packageName); err != nil {
+		return err
+	}
+
 	nodeModulesDir := filepath.Join(l.projectPath, "node_modules")
 	if err := os.MkdirAll(nodeModulesDir, 0755); err != nil {
 		return fmt.Errorf("failed to create node_modules directory: %w", err)

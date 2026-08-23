@@ -21,6 +21,19 @@ type Config struct {
 	// ManageGitignore controls automatic .gitignore management (default: true)
 	ManageGitignore *bool `yaml:"manage_gitignore,omitempty"`
 
+	// FollowSymlinkedNodeModules permits lnpm to create and delete through a
+	// node_modules - or a scope directory beneath it - that is not a real
+	// directory in the project. Off by default, because a repository can commit
+	// a link at either name and aim lnpm's writes and its recursive delete at
+	// whatever it points at. Relocating node_modules to another volume, a RAM
+	// disk or out of a synced folder is a setup people really run, which is why
+	// there is a way to say yes at all.
+	//
+	// A link is what it is named for and what it exists for, but what it
+	// actually waives is the whole check: a regular file, a fifo or a device at
+	// either path is accepted too, exactly as it was before the check existed.
+	FollowSymlinkedNodeModules bool `yaml:"follow_symlinked_node_modules,omitempty"`
+
 	// Hooks configuration
 	Hooks HooksConfig `yaml:"hooks,omitempty"`
 }

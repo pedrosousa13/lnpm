@@ -151,15 +151,21 @@ func TestLinkMissingStoreFile(t *testing.T) {
 	}
 }
 
-// useCopyMode points config at a temp file selecting link_mode: copy and resets
-// the memoised config so the setting takes effect regardless of what other
-// tests in this package loaded first (config.ResetForTesting, added for exactly
-// this, removes the ordering dependency the singleton would otherwise create).
-func useCopyMode(t *testing.T) {
+// useConfig points config at a temp file holding contents and resets the
+// memoised config, so the settings take effect regardless of what other tests in
+// this package loaded first (config.ResetForTesting, added for exactly this,
+// removes the ordering dependency the singleton would otherwise create).
+//
+// Call it with "" for a test that wants no settings at all. That is not a no-op
+// and it is not optional: without it the test reads the developer's own
+// ~/.lnpm/config.yaml, and any test whose subject is a config-gated refusal
+// would pass or fail on a machine's contents rather than on the code. #371 is
+// the same bug in the tests package.
+func useConfig(t *testing.T, contents string) {
 	t.Helper()
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("link_mode: copy\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(contents), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LNPM_CONFIG", configPath)
@@ -167,6 +173,13 @@ func useCopyMode(t *testing.T) {
 	// Runs before t.Setenv's restore (cleanups are LIFO), so the next test sees
 	// both a cleared singleton and the original environment.
 	t.Cleanup(config.ResetForTesting)
+}
+
+// useCopyMode selects link_mode: copy, and confirms it took.
+func useCopyMode(t *testing.T) {
+	t.Helper()
+
+	useConfig(t, "link_mode: copy\n")
 
 	if got := New(t.TempDir()).determineLinkType(t.TempDir()); got != Copy {
 		t.Fatalf("determineLinkType() = %q with link_mode: copy, want %q", got, Copy)
@@ -784,5 +797,360 @@ func TestUnlinkRefusesWhenTheLnpmDirectoryCannotBeInspected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), ".lnpm") {
 		t.Errorf("Unlink() error = %v, want it to name .lnpm", err)
+	}
+}
+
+// symlinkedNodeModulesFixture builds a project whose node_modules is a link to
+// a directory outside it, holding a file at exactly the path the linker is
+// about to take over. That file is the whole point: the guard is not about
+// refusing an unusual layout, it is about not destroying what the layout aims
+// at.
+func symlinkedNodeModulesFixture(t *testing.T, tmpDir, entry string) (projectPath, sentinel string) {
+	t.Helper()
+
+	projectPath = filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	if err := os.MkdirAll(filepath.Join(victim, entry), 0755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel = filepath.Join(victim, entry, "taxes.txt")
+	if err := os.WriteFile(sentinel, []byte("keep me"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return projectPath, sentinel
+}
+
+// assertSentinelIntact reports whether the file the fixture placed outside the
+// project survived. Reading its bytes rather than stat-ing it is deliberate: the
+// unguarded build replaced the directory holding it with a symlink of its own,
+// so an existence check on the parent passes there too.
+func assertSentinelIntact(t *testing.T, sentinel string) {
+	t.Helper()
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep me" {
+		t.Errorf("%s = %q (err %v) after a refused Link, want it intact", sentinel, string(got), err)
+	}
+}
+
+// TestLinkRefusesASymlinkedNodeModules covers #339's first half, reproduced
+// against the unguarded build before the guard was written: with node_modules
+// committed as a link out of the project, Link returned Result{Changed: 1} and a
+// nil error having deleted victim/my-package/taxes.txt and put its own symlink
+// where that directory had been.
+//
+// The override is asserted in the message because a refusal a user cannot get
+// past is the outcome the maintainer rejected. Naming only the path would leave
+// a relocated node_modules with nothing to do.
+func TestLinkRefusesASymlinkedNodeModules(t *testing.T) {
+	useConfig(t, "")
+
+	tmpDir := t.TempDir()
+	projectPath, sentinel := symlinkedNodeModulesFixture(t, tmpDir, "my-package")
+	linkDirAt(t, filepath.Join(tmpDir, "victim"), filepath.Join(projectPath, "node_modules"))
+
+	storePath, files := storeFixture(t, tmpDir, map[string]string{
+		"package.json": `{"name":"my-package"}`,
+	})
+
+	_, err := New(projectPath).Link("my-package", storePath, files)
+	if err == nil {
+		t.Fatal("Link() through a symlinked node_modules error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), filepath.Join(projectPath, "node_modules")) {
+		t.Errorf("Link() error = %v, want it to name the project's node_modules", err)
+	}
+	if !strings.Contains(err.Error(), "follow_symlinked_node_modules") {
+		t.Errorf("Link() error = %v, want it to name the override", err)
+	}
+
+	assertSentinelIntact(t, sentinel)
+
+	// Nothing inside the project either. The guard runs at Link's entry, above
+	// all the work, so the refusal comes before anything creates .lnpm at all -
+	// no package built and renamed into place, no temp directory beside it.
+	// The copy of the guard inside createNodeModulesSymlink refuses just as
+	// surely and leaves a fully built package behind, so this row is what tells
+	// the two placements apart.
+	if _, err := os.Lstat(filepath.Join(projectPath, ".lnpm")); !os.IsNotExist(err) {
+		t.Errorf(".lnpm exists after a refused Link (Lstat err = %v), want the project untouched", err)
+	}
+}
+
+// TestLinkRefusesASymlinkedNodeModulesScope covers the second ancestor a scoped
+// name adds. A real node_modules holding a symlinked @org redirects every scoped
+// package just as completely, one level down: against the unguarded build this
+// same fixture deleted victim/scoped/taxes.txt.
+func TestLinkRefusesASymlinkedNodeModulesScope(t *testing.T) {
+	useConfig(t, "")
+
+	tmpDir := t.TempDir()
+	projectPath, sentinel := symlinkedNodeModulesFixture(t, tmpDir, "scoped")
+	nodeModules := filepath.Join(projectPath, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, filepath.Join(tmpDir, "victim"), filepath.Join(nodeModules, "@org"))
+
+	storePath := filepath.Join(tmpDir, "store", "scoped")
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := writeStoreFiles(t, storePath, map[string]string{
+		"package.json": `{"name":"@org/scoped"}`,
+	})
+
+	_, err := New(projectPath).Link("@org/scoped", storePath, files)
+	if err == nil {
+		t.Fatal("Link() through a symlinked node_modules scope error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), filepath.Join(nodeModules, "@org")) {
+		t.Errorf("Link() error = %v, want it to name the @org scope directory", err)
+	}
+	if !strings.Contains(err.Error(), "follow_symlinked_node_modules") {
+		t.Errorf("Link() error = %v, want it to name the override", err)
+	}
+
+	assertSentinelIntact(t, sentinel)
+}
+
+// TestLinkCreatesNothingOutsideTheProjectThroughASymlinkedNodeModules covers the
+// half of the damage that is not a delete. A scoped package under a symlinked
+// node_modules reaches MkdirAll(node_modules/@org) before any RemoveAll, and
+// against the unguarded build that created an @org directory outside the
+// project and then put the package's link inside it - with no file there to
+// destroy and so nothing the delete assertions above would have noticed.
+func TestLinkCreatesNothingOutsideTheProjectThroughASymlinkedNodeModules(t *testing.T) {
+	useConfig(t, "")
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, victim, filepath.Join(projectPath, "node_modules"))
+
+	storePath := filepath.Join(tmpDir, "store", "scoped")
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := writeStoreFiles(t, storePath, map[string]string{
+		"package.json": `{"name":"@org/scoped"}`,
+	})
+
+	if _, err := New(projectPath).Link("@org/scoped", storePath, files); err == nil {
+		t.Fatal("Link() through a symlinked node_modules error = nil, want a refusal")
+	}
+
+	entries, err := os.ReadDir(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Errorf("%s was created outside the project, want the directory left empty", entry.Name())
+	}
+}
+
+// TestLinkFollowsASymlinkedNodeModulesWithTheOverride is the other side of the
+// maintainer's decision: relocating node_modules to another volume, a RAM disk
+// or out of a synced folder is a setup people run, so with the override set lnpm
+// must do exactly what it did before the guard existed.
+//
+// What that is, measured against the unguarded build rather than assumed: the
+// entry is created inside the relocation target, as a link whose target is the
+// same relative ../.lnpm/{package} the linker always writes. That link does not
+// resolve from out there - `..` is taken from the directory the relocation
+// really lives in, so it lands beside the relocation and not beside the project
+// - and the test asserts the dangling link on purpose. It is what the override
+// restores, it predates this issue, and quietly asserting something better would
+// claim a fix that is not here.
+//
+// Worth saying plainly, because it looks like a guard test and is not one: this
+// passes against the unguarded build too, which is exactly what it is for. It
+// pins the behaviour the override has to give back, so it cannot go red when the
+// guard is removed. TestLinkRefusesASymlinkedNodeModules is the one that does.
+func TestLinkFollowsASymlinkedNodeModulesWithTheOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - createDirSymlink makes the target absolute before creating the link, by either mechanism, so the relative target asserted here is never what is stored")
+	}
+
+	useConfig(t, "follow_symlinked_node_modules: true\n")
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	relocated := filepath.Join(tmpDir, "relocated")
+	if err := os.MkdirAll(relocated, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, relocated, filepath.Join(projectPath, "node_modules"))
+
+	storePath, files := storeFixture(t, tmpDir, map[string]string{
+		"package.json": `{"name":"my-package"}`,
+	})
+
+	if _, err := New(projectPath).Link("my-package", storePath, files); err != nil {
+		t.Fatalf("Link() with the override set error = %v, want it to proceed", err)
+	}
+
+	// The entry is where the relocation puts it, not in the project directory.
+	entry := filepath.Join(relocated, "my-package")
+	info, err := os.Lstat(entry)
+	if err != nil {
+		t.Fatalf("relocated/my-package Lstat err = %v, want the link created there", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("relocated/my-package mode = %v, want a symlink", info.Mode())
+	}
+	if target, err := os.Readlink(entry); err != nil || target != filepath.Join("..", ".lnpm", "my-package") {
+		t.Errorf("relocated/my-package -> %q (err %v), want the linker's usual relative target", target, err)
+	}
+	// The package itself was still materialised inside the project, which is the
+	// half of the work the relocation does not move.
+	got, err := os.ReadFile(filepath.Join(projectPath, ".lnpm", "my-package", "package.json"))
+	if err != nil || string(got) != `{"name":"my-package"}` {
+		t.Errorf(".lnpm/my-package/package.json = %q (err %v), want the linked package", string(got), err)
+	}
+}
+
+// TestLinkAcceptsARealNodeModulesDirectory is the guard's other direction: a
+// project that already holds an ordinary node_modules - which is every project
+// that has ever run an install - must be untouched by any of this. It passes
+// against the unguarded build as well, and has to: over-refusing is the failure
+// it exists to catch, not under-refusing.
+func TestLinkAcceptsARealNodeModulesDirectory(t *testing.T) {
+	useConfig(t, "")
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(filepath.Join(projectPath, "node_modules", "@org"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "scoped")
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := writeStoreFiles(t, storePath, map[string]string{
+		"package.json": `{"name":"@org/scoped"}`,
+	})
+
+	if _, err := New(projectPath).Link("@org/scoped", storePath, files); err != nil {
+		t.Fatalf("Link() into a real node_modules error = %v, want it to succeed", err)
+	}
+	got, err := os.ReadFile(filepath.Join(projectPath, "node_modules", "@org", "scoped", "package.json"))
+	if err != nil || string(got) != `{"name":"@org/scoped"}` {
+		t.Errorf("node_modules/@org/scoped/package.json = %q (err %v), want the linked package", string(got), err)
+	}
+}
+
+// TestUnlinkRefusesASymlinkedNodeModules covers the second site the same
+// predicate sits at. Unlink's node_modules delete is a plain os.Remove, so it
+// cannot empty a tree the way createNodeModulesSymlink's RemoveAll can - but
+// against the unguarded build it deleted a plain file outside the project and
+// returned nil, so the difference is in how much it destroys, not whether.
+//
+// The sentinel here is therefore a file at the entry's own path rather than a
+// file inside a directory there: a non-empty directory is what os.Remove cannot
+// take, and using one would make the test pass for a reason the guard did not
+// supply.
+func TestUnlinkRefusesASymlinkedNodeModules(t *testing.T) {
+	useConfig(t, "")
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	if err := os.MkdirAll(victim, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(victim, "my-package")
+	if err := os.WriteFile(sentinel, []byte("keep me"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectPath, ".lnpm", "my-package"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, victim, filepath.Join(projectPath, "node_modules"))
+
+	err := New(projectPath).Unlink("my-package")
+	if err == nil {
+		t.Fatal("Unlink() through a symlinked node_modules error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), filepath.Join(projectPath, "node_modules")) {
+		t.Errorf("Unlink() error = %v, want it to name the project's node_modules", err)
+	}
+	if !strings.Contains(err.Error(), "follow_symlinked_node_modules") {
+		t.Errorf("Unlink() error = %v, want it to name the override", err)
+	}
+
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep me" {
+		t.Errorf("victim/my-package = %q (err %v) after a refused Unlink, want it intact", string(got), err)
+	}
+	// Refused before anything was undone, not part-way through: the package it
+	// was asked to remove is still whole.
+	if _, err := os.Stat(filepath.Join(projectPath, ".lnpm", "my-package")); err != nil {
+		t.Errorf(".lnpm/my-package Stat err = %v after a refused Unlink, want it left alone", err)
+	}
+}
+
+// TestLinkFollowsASymlinkedNodeModulesScopeWithTheOverride is the override's
+// other half. The guard refuses two paths, so the escape hatch has to open two,
+// and a scope directory relocated on its own is the case that would be missed by
+// an override wired only to the node_modules check.
+//
+// Like its node_modules counterpart it passes against the unguarded build, for
+// the same reason: it pins what the override restores, not what the guard stops.
+func TestLinkFollowsASymlinkedNodeModulesScopeWithTheOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - createDirSymlink makes the target absolute before creating the link, by either mechanism, so the relative target asserted here is never what is stored")
+	}
+
+	useConfig(t, "follow_symlinked_node_modules: true\n")
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	relocated := filepath.Join(tmpDir, "relocated")
+	if err := os.MkdirAll(relocated, 0755); err != nil {
+		t.Fatal(err)
+	}
+	nodeModules := filepath.Join(projectPath, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, relocated, filepath.Join(nodeModules, "@org"))
+
+	storePath := filepath.Join(tmpDir, "store", "scoped")
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := writeStoreFiles(t, storePath, map[string]string{
+		"package.json": `{"name":"@org/scoped"}`,
+	})
+
+	if _, err := New(projectPath).Link("@org/scoped", storePath, files); err != nil {
+		t.Fatalf("Link() with the override set error = %v, want it to proceed", err)
+	}
+
+	entry := filepath.Join(relocated, "scoped")
+	info, err := os.Lstat(entry)
+	if err != nil {
+		t.Fatalf("relocated/scoped Lstat err = %v, want the link created there", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("relocated/scoped mode = %v, want a symlink", info.Mode())
+	}
+	if target, err := os.Readlink(entry); err != nil || target != filepath.Join("..", "..", ".lnpm", "@org", "scoped") {
+		t.Errorf("relocated/scoped -> %q (err %v), want the linker's usual relative target for a scoped package", target, err)
+	}
+	got, err := os.ReadFile(filepath.Join(projectPath, ".lnpm", "@org", "scoped", "package.json"))
+	if err != nil || string(got) != `{"name":"@org/scoped"}` {
+		t.Errorf(".lnpm/@org/scoped/package.json = %q (err %v), want the linked package", string(got), err)
 	}
 }
