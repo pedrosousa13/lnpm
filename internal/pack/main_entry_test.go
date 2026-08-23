@@ -101,6 +101,68 @@ func TestPackEmptyMainChangesNothing(t *testing.T) {
 	}, "a manifest with no main selects nothing extra")
 }
 
+// TestPackMainCannotDefeatDefaultExcludes pins the far side of the boundary the
+// force-include opens. main beats the "files" whitelist and the user's ignore
+// patterns; it must never beat lnpm's built-in force-exclude set.
+//
+// The distinction is the one isDefaultExcluded already records: the user's
+// ignore patterns are a preference the user expressed, defaultExcludes is a
+// guard lnpm applies on the user's behalf. A guard that can be stepped around by
+// naming the file in "main" is not a guard — it would make the manifest a way to
+// smuggle .env, .npmrc or anything out of node_modules past the one list that
+// exists to hold them back.
+//
+// The property holds structurally rather than by a check in the force-include
+// itself: collectFiles evaluates isDefaultExcluded in the walk and returns early,
+// above the whitelist branch the force-include lives in. Nothing pinned that
+// before — TestPackDefaultExcludesWinInWhitelistMode predates the force-include
+// and does not exercise main — so a refactor hoisting the force-include above the
+// isDefaultExcluded check would open the hole with every other test still green.
+// This is the test that goes red on it: hoisted there, the .env and .npmrc rows
+// pack [.env dist/a.js package.json] and [.npmrc dist/a.js package.json]. Run and
+// confirmed.
+//
+// The two root rows are the load-bearing ones. The node_modules row is held up by
+// a second, independent barrier and stays green under that same hoist: the
+// isDefaultExcluded check returns filepath.SkipDir for the node_modules
+// directory, so the walk never reaches the nested file for any per-file check to
+// see. It is kept as a row because that pruning is worth pinning too, but it is
+// not what catches a hoisted force-include — do not read it as covering the .env
+// case.
+func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
+	tests := []struct {
+		name string
+		main string
+	}{
+		{"dotenv", ".env"},
+		{"npmrc", ".npmrc"},
+		{"nested in node_modules", "node_modules/evil/index.js"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "main-vs-guard",
+					"version": "1.0.0",
+					"main": "` + tt.main + `",
+					"files": ["dist"]
+				}`,
+				"dist/a.js": "module.exports = {}",
+				tt.main:     "SECRET=hunter2",
+			})
+
+			assertPackedSet(t, tmpDir, []string{
+				"dist/a.js",
+				"package.json",
+			}, "main overrides the user's ignore patterns but never lnpm's "+
+				"built-in force-exclude set, so naming "+tt.main+" in \"main\" "+
+				"must not ship it")
+		})
+	}
+}
+
 // TestPackMainSurvivesIgnorePatternsUnderFilesWhitelist pins the decision
 // recorded on mainEntryPath: under a whitelist, main beats the user's ignore
 // patterns as well as the whitelist itself.

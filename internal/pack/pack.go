@@ -343,6 +343,18 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 				// load. Overriding an explicit ignore rule is a real surprise,
 				// and it is the smaller one.
 				//
+				// The boundary in full: main beats the "files" whitelist and
+				// the user's ignore patterns, and loses to defaultExcludes.
+				// That split is the one isDefaultExcluded already argues — the
+				// user's patterns are a preference the user expressed, the
+				// built-in list is a guard lnpm applies on the user's behalf,
+				// and a guard that can be stepped around by naming the file in
+				// "main" is not a guard. It holds structurally rather than by a
+				// check here: isDefaultExcluded is evaluated in the walk above
+				// and returns early, so .env named as "main" never reaches this
+				// switch. TestPackMainCannotDefeatDefaultExcludes pins it and
+				// goes red if the force-include is hoisted above that check.
+				//
 				// This sits inside the whitelist branch on purpose. A package
 				// with no "files" field is left exactly as it was — there the
 				// user's patterns decide the whole tree, main included.
