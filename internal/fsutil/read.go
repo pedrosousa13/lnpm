@@ -41,6 +41,14 @@ var ErrFileTooLarge = errors.New("file is over the size limit")
 // lets a test build the oversized case with os.Truncate instead of writing
 // megabytes.
 //
+// What it is not is a hard bound. Stat and the read are two calls, so a writer
+// growing the file in between hands back more than max, and lnpm parses it. That
+// window is accepted rather than closed: reading through an io.LimitReader would
+// make the bound absolute and would cost a full read of every legitimate file to
+// do it, losing the free refusal above. The threat #323 describes is a repo that
+// ships an oversized file, not a writer racing the read, and this closes that
+// one.
+//
 // A missing file is reported as the *fs.PathError os.Stat produced, so
 // os.IsNotExist and errors.Is(err, fs.ErrNotExist) still recognise it -
 // pkg/lockfile turns that case into "no lock file here" and has to keep being
