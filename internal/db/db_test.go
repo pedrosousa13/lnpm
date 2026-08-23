@@ -3,6 +3,7 @@ package db
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -840,5 +841,66 @@ func TestGetLinksForPackage_ReturnsNothingForAPackageNothingLinks(t *testing.T) 
 	}
 	if len(links) != 0 {
 		t.Errorf("GetLinksForPackage() returned %d link(s) for a package nothing links", len(links))
+	}
+}
+
+// --- Unreadable project records ----------------------------------------------
+
+// seedProject records one project and returns it with its assigned ID.
+func seedProject(t *testing.T, d *DB) *Project {
+	t.Helper()
+
+	projectPath := filepath.FromSlash("/projects/consumer")
+	if err := d.InsertProject(&Project{Path: projectPath, Name: "consumer"}); err != nil {
+		t.Fatalf("Failed to insert the project: %v", err)
+	}
+	proj, err := d.GetProjectByPath(projectPath)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v", err)
+	}
+	return proj
+}
+
+// TestGetProjectByID_ReturnsNoProjectWhenTheRecordWillNotUnmarshal pins the half
+// of #292 that lives in this method rather than in gc.
+//
+// The lookup used to allocate the project before unmarshalling into it, so a
+// record that would not parse came back as a non-nil project with every field
+// zero, alongside the error. A caller checking the project instead of the error
+// therefore got a project whose Path was empty and went on to use it, which is
+// the one shape a nil result would have stopped. Returning nil with the error
+// follows what #329 settled for GetLinksForPackage: a failed read hands back
+// nothing that can be mistaken for an answer.
+func TestGetProjectByID_ReturnsNoProjectWhenTheRecordWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	proj := seedProject(t, database)
+
+	putRaw(t, database, bucketProjects, itob(proj.ID), []byte("{ not a project"))
+
+	got, err := database.GetProjectByID(proj.ID)
+	if err == nil {
+		t.Fatal("GetProjectByID() returned no error for a record it could not read")
+	}
+	if got != nil {
+		t.Errorf("GetProjectByID() returned a project with Path %q alongside its error; a caller reading the project instead of the error cannot tell that apart from a project that is there", got.Path)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", proj.ID)) {
+		t.Errorf("GetProjectByID() error = %v, want it to name project %d", err, proj.ID)
+	}
+}
+
+// TestGetProjectByID_ReturnsNothingForAnIDNoRecordAnswers pins the case the one
+// above has to stay distinguishable from: an ID with no record is not damage.
+// gc classifies a link naming one as orphaned and removes it, so turning this
+// into an error would refuse the repair the --fix-links flag exists for.
+func TestGetProjectByID_ReturnsNothingForAnIDNoRecordAnswers(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	proj, err := database.GetProjectByID(4242)
+	if err != nil {
+		t.Fatalf("GetProjectByID() error = %v for an ID no record answers", err)
+	}
+	if proj != nil {
+		t.Errorf("GetProjectByID() returned a project for an ID no record answers: %+v", proj)
 	}
 }

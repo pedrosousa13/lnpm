@@ -1013,7 +1013,24 @@ func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
 	}
 }
 
-// GetProjectByID returns a project by its ID, or nil if not found.
+// GetProjectByID returns a project by its ID, or nil if not found. An ID no
+// record answers for is not an error: gc classifies a link naming one as
+// orphaned and removes it, which is the repair --fix-links exists for.
+//
+// A record that will not parse is an error, and nothing is returned with it.
+// That second half is #292. The lookup used to allocate the project before
+// unmarshalling into it, so damage came back as a non-nil project with every
+// field zero alongside the error - and its callers check the project, not the
+// error. gc's orphan scan then read Path "", found no directory there, and
+// filed the link under "project directory no longer exists": a reason it had not
+// established, with no path to print, on a project that may well still be there.
+// Counting that link out of the version's live links is what made it
+// destructive, since a version nothing links is one gc collects.
+//
+// Returning nil follows what #329 settled for GetLinksForPackage: a failed read
+// hands back nothing a caller can mistake for an answer. Per ADR-0001 the
+// direction decides, and both halves of that misclassification widen what a
+// destructive pass removes.
 func (db *DB) GetProjectByID(id int64) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1024,11 +1041,18 @@ func (db *DB) GetProjectByID(id int64) (*Project, error) {
 		if data == nil {
 			return nil
 		}
-		proj = &Project{}
-		return json.Unmarshal(data, proj)
+		var found Project
+		if err := json.Unmarshal(data, &found); err != nil {
+			return fmt.Errorf("the record of project %d will not parse: %w; run lnpm doctor to see what else the store disagrees about", id, err)
+		}
+		proj = &found
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return proj, err
+	return proj, nil
 }
 
 // --- Project operations ---

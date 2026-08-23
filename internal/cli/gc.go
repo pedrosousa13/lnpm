@@ -82,7 +82,24 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		// Named lnk, not link, so it does not shadow the link package the
 		// temp-directory sweep below calls into.
 		for _, lnk := range links {
-			proj, _ := database.GetProjectByID(lnk.ProjectID)
+			// A failure to read the project stops the run too, and for the same
+			// reason the link read above stops it: both reasons below are
+			// statements about a project, and a read that failed establishes
+			// neither. This is the #292 half. Discarding the error left "the
+			// record would not parse" indistinguishable from "no record answers
+			// for this ID", and the link was filed as orphaned either way -
+			// which, with --fix-links, deletes it, and then leaves the version
+			// looking like one nothing consumes.
+			//
+			// The lookup returning nil with its error is what makes this guard
+			// enough on its own; before #292 it returned a zero-valued project
+			// instead, so the nil check below let damage through to os.Stat("")
+			// and on to the wrong reason. Checking the error first does not
+			// depend on that, which is why it is checked first.
+			proj, err := database.GetProjectByID(lnk.ProjectID)
+			if err != nil {
+				return fmt.Errorf("failed to read project %d, linked by %s@%s: %w", lnk.ProjectID, pkg.Name, pkg.Version, err)
+			}
 			if proj == nil {
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID: pkg.ID,
