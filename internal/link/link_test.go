@@ -213,8 +213,9 @@ func TestUnlinkStillRefusesATraversingName(t *testing.T) {
 	}
 }
 
-// TestUnlinkContainsAScopeNamedLikeATraversal pins the widest consequence of the
-// removal waiver, which is not obvious from the name of the rule it waives.
+// TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm pins the
+// widest consequence of the removal waiver, which is not obvious from the name
+// of the rule it waives.
 //
 // "@../pkg" is rejected by the strict validator, but only incidentally by the
 // dot rule: the "."/".." segment check does not fire, because the segment is
@@ -222,11 +223,63 @@ func TestUnlinkStillRefusesATraversingName(t *testing.T) {
 // and lnpm.lock keys are attacker-controlled in any repository the developer did
 // not write.
 //
-// It is contained, and this is why: "@.." is a literal directory name, so
-// filepath.Join and Clean do not collapse it the way they collapse "..".
-// Verified by running it, not inferred - Join("/p/.lnpm", "@../pkg") is
-// "/p/.lnpm/@../pkg" and its Dir is "/p/.lnpm/@..", both still under .lnpm.
+// It is contained because "@.." is a literal path component: Clean collapses
+// "..", and "@.." is not that, so the component survives and the path stays
+// under .lnpm. That is a pure path-handling property, so it is asserted here
+// without touching a filesystem and runs on every platform - which matters,
+// because the filesystem half below cannot run on Windows at all. The dot rule
+// itself is covered in pack's name_test.go.
+func TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm(t *testing.T) {
+	const name = "@../pkg"
+
+	// The asymmetry the waiver creates, which is the reason containment has to
+	// be pinned at all.
+	if err := pack.ValidatePackageName(name); err == nil {
+		t.Errorf("ValidatePackageName(%q) = nil; this test assumes the strict form rejects it", name)
+	}
+	if err := pack.ValidatePackageNameForRemoval(name); err != nil {
+		t.Fatalf("ValidatePackageNameForRemoval(%q) = %v, want nil", name, err)
+	}
+
+	// Exactly the two joins Unlink performs. Asserting the full expected path,
+	// rather than "is under .lnpm", is what makes this fail loudly if Clean ever
+	// did collapse the component: the joined path would lose "@.." and become
+	// lnpmDir/pkg.
+	// The expected paths are built by concatenation, not by filepath.Join. Using
+	// Join on both sides would compare Clean's output with Clean's output, so a
+	// Clean that did collapse "@.." would change both and the assertion would
+	// pass vacuously.
+	sep := string(filepath.Separator)
+	lnpmDir := filepath.Join("/project", ".lnpm")
+
+	joined := filepath.Join(lnpmDir, name)
+	if want := lnpmDir + sep + "@.." + sep + "pkg"; joined != want {
+		t.Errorf("Join(%q, %q) = %q, want %q", lnpmDir, name, joined, want)
+	}
+	if got, want := filepath.Dir(joined), lnpmDir+sep+"@.."; got != want {
+		t.Errorf("Dir(%q) = %q, want %q", joined, got, want)
+	}
+}
+
+// TestUnlinkContainsAScopeNamedLikeATraversal is the filesystem half of the
+// property above: a real Unlink of "@../pkg" takes the entry under .lnpm and
+// nothing else. It runs on Unix only.
+//
+// Verified by running it, not inferred - on Unix. On Windows the fixture cannot
+// be built: Win32 path parsing strips trailing dots from a path component, so
+// "@.." is not a creatable directory name there and MkdirAll fails with "The
+// system cannot find the path specified" before the test reaches Unlink. That is
+// a limitation of the fixture rather than of the production behaviour, and it
+// happens to confirm the same property from the opposite direction - Windows
+// will not even let a directory be named that. The path-handling assertions in
+// TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm cover Windows.
 func TestUnlinkContainsAScopeNamedLikeATraversal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - Win32 path parsing strips trailing dots from a " +
+			"path component, so a directory named \"@..\" cannot be created and the " +
+			"fixture cannot be built (see #326 for trailing-dot names generally)")
+	}
+
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")
 	const name = "@../pkg"

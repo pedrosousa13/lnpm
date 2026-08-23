@@ -51,9 +51,13 @@ func ValidatePackageName(name string) error {
 // case is worth naming because it is not obvious: "@../pkg" is rejected by the
 // strict form via this same dot rule, since the "."/".." segment check sees the
 // segment as "@.." rather than "..". Removal therefore accepts it. It stays
-// contained because "@.." is a literal directory name that filepath.Clean does
+// contained because "@.." is a literal path component that filepath.Clean does
 // not collapse, so it resolves to a child of .lnpm like any other scope - run
-// and confirmed, and pinned by TestUnlinkContainsAScopeNamedLikeATraversal.
+// and confirmed, and pinned on every platform by
+// TestScopeNamedLikeATraversalIsAcceptedOnRemovalButStaysUnderLnpm, with
+// TestUnlinkContainsAScopeNamedLikeATraversal asserting it against a real
+// filesystem on Unix. Windows will not create a directory named "@.." at all,
+// which is the same property from the other side.
 //
 // The full list of what a removal then does with the name, so the reasoning can
 // be checked rather than taken on trust:
