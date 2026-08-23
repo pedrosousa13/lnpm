@@ -3,6 +3,7 @@ package db
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -683,15 +684,7 @@ func seedLink(t *testing.T, d *DB) (*Package, *Link) {
 	t.Helper()
 
 	pkg := insertVersion(t, d, "linked-pkg", "h1")
-
-	projectPath := filepath.FromSlash("/projects/consumer")
-	if err := d.InsertProject(&Project{Path: projectPath, Name: "consumer"}); err != nil {
-		t.Fatalf("Failed to insert the project: %v", err)
-	}
-	proj, err := d.GetProjectByPath(projectPath)
-	if err != nil || proj == nil {
-		t.Fatalf("Failed to read the project back: %v", err)
-	}
+	proj := seedProject(t, d)
 
 	link := &Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}
 	if err := d.InsertLink(link); err != nil {
@@ -840,5 +833,98 @@ func TestGetLinksForPackage_ReturnsNothingForAPackageNothingLinks(t *testing.T) 
 	}
 	if len(links) != 0 {
 		t.Errorf("GetLinksForPackage() returned %d link(s) for a package nothing links", len(links))
+	}
+}
+
+// --- Unreadable project records ----------------------------------------------
+
+// seedProject records one project and returns it with its assigned ID.
+func seedProject(t *testing.T, d *DB) *Project {
+	t.Helper()
+
+	projectPath := filepath.FromSlash("/projects/consumer")
+	if err := d.InsertProject(&Project{Path: projectPath, Name: "consumer"}); err != nil {
+		t.Fatalf("Failed to insert the project: %v", err)
+	}
+	proj, err := d.GetProjectByPath(projectPath)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v", err)
+	}
+	return proj
+}
+
+// TestGetProjectByID_ReturnsNoProjectWhenTheRecordWillNotParse pins the half of
+// #292 that lives in this method rather than in gc, on a record that is not
+// valid JSON at all.
+//
+// The lookup used to allocate the project before unmarshalling into it, so a
+// record it could not read came back as a non-nil project alongside the error,
+// and its callers check the project rather than the error. json.Unmarshal
+// validates a document before decoding any of it, so this shape decoded nothing
+// and handed back a project whose Path was empty - which gc went on to stat.
+// Returning nil with the error follows what #329 settled for
+// GetLinksForPackage: a failed read hands back nothing that can be mistaken for
+// an answer.
+func TestGetProjectByID_ReturnsNoProjectWhenTheRecordWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	proj := seedProject(t, database)
+
+	putRaw(t, database, bucketProjects, itob(proj.ID), []byte("{ not a project"))
+
+	got, err := database.GetProjectByID(proj.ID)
+	if err == nil {
+		t.Fatal("GetProjectByID() returned no error for a record it could not read")
+	}
+	if got != nil {
+		t.Errorf("GetProjectByID() returned a project with Path %q alongside its error; a caller reading the project instead of the error cannot tell that apart from a project that is there", got.Path)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", proj.ID)) {
+		t.Errorf("GetProjectByID() error = %v, want it to name project %d", err, proj.ID)
+	}
+}
+
+// TestGetProjectByID_ReturnsNoProjectWhenAValueHasTheWrongType pins the other
+// damage shape, which the test above does not reach and which failed in the
+// opposite direction.
+//
+// A document that is valid JSON but holds a value of the wrong type is decoded
+// normally up to the mismatch and decoding continues past it, so any prefix of
+// the fields can survive - here Path does. Pre-fix that came back as a non-nil
+// project carrying a real path, indistinguishable from a healthy record, and gc
+// stat'd the directory, found it and swept past. So this shape hid damage rather
+// than inventing an orphan, which is why the all-zero case is one shape and not
+// the shape. Both end at the same rule: a record that will not read is not a
+// project, whatever decoded before the failure.
+func TestGetProjectByID_ReturnsNoProjectWhenAValueHasTheWrongType(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	proj := seedProject(t, database)
+
+	// name takes a string, so this parses as JSON and then fails to decode -
+	// after path has already been set.
+	putRaw(t, database, bucketProjects, itob(proj.ID),
+		fmt.Appendf(nil, `{"id":%d,"path":%q,"name":123}`, proj.ID, proj.Path))
+
+	got, err := database.GetProjectByID(proj.ID)
+	if err == nil {
+		t.Fatal("GetProjectByID() returned no error for a record whose value has the wrong type")
+	}
+	if got != nil {
+		t.Errorf("GetProjectByID() returned a project with Path %q alongside its error; that path is real, so a caller reading the project cannot tell the record is damaged at all", got.Path)
+	}
+}
+
+// TestGetProjectByID_ReturnsNothingForAnIDNoRecordAnswers pins the case the one
+// above has to stay distinguishable from: an ID with no record is not damage.
+// gc classifies a link naming one as orphaned and removes it, so turning this
+// into an error would refuse the repair the --fix-links flag exists for.
+func TestGetProjectByID_ReturnsNothingForAnIDNoRecordAnswers(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	proj, err := database.GetProjectByID(4242)
+	if err != nil {
+		t.Fatalf("GetProjectByID() error = %v for an ID no record answers", err)
+	}
+	if proj != nil {
+		t.Errorf("GetProjectByID() returned a project for an ID no record answers: %+v", proj)
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -607,7 +608,8 @@ func damageDatabase(t *testing.T, bucket string, key []byte, value []byte) {
 	}
 }
 
-// linkKey encodes a link or package ID the way the link buckets key their rows.
+// linkKey encodes a record ID the way every bucket keyed by one keys its rows -
+// the link buckets it was written for, and the projects bucket alike.
 func linkKey(id int64) []byte {
 	key := make([]byte, 8)
 	binary.BigEndian.PutUint64(key, uint64(id))
@@ -692,4 +694,171 @@ func TestRunGCAbortsWhenALinkIndexEntryCannotBeRead(t *testing.T) {
 		t.Errorf("gc called a package orphaned on an index entry it could not read, output was:\n%s", out)
 	}
 	assertGCDeletedNothing(t, entry)
+}
+
+// --- Unreadable projects -----------------------------------------------------
+
+// seededProjectID returns the ID of the project seedCollectableLink linked the
+// package into, read back through the same lookups gc uses.
+func seededProjectID(t *testing.T, database *db.DB) int64 {
+	t.Helper()
+
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	links, err := database.GetLinksForPackage(packages[0].ID)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("read the seeded link: %v (%d found)", err, len(links))
+	}
+	return links[0].ProjectID
+}
+
+// assertLinkSurvived fails unless the seeded package still has its live link.
+//
+// It is kept apart from assertGCDeletedNothing, which the tests below call
+// alongside it, because the two assert different rows: that one is about the
+// package's store entry and database row, this one about the link row, and
+// --fix-links deletes link rows on a pass of its own. Keeping them separate is
+// what lets the dangling-link test assert that gc removed one link and kept the
+// other, which a merged helper could not express.
+func assertLinkSurvived(t *testing.T) {
+	t.Helper()
+
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	links, err := database.GetLinksForPackage(packages[0].ID)
+	if err != nil {
+		t.Fatalf("read links back: %v", err)
+	}
+	if len(links) != 1 {
+		t.Errorf("gc removed the live link of linked-pkg@1.0.0, %d link(s) left", len(links))
+	}
+}
+
+// assertAbortedOnProject runs gc over a store whose project record is damaged
+// and fails unless the run aborted naming projectID, reported nothing as
+// orphaned, and left the package and its link where they were.
+func assertAbortedOnProject(t *testing.T, entry string, projectID int64, fixLinks bool) {
+	t.Helper()
+
+	out := captureStdout(t, func() {
+		err := RunGC(false, "", fixLinks, true)
+		if err == nil {
+			t.Fatal("RunGC() returned no error for a project record it could not read")
+		}
+		if !strings.Contains(err.Error(), fmt.Sprintf("%d", projectID)) {
+			t.Errorf("RunGC() error = %v, want it to name project %d", err, projectID)
+		}
+	})
+
+	if strings.Contains(out, "orphaned") {
+		t.Errorf("gc called something orphaned on a project it could not read, output was:\n%s", out)
+	}
+	assertGCDeletedNothing(t, entry)
+	assertLinkSurvived(t)
+}
+
+// TestRunGCAbortsWhenAProjectRowCannotBeRead pins #292 on a plain run, with no
+// flag set, because that is the run the misclassification hurt most.
+//
+// The orphan scan discarded the error from the project lookup and classified on
+// a nil result, so a record that would not parse was indistinguishable from a
+// project that had gone away. The link was filed as orphaned, and the validLinks
+// subtraction in the scan takes it off the version's consumer count
+// unconditionally - fixLinks gates only the block that reports and deletes the
+// link rows. So without the flag the version was still collected and its store
+// entry still removed, and because the reporting is behind the flag, no line
+// naming the link was printed: the same loss with nothing said about it.
+func TestRunGCAbortsWhenAProjectRowCannotBeRead(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+	projectID := seededProjectID(t, database)
+
+	damageDatabase(t, "projects", linkKey(projectID), []byte("{ not a project"))
+
+	assertAbortedOnProject(t, entry, projectID, false)
+}
+
+// TestRunGCAbortsWhenAProjectRowCannotBeReadWithFixLinks is the same damage with
+// --fix-links, which adds the deletion of the link row to what the plain run
+// already destroyed.
+func TestRunGCAbortsWhenAProjectRowCannotBeReadWithFixLinks(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+	projectID := seededProjectID(t, database)
+
+	damageDatabase(t, "projects", linkKey(projectID), []byte("{ not a project"))
+
+	assertAbortedOnProject(t, entry, projectID, true)
+}
+
+// TestRunGCAbortsWhenAProjectRowHoldsAWrongTypedValue drives the other damage
+// shape, which failed in the opposite direction and so is not covered by the
+// two above.
+//
+// json.Unmarshal validates a document before decoding any of it, so the syntax
+// error those tests use decodes nothing and leaves Path empty. A document that
+// parses but holds a value of the wrong type decodes up to the mismatch and
+// carries on, so Path survives - and pre-fix gc stat'd that real directory,
+// judged the link healthy and swept straight past the damage. Nothing was
+// deleted, which is why it is not the shape ADR-0001 calls a bug, but nothing
+// was reported either, and a record gc cannot read is not one it may vouch for.
+func TestRunGCAbortsWhenAProjectRowHoldsAWrongTypedValue(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+	projectID := seededProjectID(t, database)
+
+	// A real directory in a record that will not decode: name takes a string.
+	damaged := fmt.Sprintf(`{"id":%d,"path":%q,"name":123}`, projectID, filepath.ToSlash(t.TempDir()))
+	damageDatabase(t, "projects", linkKey(projectID), []byte(damaged))
+
+	assertAbortedOnProject(t, entry, projectID, false)
+}
+
+// TestRunGCReportsALinkToAMissingProjectAsOrphaned is the other side of the same
+// branch, and the reason the fix is an error check rather than a wider guard.
+//
+// A lookup that succeeds and finds no record has established what the reason
+// string says, so that link stays orphaned and stays removable. The package
+// keeps its other link and so is not collected, which is what separates this
+// from the abort above.
+func TestRunGCReportsALinkToAMissingProjectAsOrphaned(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	entry, _ := seedCollectableLink(t, database, storeRoot)
+
+	packages, err := database.ListPackages()
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("list packages: %v (%d found)", err, len(packages))
+	}
+	// A link naming a project ID no record answers for. InsertLink keeps one row
+	// per project and package name, so this adds a row rather than replacing the
+	// live one.
+	if err := database.InsertLink(&db.Link{PackageID: packages[0].ID, ProjectID: 4242, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert the dangling link: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", true, true); err != nil {
+			t.Fatalf("RunGC() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "project not found in database") {
+		t.Errorf("gc did not report the dangling link under its own reason, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "Found 1 orphaned link(s)") {
+		t.Errorf("gc did not report exactly one orphaned link, output was:\n%s", out)
+	}
+	if strings.Contains(out, "orphaned package") {
+		t.Errorf("gc collected a package a live link still names, output was:\n%s", out)
+	}
+	assertGCDeletedNothing(t, entry)
+	assertLinkSurvived(t)
 }

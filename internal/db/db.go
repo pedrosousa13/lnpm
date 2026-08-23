@@ -1013,7 +1013,48 @@ func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
 	}
 }
 
-// GetProjectByID returns a project by its ID, or nil if not found.
+// GetProjectByID returns a project by its ID, or nil if not found. An ID no
+// record answers for is not an error: gc classifies a link naming one as
+// orphaned and removes it, which is the repair --fix-links exists for.
+//
+// A record that will not parse is an error, and nothing is returned with it.
+// That second half is #292. The lookup used to allocate the project before
+// unmarshalling into it, so damage came back as a non-nil project alongside the
+// error - and its callers check the project, not the error.
+//
+// What that project held depended on how the record was damaged, and the two
+// shapes failed in opposite directions. json.Unmarshal validates the whole
+// document before decoding any of it, so a syntax error - a truncated write, a
+// corrupted byte - decodes nothing and leaves every field zero; gc then read
+// Path "", found no directory at "", and filed the link under "project
+// directory no longer exists". A document that is valid JSON but holds a value
+// of the wrong type decodes normally up to the mismatch and carries on past it,
+// so any prefix of the fields can be populated - including a Path that is real
+// and still on disk. gc then stat'd a live directory, judged the link healthy,
+// and the damage was invisible rather than misclassified. Both were verified
+// against this struct rather than reasoned about.
+//
+// Returning nil follows what #329 settled for GetLinksForPackage: a failed read
+// hands back nothing a caller can mistake for an answer, and it covers both
+// shapes without the caller having to know which one it has. Per ADR-0001 the
+// direction decides, and the first shape widens what a destructive pass removes.
+//
+// This changes what a caller that discards the error sees, which is a real
+// behaviour change and not only a tightening. doctor.go's orphaned-link check is
+// the one such caller, and on the second shape above its count goes from 0 to 1:
+// it used to see a healthy project with a real path, and now sees no project at
+// all. Counting a damaged record as something to look at is the better answer,
+// but it is a change, and doctor's discarded error is tracked in #355.
+//
+// The error deliberately does not point at lnpm doctor, though the sibling
+// message in indexIDs does. There the pointer is honest; here doctor discards
+// this very error (#355), reports the link as orphaned and advises gc
+// --fix-links, which is the command that just aborted - so the pointer would
+// route the user in a circle. #355 can add it back once doctor can honour it.
+//
+// GetProjectByPath has the identical allocate-then-unmarshal shape and is left
+// alone here, to keep this change on the gc path; retreat.go discards its error
+// the same way. Both are #355.
 func (db *DB) GetProjectByID(id int64) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1024,11 +1065,18 @@ func (db *DB) GetProjectByID(id int64) (*Project, error) {
 		if data == nil {
 			return nil
 		}
-		proj = &Project{}
-		return json.Unmarshal(data, proj)
+		var found Project
+		if err := json.Unmarshal(data, &found); err != nil {
+			return fmt.Errorf("the record of project %d will not parse: %w", id, err)
+		}
+		proj = &found
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return proj, err
+	return proj, nil
 }
 
 // --- Project operations ---

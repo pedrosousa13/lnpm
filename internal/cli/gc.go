@@ -82,7 +82,37 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		// Named lnk, not link, so it does not shadow the link package the
 		// temp-directory sweep below calls into.
 		for _, lnk := range links {
-			proj, _ := database.GetProjectByID(lnk.ProjectID)
+			// A failure to read the project stops the run too, and for the same
+			// reason the link read above stops it: both reasons below are
+			// statements about a project, and a read that failed establishes
+			// neither. This is the #292 half. Discarding the error left "the
+			// record would not parse" indistinguishable from "no record answers
+			// for this ID", and the link was filed as orphaned either way.
+			//
+			// That is destructive on a plain gc, with no flag involved, which is
+			// the part worth being exact about. The
+			//
+			//	validLinks := len(links) - countLinksForPackage(linksToRemove, pkg.ID)
+			//
+			// below subtracts unconditionally, so a misclassified link takes the
+			// version's last consumer with it and the version is collected -
+			// store entry and database row both. fixLinks gates only the block
+			// that reports and deletes the link rows themselves. So the flagless
+			// run is the quieter of the two, not the safer one: the same package
+			// is deleted and no line naming the link is ever printed.
+			//
+			// Checking the error before the nil result is what makes this guard
+			// hold whatever the lookup returns. Before #292 it returned a
+			// non-nil project alongside the error, and what that project held
+			// depended on how the record was damaged - a syntax error decoded
+			// nothing and reached os.Stat("") and the wrong reason, while a
+			// wrong-typed value left a real Path that stat'd fine and hid the
+			// damage entirely. GetProjectByID documents both. This check needs
+			// to know about neither.
+			proj, err := database.GetProjectByID(lnk.ProjectID)
+			if err != nil {
+				return fmt.Errorf("failed to read project %d, linked by %s@%s: %w", lnk.ProjectID, pkg.Name, pkg.Version, err)
+			}
 			if proj == nil {
 				linksToRemove = append(linksToRemove, linkToRemove{
 					packageID: pkg.ID,
