@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -379,5 +380,88 @@ func TestRemoveFromPackageJSONRejectsInvalidJSON(t *testing.T) {
 
 	if err := removeFromPackageJSON(dir, "my-lib"); err == nil {
 		t.Fatal("expected an error for unparseable package.json, got nil")
+	}
+}
+
+// modePkgJSON is the fixture for the two tests below, which are about the
+// manifest's mode rather than its bytes.
+const modePkgJSON = `{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
+`
+
+// TestWriteLnpmReferenceKeepsTheManifestsOwnMode pins what the staging file and
+// rename must not cost: package.json comes back with the mode the developer gave
+// it, not os.CreateTemp's 0600 and not the umask default.
+//
+// It does not go red against the truncating os.WriteFile this write used to be,
+// which never chmods an existing file and so preserved the mode for free. It
+// exists for the rename, which hands the destination the staging file's mode and
+// would lose the original without the mode carry in fsutil.WriteFileAtomic.
+func TestWriteLnpmReferenceKeepsTheManifestsOwnMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports only a read-only bit, not Unix permission bits")
+	}
+
+	_, path := newPkgJSON(t, modePkgJSON)
+	// Set with Chmod, not through newPkgJSON: os.WriteFile's mode argument is
+	// masked by the umask, so a fixture built that way would assert the umask the
+	// suite happens to run under rather than anything about the write.
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	if err := writeLnpmReference(path, "my-lib", false, false); err != nil {
+		t.Fatalf("writeLnpmReference: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("package.json mode = %o after an add, want the author's own 0600", got)
+	}
+	if !strings.Contains(readPkgJSON(t, path), `"my-lib": "file:.lnpm/my-lib"`) {
+		t.Error("the add did not land")
+	}
+}
+
+// TestRemoveFromPackageJSONRefusesAReadOnlyManifest pins the other half: a
+// rename replaces the destination whatever its mode, so a manifest the developer
+// marked read-only has to be refused explicitly, and the refusal must not leave a
+// staging file behind.
+//
+// Like the mode test above it does not go red against the truncating
+// os.WriteFile, whose open the file's own mode already refused. It exists for the
+// rename, and covers the ordinary owner-marked-read-only case only - see
+// fsutil.WriteFileAtomic's doc comment for the two directions in which a mode
+// check and the kernel's permission check diverge.
+func TestRemoveFromPackageJSONRefusesAReadOnlyManifest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports only a read-only bit, not Unix permission bits")
+	}
+
+	dir, path := newPkgJSON(t, modePkgJSON)
+	if err := os.Chmod(path, 0444); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0644) })
+
+	if err := removeFromPackageJSON(dir, "express"); err == nil {
+		t.Fatal("removeFromPackageJSON error = nil, want a refusal to replace a read-only manifest")
+	}
+
+	assertBytes(t, readPkgJSON(t, path), modePkgJSON)
+
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("the refused write left %v behind", leftovers)
 	}
 }
