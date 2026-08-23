@@ -46,12 +46,12 @@ type FileInfo struct {
 // manifestFileName is the package root's own manifest, the one path no selection
 // rule may remove from a pack.
 //
-// It is spelled once here because the rule is asserted in three places —
-// collectFiles' two selection sites and Pack's backstop — and a package that
-// disagrees with itself about which of them is the manifest is worse than one
-// that hard-codes the string once. readPackageJSON keeps its own literal because
-// it joins a directory rather than comparing a relative path; that is a different
-// use of the same name.
+// It names the three sites that enforce that rule — collectFiles' two selection
+// sites and Pack's backstop — so they cannot disagree about which path they are
+// protecting. It is not the package's only spelling of "package.json" and does
+// not claim to be: defaultIncludes carries it as a pattern, readPackageJSON
+// joins it to a directory, and several tests write it as a fixture path. Those
+// are pre-existing and left alone.
 const manifestFileName = "package.json"
 
 // defaultIncludes are files always included regardless of config
@@ -176,22 +176,13 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 // returned a nil error and a packed set of [index.js].
 // TestPackFailsWhenManifestIsNotPacked is the fixture.
 //
-// An error, where the sibling check warnMainEntryNotPacked makes a warning of the
-// same shape, and docs/adr/0004 rejected an abort for its case in as many words.
-// The two cases differ in what is left behind. A package missing the file "main"
-// names is a package that does not load, and validation.ValidatePackage already
-// refuses that before an ordinary publish packs anything, so an abort here would
-// have duplicated a check and changed pack.Pack's contract for callers with no
-// publish semantics. A package missing its manifest is not a package: no consumer
-// can resolve its name or version, and no existing check catches it, because
-// readPackageJSON reads the manifest from disk rather than from the packed set
-// and therefore passes in exactly this case. #301 asks for the refusal directly.
-//
-// It lives in Pack, not in the publish command, for the reason
-// warnMainEntryNotPacked does: internal/cli/publish.go:159 is one of three
-// callers, and internal/cli/push.go:169 and push.go:194 pack with no validation
-// at all. An error is the right answer on all three — none of them can do
-// anything useful with a package that has no manifest.
+// An error where the sibling warnMainEntryNotPacked is a warning, which
+// docs/adr/0004 rejected for its case and docs/adr/0005 accepts for this one:
+// nothing else catches a missing manifest, because readPackageJSON reads from
+// disk rather than from the packed set and therefore passes in exactly this
+// case. It lives in Pack rather than in the publish command for the reason
+// warnMainEntryNotPacked gives below — two of Pack's three callers pack with no
+// validation at all — and an error is the right answer on all three.
 //
 // It runs after filterGitFiles so it sees the set the caller receives, not an
 // earlier one. filterGitFiles cannot itself remove the manifest —
@@ -427,11 +418,11 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 		// The package root's own manifest is not the package's to exclude
 		// (#301). An .npmignore line reading "package.json" dropped it, and so
 		// did a "files" field that did not list it, in both cases producing a
-		// tarball that is not an installable package at all: nothing downstream
-		// can read its name or version. npm permits neither, and lnpm's store
-		// already reserves names on the same grounds — .lnpm-complete in
-		// internal/store/marker.go, .lnpm-linked in internal/link — that a file
-		// belonging to the tool is not the package's to control.
+		// tarball nothing downstream can read a name or version out of.
+		// docs/adr/0005 records the decision: why this ships a file the
+		// maintainer explicitly excluded, which is the direction docs/adr/0001
+		// calls a bug, and why it is narrowed to the manifest rather than
+		// widened to all of defaultIncludes.
 		//
 		// The flag is consulted at both of the two sites that dropped it. The
 		// prune just below decides the whole tree when there is no whitelist;
@@ -440,44 +431,17 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 		// reachable — TestPackManifestSurvivesIgnorePatterns carries a row for
 		// each, and its first two rows and its third fail separately.
 		//
-		// Exact equality, not a basename test, so only the package root's
-		// manifest is covered. A sub/package.json is another package's manifest
-		// or a fixture, and an ignore pattern still drops it. That matches the
-		// root anchoring isDefaultInclude already applies after #320;
+		// Exact equality, not a basename test, so a sub/package.json is another
+		// package's manifest or a fixture and an ignore pattern still drops it.
 		// TestPackManifestForceIncludeIsRootAnchored pins it.
 		//
-		// Narrow to the manifest rather than to all of defaultIncludes. #301
-		// puts the rest of the set out of scope in as many words, and the two
-		// are not the same question: a package missing its README is poorer, a
-		// package missing its manifest does not resolve. docs/adr/0004 makes the
-		// same call for "main" and says why the inconsistency is deliberate.
-		//
-		// This sits below the isDefaultExcluded check above, never above it, for
-		// the reason docs/adr/0004 records for the "main" force-include: the
+		// This sits below the isDefaultExcluded check above, never above it: the
 		// built-in list is a guard lnpm applies on the user's behalf, and a
-		// guard anything can step around is not a guard.
-		//
-		// No test pins that placement, and the honest reason is that no test
-		// can. package.json is not in defaultExcludes, so hoisting this above
-		// the guard changes nothing any fixture can observe: run at the time of
-		// writing, the hoist left the whole package green — 358 passing test and
-		// subtest results, no failures — TestPackMainCannotDefeatDefaultExcludes
-		// included. Do not read that test as covering this force-include.
-		// Hoisting the *main* one instead does turn it red, packing
-		// [.env dist/a.js package.json], which is what establishes the test is
-		// alive rather than vacuous. Both runs are recorded here because a
-		// reader who assumed the guard test spanned both force-includes would
-		// be wrong.
-		//
-		// The ordering is load-bearing under the one condition that could make
-		// it visible, and that was checked directly rather than argued. With
-		// "package.json" temporarily added to defaultExcludes, this placement
-		// lets the guard win — the manifest is dropped and requireManifestPacked
-		// then refuses the pack — while the hoisted placement ships
-		// [index.js package.json] past it. So the two are not equivalent; they
-		// are only indistinguishable given today's defaultExcludes. Keeping the
-		// ordering uniform is what stops a reader finding one force-include on
-		// each side of the guard and concluding the side does not matter.
+		// guard anything can step around is not a guard (docs/adr/0004 for
+		// "main", docs/adr/0005 for the manifest). No defaultExcludes entry
+		// matches package.json today, so no ordinary fixture can see that
+		// placement — TestPackManifestCannotDefeatDefaultExcludes puts one there
+		// for its own duration and goes red if this is hoisted.
 		isManifest := relPath == manifestFileName
 
 		// The user's ignore patterns decide the whole tree only when there is no

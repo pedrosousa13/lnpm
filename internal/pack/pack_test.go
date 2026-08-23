@@ -2412,11 +2412,8 @@ func TestPackManifestSurvivesIgnorePatterns(t *testing.T) {
 // The manifest is the only file carrying the version string into the hashed
 // content. With it dropped, bumping the version changed nothing the hash sees, so
 // two genuinely different releases hashed the same and insertPackageTx treated
-// them as one record and overwrote its version in place (#196). The issue body
-// records 171b4fd062e6cb62 twice for its own tree; this fixture is a different
-// tree so the digits differ, but the shape is the one that matters — equal before
-// the fix, unequal after. Run and confirmed at bdd5447: both versions hashed
-// 889a823b7fa264f2.
+// them as one record and overwrote its version in place (#196). Run and
+// confirmed at bdd5447: this fixture hashed 1.0.0 and 2.0.0 to the same digest.
 //
 // The assertion is that the two differ, not that either equals a literal. A
 // hard-coded digest would pin xxhash's output and HashFiles' framing, neither of
@@ -2556,4 +2553,79 @@ func TestPackSucceedsWhenManifestIsPacked(t *testing.T) {
 		"index.js",
 		"package.json",
 	}, "the backstop must not fire on a package whose manifest is packed")
+}
+
+// TestPackManifestCannotDefeatDefaultExcludes pins where the manifest
+// force-include sits in collectFiles: below the isDefaultExcluded check, never
+// above it. #301 puts the manifest beyond the reach of the user's own rules; it
+// does not exempt it from lnpm's built-in guard, for the reason docs/adr/0004
+// gives for "main" and docs/adr/0005 repeats for the manifest — a guard anything
+// can step around is not a guard.
+//
+// No ordinary fixture can see that placement, because no defaultExcludes entry
+// matches package.json, so this test puts one there for its own duration and
+// asks which wins. Below the guard, the manifest is dropped and Pack then
+// refuses via requireManifestPacked; hoisted above it, the manifest ships past
+// the guard and Pack succeeds. Run and confirmed red under that hoist
+// (isDefaultExcluded consulted as "&& !isManifest"): both rows reported
+// `packed: [index.js package.json]`.
+//
+// lowerDefaultExcludes is recomputed alongside defaultExcludes because
+// isDefaultExcluded reads only the lowered copy. Run and confirmed: dropping the
+// lowered line leaves the guard exactly as it was, and the test then fails with
+// the same `packed: [index.js package.json]` a real hoist produces — a failure
+// that looks like the bug this test exists to catch but is not it.
+//
+// This mutates package-level state, so it must not call t.Parallel() and must
+// not run beside a test that does. No test in this package calls it.
+func TestPackManifestCannotDefeatDefaultExcludes(t *testing.T) {
+	originalExcludes, originalLowered := defaultExcludes, lowerDefaultExcludes
+	t.Cleanup(func() {
+		defaultExcludes, lowerDefaultExcludes = originalExcludes, originalLowered
+	})
+	// New slices rather than append-in-place, so the restored originals cannot
+	// share a backing array with the mutated copies.
+	defaultExcludes = append(append([]string{}, originalExcludes...), manifestFileName)
+	lowerDefaultExcludes = append(append([]string{}, originalLowered...), manifestFileName)
+
+	tests := []struct {
+		name     string
+		manifest string
+	}{
+		{
+			name:     "no files field",
+			manifest: `{"name":"guard-vs-manifest","version":"1.0.0"}`,
+		},
+		{
+			name:     "files whitelist",
+			manifest: `{"name":"guard-vs-manifest","version":"1.0.0","files":["index.js"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": tt.manifest,
+				"index.js":     "module.exports = {}",
+			})
+
+			_, files, err := Pack(tmpDir)
+			if err == nil {
+				var names []string
+				for _, f := range files {
+					names = append(names, f.RelPath)
+				}
+				sort.Strings(names)
+				t.Fatalf("Pack() succeeded with package.json in defaultExcludes; "+
+					"the manifest force-include has been hoisted above the "+
+					"built-in guard, which is what makes the guard steppable\n"+
+					"packed: %v", names)
+			}
+			if !strings.Contains(err.Error(), "package.json") {
+				t.Errorf("Pack() must fail through requireManifestPacked, which "+
+					"names the missing file\ngot: %v", err)
+			}
+		})
+	}
 }
