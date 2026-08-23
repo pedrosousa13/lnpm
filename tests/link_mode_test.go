@@ -115,7 +115,7 @@ func TestRemoveLinkedPackageKeepsSource(t *testing.T) {
 	projectDir := env.newProject("remove-live-project")
 	env.addLinkedPkg(projectDir, "remove-live-lib")
 
-	if err := cli.RunRemove("remove-live-lib", false, false); err != nil {
+	if err := cli.RunRemove("remove-live-lib", false, false, false); err != nil {
 		t.Fatalf("Failed to remove package: %v", err)
 	}
 

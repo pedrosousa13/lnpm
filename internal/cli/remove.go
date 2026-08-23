@@ -13,8 +13,9 @@ import (
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
-// RunRemove executes the remove command
-func RunRemove(packageName string, all bool, yes bool) error {
+// RunRemove executes the remove command. It starts a package-manager install
+// only when install is set; see the gate at the end of the function.
+func RunRemove(packageName string, all bool, yes bool, install bool) error {
 	// Get current directory
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -143,8 +144,32 @@ func RunRemove(packageName string, all bool, yes bool) error {
 		_ = os.Remove(lockPath)
 	}
 
-	// Run package manager install to restore removed packages
-	runProjectInstallFn(cwd)
+	// Run the package manager install to restore the removed packages, but only
+	// when asked: an install executes every dependency's install scripts, which
+	// is not something a removal should do on its own.
+	//
+	// The same flag, not the same mechanism. add's install goes through
+	// hooks.RunPostAdd, so the hooks config's skip_post_add and a custom
+	// post_add command apply to it; this goes through runProjectInstall, which
+	// runs the detected install command directly - the same helper retreat's
+	// --install branch calls, so the two cannot drift.
+	//
+	// The tip is the shared printPeerDependencyTip rather than a sentence of its
+	// own, and it names the command config.DetectPackageManager and
+	// config.GetInstallCommand derive for this project, which is what
+	// runProjectInstall would have run. A spelled-out 'npm install' here would
+	// be #384 again, told to a pnpm or yarn project.
+	//
+	// Both halves are gated on something having survived, as add gates on
+	// something having been added: an install has nothing to restore, and the
+	// tip nothing to advise on, when every package failed.
+	if removed := len(packagesToRemove) - failed; removed > 0 {
+		if install {
+			runProjectInstallFn(cwd)
+		} else {
+			printPeerDependencyTip(cwd)
+		}
+	}
 
 	if failed > 0 {
 		return fmt.Errorf("%d of %d package(s) failed to remove", failed, len(packagesToRemove))

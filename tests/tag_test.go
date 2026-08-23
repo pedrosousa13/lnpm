@@ -1306,7 +1306,7 @@ func TestUnlinkingATaggedConsumerDeletesItsLinkRow(t *testing.T) {
 		name   string
 		unlink func(t *testing.T) error
 	}{
-		{"remove", func(t *testing.T) error { return cli.RunRemove("unlink-lib", false, true) }},
+		{"remove", func(t *testing.T) error { return cli.RunRemove("unlink-lib", false, true, false) }},
 		{"retreat", func(t *testing.T) error { return cli.RunRetreat(true, false) }},
 	}
 

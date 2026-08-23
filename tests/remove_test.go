@@ -33,7 +33,7 @@ func TestRemoveVariants(t *testing.T) {
 			env.AssertSymlinkExists(projectDir, tc.pkgName)
 			env.AssertDatabaseLink(tc.pkgName, projectDir)
 
-			if err := cli.RunRemove(tc.pkgName, false, false); err != nil {
+			if err := cli.RunRemove(tc.pkgName, false, false, false); err != nil {
 				t.Fatalf("Failed to remove package: %v", err)
 			}
 
@@ -62,7 +62,7 @@ func TestRemoveRestoresOriginalVersion(t *testing.T) {
 	env.addPkg(projectDir, "remove-pkg", false, false)
 	env.AssertPackageJSON(projectDir, "remove-pkg", "file:.lnpm/remove-pkg")
 
-	if err := cli.RunRemove("remove-pkg", false, false); err != nil {
+	if err := cli.RunRemove("remove-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to remove package: %v", err)
 	}
 	env.AssertPackageJSON(projectDir, "remove-pkg", "^1.0.0")
@@ -73,7 +73,7 @@ func TestRemovePackageNotLinked(t *testing.T) {
 	env := setupTest(t)
 
 	env.newProject("test-project")
-	if err := cli.RunRemove("nonexistent-pkg", false, false); err == nil {
+	if err := cli.RunRemove("nonexistent-pkg", false, false, false); err == nil {
 		t.Fatal("Expected error when removing non-linked package, got nil")
 	}
 }
@@ -88,7 +88,7 @@ func TestRemoveNoOriginalVersion(t *testing.T) {
 	env.addPkg(projectDir, "pure-pkg", false, true)
 	env.AssertPackageJSONMissing(projectDir, "pure-pkg")
 
-	if err := cli.RunRemove("pure-pkg", false, false); err != nil {
+	if err := cli.RunRemove("pure-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to remove package: %v", err)
 	}
 	env.AssertPackageJSONMissing(projectDir, "pure-pkg")
@@ -107,7 +107,7 @@ func TestRemoveAllPackages(t *testing.T) {
 		env.addPkg(projectDir, name, false, false)
 	}
 
-	if err := cli.RunRemove("", true, true); err != nil {
+	if err := cli.RunRemove("", true, true, false); err != nil {
 		t.Fatalf("Failed to remove all packages: %v", err)
 	}
 
@@ -133,7 +133,7 @@ func TestRemoveAllWithoutYesKeepsPackages(t *testing.T) {
 		env.addPkg(projectDir, name, false, false)
 	}
 
-	if err := cli.RunRemove("", true, false); err != nil {
+	if err := cli.RunRemove("", true, false, false); err != nil {
 		t.Fatalf("Remove --all without --yes failed: %v", err)
 	}
 
@@ -149,7 +149,7 @@ func TestRemoveAllNoPackages(t *testing.T) {
 	env := setupTest(t)
 
 	projectDir := env.newProject("test-project")
-	if err := cli.RunRemove("", true, true); err != nil {
+	if err := cli.RunRemove("", true, true, false); err != nil {
 		t.Fatalf("Remove --all with no packages failed: %v", err)
 	}
 	env.AssertLockfileExists(projectDir, false)
@@ -175,7 +175,7 @@ func TestRemoveKeepsLockEntryWhenRestoreFails(t *testing.T) {
 	// Unparseable package.json: restorePackageJSON fails at json.Unmarshal.
 	env.writeFile(filepath.Join(projectDir, "package.json"), "{not valid json")
 
-	if err := cli.RunRemove("restore-fail-pkg", false, false); err == nil {
+	if err := cli.RunRemove("restore-fail-pkg", false, false, false); err == nil {
 		t.Fatal("Expected error when package.json restore fails, got nil")
 	}
 
@@ -215,7 +215,7 @@ func TestRemoveKeepsLockEntryWhenPackageJSONRemovalFails(t *testing.T) {
 	// Unparseable package.json: removeFromPackageJSON fails at json.Unmarshal.
 	env.writeFile(filepath.Join(projectDir, "package.json"), "{not valid json")
 
-	if err := cli.RunRemove("remove-fail-pkg", false, false); err == nil {
+	if err := cli.RunRemove("remove-fail-pkg", false, false, false); err == nil {
 		t.Fatal("Expected error when package.json update fails, got nil")
 	}
 
@@ -241,7 +241,7 @@ func TestRemoveKeepsOthers(t *testing.T) {
 		env.addPkg(projectDir, name, false, false)
 	}
 
-	if err := cli.RunRemove("pkg-b", false, false); err != nil {
+	if err := cli.RunRemove("pkg-b", false, false, false); err != nil {
 		t.Fatalf("Failed to remove pkg-b: %v", err)
 	}
 

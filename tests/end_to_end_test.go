@@ -52,7 +52,7 @@ func TestE2EPublishAddRemove(t *testing.T) {
 				env.AssertDirectoryExists(filepath.Join(projectDir, "node_modules", scope), true)
 			}
 
-			if err := cli.RunRemove(tc.pkgName, false, false); err != nil {
+			if err := cli.RunRemove(tc.pkgName, false, false, false); err != nil {
 				t.Fatalf("Failed to remove package: %v", err)
 			}
 
@@ -95,7 +95,7 @@ func TestE2EMultiplePackagesMultipleProjects(t *testing.T) {
 
 	// Remove one package from one project; the other project is unaffected.
 	env.chdir(projectDirs["project-1"])
-	if err := cli.RunRemove("pkg-b", false, false); err != nil {
+	if err := cli.RunRemove("pkg-b", false, false, false); err != nil {
 		t.Fatalf("Failed to remove pkg-b from project-1: %v", err)
 	}
 	env.AssertSymlinkMissing(projectDirs["project-1"], "pkg-b")
@@ -142,7 +142,7 @@ func TestE2EMixedDependencies(t *testing.T) {
 	env.AssertDatabaseLink("prod-pkg", projectDir)
 	env.AssertDatabaseLink("dev-pkg", projectDir)
 
-	if err := cli.RunRemove("dev-pkg", false, false); err != nil {
+	if err := cli.RunRemove("dev-pkg", false, false, false); err != nil {
 		t.Fatalf("Failed to remove dev package: %v", err)
 	}
 

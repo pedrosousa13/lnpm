@@ -10,8 +10,8 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
-// printPeerDependencyTip prints the advice add and restore give when they did
-// not run the install themselves.
+// printPeerDependencyTip prints the advice add, remove and restore give when
+// they did not run the install themselves.
 //
 // It takes the project directory rather than reading the process working
 // directory because the answer depends on it: config.DetectPackageManager reads
