@@ -87,15 +87,28 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 			// statements about a project, and a read that failed establishes
 			// neither. This is the #292 half. Discarding the error left "the
 			// record would not parse" indistinguishable from "no record answers
-			// for this ID", and the link was filed as orphaned either way -
-			// which, with --fix-links, deletes it, and then leaves the version
-			// looking like one nothing consumes.
+			// for this ID", and the link was filed as orphaned either way.
 			//
-			// The lookup returning nil with its error is what makes this guard
-			// enough on its own; before #292 it returned a zero-valued project
-			// instead, so the nil check below let damage through to os.Stat("")
-			// and on to the wrong reason. Checking the error first does not
-			// depend on that, which is why it is checked first.
+			// That is destructive on a plain gc, with no flag involved, which is
+			// the part worth being exact about. The
+			//
+			//	validLinks := len(links) - countLinksForPackage(linksToRemove, pkg.ID)
+			//
+			// below subtracts unconditionally, so a misclassified link takes the
+			// version's last consumer with it and the version is collected -
+			// store entry and database row both. fixLinks gates only the block
+			// that reports and deletes the link rows themselves. So the flagless
+			// run is the quieter of the two, not the safer one: the same package
+			// is deleted and no line naming the link is ever printed.
+			//
+			// Checking the error before the nil result is what makes this guard
+			// hold whatever the lookup returns. Before #292 it returned a
+			// non-nil project alongside the error, and what that project held
+			// depended on how the record was damaged - a syntax error decoded
+			// nothing and reached os.Stat("") and the wrong reason, while a
+			// wrong-typed value left a real Path that stat'd fine and hid the
+			// damage entirely. GetProjectByID documents both. This check needs
+			// to know about neither.
 			proj, err := database.GetProjectByID(lnk.ProjectID)
 			if err != nil {
 				return fmt.Errorf("failed to read project %d, linked by %s@%s: %w", lnk.ProjectID, pkg.Name, pkg.Version, err)
