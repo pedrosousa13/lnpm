@@ -36,6 +36,13 @@ chose it. Against that, lnpm:
 - Requires `.lnpm` — and, for a scoped package, `.lnpm/{scope}` — to be a real
   directory, so a repository cannot commit either as a symlink and redirect
   every write and delete underneath it.
+- Requires the same of `node_modules` — and, for a scoped package,
+  `node_modules/{scope}` — before creating the link into `.lnpm`. That check is
+  overridable, and `.lnpm`'s is not: relocating `node_modules` to another volume
+  or out of a synced folder is a setup people run, so
+  `follow_symlinked_node_modules: true` in the config file turns it off. Leaving
+  it on is what stops a committed link from aiming lnpm's directory creation and
+  its recursive delete outside the project.
 
 Note that `filepath.Join()` is not itself a defence: it cleans the path it
 builds, so `..` segments in a name survive into the result. The validation
@@ -45,7 +52,13 @@ Known limits, which this section deliberately does not claim otherwise about:
 
 - The checks are not atomic. A path validated as safe can be replaced between
   the check and the use.
-- Entries under `node_modules/` are not guarded the way `.lnpm` is.
+- The `node_modules` guard is overridable and `.lnpm`'s is not, so a project
+  that sets `follow_symlinked_node_modules` gets the old behaviour back,
+  redirect included. That is the trade relocated `node_modules` setups are
+  worth, not an oversight.
+- The guard covers `node_modules` and `node_modules/{scope}`. The entry beneath
+  them is removed with calls that do not follow a link at their last component,
+  so a package's own `node_modules/{package}` needs no equivalent check.
 - Read paths are not covered. `Store.GetFiles` walks the store path it builds
   from a name, and the link-status queries `pull` runs only `Lstat` it, and
   neither validates the name first. They read rather than write, so they cannot
