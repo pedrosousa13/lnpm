@@ -2,6 +2,15 @@
 
 ## [2.2.0](https://github.com/pedrosousa13/lnpm/compare/v2.1.0...v2.2.0) (2026-08-23)
 
+> **Packages that excluded `package.json`**: lnpm now always packs the package
+> root's own `package.json`, whatever your `.npmignore`, `.gitignore` or `files`
+> field says, and refuses to pack at all if the manifest is missing. If one of
+> your packages was excluding its manifest, its content hash changes with this
+> release — the manifest is what carries the version string into the hashed
+> content — so its next publish writes a new store entry instead of updating the
+> old one. Only packages exhibiting the bug are affected. See
+> [#301](https://github.com/pedrosousa13/lnpm/issues/301).
+
 
 ### Features
 
