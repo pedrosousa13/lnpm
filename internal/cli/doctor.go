@@ -139,6 +139,7 @@ func RunDoctor() error {
 		// Check 4: Orphaned links (links to non-existent projects)
 		fmt.Print("Checking for orphaned links... ")
 		orphanedLinks := 0
+		unreachableLinks := 0
 		for _, pkg := range packages {
 			links, _ := database.GetLinksForPackage(pkg.ID)
 			for _, link := range links {
@@ -147,9 +148,18 @@ func RunDoctor() error {
 					orphanedLinks++
 					continue
 				}
-				// Check if project directory still exists
-				if _, err := os.Stat(proj.Path); os.IsNotExist(err) {
+				// The same question gc asks, through the same helper, because
+				// the two must not disagree: doctor's answer is what sends a
+				// user to gc, and counting an unreachable project as orphaned
+				// here advised running the destructive command against a
+				// project that was only unplugged. gc would then decline, and
+				// the advice would look broken instead of wrong.
+				state, _ := classifyProjectDir(proj.Path, proj.Device)
+				switch state {
+				case projectGone:
 					orphanedLinks++
+				case projectUnreachable:
+					unreachableLinks++
 				}
 			}
 		}
@@ -159,6 +169,13 @@ func RunDoctor() error {
 			warnings++
 		} else {
 			fmt.Printf("%s OK\n", iconOK())
+		}
+		if unreachableLinks > 0 {
+			// No fix is offered, and that is the point of separating these:
+			// there is nothing to clean up. The project may be on a drive that
+			// is merely unplugged, and gc will decline to judge it too.
+			fmt.Printf("  %s %d link(s) could not be checked: the project directory is missing and the filesystem it was on is not mounted there\n", iconWarn(), unreachableLinks)
+			warnings++
 		}
 
 		// Check 5: Verify each package's store entry is one lnpm can serve.
