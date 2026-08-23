@@ -230,7 +230,11 @@ func RunRestore() error {
 		}
 		consumeSnapshotEntry(snapshot, cwd, name)
 
-		recordRestoredLink(database, cwd, pkg, linkRes.Type)
+		if err := recordRestoredLink(database, cwd, pkg, linkRes.Type); err != nil {
+			fmt.Printf("  %s %s: %v\n", iconFail(), name, err)
+			failed++
+			continue
+		}
 		warnIfOffTheDefaultChannel(database, name, pkg)
 
 		fmt.Printf("%s Restored %s@%s\n", iconOK(), name, pkg.Version)
@@ -285,24 +289,30 @@ func consumeSnapshotEntry(snapshot *lockfile.LockFile, cwd, name string) {
 }
 
 // recordRestoredLink registers the project and its link to pkg, so `lnpm list`
-// and `lnpm push` see the restored package the way they see an added one. A
-// failure here costs only bookkeeping - the link on disk is already in place -
-// so it is reported and not treated as a failed restore.
-func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType link.LinkType) {
+// and `lnpm push` see the restored package the way they see an added one.
+//
+// A failure here used to be reported and not counted as a failed restore, on
+// the grounds that it cost only bookkeeping because the link on disk was
+// already in place. That was wrong in the one direction that matters: the row
+// is what tells gc the project consumes this package, so without it the store
+// entry the restored link points at reads as unreferenced and is deleted. The
+// files on disk are what make that a live consumer, not a harmless orphan. So
+// the error is returned and the restore counts as failed - the snapshot entry
+// then survives for the re-run, which is exactly what a half-restored package
+// needs.
+func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType link.LinkType) error {
 	proj := &db.Project{
 		Path:           cwd,
 		Name:           getProjectName(cwd),
 		PackageManager: string(config.DetectPackageManager(cwd)),
 	}
 	if err := database.InsertProject(proj); err != nil {
-		fmt.Printf("  %s Failed to register project: %v\n", iconWarn(), err)
-		return
+		return fmt.Errorf("failed to register project: %w", err)
 	}
 
 	existingProj, err := database.GetProjectByPath(cwd)
 	if err != nil {
-		fmt.Printf("  %s Failed to get project: %v\n", iconWarn(), err)
-		return
+		return fmt.Errorf("failed to get project: %w", err)
 	}
 
 	// The link follows the default tag, which is what an unset Tag means. Nothing
@@ -326,8 +336,9 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 		LinkType:  string(linkType),
 	}
 	if err := database.InsertLink(dbLink); err != nil {
-		fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), pkg.Name, err)
+		return fmt.Errorf("failed to record the link: %w", err)
 	}
+	return nil
 }
 
 // warnIfOffTheDefaultChannel reports that a restored package is on a build the

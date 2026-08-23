@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -471,11 +472,12 @@ func writeLinkRow(t *testing.T, d *DB, link *Link) {
 		for _, index := range []struct {
 			bucket *bolt.Bucket
 			key    []byte
+			owner  string
 		}{
-			{tx.Bucket(bucketLinksByPackage), itob(link.PackageID)},
-			{tx.Bucket(bucketLinksByProject), itob(link.ProjectID)},
+			{tx.Bucket(bucketLinksByPackage), itob(link.PackageID), "package"},
+			{tx.Bucket(bucketLinksByProject), itob(link.ProjectID), "project"},
 		} {
-			ids, err := indexIDs(index.bucket, index.key)
+			ids, err := indexIDs(index.bucket, index.key, index.owner)
 			if err != nil {
 				return err
 			}
@@ -779,6 +781,49 @@ func TestGetLinksForPackage_ErrorsOnAnIndexEntryNamingNoLinkRow(t *testing.T) {
 	}
 	if links != nil {
 		t.Errorf("GetLinksForPackage() returned %d link(s) alongside its error", len(links))
+	}
+}
+
+// TestInsertLink_DoesNotOverwriteAnIndexEntryItCannotRead pins the write half of
+// #329, which is the half that destroys rather than hides.
+//
+// The index append used to decode the existing entry into a slice, ignore the
+// failure, and write the slice back holding the one new ID. An entry that would
+// not parse was therefore replaced by a one-element array, discarding every link
+// ID it named - and those IDs are the consumers gc reads to decide what to
+// delete. Losing them on the write path costs exactly what losing them on the
+// read path costs, so ADR-0001 decides it the same way: refuse the insert and
+// leave the damaged entry for lnpm doctor to report.
+func TestInsertLink_DoesNotOverwriteAnIndexEntryItCannotRead(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, _ := seedLink(t, database)
+
+	damaged := []byte("[ not ids")
+	putRaw(t, database, bucketLinksByPackage, itob(pkg.ID), damaged)
+
+	// A second project linking the same package is what reaches the append.
+	secondProject := t.TempDir()
+	if err := database.InsertProject(&Project{Path: secondProject, Name: "second"}); err != nil {
+		t.Fatalf("Failed to seed a second project: %v", err)
+	}
+	proj, err := database.GetProjectByPath(secondProject)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the second project back: %v", err)
+	}
+
+	if err := database.InsertLink(&Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err == nil {
+		t.Error("InsertLink() accepted a link for a package whose index entry it could not read")
+	}
+
+	var after []byte
+	if err := database.db.View(func(tx *bolt.Tx) error {
+		after = append(after, tx.Bucket(bucketLinksByPackage).Get(itob(pkg.ID))...)
+		return nil
+	}); err != nil {
+		t.Fatalf("Failed to read the index entry back: %v", err)
+	}
+	if !bytes.Equal(after, damaged) {
+		t.Errorf("InsertLink() rewrote an index entry it could not read: %q became %q; every link ID it named is gone", damaged, after)
 	}
 }
 

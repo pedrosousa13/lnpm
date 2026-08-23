@@ -279,8 +279,17 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			LinkType:  string(r.linkType),
 			Tag:       r.tag,
 		}
+		// A link that cannot be recorded is a failure, not a warning to add
+		// beneath a success line. The files are in the project either way, but
+		// without the row nothing knows the project consumes this package: gc
+		// reads the store entry as unreferenced and deletes what the project is
+		// importing. Warning and carrying on printed "Added" over exactly that
+		// state - the fail-open shape #329 removed from gc, arriving instead
+		// through the write that feeds it.
 		if err := database.InsertLink(dbLink); err != nil {
 			fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), r.pkg.Name, err)
+			errors = append(errors, fmt.Errorf("%s: failed to record the link: %w", r.pkg.Name, err))
+			continue
 		}
 
 		// Reported exactly as the single-package path reports it, so a live link
