@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.1.0](https://github.com/pedrosousa13/lnpm/compare/v2.0.0...v2.1.0) (2026-08-23)
+
+
+### Features
+
+* **check:** cover every workspace package, not just the working directory ([#337](https://github.com/pedrosousa13/lnpm/issues/337)) ([0ee3ad5](https://github.com/pedrosousa13/lnpm/commit/0ee3ad536593550e345f3c980573a46f699f9803))
+
+
+### Bug Fixes
+
+* **gc:** abort when a package's links cannot be read ([683f5c8](https://github.com/pedrosousa13/lnpm/commit/683f5c8651b1aef6cc48445b70c37f23ed456b67))
+* **gc:** abort when a project row cannot be read ([7445dbe](https://github.com/pedrosousa13/lnpm/commit/7445dbe2d17de14a0d91f3685b005f2327be80fd))
+* **gc:** confirm before deleting orphaned links and report what was removed ([ccdcd0b](https://github.com/pedrosousa13/lnpm/commit/ccdcd0b4d537301aa5a87df3c8c7a3ac45cfd6f4))
+* **link:** refuse to link through a symlinked .lnpm or scope directory ([#341](https://github.com/pedrosousa13/lnpm/issues/341)) ([d9beea2](https://github.com/pedrosousa13/lnpm/commit/d9beea2b3a22af1dab427317a614487c69c90efd))
+* **pack:** anchor the always-included set to the package root ([c3dfe77](https://github.com/pedrosousa13/lnpm/commit/c3dfe772231b3b69d1a74e9884f5bc75c837771e))
+* **pack:** force-include the main entry point under a files whitelist ([2156e15](https://github.com/pedrosousa13/lnpm/commit/2156e157f20ed3ffc067348a247ab57c1e847d03))
+* **pack:** honour .npmignore and .gitignore in every directory ([#352](https://github.com/pedrosousa13/lnpm/issues/352)) ([a35b938](https://github.com/pedrosousa13/lnpm/commit/a35b93840f2136b7fdee95e63dba8247abace343)), closes [#315](https://github.com/pedrosousa13/lnpm/issues/315)
+* **pack:** implement ** in ignore patterns as zero or more path segments ([#351](https://github.com/pedrosousa13/lnpm/issues/351)) ([faedffa](https://github.com/pedrosousa13/lnpm/commit/faedffa6de8721a0fc8faf6208990f54f2c59d68)), closes [#316](https://github.com/pedrosousa13/lnpm/issues/316)
+* **pack:** make the files whitelist win over .npmignore and .gitignore ([#349](https://github.com/pedrosousa13/lnpm/issues/349)) ([60c85a5](https://github.com/pedrosousa13/lnpm/commit/60c85a5a08dc6b6554331b22a74162f7e5b5cd28)), closes [#318](https://github.com/pedrosousa13/lnpm/issues/318)
+* **pack:** match the force-exclude guards case-insensitively ([e40905e](https://github.com/pedrosousa13/lnpm/commit/e40905ea534d3ca9e66f0c97b84040d6833c69b2))
+* **retreat:** validate lock-file package names before deleting the path ([#343](https://github.com/pedrosousa13/lnpm/issues/343)) ([f0ab237](https://github.com/pedrosousa13/lnpm/commit/f0ab2370d25027bdaed31bd2d6df650ff77fdb4b))
+* **workspace:** fail on a broken config in the directory Detect started from ([#344](https://github.com/pedrosousa13/lnpm/issues/344)) ([e1f242c](https://github.com/pedrosousa13/lnpm/commit/e1f242c6f8cfb5e1186dfe7a26d6de3814be0bd2))
+
 ## [2.0.0](https://github.com/pedrosousa13/lnpm/compare/v1.12.0...v2.0.0) (2026-08-21)
 
 > **Upgrading from 1.9.x or older?** Those versions compare version numbers
