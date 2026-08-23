@@ -186,19 +186,21 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	if fixLinks && len(linksToRemove) > 0 {
 		fmt.Printf("Found %d orphaned link(s):\n", len(linksToRemove))
 		for _, l := range linksToRemove {
-			if l.projectPath != "" {
-				fmt.Printf("  - Link to %s (%s)\n", l.projectPath, l.reason)
-			} else {
-				fmt.Printf("  - Link to project ID %d (%s)\n", l.projectID, l.reason)
-			}
+			fmt.Printf("  - Link to %s (%s)\n", l.label(), l.reason)
 		}
 		fmt.Println()
 
 		if !dryRun {
-			for _, l := range linksToRemove {
-				_ = database.DeleteLink(l.packageID, l.projectID)
+			if confirm("Permanently delete these orphaned link(s)?", yes) {
+				removeOrphanedLinks(database, linksToRemove)
+			} else {
+				// A third question rather than one shared with the two below.
+				// The blocks act on different things — link rows, store
+				// entries, temp directories — and #233 already decoupled the
+				// other two for that reason. Declining here still leaves the
+				// rest of the run to ask about what it found.
+				fmt.Println("Skipped deleting orphaned links.")
 			}
-			fmt.Printf("%s Removed %d orphaned link(s)\n", iconOK(), len(linksToRemove))
 		}
 	}
 
@@ -279,6 +281,61 @@ func pinnedByTag(tags map[string]string, hash string) bool {
 		}
 	}
 	return false
+}
+
+// removeOrphanedLinks deletes the database row of each orphaned link and reports
+// how many rows it actually removed.
+//
+// It counts successes rather than candidates: gc must not claim what it did not
+// reclaim. That rule comes from #273, which stopped the package block discarding
+// the error from removing a store entry and made it count what it had actually
+// removed; #233 is a different rule, cited at the call site, and decoupled the
+// prompts rather than the counting. The count printed here used to be
+// len(links), and the error was discarded on the way, so a run where every
+// delete failed printed a clean success and the rows it had left behind were
+// never named.
+//
+// The failure is not fatal to the run for the reason ADR-0001 gives: skipping a
+// row narrows what this pass removes and leaves it for the next run, and the row
+// it could not delete is a stale record rather than anything a project depends
+// on.
+//
+// The failure line says "the link to X" where removePackages and reapTempDirs
+// say only "X". That is deliberate and not drift: the findings printed above
+// read "- Link to X", and a user matching a failure to a finding should see the
+// same words.
+//
+// The summary is skipped entirely when nothing was removed, and that is a
+// divergence from the two blocks below, which print theirs with a count of zero:
+// removePackages prints "Removed 0 package(s), freed 0 B" under a success icon
+// when every removal failed. This block is the one being fixed today, so it
+// diverges rather than repeating that - a clean success over nothing achieved is
+// the defect, not a house style. #358 tracks the same defects in the package
+// block. The per-link failure lines above are the report in this case.
+//
+// It is a function rather than an inline block for the reason removePackages is
+// one, and for a second: no damage to the link buckets can drive a failure here.
+// Every error DeleteLink meets inside its transaction is swallowed - a link row
+// that will not parse is skipped by the lookup, and a link ID that is not found
+// returns nil - which was confirmed by damaging both a row and an index entry
+// and getting a nil error back. What is left is transaction-level, from
+// bolt.Update's Begin or its Commit, and that is all-or-nothing across the pass.
+// So a total failure is drivable by calling this with a closed handle, as
+// TestReapTempDirsRequiresTheDatabaseLock calls the sweep, and a partial one
+// cannot be constructed at all without a fake database.
+func removeOrphanedLinks(database *db.DB, links []linkToRemove) {
+	removed := 0
+	for _, l := range links {
+		if err := database.DeleteLink(l.packageID, l.projectID); err != nil {
+			fmt.Printf("  %s Failed to remove the link to %s: %v\n", iconWarn(), l.label(), err)
+			continue
+		}
+		removed++
+	}
+	if removed == 0 {
+		return
+	}
+	fmt.Printf("%s Removed %d orphaned link(s)\n", iconOK(), removed)
 }
 
 // removePackages deletes each package's store entry and then its database row.
@@ -440,6 +497,21 @@ type linkToRemove struct {
 	projectID   int64
 	projectPath string
 	reason      string
+}
+
+// label names the project end of the link, which is what the findings report has
+// always printed. It falls back to the project ID because the two orphan reasons
+// differ in what they know - a project whose record is gone has no path to print.
+//
+// One helper rather than the branch written twice, because the findings report
+// and the failure report have to name the same link the same way. A user reading
+// "Failed to remove the link to project ID 7" needs to match it to a line above
+// it, and matching is what the report exists for.
+func (l linkToRemove) label() string {
+	if l.projectPath != "" {
+		return l.projectPath
+	}
+	return fmt.Sprintf("project ID %d", l.projectID)
 }
 
 func countLinksForPackage(links []linkToRemove, packageID int64) int {
