@@ -2,6 +2,29 @@
 
 ## [2.2.1](https://github.com/pedrosousa13/lnpm/compare/v2.2.0...v2.2.1) (2026-08-23)
 
+> **Relocated your `node_modules`?** lnpm now refuses to link or unlink through a
+> `node_modules` — or a `node_modules/@scope` — that is not a real directory,
+> because a symlink there redirects lnpm's writes and deletes outside your
+> project. If you relocate `node_modules` deliberately, set
+> `follow_symlinked_node_modules: true` in `~/.lnpm/config.yaml` to restore the
+> previous behaviour. The refusal message names the file and the key. See
+> [#339](https://github.com/pedrosousa13/lnpm/issues/339).
+>
+> **Upgrading from 1.x?** Store entries written before 2.0.0 carry no
+> completeness marker, and lnpm now checks that marker before serving an entry.
+> The first command that opens your store migrates it in one pass; until then
+> `lnpm doctor` reports the store as pending rather than damaged. If it reports
+> that the migration cannot run, a directory in your store could not be read —
+> make it readable and run any command again. See
+> [#330](https://github.com/pedrosousa13/lnpm/issues/330).
+>
+> **`lnpm gc` is now more conservative.** It will not collect a package whose
+> only consuming project sits on a filesystem that is not mounted where it was
+> linked — an unplugged drive or an unmounted network share no longer costs you
+> the store entry. Those links are reported as skipped. The trade is that a
+> drive gone for good leaves its entries uncollectable for now; see
+> [#382](https://github.com/pedrosousa13/lnpm/issues/382).
+
 
 ### Bug Fixes
 
