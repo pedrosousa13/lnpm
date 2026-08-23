@@ -132,7 +132,7 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 	debug.Logf("pack: found %s@%s", pkgJSON.Name, pkgJSON.Version)
 
 	// Collect files using custom filtering
-	files, err := collectFiles(packageDir, pkgJSON.Files)
+	files, err := collectFiles(packageDir, pkgJSON.Files, mainEntryPath(pkgJSON.Main))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -171,8 +171,75 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	return &pkg, nil
 }
 
-// collectFiles walks directory and returns files to include in a package
-func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
+// mainEntryPath normalizes the manifest's "main" into the form collectFiles
+// compares against: slash-separated and relative to the package root. It returns
+// "" when main names nothing this package can ship, which is the signal to
+// force-include nothing.
+//
+// npm ships the file "main" names whatever the "files" whitelist says, and lnpm
+// did not: Main was parsed and never consulted during selection, so main
+// "lib/index.js" with files ["dist"] published [dist/a.js, package.json] and
+// requiring the package failed on the one path the manifest advertises (#319).
+//
+// Normalization is filepath.ToSlash here and filepath.ToSlash on the relPath
+// side, so the two are compared like with like on whichever platform is running.
+// ToSlash is identity when Separator is '/' and otherwise replaces Separator
+// with '/' (internal/filepathlite/path.go), and Separator is '\\' only on
+// Windows. So on Windows both sides fold and main "lib\\index.js" matches the
+// walked lib/index.js, while on Linux neither side folds and a file whose name
+// genuinely contains a backslash still matches a main spelled the same way. The
+// Linux half is run — filepath.ToSlash(`lib\index.js`) came back unchanged; the
+// Windows half is read off that stdlib source and can only be exercised by the
+// Windows CI job.
+//
+// slashpath.Clean, not filepath.Clean: filepath.Clean rewrites "/" as "\" on
+// Windows — the reason for this file's slashpath import in the first place —
+// which would leave a native-separator string compared against a ToSlash'd
+// relPath. Clean is also what collapses "./lib/index.js" and
+// "lib/../lib/index.js" onto the "lib/index.js" the walk produces; both were run
+// through slashpath.Clean and returned it.
+//
+// The "..", absolute and "." rejections defend no reachable caller today and are
+// here on purpose. relPath is filepath.Rel(packageDir, path) for a path
+// filepath.Walk yielded from inside packageDir, so it never begins with ".." and
+// is never absolute, and "." is skipped as the root before any of this runs —
+// meaning an escaping main already selects nothing purely because equality
+// cannot match. TestPackMainEscapingPackageRootSelectsNothing pins the outcome
+// with the escaping file actually present on disk. The guard is what keeps that
+// true if the comparison in collectFiles is ever loosened from equality; a
+// prefix comparison with "../evil.js" left in would reach outside the package.
+//
+// A main naming a directory returns that directory's path and matches nothing:
+// collectFiles skips directories before the whitelist branch, and the comparison
+// is equality, so main "lib" does not widen the whitelist to lib's contents.
+// Node resolves a directory main through its own index lookup; #319 puts that,
+// and every other entry-point field, out of scope.
+//
+// A main naming a path that is not on disk is not this function's business:
+// nothing matches it and pack proceeds. That is deliberate, and it does not
+// weaken publish. Confirmed by reading the call order: internal/cli/publish.go
+// calls validation.ValidatePackage (publish.go:140) before pack.Pack
+// (publish.go:159), and internal/validation/validation.go:28-36 already refuses
+// a manifest whose main is not on disk. So on the publish path pack never sees a
+// missing main unless --skip-validation was passed, and #319's "warning, not
+// abort" criterion is read here as "introduce no new abort inside pack" rather
+// than as a reason to downgrade that existing check.
+func mainEntryPath(main string) string {
+	if main == "" {
+		return ""
+	}
+
+	rel := slashpath.Clean(filepath.ToSlash(main))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "/") {
+		return ""
+	}
+	return rel
+}
+
+// collectFiles walks directory and returns files to include in a package.
+//
+// mainEntry is the manifest's "main" through mainEntryPath, or "" for none.
+func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*FileInfo, error) {
 	var filesToHash []*FileInfo
 	fileCount := 0
 
@@ -254,6 +321,33 @@ func collectFiles(packageDir string, filesField []string) ([]*FileInfo, error) {
 		// Check if included
 		if useWhitelist {
 			switch {
+			case mainEntry != "" && relPath == mainEntry:
+				// The manifest's entry point, which ships whatever the
+				// whitelist says (#319).
+				//
+				// Decision: main is exempt from the user's ignore patterns too,
+				// not from the whitelist alone. Rejected: treating it like a
+				// default include below, where an ignore pattern still drops it
+				// and README documented that as the rule. That reading leaves
+				// #319's own failure reachable — an .npmignore naming the entry
+				// point drops it, publish reports success, and requiring the
+				// package fails on the path the manifest advertises. The
+				// publish-time check does not catch it either: validation.
+				// ValidatePackage only stats main on disk, so a main that exists
+				// but is not packed passes validation and ships broken. README's
+				// divergence list is updated to match.
+				//
+				// The two differ in what dropping them costs, which is what
+				// makes them worth treating differently: a package missing its
+				// README is merely poorer, a package missing its main does not
+				// load. Overriding an explicit ignore rule is a real surprise,
+				// and it is the smaller one.
+				//
+				// This sits inside the whitelist branch on purpose. A package
+				// with no "files" field is left exactly as it was — there the
+				// user's patterns decide the whole tree, main included.
+				// TestPackMainRespectsIgnorePatternsWithoutFilesWhitelist pins
+				// that, and fails if this case is hoisted above the branch.
 			case isIncluded(relPath, filesField):
 				// npm documents that a file included with the "files" field
 				// cannot be excluded through .npmignore or .gitignore, so the
