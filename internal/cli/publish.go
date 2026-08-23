@@ -18,11 +18,9 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/workspace"
 )
 
-// PublishOptions carries everything the publish command was asked for. It
-// exists so a new flag does not change a signature: RunPublish and
-// RunPublishTagged are called from about forty-five places across the test
-// suite, and every one of them would have had to be edited to add --dry-run as
-// a parameter.
+// PublishOptions is the full request a publish run is given: every flag the
+// command accepts, in one value. It is what RunPublishWith takes, so a new flag
+// is a new field rather than a new parameter on every caller.
 type PublishOptions struct {
 	Push           bool
 	All            bool
@@ -40,8 +38,11 @@ func RunPublish(push bool, all bool, skipHooks bool, skipValidation bool) error 
 }
 
 // RunPublishTagged is RunPublish, moving tag onto what it writes instead of the
-// default one. An empty tag means the default one, which is what the flag's own
-// default value carries.
+// default one. An empty tag means the default one.
+//
+// The command no longer reaches it - cobra builds a PublishOptions and calls
+// RunPublishWith - so its only callers are tests that want a tag without
+// naming the other fields.
 func RunPublishTagged(push bool, all bool, skipHooks bool, skipValidation bool, tag string) error {
 	return RunPublishWith(PublishOptions{
 		Push:           push,
@@ -92,7 +93,14 @@ func publishAll(cwd string, opts PublishOptions) error {
 		return fmt.Errorf("no packages found in workspace")
 	}
 
-	fmt.Printf("Publishing %d packages from %s workspace...\n\n", len(packages), ws.Type)
+	// A dry run writes nothing, so this function's own three lines - the header
+	// here, and the count and failure message at the end - must not say the
+	// workspace was published. Only the wording differs; the run is the same.
+	if opts.DryRun {
+		fmt.Printf("Dry run over %d packages from %s workspace; nothing will be written...\n\n", len(packages), ws.Type)
+	} else {
+		fmt.Printf("Publishing %d packages from %s workspace...\n\n", len(packages), ws.Type)
+	}
 
 	// Publish packages in parallel with worker pool
 	numWorkers := min(runtime.NumCPU(), len(packages))
@@ -155,8 +163,17 @@ func publishAll(cwd string, opts PublishOptions) error {
 		}
 	}
 
-	fmt.Printf("Published %d/%d packages\n", successCount, len(packages))
+	if opts.DryRun {
+		fmt.Printf("Dry run: %d/%d packages packed; nothing was written\n", successCount, len(packages))
+	} else {
+		fmt.Printf("Published %d/%d packages\n", successCount, len(packages))
+	}
 	if successCount < len(packages) {
+		if opts.DryRun {
+			// Not "failed to pack": validation and the pre-pack hooks run
+			// before pack does, and a failure in either lands here too.
+			return fmt.Errorf("the dry run failed for %d of %d package(s)", len(packages)-successCount, len(packages))
+		}
 		return fmt.Errorf("%d of %d package(s) failed to publish", len(packages)-successCount, len(packages))
 	}
 	return nil
@@ -173,17 +190,14 @@ func publishSingle(pkgPath string, opts PublishOptions) error {
 
 	// Run custom pre_publish hook before packing.
 	//
-	// A dry run runs it too, deliberately. Those hooks are frequently what
-	// builds the files being packed, so skipping them would make the dry run
-	// report a set that differs from the real publish - the dry run would lie,
-	// which defeats the whole point of having one. --skip-hooks is already
-	// there for anyone who does not want them.
+	// A dry run runs it too, deliberately: these hooks are often what builds
+	// the files being packed, so skipping them would make the dry run report a
+	// set the real publish would not. --skip-hooks covers anyone who objects.
 	//
-	// npm does the same, which was run rather than assumed: with npm 11.16.0,
-	// `npm publish --dry-run` over a package carrying prepack and
-	// prepublishOnly ran both, and the file each wrote showed up in the tarball
-	// listing the dry run printed. (The same run also showed npm executing
-	// postpublish on a dry run. lnpm deliberately does not - see below.)
+	// npm agrees, run rather than assumed: with npm 11.16.0, `npm publish
+	// --dry-run` over a package carrying prepack and prepublishOnly ran both,
+	// and the file each wrote appeared in the tarball listing. That same run
+	// also executed postpublish; lnpm does not - see the dry-run return below.
 	cfg := config.Get()
 	if !opts.SkipHooks {
 		if err := hooks.RunCustom(pkgPath, cfg.Hooks.PrePublish, "pre_publish"); err != nil {
@@ -216,22 +230,22 @@ func publishSingle(pkgPath string, opts PublishOptions) error {
 		return err
 	}
 
-	// A dry run stops here: everything that decides the packed set has run, and
-	// nothing that writes has. The rewritten manifest is already materialised,
-	// so the reported set is the one a real publish would store, and the defer
-	// above removes the temporary file it lives in on the way out.
+	// A dry run stops here: everything that decides the packed set has run,
+	// nothing that writes has, and the rewritten manifest is already
+	// materialised, so the reported set is the one a real publish would store.
+	// The defer above removes the temporary file it lives in on the way out.
 	//
-	// It stops here rather than immediately before finishPublish because the
-	// "already published with same content" short-circuit sits in between, and
-	// it returns. A dry run that fell into it would answer "already published"
-	// to the question "what would you ship?" - which is the question a user
-	// asks most often about a package they have already published.
+	// Here rather than immediately before finishPublish because the "already
+	// published with same content" short-circuit sits in between and returns -
+	// a dry run that fell into it would answer "already published" to the
+	// question "what would you ship?".
 	//
-	// Returning above db.GetDB is also what keeps the guarantee cheap to state:
+	// Stopping above db.GetDB is also what keeps the guarantee cheap to state:
 	// the database is never opened, the store is never constructed (store.New
 	// creates its directory tree as a side effect of being called), and
-	// post_publish never runs. npm runs postpublish on a dry run; lnpm does
-	// not, because post_publish is for reacting to a release that happened.
+	// post_publish never runs. npm does run postpublish on a dry run (the same
+	// 11.16.0 run cited above); lnpm does not, because post_publish is for
+	// reacting to a release that happened.
 	if opts.DryRun {
 		reportDryRun(pkgJSON, files)
 		return nil
@@ -280,33 +294,46 @@ func publishSingle(pkgPath string, opts PublishOptions) error {
 	return nil
 }
 
-// reportDryRun prints the packed set, one relative path per line.
+// writePackedPaths renders the packed set into b, one relative path per line,
+// each prefixed with indent. Shared by the dry run and by finishPublish so the
+// two print the same set the same way and one of them cannot drift.
 //
 // Sorted by RelPath, and not because the walk leaves them unsorted by accident:
 // filepath.Walk visits each directory's entries in lexical order, which puts
 // "a/inner.js" before "a.js" because it descends into "a" on reaching it, while
-// a sort by path puts "a.js" first ('.' is 0x2E, '/' is 0x2F). Diffing two dry
-// runs is the main reason to have one, so the order is pinned rather than
+// a sort by path puts "a.js" first ('.' is 0x2E, '/' is 0x2F). Diffing two
+// listings is a main reason to have one, so the order is pinned rather than
 // inherited.
 //
-// The whole report is built and printed with one call: --all publishes in
-// parallel and only brackets its per-package header with a mutex, so a report
-// emitted line by line would interleave with another package's.
-func reportDryRun(pkgJSON *pack.PackageJSON, files []*pack.FileInfo) {
+// It writes into a builder so the caller can emit the whole block with one
+// Print. That is not an atomicity guarantee - a pipe only writes atomically up
+// to PIPE_BUF, 4096 bytes on Linux, and a tty promises nothing at all, and a
+// few hundred paths pass 4096 easily. It is one write syscall instead of one
+// per path, which makes interleaving under --all's parallel workers far less
+// likely, and that is the whole claim.
+func writePackedPaths(b *strings.Builder, files []*pack.FileInfo, indent string) {
 	paths := make([]string, len(files))
-	var totalSize int64
 	for i, f := range files {
 		paths[i] = f.RelPath
-		totalSize += f.Size
 	}
 	sort.Strings(paths)
+
+	for _, p := range paths {
+		fmt.Fprintf(b, "%s%s\n", indent, p)
+	}
+}
+
+// reportDryRun prints what a real publish would have packed.
+func reportDryRun(pkgJSON *pack.PackageJSON, files []*pack.FileInfo) {
+	var totalSize int64
+	for _, f := range files {
+		totalSize += f.Size
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Dry run: %s@%s would pack %d files (%s); nothing was written\n",
 		pkgJSON.Name, pkgJSON.Version, len(files), formatSize(totalSize))
-	for _, p := range paths {
-		fmt.Fprintf(&b, "  %s\n", p)
-	}
+	writePackedPaths(&b, files, "  ")
 	fmt.Print(b.String())
 }
 
@@ -368,13 +395,16 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 	fmt.Printf("  Files: %d\n", len(files))
 	fmt.Printf("  Size: %s\n", formatSize(totalSize))
 	fmt.Printf("  Store: %s\n", storePath)
-	// The count above is the only thing an ordinary publish says about the
-	// packed set, and a count cannot show that a secret was packed. The list
-	// itself is not printed here on purpose: publish is an inner-loop command
-	// run many times a day, and output that appears on every run is output
-	// users learn to skip, which serves detection worse than a pointer to the
-	// command that prints it on demand.
-	fmt.Printf("  %s Run 'lnpm publish --dry-run' to see the packed files\n", iconTip())
+
+	// The packed set itself, not only the count above. A count cannot show that
+	// a secret was packed, and this is the one place that can say what was
+	// actually stored: `publish --dry-run` re-packs the working tree, so it
+	// answers "what would ship now", never "what did ship". push reaches this
+	// same summary and gets the same list, which is what it needs too.
+	var listing strings.Builder
+	listing.WriteString("  Packed:\n")
+	writePackedPaths(&listing, files, "    ")
+	fmt.Print(listing.String())
 
 	// If push requested, push to all linked projects
 	if push {

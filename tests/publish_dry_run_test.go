@@ -20,6 +20,14 @@ import (
 // dryRunHeading is the prefix of the line a dry run prints above its file list.
 const dryRunHeading = "Dry run:"
 
+// The two indents the packed list is printed at: a dry run lists at the top
+// level of its own report, while a publish nests the list inside the indented
+// summary block under "Packed:".
+const (
+	dryRunIndent  = "  "
+	publishIndent = "    "
+)
+
 // dryRunFiles is the fixture the dry-run output tests share. It is chosen for
 // one property: filepath.Walk does not visit these paths in the order a sort by
 // RelPath puts them in. Walk descends into "a" before it reaches "a.js",
@@ -55,17 +63,19 @@ func packedPaths(t *testing.T, pkgDir string) []string {
 }
 
 // assertListsInOrder checks that every path in want appears in out as a line of
-// its own, and that the lines appear in the order want gives them.
+// its own at the given indent, and that the lines appear in the order want
+// gives them.
 //
-// It matches "\n  <path>\n" rather than the bare path: "a.js" is a substring of
-// "lib/a.js", so a Contains check on the bare path would be satisfied by the
-// wrong line.
-func assertListsInOrder(t *testing.T, out string, want []string) {
+// It matches "\n<indent><path>\n" rather than the bare path: "a.js" is a
+// substring of "lib/a.js", so a Contains check on the bare path would be
+// satisfied by the wrong line. The indent is a parameter because the dry run
+// lists at two spaces and the publish summary nests its list at four.
+func assertListsInOrder(t *testing.T, out string, want []string, indent string) {
 	t.Helper()
 
 	prev := -1
 	for _, p := range want {
-		line := "\n  " + p + "\n"
+		line := "\n" + indent + p + "\n"
 		at := strings.Index(out, line)
 		if at < 0 {
 			t.Errorf("Expected the output to list %q on a line of its own; it does not.\nOutput:\n%s", p, out)
@@ -160,7 +170,7 @@ func TestPublishDryRunPrintsEveryPackedPath(t *testing.T) {
 		t.Fatalf("Expected the dry run to succeed, got: %v", err)
 	}
 
-	assertListsInOrder(t, out, want)
+	assertListsInOrder(t, out, want, dryRunIndent)
 }
 
 // The listed order is a sort by RelPath, which is not the order the walk
@@ -198,7 +208,7 @@ func TestPublishDryRunOutputOrderIsDeterministic(t *testing.T) {
 		}
 	})
 
-	assertListsInOrder(t, first, want)
+	assertListsInOrder(t, first, want, dryRunIndent)
 	if first != second {
 		t.Errorf("Expected two dry runs to print identical output.\nFirst:\n%s\nSecond:\n%s", first, second)
 	}
@@ -323,7 +333,7 @@ func TestPublishDryRunExitStatusDistinguishesSuccessFromPackFailure(t *testing.T
 	if goodErr != nil {
 		t.Errorf("Expected a successful dry run to return nil, got: %v", goodErr)
 	}
-	assertListsInOrder(t, out, want)
+	assertListsInOrder(t, out, want, dryRunIndent)
 
 	// A manifest pack cannot parse. Validation and the prepare hooks are
 	// skipped so that pack is the step that fails, rather than one of the
@@ -364,7 +374,7 @@ func TestPublishDryRunListsFilesForAnAlreadyPublishedPackage(t *testing.T) {
 		}
 	})
 
-	assertListsInOrder(t, out, want)
+	assertListsInOrder(t, out, want, dryRunIndent)
 }
 
 // --dry-run --push pushes nothing: linked projects keep the content they had.
@@ -442,22 +452,90 @@ func TestPublishDryRunAllReportsEachPackage(t *testing.T) {
 			t.Errorf("Expected the dry run to report %s.\nOutput:\n%s", name, out)
 		}
 	}
-	assertListsInOrder(t, out, wantA)
-	assertListsInOrder(t, out, wantB)
+	assertListsInOrder(t, out, wantA, dryRunIndent)
+	assertListsInOrder(t, out, wantB, dryRunIndent)
 
 	assertSnapshotsEqual(t, before, storeSnapshot(t, env.StoreDir), "dry run --all changed the store")
 	env.AssertPackageInDatabase("@npm-test/package-a", false)
 	env.AssertPackageInDatabase("@npm-test/package-b", false)
 }
 
-// An ordinary publish reports a count, so it has to tell the user where the
-// list itself is. Without this the packed set is only visible to someone who
-// knows about the debug logger.
-func TestPublishPointsAtDryRunForTheFullFileList(t *testing.T) {
+// --dry-run --all writes nothing, so the three lines publishAll prints around
+// the per-package reports must not say it published anything.
+func TestPublishDryRunAllDoesNotClaimItPublished(t *testing.T) {
 	env := setupTest(t)
 
-	pkgDir := env.CreateTestPackage("publish-pointer-pkg", "1.0.0", dryRunFiles)
+	wsDir := env.CopyFixture("npm-workspace")
+	env.chdir(wsDir)
+
+	var err error
+	out := captureStdout(t, func() {
+		err = cli.RunPublishWith(cli.PublishOptions{DryRun: true, All: true, SkipValidation: true})
+	})
+	if err != nil {
+		t.Fatalf("Expected the dry run to succeed, got: %v", err)
+	}
+
+	// The negative is the point: "Publishing 2 packages from npm workspace..."
+	// and "Published 2/2 packages" are what this printed before, both of them
+	// untrue of a run that wrote nothing.
+	for _, claim := range []string{"Publishing ", "Published "} {
+		if strings.Contains(out, claim) {
+			t.Errorf("Expected a dry run over a workspace not to say %q anywhere.\nOutput:\n%s", claim, out)
+		}
+	}
+	for _, want := range []string{
+		"Dry run over 2 packages from npm workspace",
+		"Dry run: 2/2 packages packed; nothing was written",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Expected the output to contain %q.\nOutput:\n%s", want, out)
+		}
+	}
+}
+
+// The error publishAll returns is worded for a dry run too, for the same reason
+// as its printed lines: nothing was being published, so nothing failed to
+// publish.
+//
+// package-b is made to fail validation rather than pack, because a package.json
+// broken enough to fail pack also fails workspace.ListPackages, which aborts
+// publishAll before any package is attempted. That is also why the message says
+// "the dry run failed" rather than naming pack: the step that failed here is
+// the one before it.
+func TestPublishDryRunAllDoesNotClaimAFailedPublish(t *testing.T) {
+	env := setupTest(t)
+
+	wsDir := env.CopyFixture("npm-workspace")
+	env.writeFile(filepath.Join(wsDir, "packages", "package-b", "package.json"),
+		`{"name":"@npm-test/package-b","version":"1.0.0","main":"missing.js"}`)
+	env.chdir(wsDir)
+
+	var err error
+	out := captureStdout(t, func() {
+		err = cli.RunPublishWith(cli.PublishOptions{DryRun: true, All: true})
+	})
+	if err == nil {
+		t.Fatal("Expected the dry run to fail for package-b, got nil")
+	}
+	if want := "the dry run failed for 1 of 2 package(s)"; err.Error() != want {
+		t.Errorf("Expected %q, got: %v", want, err)
+	}
+	if strings.Contains(out, "Published ") {
+		t.Errorf("Expected a failed dry run not to say anything was published.\nOutput:\n%s", out)
+	}
+}
+
+// An ordinary publish prints the packed set, not only how many files it holds.
+// A count cannot show that a secret was packed, and --dry-run cannot answer it
+// after the fact: it re-packs the working tree, so it says what would ship now,
+// never what did.
+func TestPublishPrintsThePackedFileList(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.CreateTestPackage("publish-list-pkg", "1.0.0", dryRunFiles)
 	env.chdir(pkgDir)
+	want := packedPaths(t, pkgDir)
 
 	var err error
 	out := captureStdout(t, func() {
@@ -467,31 +545,32 @@ func TestPublishPointsAtDryRunForTheFullFileList(t *testing.T) {
 		t.Fatalf("Failed to publish: %v", err)
 	}
 
-	if !strings.Contains(out, "--dry-run") {
-		t.Errorf("Expected an ordinary publish to point at 'lnpm publish --dry-run'.\nOutput:\n%s", out)
-	}
+	assertListsInOrder(t, out, want, publishIndent)
 }
 
-// The pointer belongs to the ordinary publish only: a dry run has just printed
-// the list, so telling it to run a dry run would be noise. This one is a guard
-// on where the pointer is printed rather than a test of the dry run; it was
-// green before the pointer existed, and only starts asserting anything once it
-// does.
-func TestPublishDryRunDoesNotPointAtItself(t *testing.T) {
+// push reaches the same summary as publish when the package is not in the store
+// yet, and it gets the same list. This is the half a command-specific pointer
+// could not serve: telling a `lnpm push` user to run `lnpm publish --dry-run`
+// is advice about a command they did not run.
+func TestPushPrintsThePackedFileList(t *testing.T) {
 	env := setupTest(t)
 
-	pkgDir := env.CreateTestPackage("dryrun-no-pointer-pkg", "1.0.0", dryRunFiles)
+	pkgDir := env.CreateTestPackage("push-list-pkg", "1.0.0", dryRunFiles)
 	env.chdir(pkgDir)
+	want := packedPaths(t, pkgDir)
 
+	var err error
 	out := captureStdout(t, func() {
-		if err := cli.RunPublishWith(cli.PublishOptions{DryRun: true}); err != nil {
-			t.Errorf("Expected the dry run to succeed, got: %v", err)
-		}
+		err = cli.RunPush(false)
 	})
-
-	if strings.Contains(out, "Run 'lnpm publish --dry-run'") {
-		t.Errorf("Expected a dry run not to advertise itself.\nOutput:\n%s", out)
+	if err != nil {
+		t.Fatalf("Failed to push: %v", err)
 	}
+	if !strings.Contains(out, "not published yet, publishing...") {
+		t.Fatalf("Expected push to fall through to the publish summary.\nOutput:\n%s", out)
+	}
+
+	assertListsInOrder(t, out, want, publishIndent)
 }
 
 // yamlQuote renders s as a YAML double-quoted scalar, so a hook command holding
