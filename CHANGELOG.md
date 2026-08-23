@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0](https://github.com/pedrosousa13/lnpm/compare/v2.1.0...v2.2.0) (2026-08-23)
+
+
+### Features
+
+* **publish:** add --dry-run and print the packed file list ([3354320](https://github.com/pedrosousa13/lnpm/commit/335432039719e383d1352f603fd33dd0cfba0bbf))
+
+
+### Bug Fixes
+
+* **lockfile:** bound lock-file and workspace-config size before parsing ([032190d](https://github.com/pedrosousa13/lnpm/commit/032190d8f76bf1e240f007305752adec81103faa))
+* **pack:** always pack the manifest, whatever the ignore rules say ([b47a0c3](https://github.com/pedrosousa13/lnpm/commit/b47a0c3d6c8fd6d6fc2bd3f31f63b62ff73a1434))
+
 ## [2.1.0](https://github.com/pedrosousa13/lnpm/compare/v2.0.0...v2.1.0) (2026-08-23)
 
 
