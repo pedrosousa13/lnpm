@@ -5,9 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
+	"github.com/pedrosousa13/lnpm/internal/config"
+	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
+	bolt "go.etcd.io/bbolt"
 )
 
 // TestAddVariants table-drives the core "publish then add" behaviors across the
@@ -418,4 +422,78 @@ func TestAddMultipleLeavesSucceedingPackageIntactWhenSiblingFails(t *testing.T) 
 		}
 	})
 	env.AssertSymlinkMissing(projectDir, "missing-pkg")
+}
+
+// damageLinkIndex writes bytes straight into a link index bucket of the store's
+// bbolt file, standing in for the damage a torn write leaves behind.
+//
+// lnpm's handle is closed first and left closed, because bbolt holds an
+// exclusive file lock: the command under test reopens the database itself, which
+// is also what makes the damage look exactly like damage it found on open.
+func damageLinkIndex(t *testing.T, bucket string, id int64, value []byte) {
+	t.Helper()
+
+	storePath, err := config.GetStorePath()
+	if err != nil {
+		t.Fatalf("resolve store path: %v", err)
+	}
+	db.ResetForTesting()
+
+	handle, err := bolt.Open(filepath.Join(storePath, "lnpm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("open the database directly: %v", err)
+	}
+	key := make([]byte, 8)
+	for i := 7; i >= 0; i-- {
+		key[i] = byte(id)
+		id >>= 8
+	}
+	err = handle.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(bucket)).Put(key, value)
+	})
+	if closeErr := handle.Close(); closeErr != nil {
+		t.Fatalf("close the database: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("damage %s: %v", bucket, err)
+	}
+}
+
+// TestAddMultipleFailsWhenALinkCannotBeRecorded pins the write half of #329 on
+// the multi-package path - the one that used to warn and carry on.
+//
+// The link row is what tells gc a project consumes a package. Without it the
+// store entry reads as consumed by nobody, and gc deletes what the project is
+// importing. That is the same fail-open shape #329 removed from gc's own read,
+// arriving instead through the command that should have written the row, so add
+// must not report success over it.
+//
+// The single-package path already returned this error; only the loop swallowed
+// it, printing "Added" per package and exiting zero. So the test drives
+// RunAddMultiple with two specs, which is what routes through the loop at all.
+func TestAddMultipleFailsWhenALinkCannotBeRecorded(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("linked-pkg")
+	env.simplePkg("second-pkg")
+	projectDir := env.newProject("test-project")
+
+	// Register the project so there is a links_by_project entry to damage, then
+	// damage it. Nothing in lnpm produces this state; a torn write does.
+	if err := env.Database.InsertProject(&db.Project{Path: projectDir, Name: "test-project"}); err != nil {
+		t.Fatalf("Failed to register the project: %v", err)
+	}
+	proj, err := env.Database.GetProjectByPath(projectDir)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v", err)
+	}
+	damageLinkIndex(t, "links_by_project", proj.ID, []byte("[ not ids"))
+
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Failed to enter the project: %v", err)
+	}
+	err = cli.RunAddMultiple([]string{"linked-pkg", "second-pkg"}, false, false, false, false)
+	if err == nil {
+		t.Fatal("RunAddMultiple() reported success for packages whose links it could not record; gc reads those store entries as consumed by nobody and deletes them")
+	}
 }

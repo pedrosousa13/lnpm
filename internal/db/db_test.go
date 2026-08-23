@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -471,11 +472,16 @@ func writeLinkRow(t *testing.T, d *DB, link *Link) {
 		for _, index := range []struct {
 			bucket *bolt.Bucket
 			key    []byte
+			owner  string
 		}{
-			{tx.Bucket(bucketLinksByPackage), itob(link.PackageID)},
-			{tx.Bucket(bucketLinksByProject), itob(link.ProjectID)},
+			{tx.Bucket(bucketLinksByPackage), itob(link.PackageID), "package"},
+			{tx.Bucket(bucketLinksByProject), itob(link.ProjectID), "project"},
 		} {
-			if err := putIndexIDs(index.bucket, index.key, append(indexIDs(index.bucket, index.key), id)); err != nil {
+			ids, err := indexIDs(index.bucket, index.key, index.owner)
+			if err != nil {
+				return err
+			}
+			if err := putIndexIDs(index.bucket, index.key, append(ids, id)); err != nil {
 				return err
 			}
 		}
@@ -666,5 +672,173 @@ func TestGetPackageVersions_SurfacesARecordThatWillNotUnmarshal(t *testing.T) {
 
 	if _, err := database.GetPackageVersions("damaged-pkg"); err == nil {
 		t.Error("GetPackageVersions() skipped a record it could not read; a version missing from a rollback listing reads as one gc collected")
+	}
+}
+
+// --- Unreadable link data ----------------------------------------------------
+
+// seedLink records a package, a project and the link between them, and returns
+// both so a test can damage exactly one row or index entry by ID.
+func seedLink(t *testing.T, d *DB) (*Package, *Link) {
+	t.Helper()
+
+	pkg := insertVersion(t, d, "linked-pkg", "h1")
+
+	projectPath := filepath.FromSlash("/projects/consumer")
+	if err := d.InsertProject(&Project{Path: projectPath, Name: "consumer"}); err != nil {
+		t.Fatalf("Failed to insert the project: %v", err)
+	}
+	proj, err := d.GetProjectByPath(projectPath)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v", err)
+	}
+
+	link := &Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}
+	if err := d.InsertLink(link); err != nil {
+		t.Fatalf("Failed to insert the link: %v", err)
+	}
+	return pkg, link
+}
+
+// putRaw writes bytes straight into a bucket, standing in for the damage a torn
+// write leaves behind.
+func putRaw(t *testing.T, d *DB, bucket, key, value []byte) {
+	t.Helper()
+
+	err := d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucket).Put(key, value)
+	})
+	if err != nil {
+		t.Fatalf("Failed to write into %s: %v", bucket, err)
+	}
+}
+
+// TestGetLinksForPackage_ErrorsOnALinkRowThatWillNotUnmarshal pins the half of
+// #329 the sweep reproduced first.
+//
+// gc treats this lookup's answer as the list of projects that would break if the
+// version went away, so a row silently dropped is a consumer gc cannot see and a
+// store entry gc deletes while a project is still using it. Per ADR-0001 the
+// direction decides: this read widens a destructive set, so it fails loudly.
+func TestGetLinksForPackage_ErrorsOnALinkRowThatWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	putRaw(t, database, bucketLinks, itob(link.ID), []byte("{ not a link"))
+
+	links, err := database.GetLinksForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetLinksForPackage() returned %d link(s) and no error for a row it could not read; gc reads that as a version nothing links", len(links))
+	}
+	if links != nil {
+		t.Errorf("GetLinksForPackage() returned %d link(s) alongside its error, which a caller could mistake for the whole list", len(links))
+	}
+}
+
+// TestGetLinksForPackage_ErrorsOnAnIndexEntryThatWillNotUnmarshal pins the other
+// half the sweep reproduced: the index entry, not the row, is the damaged one.
+//
+// It is the worse of the two, because one unreadable entry hides every link the
+// package has rather than one of them.
+func TestGetLinksForPackage_ErrorsOnAnIndexEntryThatWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, _ := seedLink(t, database)
+
+	putRaw(t, database, bucketLinksByPackage, itob(pkg.ID), []byte("[ not ids"))
+
+	links, err := database.GetLinksForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetLinksForPackage() returned %d link(s) and no error for an index entry it could not read", len(links))
+	}
+	if links != nil {
+		t.Errorf("GetLinksForPackage() returned %d link(s) alongside its error", len(links))
+	}
+}
+
+// TestGetLinksForPackage_ErrorsOnAnIndexEntryNamingNoLinkRow pins the third
+// shape, which the report did not name.
+//
+// Every path that deletes a link row scrubs the ID from both indexes inside the
+// same bolt transaction - moveLinksTx, DeletePackage, deleteLinkRowTx and
+// DeleteLink all do - and bolt commits a transaction whole or not at all. So no
+// flow lnpm has leaves an index naming a row that is gone: reaching this state
+// means the file was damaged, exactly as an unparseable row does. Tolerating it
+// here would undercount the same consumers the two cases above hide.
+func TestGetLinksForPackage_ErrorsOnAnIndexEntryNamingNoLinkRow(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLinks).Delete(itob(link.ID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to remove the link row: %v", err)
+	}
+
+	links, err := database.GetLinksForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetLinksForPackage() returned %d link(s) and no error for an index entry naming no row", len(links))
+	}
+	if links != nil {
+		t.Errorf("GetLinksForPackage() returned %d link(s) alongside its error", len(links))
+	}
+}
+
+// TestInsertLink_DoesNotOverwriteAnIndexEntryItCannotRead pins the write half of
+// #329, which is the half that destroys rather than hides.
+//
+// The index append used to decode the existing entry into a slice, ignore the
+// failure, and write the slice back holding the one new ID. An entry that would
+// not parse was therefore replaced by a one-element array, discarding every link
+// ID it named - and those IDs are the consumers gc reads to decide what to
+// delete. Losing them on the write path costs exactly what losing them on the
+// read path costs, so ADR-0001 decides it the same way: refuse the insert and
+// leave the damaged entry for lnpm doctor to report.
+func TestInsertLink_DoesNotOverwriteAnIndexEntryItCannotRead(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, _ := seedLink(t, database)
+
+	damaged := []byte("[ not ids")
+	putRaw(t, database, bucketLinksByPackage, itob(pkg.ID), damaged)
+
+	// A second project linking the same package is what reaches the append.
+	secondProject := t.TempDir()
+	if err := database.InsertProject(&Project{Path: secondProject, Name: "second"}); err != nil {
+		t.Fatalf("Failed to seed a second project: %v", err)
+	}
+	proj, err := database.GetProjectByPath(secondProject)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the second project back: %v", err)
+	}
+
+	if err := database.InsertLink(&Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err == nil {
+		t.Error("InsertLink() accepted a link for a package whose index entry it could not read")
+	}
+
+	var after []byte
+	if err := database.db.View(func(tx *bolt.Tx) error {
+		after = append(after, tx.Bucket(bucketLinksByPackage).Get(itob(pkg.ID))...)
+		return nil
+	}); err != nil {
+		t.Fatalf("Failed to read the index entry back: %v", err)
+	}
+	if !bytes.Equal(after, damaged) {
+		t.Errorf("InsertLink() rewrote an index entry it could not read: %q became %q; every link ID it named is gone", damaged, after)
+	}
+}
+
+// TestGetLinksForPackage_ReturnsNothingForAPackageNothingLinks pins the case the
+// three above have to stay distinguishable from: a package with no consumers is
+// not damage, and gc must go on collecting it.
+func TestGetLinksForPackage_ReturnsNothingForAPackageNothingLinks(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg := insertVersion(t, database, "unlinked-pkg", "h1")
+
+	links, err := database.GetLinksForPackage(pkg.ID)
+	if err != nil {
+		t.Fatalf("GetLinksForPackage() error = %v for a package nothing links", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("GetLinksForPackage() returned %d link(s) for a package nothing links", len(links))
 	}
 }

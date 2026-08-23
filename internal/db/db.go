@@ -542,12 +542,23 @@ func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 	byPackage := tx.Bucket(bucketLinksByPackage)
 	byProject := tx.Bucket(bucketLinksByProject)
 
-	fromIDs := indexIDs(byPackage, itob(fromID))
+	// Both index entries are read before anything moves, and an unreadable one
+	// abandons the tag move rather than being treated as empty. Treating the
+	// source as empty would leave every consumer on the version the tag moved
+	// off; treating the destination as empty would rewrite its entry from the
+	// links carried across alone, dropping the ones already there.
+	fromIDs, err := indexIDs(byPackage, itob(fromID), "package")
+	if err != nil {
+		return err
+	}
 	if len(fromIDs) == 0 {
 		return nil
 	}
 
-	toIDs := indexIDs(byPackage, itob(toID))
+	toIDs, err := indexIDs(byPackage, itob(toID), "package")
+	if err != nil {
+		return err
+	}
 	onDestination := make(map[int64]bool, len(toIDs))
 	for _, id := range toIDs {
 		if data := links.Get(itob(id)); data != nil {
@@ -598,17 +609,32 @@ func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 	return putIndexIDs(byPackage, itob(toID), toIDs)
 }
 
-// indexIDs reads a link index entry, which holds a JSON array of link IDs.
-func indexIDs(b *bolt.Bucket, key []byte) []int64 {
+// indexIDs reads a link index entry, which holds a JSON array of link IDs. A
+// key that is not there is not an error: it is a package or project nothing
+// links, which is the ordinary state of most of them.
+//
+// An entry that will not parse is an error, and the distinction is the whole of
+// #329. Returning no IDs for it made "this package has no consumers" and "this
+// package's consumers could not be read" the same answer, and gc acts on the
+// first by deleting the version. Per ADR-0001 the direction is what decides: a
+// swallowed error that widens what a destructive pass removes is a bug, so this
+// one is reported rather than absorbed. The opposite direction is left alone -
+// ListPackages still skips a package record it cannot parse, which leaks a store
+// entry instead of deleting one.
+//
+// owner names what the key counts as - "package" or "project" - because the same
+// number means either depending on which index is being read, and an error that
+// says only "key 3" tells the reader nothing about where to look.
+func indexIDs(b *bolt.Bucket, key []byte, owner string) ([]int64, error) {
 	data := b.Get(key)
 	if data == nil {
-		return nil
+		return nil, nil
 	}
 	var ids []int64
-	if json.Unmarshal(data, &ids) != nil {
-		return nil
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return nil, fmt.Errorf("the link index for %s %d will not parse: %w; run lnpm doctor to see what else the store disagrees about", owner, btoi(key), err)
 	}
-	return ids
+	return ids, nil
 }
 
 // putIndexIDs writes a link index entry, deleting the key when no IDs are left
@@ -1131,8 +1157,28 @@ func (db *DB) InsertLink(link *Link) error {
 
 		// indexIDs decodes into a slice of its own, so deleting rows below does
 		// not disturb this walk.
+		//
+		// An unreadable index entry refuses the insert instead of walking no
+		// rows. This walk is what keeps one row per project and package name:
+		// skipping it would leave the row this link replaces in place, and the
+		// project would then hold two answers to which version it consumes -
+		// the state the doc comment above says everything downstream assumes
+		// away.
+		existingIDs, err := indexIDs(byProject, itob(link.ProjectID), "project")
+		if err != nil {
+			return err
+		}
+		// The two skips below are deliberate, and they are not the tolerance
+		// #329 removed. ADR-0001's test is direction: this walk's only
+		// destructive act is deleting the row a link supersedes, so skipping a
+		// row it cannot read declines to delete rather than deleting on a
+		// guess. Erroring instead would lock the project out of add entirely -
+		// one damaged row would refuse every later package, unrelated ones
+		// included, and nothing repairs links_by_project. The damage is still
+		// not ignored: gc reads the same rows through GetLinksForPackage, which
+		// now refuses them, so nothing is deleted on their strength either way.
 		var updated bool
-		for _, id := range indexIDs(byProject, itob(link.ProjectID)) {
+		for _, id := range existingIDs {
 			data := links.Get(itob(id))
 			if data == nil {
 				continue // Index entry naming no link row
@@ -1190,33 +1236,74 @@ func (db *DB) InsertLink(link *Link) error {
 			return err
 		}
 
-		// Update indexes (store as JSON arrays of IDs)
+		// Update indexes (store as JSON arrays of IDs).
+		//
+		// Both entries are read through indexIDs, so an entry that will not
+		// parse fails the insert rather than being appended to. Decoding into a
+		// nil slice and writing it back replaced the entry with a one-element
+		// array, discarding every link ID it named - and those IDs are the
+		// consumers gc reads to decide what to delete. Losing them there is the
+		// same widening of a destructive set as losing them on the read path,
+		// which is what #329 is about, so ADR-0001 decides it the same way.
 		pkgKey := itob(link.PackageID)
 		projKey := itob(link.ProjectID)
 
 		// Add to package index
-		var pkgLinks []int64
-		if existing := byPackage.Get(pkgKey); existing != nil {
-			_ = json.Unmarshal(existing, &pkgLinks)
+		pkgLinks, err := indexIDs(byPackage, pkgKey, "package")
+		if err != nil {
+			return err
 		}
 		pkgLinks = append(pkgLinks, id)
-		pkgLinksData, _ := json.Marshal(pkgLinks)
-		_ = byPackage.Put(pkgKey, pkgLinksData)
+		pkgLinksData, err := json.Marshal(pkgLinks)
+		if err != nil {
+			return err
+		}
+		if err := byPackage.Put(pkgKey, pkgLinksData); err != nil {
+			return err
+		}
 
 		// Add to project index
-		var projLinks []int64
-		if existing := byProject.Get(projKey); existing != nil {
-			_ = json.Unmarshal(existing, &projLinks)
+		projLinks, err := indexIDs(byProject, projKey, "project")
+		if err != nil {
+			return err
 		}
 		projLinks = append(projLinks, id)
-		projLinksData, _ := json.Marshal(projLinks)
-		_ = byProject.Put(projKey, projLinksData)
-
-		return nil
+		projLinksData, err := json.Marshal(projLinks)
+		if err != nil {
+			return err
+		}
+		return byProject.Put(projKey, projLinksData)
 	})
 }
 
-// GetLinksForPackage returns all links for a package
+// GetLinksForPackage returns every link a package has, and reports rather than
+// hides any it could not read.
+//
+// This is gc's reachability check, so the three ways the answer can be short - an
+// unreadable index entry, an index entry naming a row that is not there, and a
+// row that will not parse - all have to be errors. Each of them otherwise leaves
+// a consumer out of a list gc reads as "nothing is using this version", and gc
+// then deletes the store entry that project is linked to and reports success.
+// That is the whole of #329, and ADR-0001 is the rule it is decided by: a
+// swallowed error that widens a destructive set is a bug.
+//
+// The index entry naming no row is included even though no flow lnpm has
+// produces one here. The claim needed is only about links_by_package, the index
+// this reads: DeletePackage deletes that key outright, moveLinksTx rewrites it
+// from the IDs that stay, and deleteLinkRowTx and DeleteLink scrub the ID from
+// it - each inside one bolt transaction, which commits whole or not at all. So a
+// dangling ID in this index is unreachable except through damage to the file,
+// and tolerating it would be tolerating the class of damage the other two cases
+// refuse.
+//
+// Deliberately no wider a claim than that. DeletePackage does not hold the same
+// line on links_by_project: an entry there it cannot parse leaves the rows
+// undeleted and the index unscrubbed while the links_by_package key goes anyway.
+// That, and the readers still swallowing this damage, are #355.
+//
+// Returning the links read so far alongside the error was rejected: a caller
+// that checks the error is no better off for them, and one that does not gets a
+// short list that looks complete, which is the bug.
 func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1226,29 +1313,29 @@ func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
 		links := tx.Bucket(bucketLinks)
 		byPackage := tx.Bucket(bucketLinksByPackage)
 
-		data := byPackage.Get(itob(packageID))
-		if data == nil {
-			return nil
-		}
-
-		var linkIDs []int64
-		if err := json.Unmarshal(data, &linkIDs); err != nil {
-			return nil
+		linkIDs, err := indexIDs(byPackage, itob(packageID), "package")
+		if err != nil {
+			return err
 		}
 
 		for _, id := range linkIDs {
 			linkData := links.Get(itob(id))
-			if linkData != nil {
-				var link Link
-				if json.Unmarshal(linkData, &link) == nil {
-					result = append(result, &link)
-				}
+			if linkData == nil {
+				return fmt.Errorf("the link index for package %d names link %d, which the database does not hold; run lnpm doctor to see what else the store disagrees about", packageID, id)
 			}
+			var link Link
+			if err := json.Unmarshal(linkData, &link); err != nil {
+				return fmt.Errorf("link %d, which package %d is linked by, will not parse: %w; run lnpm doctor to see what else the store disagrees about", id, packageID, err)
+			}
+			result = append(result, &link)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return result, err
+	return result, nil
 }
 
 // GetLinksForProject returns all links for a project

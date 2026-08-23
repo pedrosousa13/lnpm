@@ -188,8 +188,15 @@ func RunPull(packageNames []string) error {
 				LinkType:  l.LinkType,
 				Tag:       l.Tag,
 			}
+			// Reported as a failed pull, not warned past. Leaving the old row in
+			// place is not a smaller version of the same state: it names the
+			// build this project no longer has, so gc keeps that one as linked
+			// and reads the build now on disk as consumed by nobody - and
+			// deletes it. The files were refreshed above, which is what makes
+			// the stale row dangerous rather than merely untidy.
 			if err := database.InsertLink(repointed); err != nil {
 				fmt.Printf("  %s Failed to record the link for %s: %v\n", iconWarn(), name, err)
+				failed = append(failed, fmt.Errorf("%s: failed to record the link: %w", name, err))
 			}
 		}
 	}
