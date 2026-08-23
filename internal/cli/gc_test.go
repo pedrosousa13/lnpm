@@ -233,7 +233,8 @@ func assertReclaimReported(t *testing.T, out, path, wantNote string) {
 // directory, which a one-level sweep would miss), and the retired directory an
 // interrupted swap leaves holding a complete copy of the previous package.
 //
-// It also seeds a package whose name begins with a dot. ListLinked hides every
+// It also seeds a package whose name begins with a dot — the shape a project
+// linked before #325 rejected such names can still hold. ListLinked hides every
 // dot-prefixed entry, so a sweep written against that filter rather than against
 // the temp-name convention would delete a real package here.
 func TestRunGCReclaimsOrphanedTempDirs(t *testing.T) {

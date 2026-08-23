@@ -762,9 +762,10 @@ func (l *Linker) ListLinked() ([]string, error) {
 	for _, entry := range entries {
 		// Skip dot-prefixed entries: they are in-progress or crash-orphaned
 		// relink temp directories, not linked packages. This also skips a
-		// package whose name starts with a dot, which is safe in practice: npm
-		// forbids such names, so one can never have been linked here
-		// (ValidatePackageName itself only rejects "." and "..").
+		// package whose name starts with a dot. Since #325 ValidatePackageName
+		// rejects a leading dot on either segment, so nothing linked after that
+		// change can land here — but a .lnpm populated before it is not
+		// revalidated, and such an entry stays hidden from this listing.
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}

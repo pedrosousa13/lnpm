@@ -125,12 +125,15 @@ func FindTempEntries(projectPath string) (entries []TempEntry, unreadable int) {
 // isTempEntryName reports whether name is one newTempDir or newTempLink
 // produced, and whether it is the retired form the swap derives from it.
 //
-// The match is deliberately narrow. ListLinked hides every dot-prefixed entry,
-// but a package name may legitimately begin with a dot, so "dot-prefixed" is not
-// the same thing as "ours" — reclaiming a user's dot-named package would be a
-// far worse bug than the leak this sweep exists to fix. Only the exact shape the
-// constructors produce is matched: the prefix, then the lowercase hex of a
-// uint64, optionally followed by the retired suffix.
+// The match is deliberately narrow, and stays narrow. ListLinked hides every
+// dot-prefixed entry, but "dot-prefixed" is still not the same thing as "ours".
+// Since #325 ValidatePackageName rejects a leading dot on either segment, so no
+// package linked after that change can own one of these names — but nothing
+// revalidates a .lnpm populated before it, and nothing stops a user putting
+// something else dot-named in there either. Reclaiming a directory that is not
+// ours would be a far worse bug than the leak this sweep exists to fix. Only the
+// exact shape the constructors produce is matched: the prefix, then the
+// lowercase hex of a uint64, optionally followed by the retired suffix.
 func isTempEntryName(name string) (retired, ok bool) {
 	rest, retired := strings.CutSuffix(name, retiredSuffix)
 	rest, hasPrefix := strings.CutPrefix(rest, tempPrefix)
