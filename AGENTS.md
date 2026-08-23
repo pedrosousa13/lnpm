@@ -13,3 +13,9 @@ Canonical label names, as repo labels on pedrosousa13/lnpm — plus `in-progress
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Verification discipline
+
+What counts as evidence here, and the failures each rule was earned by — comments are
+reviewable assertions, a test must go red for the reason you think, and some claims only CI can
+settle. See `docs/agents/verification-discipline.md`.
