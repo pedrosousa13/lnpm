@@ -80,7 +80,7 @@ lnpm push
 
 | Command | Description |
 |---------|-------------|
-| `lnpm publish` | Publish package to local store |
+| `lnpm publish` | Publish package to local store (`--dry-run` lists what would be packed and writes nothing) |
 | `lnpm add <pkg...>` | Add package(s) from store to project |
 | `lnpm remove <pkg>` | Remove linked package |
 | `lnpm pull [pkg...]` | Sync linked packages with the store (all of them when no name is given) |

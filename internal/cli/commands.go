@@ -28,14 +28,23 @@ Examples:
   lnpm publish            # Publish current package
   lnpm publish --push     # Publish and update all linked projects
   lnpm publish --all      # Publish all packages in monorepo
-  lnpm publish --tag beta # Publish to the beta channel, leaving latest alone`,
+  lnpm publish --tag beta # Publish to the beta channel, leaving latest alone
+  lnpm publish --dry-run  # List exactly what would be packed, write nothing`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		push, _ := cmd.Flags().GetBool("push")
 		all, _ := cmd.Flags().GetBool("all")
 		skipHooks, _ := cmd.Flags().GetBool("skip-hooks")
 		skipValidation, _ := cmd.Flags().GetBool("skip-validation")
 		tag, _ := cmd.Flags().GetString("tag")
-		return RunPublishTagged(push, all, skipHooks, skipValidation, tag)
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		return RunPublishWith(PublishOptions{
+			Push:           push,
+			All:            all,
+			SkipHooks:      skipHooks,
+			SkipValidation: skipValidation,
+			DryRun:         dryRun,
+			Tag:            tag,
+		})
 	},
 }
 
@@ -407,6 +416,7 @@ func init() {
 	publishCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts (prepare, prepublishOnly, prepack)")
 	publishCmd.Flags().Bool("skip-validation", false, "Skip package validation before publish")
 	publishCmd.Flags().String("tag", db.DefaultTag, "Channel to publish to; anything but "+db.DefaultTag+" leaves "+db.DefaultTag+" where it is")
+	publishCmd.Flags().Bool("dry-run", false, "Show what would be packed and write nothing (pre_publish and prepare scripts still run, since they are usually what builds those files)")
 
 	// retreat flags
 	retreatCmd.Flags().Bool("force", false, "Actually remove everything (required)")
