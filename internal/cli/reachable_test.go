@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/fsutil"
@@ -73,7 +74,20 @@ func TestClassifyProjectDirReportsTheDeviceEvenWhenTheRecordDisagrees(t *testing
 // The denial goes on the parent, not the project directory: a directory with
 // mode 0000 still stats fine, because stat needs only search permission on the
 // path leading to it.
+//
+// There is no portable fixture for this. Windows has no mode bits: os.Chmod maps
+// a mode to the read-only attribute, which does not deny traversal, so the
+// denial silently does not take and the guard below catches it - which is how
+// this surfaced on CI rather than as a confusing failure. Standing a regular
+// file in for a parent directory was considered as a portable way to force a
+// non-ENOENT error (ENOTDIR on Unix), and rejected: whether Windows reports that
+// as not-exist could not be established from here, and guessing it would put the
+// same failure back on a later CI run. So the property is asserted on Unix,
+// where it is real, and this says plainly that Windows does not test it.
 func TestClassifyProjectDirTreatsANonExistErrorAsLive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - a directory mode of 0000 maps to the read-only attribute, which still permits traversal, so no permission error can be produced")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root ignores the permission bits this test relies on")
 	}

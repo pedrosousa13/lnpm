@@ -21,7 +21,7 @@ import (
 func TestInsertProjectRecordsTheDeviceOfThePath(t *testing.T) {
 	database := openStore(t, t.TempDir())
 
-	project := t.TempDir()
+	project := normalizePath(t.TempDir())
 	proj := &Project{Path: project, Name: "consumer"}
 	if err := database.InsertProject(proj); err != nil {
 		t.Fatalf("InsertProject: %v", err)
@@ -57,7 +57,7 @@ func TestInsertProjectRecordsTheDeviceOfThePath(t *testing.T) {
 func TestInsertProjectRefreshesTheDeviceOnUpdate(t *testing.T) {
 	database := openStore(t, t.TempDir())
 
-	project := t.TempDir()
+	project := normalizePath(t.TempDir())
 	proj := &Project{Path: project, Name: "consumer"}
 	if err := database.InsertProject(proj); err != nil {
 		t.Fatalf("InsertProject: %v", err)
@@ -79,6 +79,9 @@ func TestInsertProjectRefreshesTheDeviceOnUpdate(t *testing.T) {
 	if err := database.InsertProject(again); err != nil {
 		t.Fatalf("InsertProject (update): %v", err)
 	}
+	if again.ID != proj.ID {
+		t.Fatalf("the second insert created project %d rather than updating %d: this test never reached the update branch", again.ID, proj.ID)
+	}
 
 	stored, err := database.GetProjectByPath(project)
 	if err != nil || stored == nil {
@@ -97,6 +100,21 @@ func TestInsertProjectRefreshesTheDeviceOnUpdate(t *testing.T) {
 // overwriting a good recorded value with that nothing would throw away the only
 // evidence gc has - turning a protected project back into a collectable one at
 // exactly the moment it became unreachable.
+//
+// The path is normalised before it is used, through the same function
+// InsertProject applies, and that is what makes the test exercise the branch it
+// names. normalizePath resolves symlinks only while the path exists; once the
+// directory is removed it falls back to Clean. On macOS a temp path arrives as
+// /var/... and is stored as /private/var/..., and on Windows it arrives as an
+// 8.3 short name and is stored expanded - so on both, a second insert of the
+// raw spelling after the removal hashes to a different key, misses the by-path
+// index, and takes the INSERT branch. It then writes a second record with no
+// device and the test fails while the guard it is aiming at was never reached.
+// Confirmed on Linux by standing a symlink in for that divergence: the second
+// insert came back with a new ID and Device 0. Handing in an already-normalised
+// path makes Clean a no-op, so both inserts agree and the update branch runs.
+//
+// The ID assertion below is what stops that regressing into a silent pass.
 func TestInsertProjectKeepsARecordedDeviceWhenThePathIsGone(t *testing.T) {
 	database := openStore(t, t.TempDir())
 
@@ -105,6 +123,7 @@ func TestInsertProjectKeepsARecordedDeviceWhenThePathIsGone(t *testing.T) {
 	if err := os.MkdirAll(project, 0755); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	project = normalizePath(project)
 	proj := &Project{Path: project, Name: "consumer"}
 	if err := database.InsertProject(proj); err != nil {
 		t.Fatalf("InsertProject: %v", err)
@@ -120,6 +139,9 @@ func TestInsertProjectKeepsARecordedDeviceWhenThePathIsGone(t *testing.T) {
 	again := &Project{Path: project, Name: "consumer"}
 	if err := database.InsertProject(again); err != nil {
 		t.Fatalf("InsertProject (update over a missing path): %v", err)
+	}
+	if again.ID != proj.ID {
+		t.Fatalf("the second insert created project %d rather than updating %d: the by-path lookup missed, so this test never reached the device guard it exists to check", again.ID, proj.ID)
 	}
 
 	stored, err := database.GetProjectByPath(project)
@@ -140,7 +162,7 @@ func TestInsertProjectKeepsARecordedDeviceWhenThePathIsGone(t *testing.T) {
 func TestProjectRecordWithNoDeviceStillReads(t *testing.T) {
 	database := openStore(t, t.TempDir())
 
-	project := t.TempDir()
+	project := normalizePath(t.TempDir())
 	proj := &Project{Path: project, Name: "consumer"}
 	if err := database.InsertProject(proj); err != nil {
 		t.Fatalf("InsertProject: %v", err)

@@ -40,10 +40,7 @@ func TestGCKeepsAPackageAcrossARealUnmount(t *testing.T) {
 
 	storeRoot, database := newGCStore(t)
 
-	mountPoint := filepath.Join(t.TempDir(), "external")
-	if err := os.MkdirAll(mountPoint, 0755); err != nil {
-		t.Fatalf("create the mount point: %v", err)
-	}
+	mountPoint := resolvedDir(t, filepath.Join(t.TempDir(), "external"))
 	mustRun(t, "mount", "-t", "tmpfs", "tmpfs", mountPoint)
 	mounted := true
 	t.Cleanup(func() {
@@ -52,10 +49,7 @@ func TestGCKeepsAPackageAcrossARealUnmount(t *testing.T) {
 		}
 	})
 
-	project := filepath.Join(mountPoint, "myproject")
-	if err := os.MkdirAll(project, 0755); err != nil {
-		t.Fatalf("create the project on the mounted filesystem: %v", err)
-	}
+	project := resolvedDir(t, filepath.Join(mountPoint, "myproject"))
 	proj, pkg := seedProjectAndPackage(t, database, storeRoot, project, "offline-pkg")
 
 	// Confirm the mount really is a separate filesystem, so the unmount below

@@ -27,12 +27,25 @@ func DeviceID(info os.FileInfo) uint64 {
 // DeviceIDOfPath returns the serial number of the volume the path is on, or 0
 // if that cannot be established.
 //
-// EVERYTHING BELOW ABOUT WINDOWS BEHAVIOUR WAS READ, NOT RUN. It was taken from
-// the golang.org/x/sys/windows source and the Win32 documentation; this repo's
-// development happens on Linux and no claim here has been executed locally. CI
-// is the first place any of it is tested, and TestDeviceIDOfPathIsNonZeroAndShared-
-// WithinOneFilesystem is what tests it. Treat the reasoning as argued rather
-// than as established, per docs/agents/verification-discipline.md.
+// PROVENANCE. The design below was read from the golang.org/x/sys/windows source
+// and the Win32 documentation, not run: this repo's development happens on Linux.
+// CI has since executed it, which upgrades part of it from argued to established.
+//
+//   - RUN, on the Windows CI runner for PR #383: TestDeviceIDOfPath* assert that
+//     this returns a non-zero volume serial for an existing file and for an
+//     existing directory, the same value for two paths on one volume, and zero
+//     for a path that does not exist. That run reported failures in internal/cli
+//     and internal/db and none in internal/fsutil, so those three passed. The
+//     directory case passing is what establishes the CreateFile flags: without
+//     FILE_FLAG_BACKUP_SEMANTICS it would have returned zero and gone red.
+//     (Established from which tests CI reported failing, not from reading the
+//     runner's log line by line.)
+//   - STILL READ, NOT RUN: that a serial survives unplug and replug of the same
+//     volume, and that a reformat reassigns it. CI mounts nothing, so no test
+//     here touches either. Treat those two as argued.
+//
+// Per docs/agents/verification-discipline.md, which half is which is the point
+// of stating it.
 //
 // The Windows analogue of a Unix st_dev is dwVolumeSerialNumber, which arrives
 // only via GetFileInformationByHandle - so unlike the Unix side this has to open

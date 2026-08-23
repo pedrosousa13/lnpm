@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -41,6 +42,46 @@ func seedProjectAndPackage(t *testing.T, database *db.DB, storeRoot, projectPath
 	return proj, pkg
 }
 
+// resolvedTempDir returns a fresh temp directory in the spelling lnpm's database
+// will record it under.
+//
+// The two are not the same string on two of the three platforms this has to pass
+// on. InsertProject stores db.normalizePath's result, which is EvalSymlinks: on
+// macOS a temp path arrives as /var/folders/... and is stored as
+// /private/var/folders/..., because /var is a symlink; on Windows TEMP is an 8.3
+// short name, so C:\Users\RUNNER~1\... is stored as C:\Users\runneradmin\... .
+// Linux happens not to differ, which is why building fixtures from the raw path
+// looks correct there and fails on the other two.
+//
+// Every assertion here compares against what gc read out of the database or
+// printed, so the fixture has to start from the same spelling. resolvePath is
+// the helper gc_test.go already uses for this; it is reused rather than
+// re-derived so there is one answer to the question in this package.
+//
+// This divergence does not need CI to reproduce, which is worth knowing before
+// spending a run on it. Point TMPDIR at a symlink and the macOS shape appears on
+// Linux:
+//
+//	mkdir -p /tmp/d/real && ln -sfn /tmp/d/real /tmp/d/link
+//	TMPDIR=/tmp/d/link go test ./internal/cli/ ./internal/db/ -count=1
+//
+// Against the fixtures that failed CI that reproduces all nine of them, plus the
+// internal/db one, with the same "the test's idea of the path and gc's have
+// diverged" message.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	return resolvePath(t.TempDir())
+}
+
+// resolvedDir creates dir and returns it in the spelling the database will use.
+func resolvedDir(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("seed %s: %v", dir, err)
+	}
+	return resolvePath(dir)
+}
+
 func packageNames(t *testing.T, database *db.DB) []string {
 	t.Helper()
 	packages, err := database.ListPackages()
@@ -73,11 +114,8 @@ func packageNames(t *testing.T, database *db.DB) []string {
 func seedUnreachableProject(t *testing.T, database *db.DB, storeRoot, pkgName string) (string, *db.Package) {
 	t.Helper()
 
-	mountPoint := filepath.Join(t.TempDir(), "external")
-	project := filepath.Join(mountPoint, "myproject")
-	if err := os.MkdirAll(project, 0755); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
+	project := resolvedDir(t, filepath.Join(t.TempDir(), "external", "myproject"))
+	mountPoint := filepath.Dir(project)
 	proj, pkg := seedProjectAndPackage(t, database, storeRoot, project, pkgName)
 	if proj.Device == 0 {
 		t.Skip("this platform reports no device, so gc has nothing to compare")
@@ -178,11 +216,7 @@ func TestGCReportsSkippedLinksWithoutFixLinks(t *testing.T) {
 func TestGCCollectsWhenTheProjectDirectoryIsGone(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 
-	parent := t.TempDir()
-	project := filepath.Join(parent, "myproject")
-	if err := os.MkdirAll(project, 0755); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
+	project := resolvedDir(t, filepath.Join(t.TempDir(), "myproject"))
 	_, pkg := seedProjectAndPackage(t, database, storeRoot, project, "deleted-pkg")
 	if err := os.RemoveAll(project); err != nil {
 		t.Fatalf("delete project: %v", err)
@@ -217,11 +251,7 @@ func TestGCCollectsWhenTheProjectDirectoryIsGone(t *testing.T) {
 func TestGCCollectsWhenTheProjectHasNoRecordedDevice(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 
-	parent := t.TempDir()
-	project := filepath.Join(parent, "myproject")
-	if err := os.MkdirAll(project, 0755); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
+	project := resolvedDir(t, filepath.Join(t.TempDir(), "myproject"))
 	proj, _ := seedProjectAndPackage(t, database, storeRoot, project, "legacy-pkg")
 	// A record as an older lnpm would have written it.
 	if err := database.SetProjectDevice(proj.ID, 0); err != nil {
@@ -250,17 +280,22 @@ func TestGCCollectsWhenTheProjectHasNoRecordedDevice(t *testing.T) {
 // The denial is on the parent, not the project directory: a directory with mode
 // 0000 still stats fine, because stat needs only search permission on the path
 // leading to it.
+//
+// Skipped on Windows for the reason
+// TestClassifyProjectDirTreatsANonExistErrorAsLive gives: the fixture cannot be
+// built there, because a mode maps to the read-only attribute and does not deny
+// traversal.
 func TestGCTreatsAPermissionErrorAsLive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows - a directory mode of 0000 maps to the read-only attribute, which still permits traversal, so no permission error can be produced")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("root ignores the permission bits this test relies on")
 	}
 	storeRoot, database := newGCStore(t)
 
-	parent := filepath.Join(t.TempDir(), "locked")
-	project := filepath.Join(parent, "myproject")
-	if err := os.MkdirAll(project, 0755); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
+	project := resolvedDir(t, filepath.Join(t.TempDir(), "locked", "myproject"))
+	parent := filepath.Dir(project)
 	seedProjectAndPackage(t, database, storeRoot, project, "guarded-pkg")
 
 	if err := os.Chmod(parent, 0000); err != nil {
@@ -298,7 +333,7 @@ func TestGCTreatsAPermissionErrorAsLive(t *testing.T) {
 func TestGCRestampsTheDeviceOfAProjectItCanStat(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 
-	project := t.TempDir()
+	project := resolvedTempDir(t)
 	proj, _ := seedProjectAndPackage(t, database, storeRoot, project, "live-pkg")
 	real := proj.Device
 	if real == 0 {
@@ -360,7 +395,7 @@ func TestDoctorDoesNotCallAnUnreachableProjectAnOrphanedLink(t *testing.T) {
 func TestGCDryRunDoesNotRestampTheDevice(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 
-	project := t.TempDir()
+	project := resolvedTempDir(t)
 	proj, _ := seedProjectAndPackage(t, database, storeRoot, project, "live-pkg")
 	real := proj.Device
 	if real == 0 {
