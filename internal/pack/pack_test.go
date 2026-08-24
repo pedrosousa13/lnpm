@@ -244,14 +244,22 @@ func TestIsIncluded(t *testing.T) {
 
 // TestIsIncludedPatternForms pins every spelling of a directory entry in the
 // "files" whitelist against one path. npm treats a leading "/" as anchoring to
-// the package root rather than as an absolute path, and a trailing "/" as a
-// directory marker, so the plain, anchored and "/**" spellings of "dist" all
-// ship dist/cli/index.js.
+// the package root rather than as an absolute path, a leading "./" as no part
+// of the name, and a trailing "/" as a directory marker, so the plain, anchored,
+// "./" and "/**" spellings of "dist" all ship dist/cli/index.js.
 //
 // "dist/**/" is the exception that keeps the trailing-slash normalization
 // honest: npm ships nothing from dist for it, because a trailing slash on a
-// glob is not a directory marker. Each expectation here was verified against
-// "npm pack --dry-run" on a fixture package.
+// glob is not a directory marker.
+//
+// The ".//dist", "/./dist" and "././dist" rows are what pin #346's trim to one
+// "./" and to running before the "/" trim, and their expectations are as
+// surprising as they look: npm ships dist for ".//dist" and nothing for either
+// "/./dist" or "././dist". Swap the two trims and ".//dist" and "/./dist" both
+// flip — measured, not predicted.
+//
+// Each expectation here was verified against "npm pack --dry-run" on a fixture
+// package, the "./" rows included — none is inferred from a neighbouring row.
 func TestIsIncludedPatternForms(t *testing.T) {
 	const relPath = "dist/cli/index.js"
 
@@ -263,11 +271,19 @@ func TestIsIncludedPatternForms(t *testing.T) {
 		{"/dist", true},
 		{"dist/", true},
 		{"/dist/", true},
+		{"./dist", true},
+		{"./dist/", true},
+		{".//dist", true},
+		{"/./dist", false},
+		{"././dist", false},
 		{"dist/**", true},
 		{"/dist/**", true},
+		{"./dist/**", true},
 		{"dist/**/", false},
+		{"./dist/**/", false},
 		{"lib", false},
 		{"/lib", false},
+		{"./lib", false},
 	}
 
 	for _, tt := range tests {
@@ -282,13 +298,21 @@ func TestIsIncludedPatternForms(t *testing.T) {
 
 // TestIsIncludedDegeneratePattern pins the "files" entries that are empty once
 // normalized: "/" and "//" lose everything to the leading- and trailing-slash
-// normalization, and "" starts empty. npm 11.16.0 ships the same file set for
-// all three as it does for a package with no "files" field at all, so an empty
-// normalized pattern includes everything.
+// normalization, "./" loses everything to #346's "./" trim, and "" starts empty.
+// npm 11.16.0 ships the same file set for all four as it does for a package with
+// no "files" field at all, so an empty normalized pattern includes everything.
 //
-// isExcluded already skips such a pattern (it neither excludes nor un-excludes
-// anything), and the two functions must agree: neither may filter a path out on
-// the strength of a degenerate entry.
+// The "." row is the trap and is why it sits here rather than being left
+// unwritten. It looks like a fifth degenerate spelling and is not: npm 11.16.0
+// ships only the always-included set for "files": ["."] — README.md and
+// package.json on the fixture it was run against — so "." selects nothing and
+// lnpm matches that. Every expectation in this test was run against
+// "npm pack --dry-run" rather than reasoned from the others.
+//
+// isExcluded already skips a degenerate pattern (it neither excludes nor
+// un-excludes anything), and the two functions must agree: neither may filter a
+// path out on the strength of one. "." is not in that loop because it is not
+// degenerate on either side.
 func TestIsIncludedDegeneratePattern(t *testing.T) {
 	const relPath = "dist/cli/index.js"
 
@@ -300,6 +324,8 @@ func TestIsIncludedDegeneratePattern(t *testing.T) {
 		{"slash", "/", true},
 		{"double slash", "//", true},
 		{"empty", "", true},
+		{"dot slash", "./", true},
+		{"dot", ".", false},
 		{"dist", "dist", true},
 		{"lib", "lib", false},
 	}
@@ -313,13 +339,127 @@ func TestIsIncludedDegeneratePattern(t *testing.T) {
 		})
 	}
 
-	for _, pattern := range []string{"/", "//", ""} {
+	for _, pattern := range []string{"/", "//", "", "./"} {
 		t.Run("agrees with isExcluded "+pattern, func(t *testing.T) {
 			if !isIncluded(relPath, []string{pattern}) {
 				t.Errorf("isIncluded(%q, [%q]) = false, want true", relPath, pattern)
 			}
 			if isExcluded(relPath, []string{pattern}) {
 				t.Errorf("isExcluded(%q, [%q]) = true, want false", relPath, pattern)
+			}
+		})
+	}
+}
+
+// filesMatchNames spells a filesMatch for a failure message. The type has no
+// String method, and "1" versus "2" in a diff says nothing about which of
+// containment and naming was expected.
+var filesMatchNames = map[filesMatch]string{
+	filesMatchNone:     "none",
+	filesMatchContains: "contains",
+	filesMatchDirect:   "direct",
+}
+
+// TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm is #346's core claim, and
+// it asserts the classification rather than the boolean isIncluded reduces it
+// to. Selecting the same paths is not enough: #321 lets a "files" entry override
+// defaultExcludes only for a path it *names*, so a normalization that turned
+// "./dist" into a direct match would select the right files and additionally
+// publish dist/.env. Each row therefore compares matchFilesField for the two
+// spellings, and pins the shared answer so a row cannot pass by both spellings
+// being equally broken.
+//
+// The two filesMatchNone rows are as load-bearing as the rest. A normalization
+// wide enough to make "./dist/**/" select something would have repaired an entry
+// npm ships nothing for, and "lib" is the row that fails if a bug makes every
+// "./"-prefixed entry match everything rather than nothing.
+//
+// How the trim is ordered against the leading-"/" trim is pinned elsewhere:
+// TestIsIncludedPatternForms carries the ".//dist", "/./dist" and "././dist"
+// rows. This table cannot express them: every row here runs one entry and that
+// same entry with "./" prepended, which is not what those three spellings are.
+func TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm(t *testing.T) {
+	tests := []struct {
+		name    string
+		relPath string
+		// entry is the unprefixed spelling. Each row runs it and "./"+entry.
+		entry string
+		want  filesMatch
+	}{
+		{"directory", "dist/index.js", "dist", filesMatchContains},
+		{"nested file", "lib/keep.js", "lib/keep.js", filesMatchDirect},
+		{"subtree glob", "dist/index.js", "dist/**", filesMatchContains},
+		{"bare wildcard segment", "dist/index.js", "dist/*", filesMatchContains},
+		{"glob constraining the segment", "dist/.env", "dist/*.env", filesMatchDirect},
+		{"trailing slash directory", "dist/index.js", "dist/", filesMatchContains},
+		{"trailing slash on a glob", "dist/cli/index.js", "dist/**/", filesMatchNone},
+		{"unrelated directory", "dist/index.js", "lib", filesMatchNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plain := matchFilesField(tt.relPath, []string{tt.entry})
+			if plain != tt.want {
+				t.Fatalf("matchFilesField(%q, [%q]) = %s, want %s",
+					tt.relPath, tt.entry, filesMatchNames[plain], filesMatchNames[tt.want])
+			}
+
+			dotted := matchFilesField(tt.relPath, []string{"./" + tt.entry})
+			if dotted != plain {
+				t.Errorf("matchFilesField(%q, [%q]) = %s, but the unprefixed [%q] = %s; "+
+					"npm reads a leading \"./\" as no part of the name, so the two "+
+					"spellings must classify the same",
+					tt.relPath, "./"+tt.entry, filesMatchNames[dotted], tt.entry, filesMatchNames[plain])
+			}
+		})
+	}
+}
+
+// TestIsExcludedDoesNotResolveLeadingDotSlash pins the half of #346 that stays
+// as it is, and it is the second direction of that issue's revert check: apply
+// matchFilesField's "./" normalization to the ignore matcher as well and this
+// test goes red.
+//
+// The asymmetry is deliberate. git does not resolve a leading "./" in an ignore
+// pattern, while npm does in a "files" entry, so matching each format's own tool
+// means the two matchers differ here. Both halves were run rather than assumed:
+// on git 2.43.0 a .gitignore holding "./dist" leaves dist/index.js untracked and
+// one holding "dist" ignores it, and on npm 11.16.0 "files": ["./dist"] ships
+// the same tarball as ["dist"]. isIncluded's doc comment records the decision.
+//
+// The isIncluded half of each row is asserted too, so the test states the
+// asymmetry rather than only one side of it: the same string reaches the path as
+// a "files" entry and does not as an ignore pattern.
+//
+// This is not the only row that catches the symmetric change. Adding the same
+// trim to applyIgnorePatterns also turns TestIsExcluded's "./.env.*" row red,
+// which is a pre-existing pin nobody wrote for this purpose — measured, both
+// tests fail together.
+func TestIsExcludedDoesNotResolveLeadingDotSlash(t *testing.T) {
+	tests := []struct {
+		name     string
+		relPath  string
+		pattern  string
+		unprefix string
+	}{
+		{"directory", "dist/index.js", "./dist", "dist"},
+		{"root file", "index.js", "./index.js", "index.js"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isExcluded(tt.relPath, []string{tt.unprefix}) {
+				t.Fatalf("isExcluded(%q, [%q]) = false, want true (control)", tt.relPath, tt.unprefix)
+			}
+			if isExcluded(tt.relPath, []string{tt.pattern}) {
+				t.Errorf("isExcluded(%q, [%q]) = true, want false: git does not resolve a "+
+					"leading \"./\" in an ignore pattern, so lnpm must not either",
+					tt.relPath, tt.pattern)
+			}
+			if !isIncluded(tt.relPath, []string{tt.pattern}) {
+				t.Errorf("isIncluded(%q, [%q]) = false, want true: npm does resolve a "+
+					"leading \"./\" in a \"files\" entry",
+					tt.relPath, tt.pattern)
 			}
 		})
 	}
@@ -559,12 +699,62 @@ func TestPackRootAnchoredFilesWhitelist(t *testing.T) {
 	}
 }
 
+// TestPackDotSlashFilesWhitelist is #346's reported fixture, packed through the
+// real path. A manifest declaring "files": ["./dist"] published package.json and
+// nothing else: matchFilesField dropped a leading "/" from every entry and left a
+// leading "./" alone, so the entry matched no path in the tree. npm accepts the
+// spelling and treats it as "dist".
+//
+// No ignore file is written on purpose. The same symptom has a second cause —
+// #318, a "files" entry losing to a .gitignore rule — and an ignore file in the
+// fixture would leave which one is under test ambiguous.
+//
+// The nested "./lib/keep.js" entry is the issue's second acceptance criterion
+// and a different branch: it is a direct name rather than a directory that
+// contains. lib/drop.js sits beside it so the fixture shows the entry selecting
+// one file rather than the directory, and src/index.ts shows an unnamed
+// directory staying out.
+//
+// package.json is in the expected set only because assertPackedSet compares the
+// whole set. It carries no evidence: it ships via the manifest force-include
+// whatever "files" says, and the bug this test is about published exactly
+// [package.json]. Every other path in the set is one the whitelist controls.
+// The fixture has no README.md for the same reason — isDefaultInclude would
+// ship it either way.
+func TestPackDotSlashFilesWhitelist(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "dot-slash-files",
+			"version": "1.0.0",
+			"files": ["./dist", "./lib/keep.js"]
+		}`,
+		"dist/index.js":     "module.exports = {}",
+		"dist/cli/index.js": "#!/usr/bin/env node",
+		"lib/keep.js":       "module.exports = {}",
+		"lib/drop.js":       "module.exports = {}",
+		"src/index.ts":      "export {}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"dist/cli/index.js",
+		"dist/index.js",
+		"lib/keep.js",
+		"package.json",
+	}, "npm reads \"./dist\" as \"dist\" and \"./lib/keep.js\" as \"lib/keep.js\"")
+}
+
 // TestPackDegenerateFilesEntryShipsEverything packs the same fixture once with
 // no "files" field, as a baseline, then once for each degenerate spelling —
-// ["/"], ["//"] and [""] — and requires every file set to equal the baseline.
-// npm 11.16.0 produces the same tarball for all four; lnpm shipped only
-// package.json and README.md for the degenerate spellings, dropping every file
-// the whitelist named. Regression test for #227.
+// ["/"], ["//"], [""] and ["./"] — and requires every file set to equal the
+// baseline. npm 11.16.0 produces the same tarball for all five; lnpm shipped
+// only package.json and README.md for the degenerate spellings, dropping every
+// file the whitelist named. Regression test for #227, and for #346 on the
+// ["./"] spelling, which #227 did not reach.
+//
+// ["."] is deliberately absent. npm ships only the always-included set for it,
+// so it is not a degenerate spelling at all — TestIsIncludedDegeneratePattern
+// carries that row and the measurement behind it.
 //
 // The dist/ and top.js paths are asserted explicitly as well as compared,
 // because package.json and README.md ship via isDefaultInclude whatever "files"
@@ -610,7 +800,7 @@ func TestPackDegenerateFilesEntryShipsEverything(t *testing.T) {
 
 	baseline := writeFixture(t, `{"name": "degenerate-files", "version": "1.0.0"}`)
 
-	for _, entry := range []string{"/", "//", ""} {
+	for _, entry := range []string{"/", "//", "", "./"} {
 		t.Run("files "+entry, func(t *testing.T) {
 			pkgJSON := `{"name": "degenerate-files", "version": "1.0.0", "files": ["` + entry + `"]}`
 			packed := writeFixture(t, pkgJSON)
@@ -3012,22 +3202,25 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 //
 // The four rows are not equal evidence on their packed-set half. Disabling the
 // isHardReserved check in the walk and running this test is what established
-// which is which — not reading the code. Two red, two green:
+// which is which — not reading the code, and re-run after #346 rather than
+// carried over. Three red, one green:
 //
-//   - .npmrc reported `packed: [.npmrc index.js package.json]` and
-//     node_modules reported `packed: [index.js node_modules/dep/index.js
-//     package.json]`. Both are real evidence that the check is what refuses the
-//     entry.
+//   - .npmrc reported `packed: [.npmrc index.js package.json]`, and
+//     node_modules and "./node_modules" both reported `packed: [index.js
+//     node_modules/dep/index.js package.json]`. All three are real evidence
+//     that the check is what refuses the entry.
 //   - .git stayed green. filterGitFiles runs over the finished set in Pack and
 //     drops anything under .git whatever collectFiles decided, so this row
 //     cannot fail for the reason the test is about. It is kept because #321
 //     names .git, and it is the weakest row in the file — do not read it as
 //     covering the hard-reserved check.
-//   - "./node_modules" stayed green too, for a third reason again: matchFilesField
-//     resolves no leading "./", so the entry selects nothing whatever the
-//     built-in lists say. Its value is entirely in the warning half — it is the
-//     row that caught namesHardReserved's comment claiming such an entry is
-//     refused in silence, when the basename fold makes it warn.
+//
+// The "./node_modules" row moved into the first group with #346. Before it,
+// matchFilesField resolved no leading "./", so the entry selected nothing
+// whatever the built-in lists said and the row stayed green for that third
+// reason. Its original value was entirely in the warning half — it is the row
+// that caught namesHardReserved's comment claiming such an entry is refused in
+// silence, when the basename fold makes it warn.
 //
 // The warning half is load-bearing on all four rows, since nothing else in the
 // codebase produces that message.
@@ -3131,20 +3324,21 @@ func TestPackDoesNotWarnForOrdinaryFilesEntries(t *testing.T) {
 // shipped. The narrowing check in collectFiles' isIncluded arm is what stops it.
 //
 // The check has three separable parts and each was reverted on its own. Every
-// figure below was measured against this table as it now stands — sixteen rows —
-// after the bare-wildcard rule landed, not carried over from an earlier draft.
+// figure below was measured against this table as it now stands — eighteen
+// rows — and re-measured when #346 added the two "./" rows, not carried over
+// from an earlier draft.
 //
-// Delete the whole check at the isIncluded arm: eight rows red, eight green.
-// The eight red, with what each packs — "directory entry"
+// Delete the whole check at the isIncluded arm: nine rows red, nine green.
+// The nine red, with what each packs — "directory entry"
 // [dist/.env dist/README.md dist/a.js dist/app.log dist/pkg.tgz package.json];
-// "subtree glob entry" and "bare wildcard segment" both
-// [dist/.env dist/a.js package.json]; "bare wildcard at the root"
+// "subtree glob entry", "bare wildcard segment" and "dot slash directory entry"
+// all three [dist/.env dist/a.js package.json]; "bare wildcard at the root"
 // [.env app.log index.js package.json pkg-1.0.0.tgz]; "double bare wildcard at
 // the root" [.env index.js package.json]; "direct entry outranks"
 // [dist/.env dist/a.js dist/app.log package.json], leaking the log beside the
 // .env it was right about; "directory entry ... subdirectory"
 // [package.json src/.env/config src/a.js]; "degenerate entry"
-// [.env index.js package.json]. The eight green are the seven rows that assert
+// [.env index.js package.json]. The nine green are the eight rows that assert
 // only a direct name, plus "dot entry". Note "direct entry outranks" is red
 // despite carrying a direct entry: its dist/.env still packs, and it fails on
 // the dist/app.log its containing entry leaks.
@@ -3172,19 +3366,23 @@ func TestPackDoesNotWarnForOrdinaryFilesEntries(t *testing.T) {
 // filepath.Match's "*" cannot cross a separator so the entry picks out one
 // level rather than a tree. That is true and it is not the question. It also
 // made "files": ["*"] publish .env, app.log and pkg-1.0.0.tgz from a manifest
-// that had named none of them, and it split the three spellings of "ship
-// everything" — "", "." and "*" — so that two kept .env out and the third did
-// not. The rows below pin all three agreeing.
+// that had named none of them, and it split the spellings of "ship everything"
+// — "" and "*" here — so that one kept .env out and the other did not. The
+// "degenerate entry" and "bare wildcard at the root" rows pin them agreeing:
+// both go red when the narrowing check is deleted, so each pins the
+// classification on its own.
 //
-// The three "ship everything" rows are not equal evidence, and the difference is
-// measured rather than reasoned. "degenerate entry" and "bare wildcard at the
-// root" both go red when the narrowing check is deleted, so each pins the
-// classification. "dot entry" stays green under every revert in this file: "."
-// matches nothing at all in isIncluded — not the package root, not anything
-// under it — so .env is unpacked there however the classification behaves. It is
-// in the table because the required set names it, not because it guards
-// anything. That "." selects nothing is a separate pre-existing defect about
-// entries npm resolves and lnpm does not, tracked on its own.
+// "dot entry" is a different kind of row and does not pin the classification.
+// It stays green under all three reverts above, because "." matches nothing at
+// all in matchFilesField — not the package root, not anything under it — so
+// .env is unpacked there however the classification behaves. What it does pin
+// is npm parity, and that is the point of keeping it: npm 11.16.0 ships only
+// the always-included set for "files": ["."], run and confirmed on a fixture
+// package, so selecting nothing is the correct answer and not the #346 defect
+// it resembles. #346 fixed "./", which npm does resolve, and deliberately left
+// "." alone. Normalize "." to "" — the obvious-looking extension of that fix —
+// and this row goes red packing [index.js package.json], which is the revert it
+// exists to catch. Measured, not reasoned.
 //
 // This is not npm's behaviour, and the divergence is wider than one rule. npm
 // does not ignore .env at all, so `npm publish` with "files": ["dist"]
@@ -3321,6 +3519,24 @@ func TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch(t *testing.T) {
 				".env.d/drop.js": "module.exports = {}",
 			},
 			want: []string{".env.d/keep.js", "package.json"},
+		},
+		{
+			name:  "dot slash directory entry is containment",
+			files: `["./dist"]`,
+			tree: map[string]string{
+				"dist/a.js": "module.exports = {}",
+				"dist/.env": "SECRET=hunter2",
+			},
+			want: []string{"dist/a.js", "package.json"},
+		},
+		{
+			name:  "dot slash entry naming the path exactly",
+			files: `["./dist/.env"]`,
+			tree: map[string]string{
+				"dist/a.js": "module.exports = {}",
+				"dist/.env": "SECRET=hunter2",
+			},
+			want: []string{"dist/.env", "package.json"},
 		},
 		{
 			name:  "dot entry",

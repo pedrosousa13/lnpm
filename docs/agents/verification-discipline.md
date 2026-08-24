@@ -146,9 +146,19 @@ own line, so there are two guard sites, not one:
   `TestPackMainNamedByFilesFieldIsPacked`. Every row of
   `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` stays green.
 - Delete the `isIncluded` arm's call and `"files": ["dist"]` ships `dist/.env`, `dist/app.log`
-  and `dist/pkg.tgz`. Measured: eight rows of sixteen in
-  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch`, and every `main` test stays
-  green.
+  and `dist/pkg.tgz`. Measured: nine rows of eighteen in
+  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch`, plus
+  `TestPackNegationDoesNotOverrideInWhitelistMode/negation_alone_does_not_re-include`, and
+  every `main` test stays green. That test's other row, `naming_the_path_in_files_does`, stays
+  green and could not do otherwise: its `want` already holds `dist/.env`, so a guard whose
+  deletion only ever adds paths leaves the expected set untouched.
+
+  The figure was eight of sixteen until #346 added two `./` rows and both experiments were
+  re-run. `TestPackNegationDoesNotOverrideInWhitelistMode` was missing from this list before
+  that re-run, and had not changed — the list was simply short. It was then entered here as
+  "both rows", from a run whose output had been filtered to top-level test names: the whole
+  test showed red and the row count was inferred rather than read. Two failures of this
+  section's own rule, in the same bullet, one round apart. Read the subtest lines.
 
 An earlier draft of this section said only `mainEntry` called back, and a reviewer following it
 would have deleted one line, watched one test go red, and missed the second site entirely — which
