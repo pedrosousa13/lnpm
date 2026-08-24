@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -652,6 +655,263 @@ func TestRunRetreatPreviewFlagsASymlinkedNodeModules(t *testing.T) {
 	// The listing is what it replaced, not something it printed alongside.
 	if strings.Contains(out, "Changes that will be made") {
 		t.Errorf("the preview listed changes --force is not going to make, output was:\n%s", out)
+	}
+}
+
+// The tests below cover the third thing that can send retreat somewhere it
+// should not go: the store's own record of this project. retreat reads it to
+// find the link rows to delete, and #391 made that read report damage instead of
+// handing back whatever decoded. A record retreat cannot read is a record it
+// cannot clean up from, so the retreat is refused whole - the same all-or-nothing
+// shape, and for the same reason, as the node_modules preflight above.
+
+// damageProjectRecord registers the current directory as a project and then
+// writes bytes over its record, which damage builds from the record as the store
+// actually holds it.
+//
+// The lookup is checked before the damage goes in so that a fixture whose
+// directory the store does not answer for says which of those two things went
+// wrong. Without it the nil project is dereferenced for its ID on the way into
+// linkKey, and the fixture dies on a nil pointer naming neither the directory nor
+// what the store did with it.
+func damageProjectRecord(t *testing.T, damage func(stored *db.Project) []byte) {
+	t.Helper()
+
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	proj := &db.Project{Path: cwd, Name: "victim-project", PackageManager: "npm"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("register the project: %v", err)
+	}
+	stored, err := database.GetProjectByPath(cwd)
+	if err != nil || stored == nil {
+		t.Fatalf("the store does not answer for %s (project %v, err %v); this fixture would never reach the damaged record", cwd, stored, err)
+	}
+
+	damageDatabase(t, "projects", linkKey(stored.ID), damage(stored))
+}
+
+// retypeStoredField re-marshals the record lnpm wrote and replaces one field's
+// value with a number, which is what the wrong-type damage shape looks like on a
+// record the store really holds.
+//
+// Going through the record rather than hand-writing a JSON document is the
+// point. The wrong-type case is only worth running if the damaged record still
+// decodes a real project ID, and a hand-written document would establish that
+// about itself rather than about anything lnpm writes. Marshalling the struct
+// damages the record as the store actually holds it.
+//
+// The two checks below are what say the fixture still drives that shape: the
+// record must fail to decode, and the ID must survive the failure.
+//
+// The ID survives for a reason particular to this helper rather than a general
+// one. Re-marshalling puts the fields in the order Project declares them, and id
+// is the first, so nothing this writes can land ahead of it - and fields ahead of
+// a mismatch are kept whichever way the decoder handles it, whether it records
+// the error and carries on or stops at the field outright. GetProjectByPath's doc
+// comment carries the measurement for both. A hand-written document would have
+// had neither guarantee.
+//
+// The second check is insurance rather than a guard against anything reachable
+// today: it fails if the ID ever stops surviving, whatever change made that true,
+// which would leave the wrong-type test asserting nothing the syntax-error test
+// does not already cover.
+func retypeStoredField(t *testing.T, stored *db.Project, field, was string) []byte {
+	t.Helper()
+
+	record, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatalf("marshal the stored project: %v", err)
+	}
+	old := fmt.Sprintf("%q:%q", field, was)
+	if !bytes.Contains(record, []byte(old)) {
+		t.Fatalf("the stored record does not hold %s; it is %s", old, record)
+	}
+	damaged := bytes.Replace(record, []byte(old), fmt.Appendf(nil, "%q:123", field), 1)
+
+	var decoded db.Project
+	if err := json.Unmarshal(damaged, &decoded); err == nil {
+		t.Fatalf("the damaged record still decodes cleanly: %s", damaged)
+	}
+	if decoded.ID != stored.ID {
+		t.Fatalf("decoding the damaged record left ID %d, not the real %d; this fixture no longer drives the shape it exists for: %s",
+			decoded.ID, stored.ID, damaged)
+	}
+	return damaged
+}
+
+// requireRefusedForADamagedRecord is what every case here turns on: a non-nil
+// error that names the damage, raised by the read that found it, and a project
+// nothing has been taken out of.
+//
+// The untouched half is the load-bearing one. RunRetreat's os.RemoveAll of
+// .lnpm/ and its stashLockForRestore both run below the removal loop and neither
+// is conditional on it, so a guard that only skipped the database work - or one
+// that aborted from inside the loop - would still end with the package's files
+// deleted, package.json still carrying file:.lnpm/my-package pointing at
+// nothing, and lnpm.lock moved aside so a re-run reports no links at all. That is
+// the state the leading-dot waiver in the loop calls worse than pointless.
+//
+// The prefix assertion is what makes this pin RunRetreat's own check rather than
+// its neighbour's. Two reads in RunRetreat ask the store about this same path,
+// and both refuse damage, so an error-only assertion passes whichever one raised
+// it - which left the check on the first read unpinned, since restoring its
+// discard simply moved the refusal to linksOfProject. The two are distinguishable
+// in the message: linksOfProject wraps what it returns, so its refusal cannot
+// begin with the lookup's own words while RunRetreat's, which wraps only a
+// trailing hint, does.
+func requireRefusedForADamagedRecord(t *testing.T, err error, out, project string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("RunRetreat() = nil for a project record the store cannot read, want a refusal; output was:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "will not parse") {
+		t.Errorf("RunRetreat() error = %v, want it to say the record will not parse", err)
+	}
+	// Resolved, because the error names the path the lookup normalized rather
+	// than the one the fixture handed it. GetProjectByPath runs its argument
+	// through normalizePath, which is filepath.EvalSymlinks, and on Windows that
+	// expands an 8.3 short name: a temp directory that arrives as
+	// C:\Users\RUNNER~1\... is named in the error as C:\Users\runneradmin\... .
+	// seedLinkedProject records the same asymmetry for the paths gc prints.
+	wantDir := resolvePath(project)
+	if !strings.Contains(err.Error(), wantDir) {
+		t.Errorf("RunRetreat() error = %v, want it to name the project directory %s", err, wantDir)
+	}
+	const lookupPrefix = "the record of the project at "
+	if !strings.HasPrefix(err.Error(), lookupPrefix) {
+		t.Errorf("RunRetreat() error = %q, want it to begin %q; anything ahead of that means some later reader refused and RunRetreat's own check on the project record did not", err, lookupPrefix)
+	}
+	// A refusal has to say which side of the removals it happened on, as the
+	// node_modules preflight's does. Without it the user cannot tell a project
+	// that was left alone from one that is half retreated.
+	if !strings.Contains(err.Error(), "nothing was removed") {
+		t.Errorf("RunRetreat() error = %v, want it to say nothing was removed", err)
+	}
+	requireProjectUntouched(t, project, `"my-package":"file:.lnpm/my-package"`)
+	// Nothing was claimed either. The read runs above the first print, as the
+	// node_modules preflight does, so a refused retreat does not announce one.
+	if out != "" {
+		t.Errorf("a refused retreat printed %q, want nothing said before it refused", out)
+	}
+}
+
+// TestRunRetreatRefusesAProjectRecordThatWillNotParse drives the syntax-error
+// shape. json.Unmarshal validates a document before decoding any of it, so this
+// one decodes nothing: pre-#391 the lookup handed back a project with every
+// field zero, which is the harmless end of the damage - ID 0 names no row the
+// store ever assigned. The shape below is the one that cost something.
+func TestRunRetreatRefusesAProjectRecordThatWillNotParse(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+	damageProjectRecord(t, func(*db.Project) []byte { return []byte("{ not a project") })
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	requireRefusedForADamagedRecord(t, err, out, project)
+}
+
+// TestRunRetreatRefusesAProjectRecordWhoseValueHasTheWrongType drives the shape
+// that costs more here, and which the test above does not reach.
+//
+// A document that parses but holds a value of the wrong type loses only the
+// field that will not decode, so a real project ID survives it -
+// retypeStoredField asserts that rather than taking it on trust. Pre-#391 the
+// lookup therefore handed back a half-built project carrying an ID that names
+// live link rows, out of a record it had just failed to read. Nothing in retreat
+// consumed it: linksOfProject re-reads this same path in the same block and
+// refused first, so the removal loop and its DeleteLink were never reached. What
+// the shape cost was the margin - the ID that would have been handed to a caller
+// that did not check, where the other shape's zero could only ever have named
+// nothing.
+func TestRunRetreatRefusesAProjectRecordWhoseValueHasTheWrongType(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+	// package_manager takes a string, so this parses and then fails to decode,
+	// leaving every other field - id among them - decoded.
+	damageProjectRecord(t, func(stored *db.Project) []byte {
+		return retypeStoredField(t, stored, "package_manager", "npm")
+	})
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	requireRefusedForADamagedRecord(t, err, out, project)
+}
+
+// TestRunRetreatStillRetreatsADirectoryTheStoreDoesNotKnow pins the case the two
+// above have to stay distinguishable from. A project with no record is the
+// ordinary state of a lock file written by an add whose database write failed,
+// and it is not damage: there are no rows to clean up, so retreat does the rest
+// of its work and completes. Reading a missing record as a reason to refuse
+// would take retreat - the documented way out of lnpm - away from exactly the
+// projects whose database bookkeeping is already broken.
+func TestRunRetreatStillRetreatsADirectoryTheStoreDoesNotKnow(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	if err != nil {
+		t.Errorf("RunRetreat() = %v for a directory the store holds no record of, want nil; output was:\n%s", err, out)
+	}
+	if !strings.Contains(out, "Retreat complete!") {
+		t.Errorf("retreat did not report completion, output was:\n%s", out)
+	}
+	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
+	if !strings.Contains(pkgJSON, `"my-package":"^1.0.0"`) {
+		t.Errorf("retreat did not restore my-package's original version, package.json is now:\n%s", pkgJSON)
+	}
+}
+
+// TestLinksOfProjectRefusesARecordThatWillNotParse pins the fail-closed half of
+// the read retreat shares with pull and remove. It sits with the damaged-record
+// cases above, whose fixture shape it repeats, rather than in a new file for one
+// test - this package has no tag_test.go to put it in.
+//
+// #329 is the reason this is asserted rather than assumed: making a read strict
+// is only half the work, and the half that went wrong there was a caller that
+// warned about the new error and carried on. linksOfProject already returns it,
+// and returning nil links with it is what stops a caller reading the failure as
+// an empty set - an answer that means "this project holds no links", and so
+// leaves every link in place while the command reports success.
+func TestLinksOfProjectRefusesARecordThatWillNotParse(t *testing.T) {
+	newDoctorStoreConfig(t)
+	db.ResetForTesting()
+	t.Cleanup(db.ResetForTesting)
+
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	project := t.TempDir()
+	proj := &db.Project{Path: project, Name: "consumer", PackageManager: "npm"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("register the project: %v", err)
+	}
+
+	// Closes lnpm's handle, so the read below has to reopen it.
+	damageDatabase(t, "projects", linkKey(proj.ID), []byte("{ not a project"))
+	database, err = db.GetDB()
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+
+	held, err := linksOfProject(database, project)
+	if err == nil {
+		t.Fatal("linksOfProject() returned no error for a project record the store cannot read")
+	}
+	if held != nil {
+		t.Errorf("linksOfProject() returned %v alongside its error; a caller reading the links instead of the error cannot tell a failed read from a project that holds none", held)
 	}
 }
 

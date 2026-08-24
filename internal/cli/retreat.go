@@ -109,31 +109,74 @@ func RunRetreat(force bool, runInstall bool) error {
 		return fmt.Errorf("%w\n\nHint: nothing was removed - .lnpm/, lnpm.lock and package.json are as they were, so re-run 'lnpm retreat' once that is settled", err)
 	}
 
-	fmt.Println("Retreating from lnpm...")
-
 	// Get database for cleanup
 	database, _ := db.GetDB()
 
 	// Get current project, and the links it actually holds.
 	//
 	// A failed read is returned rather than read as "this project holds no
-	// links", which is what remove does with the same call for the same reason:
-	// the rows are how the link this project actually holds is found, and
+	// links", which is what remove does with these same two calls for the same
+	// reason: the rows are how the link this project actually holds is found, and
 	// treating a failure as an empty set would leave every one of them behind
-	// while the retreat reported success. Nothing has been removed yet at this
-	// point, so returning here leaves the project untouched.
+	// while the retreat reported success. A record retreat cannot parse is a
+	// record it cannot clean up from, so it is refused rather than read as "this
+	// directory is not a project lnpm knows" - which is a different answer, and
+	// the one a directory the store holds no row for goes on getting.
+	//
+	// Both errors are checked, and the first one was not before #391. Discarding
+	// it never let a damaged record reach the removal loop: linksOfProject asks
+	// the same question of the same path and fails the same way, so retreat
+	// refused either way. What the discard cost was which read does the refusing.
+	// linksOfProject wraps what it returns, so the damage arrived described as a
+	// failed lookup rather than named as a record that will not parse, and the
+	// refusal rested on a second reader that has no reason to keep asking this
+	// question. Checking it here puts the refusal on the read that found the
+	// damage, and the tests tell the two apart by that wrapper rather than by the
+	// refusal alone.
+	//
+	// What #391 changed inside the lookup is what makes the check worth having
+	// rather than merely tidier. A wrong-typed string field costs only itself -
+	// the decoder records the error and keeps going - so a record damaged that way
+	// used to come back as a project carrying a real ID, the value DeleteLink
+	// matches link rows on, out of a record nothing could parse. Nothing in retreat
+	// ever used it, because linksOfProject refused before the loop. It is nil now,
+	// so a caller that did reach it would have no ID to aim a delete with.
+	//
+	// The refusal carries the same reassurance the node_modules preflight's does,
+	// and for its reason: a command that stops partway has to say whether it
+	// stopped before or after it began removing things. It does not repeat that
+	// one's "re-run once that is settled" - the wrapped error already names lnpm
+	// doctor, and a second next step would send the user two ways at once.
+	//
+	// Above the first print, let alone the first delete, for the reason
+	// requireRetreatableNodeModules gives for its own position: a refusal here has
+	// to leave the project exactly as it was, and announcing a retreat that is not
+	// going to happen would be the only part of that which was not true. Position
+	// matters more than it looks - os.RemoveAll(.lnpm) and stashLockForRestore
+	// both run below the removal loop and neither is conditional on it, so a
+	// refusal raised any later than this would still end with the package's files
+	// gone, package.json still carrying its file:.lnpm reference and lnpm.lock
+	// moved aside. Returning from here reaches none of them.
 	//
 	// A database that would not open at all is still tolerated, as it always was:
-	// then there are no rows to clean up and no read to fail.
+	// then there are no rows to clean up and no read to fail. A store that opens
+	// and holds a record it cannot parse is a different thing and does not inherit
+	// that tolerance - the first says nothing was ever recorded here, the second
+	// says something was and lnpm can no longer tell what.
 	var proj *db.Project
 	var held projectLinks
 	if database != nil {
-		proj, _ = database.GetProjectByPath(cwd)
+		proj, err = database.GetProjectByPath(cwd)
+		if err != nil {
+			return fmt.Errorf("%w\n\nHint: nothing was removed - .lnpm/, lnpm.lock and package.json are as they were", err)
+		}
 		held, err = linksOfProject(database, cwd)
 		if err != nil {
 			return err
 		}
 	}
+
+	fmt.Println("Retreating from lnpm...")
 
 	// Remove each linked package
 	linkedPkgs := lock.List()

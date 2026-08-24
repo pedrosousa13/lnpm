@@ -1272,3 +1272,83 @@ func TestGetProjectByID_ReturnsNothingForAnIDNoRecordAnswers(t *testing.T) {
 		t.Errorf("GetProjectByID() returned a project for an ID no record answers: %+v", proj)
 	}
 }
+
+// TestGetProjectByPath_ReturnsNoProjectWhenTheRecordWillNotParse is #391: the
+// by-path lookup reached that issue still holding the shape #292 had removed
+// from the by-ID one. It allocated the project and unmarshalled into it, so a
+// record it could not read came back as a non-nil, half-built project alongside
+// the error - the reverse of "yields no project", and worse, because a caller
+// reading the project rather than the error finds one there.
+//
+// This is the syntax-error shape: json.Unmarshal validates a document before
+// decoding any of it, so nothing is decoded and every field stays zero. The
+// project handed back therefore had ID 0, which is not an ID the store ever
+// assigns - nextID starts above it - so a caller that went on to use it named no
+// record at all.
+func TestGetProjectByPath_ReturnsNoProjectWhenTheRecordWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	proj := seedProject(t, database)
+
+	putRaw(t, database, bucketProjects, itob(proj.ID), []byte("{ not a project"))
+
+	got, err := database.GetProjectByPath(proj.Path)
+	if err == nil {
+		t.Fatal("GetProjectByPath() returned no error for a record it could not read")
+	}
+	if got != nil {
+		t.Errorf("GetProjectByPath() returned a project with Path %q and ID %d alongside its error; a caller reading the project instead of the error cannot tell that apart from a project that is there", got.Path, got.ID)
+	}
+	if !strings.Contains(err.Error(), proj.Path) {
+		t.Errorf("GetProjectByPath() error = %v, want it to name the path %q it was asked about", err, proj.Path)
+	}
+}
+
+// TestGetProjectByPath_ReturnsNoProjectWhenAValueHasTheWrongType pins the other
+// damage shape, which the test above does not reach.
+//
+// A document that is valid JSON but gives one of the string fields the wrong
+// type loses that field alone: the decoder records the type error and carries on,
+// so the rest is populated - here both Path and ID are. (Damage to one of the
+// time fields stops the decode instead, which is a different shape;
+// GetProjectByPath's doc comment carries the measurement for both.) That made
+// this the dangerous shape for this lookup: the half-built project carried a real
+// directory and a real ID, so it was indistinguishable from a healthy record, and
+// a caller reading it went on to act on a project the store cannot actually read.
+func TestGetProjectByPath_ReturnsNoProjectWhenAValueHasTheWrongType(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	proj := seedProject(t, database)
+
+	// name takes a string, so this parses as JSON and then fails to decode,
+	// leaving id and path set. The path is a directory that exists, which is what
+	// makes the surviving fields look healthy.
+	putRaw(t, database, bucketProjects, itob(proj.ID),
+		fmt.Appendf(nil, `{"id":%d,"path":%q,"name":123}`, proj.ID, filepath.ToSlash(t.TempDir())))
+
+	got, err := database.GetProjectByPath(proj.Path)
+	if err == nil {
+		t.Fatal("GetProjectByPath() returned no error for a record whose value has the wrong type")
+	}
+	if got != nil {
+		t.Errorf("GetProjectByPath() returned a project with Path %q and ID %d alongside its error; that path is a live directory and that ID names a row, so a caller reading the project cannot tell the record is damaged at all", got.Path, got.ID)
+	}
+}
+
+// TestGetProjectByPath_ReturnsNothingForAPathNoRecordAnswers pins the case the
+// two above have to stay distinguishable from: a path with no record is not
+// damage. The callers that can reach it handle it - linksOfProject returns no
+// links and says in as many words that this is not an error, and remove and
+// retreat both check the project before using its ID - so turning it into an
+// error would refuse work that has nothing wrong with it. The add and restore
+// sites dereference it unchecked, which is safe there for a different reason:
+// each registers the project immediately before looking it up.
+func TestGetProjectByPath_ReturnsNothingForAPathNoRecordAnswers(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	proj, err := database.GetProjectByPath(filepath.FromSlash("/projects/never-added"))
+	if err != nil {
+		t.Fatalf("GetProjectByPath() error = %v for a path no record answers", err)
+	}
+	if proj != nil {
+		t.Errorf("GetProjectByPath() returned a project for a path no record answers: %+v", proj)
+	}
+}
