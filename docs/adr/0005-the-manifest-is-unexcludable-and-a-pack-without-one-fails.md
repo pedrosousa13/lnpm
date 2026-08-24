@@ -30,6 +30,16 @@ cheap, too. The file this newly ships is the one file every package must have,
 so a maintainer who genuinely meant to exclude it was asking for something that
 is not a package, and nothing about the intent is worth preserving.
 
+> **Amended by #321.** In the next two paragraphs read `hardReservedExcludes`
+> for `defaultExcludes`, `lowerHardReservedExcludes` for `lowerDefaultExcludes`,
+> `isHardReserved` for `isDefaultExcluded`, and
+> `TestPackManifestCannotDefeatHardReserved` for the test they name. Read
+> "appending `package.json` to both slices" for "recomputing": the test appends
+> the name to the plain slice and to the lowered one, rather than rebuilding
+> either. The boundary the paragraphs describe is unchanged; the list it is drawn
+> against was split. See "Amendment: #321 splits the built-in list" at
+> the end of this document.
+
 What this does not override is `defaultExcludes`. That boundary is the one
 `isDefaultExcluded` already argues and 0004 restates for `main` — the user's
 ignore patterns are a preference the user expressed, the built-in list is a
@@ -73,7 +83,9 @@ The exemption is narrower than the always-included set it sits beside, and
 narrower again than `main`'s. `README*`, `LICENSE*` and the rest stay exempt
 from the `files` whitelist only, and an ignore pattern still drops them; `main`
 beats the whitelist and the ignore patterns under a `files` field; the manifest
-beats everything except `defaultExcludes`, in every mode. A reader who finds
+beats everything except `hardReservedExcludes`, in every mode — since #321 it
+outranks `defaultExcludes` too, inertly, as the amendment at the end of this
+document records. A reader who finds
 three treatments in one `switch` should not make them consistent without
 deciding, for each, whether losing the file breaks the package, impoverishes it,
 or leaves it unresolvable.
@@ -129,3 +141,39 @@ anywhere in the walk.** Rejected. No `defaultExcludes` entry matches
 `isDefaultExcluded` is evaluated first and alone. Keeping every force-include on
 the same side of that check is what stops a reader concluding the side does not
 matter.
+
+## Amendment: #321 splits the built-in list
+
+#321 split `defaultExcludes` into `hardReservedExcludes` — the half nothing
+publishes — and a `defaultExcludes` that any explicit selection outranks. The
+manifest force-include still sits below the first and now sits above the second.
+
+That second half is a real precedence move and an inert one. No entry in either
+list matches `package.json`, so nothing observable changed for any package; what
+changed is where the invariant now sits, and a reader restoring the old
+placement would be adding a fresh explicit check for no effect.
+
+It is not an exemption carved out for the manifest either. After the split, a
+`files` entry and an `!` negation both outrank `defaultExcludes` by
+construction, and force-including the manifest is one more selection made
+explicitly. `main` is the deliberate exception: it carries an explicit
+`isDefaultExcluded` check in its own arm, because a `main` naming a `.env`, a
+log or a `*.tgz` would otherwise publish it, and `docs/adr/0004` keeps that
+failing toward a warning rather than toward a leak. The manifest needs no such
+check, because `package.json` is not a name either list can plausibly grow.
+
+`TestPackManifestCannotDefeatDefaultExcludes` became
+`TestPackManifestCannotDefeatHardReserved` and now seeds `package.json` into
+`hardReservedExcludes`. Seeding it into `defaultExcludes` instead would leave
+`Pack` succeeding — correctly, by the rule above — so the old spelling would
+have failed for the new right behaviour rather than for the bug it exists to
+catch.
+
+The rejected option in "Considered options" above reads differently after the
+split. "Exempt the
+manifest from `defaultExcludes` too" is now the shipped behaviour, arrived at as
+a consequence of moving that list into `ignoreLoader.excludes` rather than as a
+fresh decision. What stays rejected is exempting the manifest from
+`hardReservedExcludes`, and the reason is unchanged — keeping every
+force-include on the same side of that one check is what stops a reader
+concluding the side does not matter.

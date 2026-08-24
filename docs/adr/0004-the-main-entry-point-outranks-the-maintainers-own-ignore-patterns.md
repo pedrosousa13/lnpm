@@ -31,15 +31,55 @@ that does not load. The costs are not symmetric either: a package missing its
 README is poorer, a package missing its entry point is inert. We take the
 narrower, louder failure.
 
-What this does not override is `defaultExcludes`. `main: ".env"` does not ship
-`.env`. That holds structurally rather than by a check in the force-include:
-`collectFiles` evaluates `isDefaultExcluded` during the walk and returns early,
-above the whitelist branch the force-include lives in. The distinction is the one
-`isDefaultExcluded` already argues — the user's ignore patterns are a preference
-the user expressed, the built-in list is a guard lnpm applies on the user's
-behalf, and a guard that can be stepped around by naming the file in `main` is
-not a guard. `TestPackMainCannotDefeatDefaultExcludes` pins it and goes red if
-the force-include is hoisted above that check.
+What this does not override is lnpm's built-in exclusion. `main: ".env"` does not
+ship `.env`, and `main: ".npmrc"` does not ship `.npmrc`. The distinction is the
+one `isDefaultExcluded` already argues — the user's ignore patterns are a
+preference the user expressed, a built-in exclusion is a guard lnpm applies on
+the user's behalf, and a guard that can be stepped around by naming the file in
+`main` is not a guard.
+
+That outcome is unchanged since this ADR was written; how it is enforced is not.
+#321 split the one built-in list into `hardReservedExcludes` and
+`defaultExcludes`, and `main` loses to each by a different mechanism:
+
+- `hardReservedExcludes` still holds structurally, exactly as this ADR first
+  described. `collectFiles` evaluates `isHardReserved` during the walk and
+  returns early, above the whitelist branch the force-include lives in.
+  `TestPackMainCannotDefeatHardReserved` pins it and goes red if the
+  force-include is hoisted above that check.
+- `defaultExcludes` now needs an explicit check, and did not before. #321 moved
+  it into `ignoreLoader.excludes`, which the force-include arm deliberately does
+  not call — not calling it is what an override *is* there — so the arm carries
+  its own check:
+
+  ```go
+  if softExcluded.covers(relPath) && !isIncludedDirectly(relPath, filesField) {
+      return nil
+  }
+  ```
+
+  `defaultExcludedTree.covers` asks about the path *and every ancestor
+  directory*, so a `main` under a directory the list covers is refused too.
+  `TestPackMainCannotDefeatDefaultExcludes` pins the refusal and goes red when
+  the check is deleted.
+
+There is one exception, and it is the `!isIncludedDirectly` half above. `main`
+alone is not publication consent — that is this whole section — but a `files`
+entry naming the same path directly *is*, and then the file ships. So
+`"files": [".env.example"]` with `main: ".env.example"` publishes the template,
+while `main: ".env.example"` alongside `"files": ["index.js"]` does not. The
+consent comes from the `files` entry, not from `main`; `main` merely stops being
+a reason to refuse. Without that half the `mainEntry` arm, which runs before the
+`isIncluded` arm, would return first and defeat #321's own first acceptance
+criterion. `TestPackMainNamedByFilesFieldIsPacked` pins both halves.
+
+The two lists are deliberately not treated alike in that arm, and the reason is
+the direction of failure this ADR keeps returning to. Letting `main` override
+`defaultExcludes` would publish a `.env`, a log or a `*.tgz` on the strength of
+one manifest field, which fails toward leaking. Refusing it packs nothing and
+`warnMainEntryNotPacked` reports it, which fails toward a message. #321 made
+`defaultExcludes` overridable by the maintainer's *selection* rules — a `files`
+entry and an `!` negation — and left `main` where this ADR put it.
 
 ## Consequences
 
@@ -52,9 +92,11 @@ file breaks the package or merely impoverishes it.
 
 `main` was the only entry exempt from both when this was written, and is no
 longer. `docs/adr/0005` makes the package root's own `package.json` unexcludable
-by anything except `defaultExcludes`, in every mode rather than under a `files`
-whitelist alone. There are now three treatments in that `switch`, and the
-question to decide per file is unchanged.
+by anything except `hardReservedExcludes`, in every mode rather than under a
+`files` whitelist alone — and unlike `main` it outranks `defaultExcludes` too,
+since #321 gave that list no explicit check in the manifest arm. There are now
+three treatments in that `switch`, and the question to decide per file is
+unchanged.
 
 It applies in whitelist mode only. A package with no `files` field is untouched:
 there the user's ignore patterns decide the whole tree, `main` included, exactly

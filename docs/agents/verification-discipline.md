@@ -46,18 +46,70 @@ cannot run.
 A new test passing proves nothing on its own. Remove the fix and watch it fail, and read the
 failure — not just that it failed.
 
-Two ways this has gone wrong here:
+Three ways this has gone wrong here:
 
 **A test that never exercised the code path.** An `add` regression test passed with the fix
 removed, because it drove `runAddSingle`, which already returned the error. Only
 `RunAddMultiple` reaches the loop that swallowed it. The test looked exactly like a working
 one.
 
-**A test held up by an unrelated barrier.** In `TestPackMainCannotDefeatDefaultExcludes`, the
+**A test held up by an unrelated barrier.** In `TestPackMainCannotDefeatHardReserved`, the
 `node_modules` row stays green even under the refactor the test exists to catch, because the
 walk prunes that directory before any per-file check runs. It is worth keeping, but it is not
-the guarantee the `.env` and `.npmrc` rows are — and the test says so, so three green rows are
-not read as three equal guarantees.
+the guarantee the `.npmrc` row is — and the test says so, so two green rows are not read as two
+equal guarantees. #321 found a third shape of this: in `TestPackWarnsWhenFilesNamesHardReserved`
+the `.git` row stays green with the hard-reserved check disabled outright, because
+`filterGitFiles` strips `.git` from the finished set independently. Disabling the check and
+reading which rows moved is what established that — the first draft of the comment asserted a
+different split from reading the code, and was wrong.
+
+**A revert experiment that never built.** This one does not look like a broken experiment. It
+looks like a finished one with a clean answer: you remove the fix, run the suite, see zero
+failures, and conclude that nothing pins the behaviour. What actually happened is that the
+package did not compile, so no test ran at all.
+
+In #321, reverting an ancestor-directory check meant replacing `softExcluded.covers(relPath)`
+with `isDefaultExcluded(relPath)` at both call sites. That left the `softExcluded` variable
+declared and unused, which Go rejects:
+
+```
+# github.com/pedrosousa13/lnpm/internal/pack [github.com/pedrosousa13/lnpm/internal/pack.test]
+internal/pack/pack.go:601:2: declared and not used: softExcluded
+FAIL	github.com/pedrosousa13/lnpm/internal/pack [build failed]
+FAIL
+```
+
+The filter in use was `grep -E "^    ---|^--- |         got|        want"`, which pulls result
+and diff lines out of a verbose run. No line above matches any of those four alternatives, so the
+command printed nothing whatsoever — and the obvious reading of no output is "every row passed".
+The experiment was re-run with `_ = softExcluded` added to keep the build honest, and the real
+answer was one failing row: the exact opposite of the conclusion the silent run invited.
+
+Note what composes here, because both halves are recommended practice. Test output is filtered
+rather than read whole for the reason the environment notes give: `PIPESTATUS` misbehaves in a
+zsh subshell, so exit status is checked separately and the output is grepped for the interesting
+lines. That filter is built to match test-failure lines, and a compiler error is not one.
+
+**The check: confirm the experiment built before believing a green result.** A revert producing
+zero failures is not evidence until you have seen the test binary actually run. Two ways to
+settle it, both measured:
+
+- **Look for the package's result line.** A run that built prints `ok <package>` or
+  `FAIL <package>` with a duration; a run that did not prints
+  `FAIL <package> [build failed]` and never `ok`. Keep that line out of whatever filter you
+  apply, or read the run unfiltered once.
+- **`go vet ./...` before the test run.** It type-checks test files as well as the package, so
+  it catches breakage on either side. `go build ./...` is *not* sufficient — with a deliberate
+  unused variable added to `internal/pack/pack_test.go`, `go build ./...` exited 0 while
+  `go vet ./...` reported `declared and not used: x` and exited 1.
+
+Do not accept "no output" as "no failures".
+
+**The general shape.** Any revert that deletes a call can leave something else unused or
+mistyped: an import with no remaining reference, a variable whose only use was the deleted line,
+a helper whose signature no longer matches, a receiver on a type that is now unreferenced. The
+smaller and more surgical the revert, the likelier this is — a one-line deletion is exactly the
+kind that orphans its own dependencies.
 
 **When a fixture cannot express the thing you are testing, say so rather than adjusting the
 assertion until it passes.** `DeleteLink` swallows every per-item error inside its transaction,
@@ -72,12 +124,50 @@ boundary:
 
 - **B** — hoist the change above the whitelist branch. Tests that it does not change
   behaviour for packages with no `files` field.
-- **B-prime** — hoist it above `isDefaultExcluded`. Tests that it cannot defeat the built-in
-  force-exclude set.
+- **B-prime** — hoist it above `isHardReserved`. Tests that it cannot defeat the
+  never-publishable list.
 
 They are different refactors and they catch different bugs. **Use B-prime for anything touching
-pack selection**: under it, `main: ".env"` ships the secret, and a change that only ran B would
-have looked fully covered.
+pack selection**: under it, `main: ".npmrc"` ships the auth token, and a change that only ran B
+would have looked fully covered.
+
+Since #321 there are two built-in lists and they are enforced in different places, so B-prime
+has several spellings and you may need more than one. `hardReservedExcludes` is checked first in
+the walk, so hoisting a force-include above `isHardReserved` is the classic B-prime.
+
+`defaultExcludes` is seeded into the ignore chain instead, and *any* whitelist arm that does not
+consult the chain overrides it by default. **Count the arms before writing the experiment.** As
+of #321 there are two — `mainEntry` and `isIncluded` — and each calls back into the list on its
+own line, so there are two guard sites, not one:
+
+- Delete the `mainEntry` arm's call and `main: ".env"` under a `files` whitelist ships the
+  secret. Measured: all four rows of `TestPackMainCannotDefeatDefaultExcludes`, plus
+  `TestPackWarnsWhenMainIsNotPacked/held_back_by_defaultExcludes` and two rows of
+  `TestPackMainNamedByFilesFieldIsPacked`. Every row of
+  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` stays green.
+- Delete the `isIncluded` arm's call and `"files": ["dist"]` ships `dist/.env`, `dist/app.log`
+  and `dist/pkg.tgz`. Measured: eight rows of sixteen in
+  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch`, and every `main` test stays
+  green.
+
+An earlier draft of this section said only `mainEntry` called back, and a reviewer following it
+would have deleted one line, watched one test go red, and missed the second site entirely — which
+is how the `dist/.env` leak reached a second review round. Re-derive the count from the code each
+time rather than trusting this paragraph's number.
+
+Each guard site also has inner halves worth reverting on their own. Both read
+`softExcluded.covers(relPath) && !isIncludedDirectly(...)`; swapping `covers` back to
+`isDefaultExcluded` drops the ancestor-directory question and turns exactly one row red, and
+dropping `!isIncludedDirectly` turns a different single row red at the `mainEntry` arm. The
+classification behind `isIncludedDirectly` has a third: treating every `filepath.Match` hit as
+naming a path, rather than only those whose final glob segment constrains the name, turns exactly
+three rows red. A single-line revert that moves one row is still a real revert — but only if you
+checked that the rows you expected to stay green actually did.
+
+The general lesson is the one that generalises past `pack`: **when a fix moves a check from an
+implicit position to an explicit one, the revert direction moves with it.** Reverting the old
+placement no longer tests anything, and a reviewer reading only the ADR would write the wrong
+experiment.
 
 This was found because a subagent reported that a revert check did not catch what it had been
 told it would, instead of reshaping the test to fit the claim. That is the behaviour to copy.
@@ -117,6 +207,9 @@ Before treating CI as evidence, confirm a run exists for the exact SHA you pushe
 (`gh run list --branch <b> --json headSha,databaseId`), and confirm the tests you care about
 actually *ran* rather than being skipped — a skipped test and a passing one look identical in a
 summary.
+
+The local counterpart is "A revert experiment that never built" above: same family, different
+mechanism. Both are a green-looking result produced by tests that did not execute.
 
 ## Squash bodies are the permanent record
 
