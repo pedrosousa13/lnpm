@@ -2104,11 +2104,11 @@ func isBareWildcard(segment string) bool {
 //
 // The separator check is deliberately made before filepath.Match rather than
 // left to it. Some defaultIncludes entries are globs ("README*"), and
-// filepath.Match reads its separator from the platform. On Linux, "*" stops at "/", so
-// filepath.Match("readme*", "dist/readme.md") is false — run and confirmed — and
-// dropping filepath.Base alone would look sufficient here. It would only be
-// sufficient here: Windows builds path_windows.go, where the separator is "\"
-// and "/" is an ordinary character.
+// filepath.Match reads its separator from the platform. On Linux, "*" stops at
+// "/", so filepath.Match("readme*", "dist/readme.md") is false — run and
+// confirmed — and dropping filepath.Base alone would look sufficient here. It
+// would only be sufficient here: Windows builds path_windows.go, where the
+// separator is "\" and "/" is an ordinary character.
 // TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform pins that same
 // split biting the ignore matcher, where a single "*" did cross a "/" on Windows
 // and not elsewhere from identical inputs. Rather than depend on which way
