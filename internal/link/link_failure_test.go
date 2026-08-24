@@ -112,7 +112,7 @@ func TestLinkMissingStoreFile(t *testing.T) {
 	if names := entryNames(t, filepath.Join(projectPath, ".lnpm")); len(names) != 0 {
 		t.Errorf(".lnpm entries after a failed Link = %v, want none", names)
 	}
-	if linker.IsLinked("my-package") {
+	if mustIsLinked(t, linker, "my-package") {
 		t.Error("IsLinked(my-package) = true after a failed Link, want false")
 	}
 
@@ -501,10 +501,29 @@ func TestLinkSourceKeepsPreviousOnFailure(t *testing.T) {
 	}
 }
 
+// mustIsLiveLinked answers IsLiveLinked, failing the test if the query refused
+// to answer. It is mustIsLinked's counterpart and it is there for the same
+// reason: every caller drives a project whose .lnpm is an ordinary directory,
+// where a refusal would be a broken fixture rather than the behaviour under
+// test.
+func mustIsLiveLinked(t *testing.T, linker *Linker, packageName string) bool {
+	t.Helper()
+
+	live, err := linker.IsLiveLinked(packageName)
+	if err != nil {
+		t.Fatalf("IsLiveLinked(%s) error: %v", packageName, err)
+	}
+	return live
+}
+
 // TestIsLiveLinkedRejectsNonLinks pins what IsLiveLinked accepts. pull and push
 // skip a live-linked package and report the skip as success, so anything at
 // .lnpm/{package} that is not a link - a stray file left by a crashed tool, say
 // - must not be taken for one: that would report a corrupt project as fine.
+//
+// Every row here also pins the healthy-project half of the refusal the guard
+// adds: mustIsLiveLinked fails the test on any error, so an ordinary .lnpm must
+// keep producing a plain yes or no.
 func TestIsLiveLinkedRejectsNonLinks(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")
@@ -518,28 +537,28 @@ func TestIsLiveLinkedRejectsNonLinks(t *testing.T) {
 
 	linker := New(projectPath)
 
-	if linker.IsLiveLinked("absent") {
+	if mustIsLiveLinked(t, linker, "absent") {
 		t.Error("IsLiveLinked(absent) = true, want false")
 	}
 
 	if err := os.MkdirAll(filepath.Join(lnpmDir, "a-copy"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if linker.IsLiveLinked("a-copy") {
+	if mustIsLiveLinked(t, linker, "a-copy") {
 		t.Error("IsLiveLinked(a-copy) = true for a store copy, want false")
 	}
 
 	if err := os.WriteFile(filepath.Join(lnpmDir, "a-file"), []byte("stray"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if linker.IsLiveLinked("a-file") {
+	if mustIsLiveLinked(t, linker, "a-file") {
 		t.Error("IsLiveLinked(a-file) = true for a regular file, want false")
 	}
 
 	if _, err := linker.LinkSource("a-link", sourcePath); err != nil {
 		t.Fatalf("LinkSource(a-link): %v", err)
 	}
-	if !linker.IsLiveLinked("a-link") {
+	if !mustIsLiveLinked(t, linker, "a-link") {
 		t.Error("IsLiveLinked(a-link) = false for a live link, want true")
 	}
 
@@ -548,7 +567,7 @@ func TestIsLiveLinkedRejectsNonLinks(t *testing.T) {
 	if err := os.RemoveAll(sourcePath); err != nil {
 		t.Fatal(err)
 	}
-	if !linker.IsLiveLinked("a-link") {
+	if !mustIsLiveLinked(t, linker, "a-link") {
 		t.Error("IsLiveLinked(a-link) = false for a dangling live link, want true")
 	}
 }
@@ -703,6 +722,343 @@ func TestLinkSourceRefusesASymlinkedScopeDirectory(t *testing.T) {
 
 	if _, err := os.Lstat(filepath.Join(victim, "scoped")); !os.IsNotExist(err) {
 		t.Errorf("scoped was created outside the project (Lstat err = %v), want none", err)
+	}
+}
+
+// hostileLnpmFixture builds a project whose .lnpm is a link at a directory
+// outside it, and populates that directory with entry. It returns the project
+// path and the outside directory, so a test can assert both that the query
+// refused and that nothing it holds was reported as the project's.
+//
+// It is the read-side counterpart of the fixtures the write-path guard tests
+// build inline, and it skips rather than fails where no directory link can be
+// created, exactly as linkDirAt does.
+func hostileLnpmFixture(t *testing.T, tmpDir, entry string) (projectPath, outside string) {
+	t.Helper()
+
+	projectPath = filepath.Join(tmpDir, "project")
+	outside = filepath.Join(tmpDir, "outside")
+	for _, dir := range []string{projectPath, filepath.Join(outside, entry)} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, outside, filepath.Join(projectPath, ".lnpm"))
+	return projectPath, outside
+}
+
+// TestIsLinkedRefusesASymlinkedLnpmDirectory covers the read half of the hole
+// #313 closed on the write paths. The same committed .lnpm symlink that made
+// Link write outside the project makes IsLinked answer about a directory outside
+// it: a package that happens to exist over there is reported as linked here.
+//
+// Both directions of the revert check, measured, and they cover
+// TestIsLinkedRefusesASymlinkedScopeDirectory below as well - which is why each
+// direction lists two failures, one per test:
+//
+//   - Guard deleted: "IsLinked() through a symlinked .lnpm error = nil, want a
+//     refusal" and "IsLinked() through a symlinked scope directory error = nil,
+//     want a refusal".
+//   - Guard moved below the os.Stat, returning the resolved answer alongside the
+//     refusal: "IsLinked() = true through a symlinked .lnpm, want false" and
+//     "IsLinked() = true through a symlinked scope directory, want false". The
+//     value assertion is what catches that direction - the error assertion still
+//     passes, because a late guard still returns an error.
+//
+// go vet ./... exited 0 for both, and internal/link printed a FAIL line with a
+// duration rather than "[build failed]", so the test binary really ran.
+func TestIsLinkedRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	projectPath, _ := hostileLnpmFixture(t, t.TempDir(), "my-package")
+
+	linked, err := New(projectPath).IsLinked("my-package")
+	if err == nil {
+		t.Fatal("IsLinked() through a symlinked .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("IsLinked() error = %v, want it to name .lnpm", err)
+	}
+	if linked {
+		t.Error("IsLinked() = true through a symlinked .lnpm, want false")
+	}
+}
+
+// TestIsLinkedRefusesASymlinkedScopeDirectory covers the second ancestor a
+// scoped name adds, the same one TestLinkSourceRefusesASymlinkedScopeDirectory
+// covers on the write side: a real .lnpm holding a linked @org redirects the
+// query one level down instead.
+func TestIsLinkedRefusesASymlinkedScopeDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	for _, dir := range []string{filepath.Join(projectPath, ".lnpm"), filepath.Join(victim, "scoped")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, victim, filepath.Join(projectPath, ".lnpm", "@org"))
+
+	linked, err := New(projectPath).IsLinked("@org/scoped")
+	if err == nil {
+		t.Fatal("IsLinked() through a symlinked scope directory error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "@org") {
+		t.Errorf("IsLinked() error = %v, want it to name the @org scope directory", err)
+	}
+	if linked {
+		t.Error("IsLinked() = true through a symlinked scope directory, want false")
+	}
+}
+
+// TestIsLinkedAnswersInAHealthyProject is the other half of the refusal: the
+// signature grew an error, and every caller now has one more branch to get
+// wrong. A project whose .lnpm is an ordinary directory must still get a plain
+// yes or no, with no error at all - including when .lnpm does not exist yet,
+// which requireRealDir deliberately does not refuse.
+func TestIsLinkedAnswersInAHealthyProject(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linker := New(projectPath)
+
+	// No .lnpm at all: nothing is linked, and that is an answer rather than a
+	// refusal.
+	linked, err := linker.IsLinked("my-package")
+	if err != nil {
+		t.Fatalf("IsLinked() with no .lnpm error = %v, want nil", err)
+	}
+	if linked {
+		t.Error("IsLinked() = true with no .lnpm, want false")
+	}
+
+	storePath, files := storeFixture(t, tmpDir, map[string]string{
+		"package.json": `{"name":"my-package"}`,
+	})
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("Link(): %v", err)
+	}
+
+	linked, err = linker.IsLinked("my-package")
+	if err != nil {
+		t.Fatalf("IsLinked() after Link error = %v, want nil", err)
+	}
+	if !linked {
+		t.Error("IsLinked(my-package) = false after Link, want true")
+	}
+
+	linked, err = linker.IsLinked("other-package")
+	if err != nil {
+		t.Fatalf("IsLinked(other-package) error = %v, want nil", err)
+	}
+	if linked {
+		t.Error("IsLinked(other-package) = true, want false")
+	}
+}
+
+// TestIsLiveLinkedRefusesASymlinkedLnpmDirectory is the query publish, push and
+// pull reach first, before they call Link at all: on a hostile checkout the very
+// first thing those commands do is look outside the project, and #313's refusal
+// only arrives one step later.
+//
+// The entry outside the project is itself a link, so the unguarded query does
+// not merely fail to find something - it answers true about a directory the
+// project does not own.
+//
+// Both directions of the revert check, measured, covering
+// TestIsLiveLinkedRefusesASymlinkedScopeDirectory below too - which is why each
+// direction lists two failures, one per test:
+//
+//   - Guard deleted: "IsLiveLinked() through a symlinked .lnpm error = nil, want
+//     a refusal" and "IsLiveLinked() through a symlinked scope directory error =
+//     nil, want a refusal", plus all three command-level tests in
+//     tests/security_test.go red with their own "error = nil, want a refusal".
+//   - Guard moved below the os.Lstat, returning the resolved answer alongside
+//     the refusal: "IsLiveLinked() = true through a symlinked .lnpm, want false"
+//     and "IsLiveLinked() = true through a symlinked scope directory, want
+//     false".
+//
+// The honest gap in the second direction: the tests package stayed green
+// ("ok github.com/pedrosousa13/lnpm/tests"). The command-level tests assert only
+// that an error surfaces, and a late guard still surfaces one, so direction B is
+// caught here and nowhere else. Do not read those three as covering it.
+func TestIsLiveLinkedRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath, outside := hostileLnpmFixture(t, tmpDir, "someone-elses-package")
+	sourcePath := filepath.Join(tmpDir, "source")
+	if err := os.MkdirAll(sourcePath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirAt(t, sourcePath, filepath.Join(outside, "live-pkg"))
+
+	live, err := New(projectPath).IsLiveLinked("live-pkg")
+	if err == nil {
+		t.Fatal("IsLiveLinked() through a symlinked .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("IsLiveLinked() error = %v, want it to name .lnpm", err)
+	}
+	if live {
+		t.Error("IsLiveLinked() = true through a symlinked .lnpm, want false")
+	}
+}
+
+// TestIsLiveLinkedRefusesASymlinkedScopeDirectory is the scope-level
+// counterpart, one level down, with the same shape: the entry the query would
+// have answered about is a link outside the project.
+func TestIsLiveLinkedRefusesASymlinkedScopeDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	sourcePath := filepath.Join(tmpDir, "source")
+	for _, dir := range []string{filepath.Join(projectPath, ".lnpm"), victim, sourcePath} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, sourcePath, filepath.Join(victim, "scoped"))
+	linkDirAt(t, victim, filepath.Join(projectPath, ".lnpm", "@org"))
+
+	live, err := New(projectPath).IsLiveLinked("@org/scoped")
+	if err == nil {
+		t.Fatal("IsLiveLinked() through a symlinked scope directory error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "@org") {
+		t.Errorf("IsLiveLinked() error = %v, want it to name the @org scope directory", err)
+	}
+	if live {
+		t.Error("IsLiveLinked() = true through a symlinked scope directory, want false")
+	}
+}
+
+// TestListLinkedRefusesASymlinkedLnpmDirectory is the query that can put names
+// from outside the project into command output: os.ReadDir follows a linked
+// .lnpm and reports whatever the target holds. Measured against the unguarded
+// build, the listing came back as [pkg-a pkg-b] with err = nil - two directories
+// that belong to someone else.
+// Both directions of the revert check, measured:
+//
+//   - Guard deleted: red with "error = nil, want a refusal".
+//   - Guard moved below the ReadDir and the loop, returning the listing
+//     alongside the refusal: red with "ListLinked() = [pkg-a pkg-b] through a
+//     symlinked .lnpm, want no names at all". The names assertion is the only
+//     one that moves, which is why it is asserted separately from the error.
+func TestListLinkedRefusesASymlinkedLnpmDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath, outside := hostileLnpmFixture(t, tmpDir, "pkg-a")
+	if err := os.MkdirAll(filepath.Join(outside, "pkg-b"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	linked, err := New(projectPath).ListLinked()
+	if err == nil {
+		t.Fatal("ListLinked() through a symlinked .lnpm error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), ".lnpm") {
+		t.Errorf("ListLinked() error = %v, want it to name .lnpm", err)
+	}
+	// The refusal is only worth anything if it also withholds the names. A
+	// listing returned alongside an error would still reach a caller that logs
+	// what it got before checking.
+	if len(linked) != 0 {
+		t.Errorf("ListLinked() = %v through a symlinked .lnpm, want no names at all", linked)
+	}
+}
+
+// TestListLinkedRefusesASymlinkedScopeDirectory covers the scope level, and it
+// needs its guard in a different place from the other two queries.
+//
+// Measured: os.ReadDir reports a linked @org with IsDir() false, so the existing
+// "not a directory, skip it" filter already stops the descent and no name from
+// the target reaches the listing. What it does not do is say anything - a
+// hostile checkout reads as a project with one fewer scope. The guard therefore
+// sits above that filter, where the entry is still visible, so the same
+// arrangement the write paths refuse is refused here too rather than silently
+// dropped.
+// Both directions of the revert check, measured:
+//
+//   - Scope guard deleted: red with "error = nil, want a refusal".
+//   - Entry-type filter restored to the top of the loop, so the guard sits below
+//     it and never sees a linked scope: red with the same message, together with
+//     TestListLinkedRefusesANonDirectoryScope. That second placement is the one
+//     a reviewer would reach for first, and it is why the filter moved.
+func TestListLinkedRefusesASymlinkedScopeDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	victim := filepath.Join(tmpDir, "victim")
+	for _, dir := range []string{filepath.Join(projectPath, ".lnpm", "real-pkg"), filepath.Join(victim, "scoped")} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linkDirAt(t, victim, filepath.Join(projectPath, ".lnpm", "@org"))
+
+	linked, err := New(projectPath).ListLinked()
+	if err == nil {
+		t.Fatal("ListLinked() with a symlinked scope directory error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "@org") {
+		t.Errorf("ListLinked() error = %v, want it to name the @org scope directory", err)
+	}
+	if len(linked) != 0 {
+		t.Errorf("ListLinked() = %v with a symlinked scope directory, want no names at all", linked)
+	}
+}
+
+// TestListLinkedRefusesANonDirectoryScope pins the one behaviour change moving
+// the entry-type filter below the scope branch makes beyond the guard itself.
+//
+// An entry named @something that is not a directory used to be skipped silently;
+// it now fails the whole listing. That is deliberate, and it matches what the
+// write paths already say about the same project: measured, Link("@stray/pkg")
+// and ListLinked() return byte-identical refusals against a .lnpm holding a
+// regular file named @stray.
+//
+// The body asserts two blocks, in this order. The plain-stray block comes first
+// and is the one that could regress unnoticed: a non-@ entry that is not a
+// directory must still be skipped rather than swept into the same refusal. The
+// @stray block comes second and is the new refusal itself.
+//
+// Revert measured by restoring the filter to the top of the loop, above the
+// scope branch: the @stray block goes red with "ListLinked() with a regular file
+// named @stray error = nil, want a refusal", and the plain-stray block stays
+// green - which is the whole point of asserting them separately.
+func TestListLinkedRefusesANonDirectoryScope(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	lnpmDir := filepath.Join(projectPath, ".lnpm")
+	if err := os.MkdirAll(filepath.Join(lnpmDir, "real-pkg"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A regular file where a package would live is not a scope and never was.
+	// It is skipped, exactly as before this guard.
+	if err := os.WriteFile(filepath.Join(lnpmDir, "plain-stray"), []byte("stray"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := New(projectPath).ListLinked()
+	if err != nil {
+		t.Fatalf("ListLinked() with a stray regular file error = %v, want nil", err)
+	}
+	if len(linked) != 1 || linked[0] != "real-pkg" {
+		t.Errorf("ListLinked() = %v with a stray regular file, want [real-pkg]", linked)
+	}
+
+	// A regular file where a scope would live is refused, because that is the
+	// same shape a linked scope arrives in and the listing cannot tell the
+	// project it read a scope it did not.
+	if err := os.WriteFile(filepath.Join(lnpmDir, "@stray"), []byte("stray"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linked, err = New(projectPath).ListLinked()
+	if err == nil {
+		t.Fatal("ListLinked() with a regular file named @stray error = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "@stray") || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("ListLinked() error = %v, want it to name @stray and say it is not a directory", err)
+	}
+	if len(linked) != 0 {
+		t.Errorf("ListLinked() = %v alongside a refusal, want no names at all", linked)
 	}
 }
 

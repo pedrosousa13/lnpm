@@ -509,7 +509,16 @@ func pushToProject(database *db.DB, proj *db.Project, pkg *db.Package, s *store.
 	// was added for - the same hazard push guards against, reached here by
 	// `publish --push`.
 	linker := link.New(proj.Path)
-	if linker.IsLiveLinked(pkg.Name) {
+	live, err := linker.IsLiveLinked(pkg.Name)
+	if err != nil {
+		// The query refuses when the project's .lnpm is not a directory the
+		// project owns. Reporting that as a per-project failure is what keeps
+		// the push from carrying on into Link, which would refuse anyway - and
+		// reporting it as "skipped (live link to source)" would say the project
+		// was fine when nothing about it could be established.
+		return link.Result{}, false, err
+	}
+	if live {
 		return link.Result{}, true, nil
 	}
 
