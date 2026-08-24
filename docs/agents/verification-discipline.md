@@ -315,9 +315,10 @@ its revert check can and cannot settle. Measured on 2026-08-24 on Linux, each ru
 - **Revert the fix.** One red row: `TestQuoteForCmdQuotesForCmdExe/a_double_quote`, on
   `quoteForCmd("a\"b") = "\"a\\\"b\""`. Every other row stays green, including all four of
   `TestCommandRunsAQuotedPath` — because the `SysProcAttr.CmdLine` half of the fix is invisible
-  to a Linux run. **That half's red is CI's to produce**, and the pre-existing one is CI run
+  to a Linux run. **That half's red is CI's to produce**, and it already has: CI run
   32634796756, where `TestPublishDryRunRunsPrePublishButNotPostPublish` failed on Windows alone
-  with `pre_publish hook failed: command failed: exit status 1`.
+  with `pre_publish hook failed: command failed: exit status 1`. #375 put that test back on
+  `shellcmd.QuoteArg`, so it is a live guard rather than a historical one.
 - **A plausible wrong fix: quote for cmd.exe on every platform**, by dropping QuoteArg's
   `runtime.GOOS` branch. Two red tests —
   `TestQuoteArgMatchesTheShellCommandStarts`, which **has no subtests** and so prints only the

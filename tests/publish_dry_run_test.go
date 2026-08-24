@@ -408,13 +408,20 @@ func TestPublishDryRunRunsPrePublishButNotPostPublish(t *testing.T) {
 	pre := filepath.Join(markers, "pre.txt")
 	post := filepath.Join(markers, "post.txt")
 
-	// The marker paths go through shellcmd.QuoteArg, which is what a user with
-	// a space in their temp path has to rely on. This test used to skip such a
-	// path instead, because QuoteArg's output did not survive shellcmd.Command
-	// on Windows; #375 fixed that, so the skip is gone. What actually pins the
-	// fix is TestCommandRunsAQuotedPath in internal/shellcmd, which builds a
-	// directory with a space in its name rather than hoping the machine's
-	// TMPDIR has one - CI's does not, so this test would pass here either way.
+	// The marker paths go through shellcmd.QuoteArg. This test used to paste
+	// them in unquoted and skip when the temp path held a space, because
+	// QuoteArg's output did not survive shellcmd.Command on Windows. #375 fixed
+	// that, so the quoting is back and the skip is gone.
+	//
+	// This is the test that caught the defect - CI run 32634796756, Windows
+	// only, `pre_publish hook failed: command failed: exit status 1`, with Linux
+	// and macOS green on the same commit - and it catches it without needing a
+	// space in the marker path, because the command string as a whole contains
+	// spaces and that alone was enough for syscall.EscapeArg to rewrite the
+	// quotes QuoteArg had added. What it does not cover is a space inside the
+	// path itself, since CI's temp directory has none. That case is
+	// TestCommandRunsAQuotedPath in internal/shellcmd, which builds a directory
+	// with a space in its name rather than hoping the machine supplies one.
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	env.writeFile(cfgPath, "hooks:\n"+
 		"  pre_publish: "+yamlQuote("echo ran > "+shellcmd.QuoteArg(pre))+"\n"+
