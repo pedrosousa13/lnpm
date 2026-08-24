@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -359,6 +360,298 @@ func TestRunRetreatPreviewFlagsAnUnsafeLockEntry(t *testing.T) {
 	}
 	if !strings.Contains(out, "good-pkg") {
 		t.Errorf("the preview dropped the valid entry, output was:\n%s", out)
+	}
+}
+
+// The tests below cover the second thing retreat joins a lock key into a path
+// under: the two directories above node_modules/{name}. A name it validated can
+// still land outside the project when node_modules - or, for a scoped name, the
+// scope directory - is a link the repository committed. That is the linker's
+// #339 hole reached through a different command, and the assertion that matters
+// is the same one: the file outside the project is still there afterwards.
+
+// symlinkDirAt points linkPath at target, and skips the test when the platform
+// will not have it.
+//
+// os.Symlink rather than the linker's createDirSymlink, which is unexported:
+// that one falls back to a junction on Windows, so these tests run there only
+// with the symlink privilege and skip without it. The guard is not exercised in
+// that case and saying so beats pretending it passed. Every case below reaches
+// this helper before it asserts anything, so a skip is never a silent pass.
+func symlinkDirAt(t *testing.T, target, linkPath string) {
+	t.Helper()
+
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("cannot create a directory link at %s: %v", linkPath, err)
+	}
+}
+
+// allowSymlinkedNodeModules turns the override on in the config newRetreatProject
+// already pointed LNPM_CONFIG at, appending rather than rewriting so the store
+// path that config carries survives.
+func allowSymlinkedNodeModules(t *testing.T) {
+	t.Helper()
+
+	path := os.Getenv("LNPM_CONFIG")
+	if path == "" {
+		t.Fatal("LNPM_CONFIG is unset; newRetreatProject is what sets it")
+	}
+	writeFile(t, path, readFileString(t, path)+"follow_symlinked_node_modules: true\n")
+	config.ResetForTesting()
+	t.Cleanup(config.ResetForTesting)
+}
+
+// symlinkedNodeModulesProject lays out the hostile checkout every case below
+// starts from: a project whose node_modules is a link to the sibling directory
+// the fixture keeps a file in, and a sentinel file in that directory at exactly
+// the path retreat is about to remove.
+//
+// The sentinel is a plain file at the entry's own path, as the linker's
+// TestUnlinkRefusesASymlinkedNodeModules uses, and for that test's reason: the
+// call here is os.Remove, which cannot take a non-empty directory, so a sentinel
+// inside one would leave the test passing for a reason the guard did not supply.
+func symlinkedNodeModulesProject(t *testing.T, entry string) (project, sentinel string) {
+	t.Helper()
+
+	project, victim := newRetreatProject(t)
+	victimDir := filepath.Dir(victim)
+	sentinel = filepath.Join(victimDir, entry)
+	writeFile(t, sentinel, victimContents)
+
+	nodeModules := filepath.Join(project, "node_modules")
+	if err := os.Remove(nodeModules); err != nil {
+		t.Fatalf("clear the real node_modules: %v", err)
+	}
+	symlinkDirAt(t, victimDir, nodeModules)
+
+	return project, sentinel
+}
+
+// requireProjectUntouched is what a refusal has to be worth. The retreat is
+// refused before any of this is touched, so every artifact lnpm would have
+// removed is still exactly where it was - which is what makes the remedy the
+// message advertises something the user can actually take.
+//
+// .lnpm/ is the load-bearing one. The retreat loop's other refusal, on an
+// invalid name, is safe precisely because lnpm never wrote a .lnpm/{name} for
+// it; here it did, and RunRetreat's os.RemoveAll takes that directory whatever
+// the loop decided. A guard that only skipped the entry would leave the files
+// gone, the package.json reference dangling and lnpm.lock stashed.
+func requireProjectUntouched(t *testing.T, project string, deps ...string) {
+	t.Helper()
+
+	if _, err := os.Stat(filepath.Join(project, ".lnpm")); err != nil {
+		t.Errorf(".lnpm/ Stat err = %v after a refused retreat, want the directory left alone", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, "lnpm.lock")); err != nil {
+		t.Errorf("lnpm.lock Stat err = %v after a refused retreat, want it left in place", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, lockfile.RetreatFileName)); !os.IsNotExist(err) {
+		t.Errorf("%s exists after a refused retreat (Stat err = %v); the lock file must not be stashed", lockfile.RetreatFileName, err)
+	}
+	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
+	for _, dep := range deps {
+		if !strings.Contains(pkgJSON, dep) {
+			t.Errorf("retreat edited package.json for a refused retreat; want it to still hold %s, package.json is now:\n%s", dep, pkgJSON)
+		}
+	}
+}
+
+// requireRefusalNamesTheWayOut is the other half: a refusal the user cannot act
+// on is the outcome the override exists to prevent, so the message has to carry
+// the path and the key, not just a non-nil error.
+func requireRefusalNamesTheWayOut(t *testing.T, err error, path string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("RunRetreat() = nil through a symlinked node_modules, want a refusal")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("RunRetreat() error = %v, want it to name %s", err, path)
+	}
+	if !strings.Contains(err.Error(), "follow_symlinked_node_modules") {
+		t.Errorf("RunRetreat() error = %v, want it to name the override", err)
+	}
+}
+
+// TestRunRetreatRefusesASymlinkedNodeModules is this hole's reproduction, run
+// against the unguarded build before the guard was written: with node_modules
+// committed as a link out of the project, retreat deleted nm-victim/my-package
+// and reported "OK Retreat complete!" with a nil error.
+//
+// The refusal takes the whole retreat rather than the entry, and the assertions
+// are split accordingly: the sentinel outside the project survives, and so does
+// everything inside it. Skipping the entry instead would satisfy the first of
+// those and fail the second, because the os.RemoveAll of .lnpm/ below the loop
+// runs whatever the loop decided.
+func TestRunRetreatRefusesASymlinkedNodeModules(t *testing.T) {
+	project, sentinel := symlinkedNodeModulesProject(t, "my-package")
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	requireVictimIntact(t, sentinel)
+	requireProjectUntouched(t, project, `"my-package":"file:.lnpm/my-package"`)
+	requireRefusalNamesTheWayOut(t, err, filepath.Join(project, "node_modules"))
+
+	// Nothing was claimed either. The check runs above the first print, so a
+	// refused retreat does not announce one.
+	if out != "" {
+		t.Errorf("a refused retreat printed %q, want nothing said before it refused", out)
+	}
+}
+
+// TestRunRetreatRefusesASymlinkedNodeModulesScope covers the second ancestor a
+// scoped name adds: a real node_modules holding a committed @org link redirects
+// every scoped package one level down. Against the unguarded build this fixture
+// deleted nm-victim/scoped.
+//
+// The unscoped package beside it is the point of the fixture. The scope check is
+// per entry, so a check inside the loop would refuse the scoped entry only after
+// good-pkg had already been removed - a half-retreated project. The preflight
+// answers for both before either is touched, so good-pkg is still linked here.
+func TestRunRetreatRefusesASymlinkedNodeModulesScope(t *testing.T) {
+	project, victim := newRetreatProject(t)
+	victimDir := filepath.Dir(victim)
+	sentinel := filepath.Join(victimDir, "scoped")
+	writeFile(t, sentinel, victimContents)
+
+	scopeDir := filepath.Join(project, "node_modules", "@org")
+	symlinkDirAt(t, victimDir, scopeDir)
+
+	writeRetreatLock(t, project, map[string]string{"@org/scoped": "", "good-pkg": "^1.0.0"})
+	goodLink := filepath.Join(project, "node_modules", "good-pkg")
+	writeFile(t, goodLink, "module.exports = {}\n")
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	requireVictimIntact(t, sentinel)
+	requireProjectUntouched(t, project,
+		`"@org/scoped":"file:.lnpm/@org/scoped"`, `"good-pkg":"file:.lnpm/good-pkg"`)
+	requireRefusalNamesTheWayOut(t, err, scopeDir)
+
+	if _, statErr := os.Lstat(goodLink); statErr != nil {
+		t.Errorf("node_modules/good-pkg Lstat err = %v; a refused retreat must not remove the entries it could have", statErr)
+	}
+	if out != "" {
+		t.Errorf("a refused retreat printed %q, want nothing said before it refused", out)
+	}
+}
+
+// TestRunRetreatRefusedForASymlinkedNodeModulesStillRetreatsWithTheOverride is
+// what the refusal is worth, asserted rather than argued. The message tells the
+// user to set the override and re-run; this runs exactly that, and the retreat
+// completes. It can only pass if the refusal left .lnpm/ and lnpm.lock alone,
+// which is the whole reason it refuses the retreat instead of the entry.
+func TestRunRetreatRefusedForASymlinkedNodeModulesStillRetreatsWithTheOverride(t *testing.T) {
+	project, sentinel := symlinkedNodeModulesProject(t, "my-package")
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+
+	var err error
+	captureStdout(t, func() { err = RunRetreat(true, false) })
+	if err == nil {
+		t.Fatal("RunRetreat() = nil through a symlinked node_modules, want the refusal this test recovers from")
+	}
+
+	// The remedy the refusal names, taken literally.
+	allowSymlinkedNodeModules(t)
+
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	if err != nil {
+		t.Errorf("RunRetreat() = %v after setting the override, want the retreat the refusal promised; output was:\n%s", err, out)
+	}
+	if !strings.Contains(out, "Retreat complete!") {
+		t.Errorf("retreat did not report completion after setting the override, output was:\n%s", out)
+	}
+	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
+	if !strings.Contains(pkgJSON, `"my-package":"^1.0.0"`) {
+		t.Errorf("retreat did not restore my-package's original version, package.json is now:\n%s", pkgJSON)
+	}
+	// The override is what the second run followed the link on, so the sentinel
+	// is gone this time. That is the behaviour it restores, not a regression.
+	if _, statErr := os.Lstat(sentinel); !os.IsNotExist(statErr) {
+		t.Errorf("nm-victim/my-package survived the override run (%v); the override has to restore the removal through the link", statErr)
+	}
+}
+
+// TestRunRetreatFollowsASymlinkedNodeModulesWithTheOverride is the other side of
+// the maintainer's decision, carried over from the linker: relocating
+// node_modules is a setup people run, so with the override set retreat must do
+// exactly what it did before the guard existed - remove the entry wherever the
+// relocation put it.
+//
+// Like its linker counterparts this passes against the unguarded build too, and
+// has to: it pins what the override gives back, not what the guard stops.
+func TestRunRetreatFollowsASymlinkedNodeModulesWithTheOverride(t *testing.T) {
+	project, victim := newRetreatProject(t)
+	allowSymlinkedNodeModules(t)
+
+	relocated := filepath.Join(filepath.Dir(victim), "..", "relocated")
+	if err := os.MkdirAll(relocated, 0755); err != nil {
+		t.Fatalf("create the relocation target: %v", err)
+	}
+	entry := filepath.Join(relocated, "my-package")
+	writeFile(t, entry, "module.exports = {}\n")
+
+	nodeModules := filepath.Join(project, "node_modules")
+	if err := os.Remove(nodeModules); err != nil {
+		t.Fatalf("clear the real node_modules: %v", err)
+	}
+	symlinkDirAt(t, relocated, nodeModules)
+
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	if err != nil {
+		t.Errorf("RunRetreat() = %v with the override set, want it to proceed; output was:\n%s", err, out)
+	}
+	if !strings.Contains(out, "Retreat complete!") {
+		t.Errorf("retreat did not report completion with the override set, output was:\n%s", out)
+	}
+	if _, statErr := os.Lstat(entry); !os.IsNotExist(statErr) {
+		t.Errorf("relocated/my-package is still there (%v); the override has to restore the removal through the link", statErr)
+	}
+	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
+	if !strings.Contains(pkgJSON, `"my-package":"^1.0.0"`) {
+		t.Errorf("retreat did not restore my-package's original version, package.json is now:\n%s", pkgJSON)
+	}
+}
+
+// TestRunRetreatPreviewFlagsASymlinkedNodeModules holds the preview to the
+// invariant the name check states in retreat.go: the preview and the action
+// agree on what --force is going to do. --force refuses outright and removes
+// nothing, so a preview that listed the packages it would have removed would
+// describe a retreat that is not going to happen.
+func TestRunRetreatPreviewFlagsASymlinkedNodeModules(t *testing.T) {
+	project, sentinel := symlinkedNodeModulesProject(t, "my-package")
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(false, false) })
+
+	requireVictimIntact(t, sentinel)
+	requireProjectUntouched(t, project, `"my-package":"file:.lnpm/my-package"`)
+
+	if err != nil {
+		t.Errorf("RunRetreat(force=false) = %v, want nil: a preview changes nothing", err)
+	}
+	if !strings.Contains(out, "will refuse and remove nothing") {
+		t.Errorf("the preview did not say --force is going to refuse, output was:\n%s", out)
+	}
+	if !strings.Contains(out, filepath.Join(project, "node_modules")) {
+		t.Errorf("the preview did not name the project's node_modules, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "follow_symlinked_node_modules") {
+		t.Errorf("the preview did not name the override, output was:\n%s", out)
+	}
+	// The listing is what it replaced, not something it printed alongside.
+	if strings.Contains(out, "Changes that will be made") {
+		t.Errorf("the preview listed changes --force is not going to make, output was:\n%s", out)
 	}
 }
 

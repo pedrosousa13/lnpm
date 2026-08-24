@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
+	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
@@ -42,6 +44,16 @@ func RunRetreat(force bool, runInstall bool) error {
 	}
 
 	if !force {
+		// Before the listing, not inside it. --force is going to refuse and
+		// remove nothing, so describing the packages it would have removed
+		// would describe a retreat that is not going to happen - at the one
+		// moment the developer is reading. A preview still changes nothing and
+		// still returns nil; it just says what is actually coming.
+		if err := requireRetreatableNodeModules(cwd, lock.List()); err != nil {
+			fmt.Printf("%s 'lnpm retreat --force' will refuse and remove nothing: %v\n", iconWarn(), err)
+			return nil
+		}
+
 		fmt.Println("This will remove all lnpm links and restore original dependencies.")
 		fmt.Println("Run with --force to confirm.")
 		fmt.Println()
@@ -88,6 +100,13 @@ func RunRetreat(force bool, runInstall bool) error {
 			fmt.Printf("  - Save lnpm.lock as %s, for 'lnpm restore'\n", lockfile.RetreatFileName)
 		}
 		return nil
+	}
+
+	// Before the first print, let alone the first delete: a refusal here has to
+	// leave the project exactly as it was, and saying "Retreating from lnpm..."
+	// first would be the only part of that which was not true.
+	if err := requireRetreatableNodeModules(cwd, lock.List()); err != nil {
+		return fmt.Errorf("%w\n\nHint: nothing was removed - .lnpm/, lnpm.lock and package.json are as they were, so re-run 'lnpm retreat' once that is settled", err)
 	}
 
 	fmt.Println("Retreating from lnpm...")
@@ -253,6 +272,88 @@ func RunRetreat(force bool, runInstall bool) error {
 	// counts what was refused; this names what is left.
 	if len(refused) > 0 {
 		return fmt.Errorf("package.json still references %d unretreated lnpm.lock entr(ies)", len(refused))
+	}
+
+	return nil
+}
+
+// requireRetreatableNodeModules refuses the whole retreat when node_modules -
+// or, for a scoped entry, node_modules/{scope} - is not a real directory in the
+// project. It answers for every entry the retreat would remove, and it is called
+// before anything is removed at all.
+//
+// The hole it closes. retreat removes node_modules/{name} itself and never goes
+// through the linker, so #339's guard did not cover it. Measured against the
+// unguarded build: with node_modules committed as a link out of the project,
+// retreat deleted nm-victim/my-package - a plain file outside the project - and
+// printed "OK Retreat complete!" with a nil error.
+//
+// Why the whole retreat and not the entry, which is the opposite of what the
+// name check beside the removal does with its refusals. That check can skip an
+// entry safely because lnpm never wrote anything for it: 'lnpm add' validates
+// the name, so there is no .lnpm/{name} to undo, which is exactly what
+// reportRefused tells the user. Neither half of that holds here. lnpm did write
+// .lnpm/{name}, and RunRetreat's os.RemoveAll takes it whatever the loop
+// decided - so a skipped entry would end with its files deleted, package.json
+// still carrying file:.lnpm/{name} pointing at nothing, lnpm.lock stashed so a
+// re-run reports "No lnpm links found", and reportRefused telling the user lnpm
+// had written nothing for it. That is the state the leading-dot waiver in the
+// loop calls worse than pointless, for this same reason, forty lines above the
+// removal. Refusing outright leaves a project the user can still act on: the
+// error names the path and the override, and nothing has been touched.
+//
+// Why a preflight and not a check inside the loop. Both refuse, but only this
+// one refuses atomically. The node_modules half is a property of the project, so
+// inside the loop it would fire on the first entry and stop before any removal;
+// the scope half is not, so with a committed node_modules/@org beside ordinary
+// packages the loop would remove however many entries it reached first and then
+// abort - a partially retreated project, which is the outcome this whole check
+// exists to avoid. Answering for every entry up front is what makes the refusal
+// all-or-nothing.
+//
+// Position was measured, not argued, the way the linker's own guard records it.
+// Two wrong placements were run on 2026-08-24, each preceded by go vet and each
+// read for the package result line: moved down to just above the .lnpm
+// RemoveAll, and moved into the loop below the os.Remove. Both give the same
+// answer - TestRunRetreatRefusesASymlinkedNodeModules and its scope twin, red on
+// the sentinel and on nothing else. requireRefusalNamesTheWayOut stays green
+// under both: the returned error still names the path and the override, and the
+// hint below still says "nothing was removed" while the file outside the project
+// is already gone. An error-only test cannot tell any of these placements apart,
+// which is why the sentinel assertion runs first in every case.
+//
+// Worth naming what does not move, because it looks like it should.
+// TestRunRetreatRefusedForASymlinkedNodeModulesStillRetreatsWithTheOverride
+// stays green under the first placement: it sits above the RemoveAll, so .lnpm/
+// and lnpm.lock still survive and the override re-run still completes. That test
+// pins the recovery, not the position - only the sentinel does the latter.
+//
+// Deleting the check outright turns the same two tests red on the sentinel, plus
+// that recovery test on its "want the refusal this test recovers from" line.
+// Deleting only the preview's call moves one test and no others:
+// TestRunRetreatPreviewFlagsASymlinkedNodeModules.
+//
+// Entries the name check will refuse are passed over. They never reach the
+// removal, so they are not what this protects, and refusing the retreat on their
+// account would take away the escape that check deliberately leaves open for a
+// developer holding a tampered lock file.
+//
+// The names are sorted because lock.List() is a map range and returns them in a
+// random order. Without it, a project with two committed scope links names a
+// different one on each run.
+func requireRetreatableNodeModules(cwd string, names []string) error {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+
+	for _, name := range sorted {
+		if pack.ValidatePackageNameForRemoval(name) != nil {
+			continue
+		}
+		// The linker's own predicate, not a copy of it: one guard, one override
+		// key, one message, whichever command reaches the directory.
+		if err := link.RequireRealNodeModulesDirs(cwd, name); err != nil {
+			return err
+		}
 	}
 
 	return nil

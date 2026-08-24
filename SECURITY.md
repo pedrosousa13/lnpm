@@ -43,12 +43,13 @@ chose it. Against that, lnpm:
   directory, so a repository cannot commit either as a symlink and redirect
   every write and delete underneath it.
 - Requires the same of `node_modules` — and, for a scoped package,
-  `node_modules/{scope}` — before creating the link into `.lnpm`. That check is
-  overridable, and `.lnpm`'s is not: relocating `node_modules` to another volume
-  or out of a synced folder is a setup people run, so
-  `follow_symlinked_node_modules: true` in the config file turns it off. Leaving
-  it on is what stops a committed link from aiming lnpm's directory creation and
-  its recursive delete outside the project.
+  `node_modules/{scope}` — before creating the link into `.lnpm` and before
+  removing it again, in the linker and in `retreat` alike, through one shared
+  predicate. That check is overridable, and `.lnpm`'s is not: relocating
+  `node_modules` to another volume or out of a synced folder is a setup people
+  run, so `follow_symlinked_node_modules: true` in the config file turns it off.
+  Leaving it on is what stops a committed link from aiming lnpm's directory
+  creation and its deletes outside the project.
 
 Note that `filepath.Join()` is not itself a defence: it cleans the path it
 builds, so `..` segments in a name survive into the result. The validation
@@ -67,9 +68,6 @@ Known limits, which this section deliberately does not claim otherwise about:
 - The guard covers `node_modules` and `node_modules/{scope}`. The entry beneath
   them is removed with calls that do not follow a link at their last component,
   so a package's own `node_modules/{package}` needs no equivalent check.
-- The guard is in the linker, and `retreat` does not go through it: it removes
-  `node_modules/{name}` itself, with no check on the two directories above. A
-  committed symlink still redirects that one removal.
 - Read paths are not covered. `Store.GetFiles` walks the store path it builds
   from a name, and the link-status queries `pull` runs only `Lstat` it, and
   neither validates the name first. They read rather than write, so they cannot
