@@ -71,12 +71,60 @@ var defaultIncludes = []string{
 	"history*",
 }
 
-// defaultExcludes are patterns always excluded
-var defaultExcludes = []string{
+// hardReservedExcludes are patterns nothing publishes. Not a "files" entry, not
+// an "!" negation in .npmignore or .gitignore, not the path named by "main".
+// They are the one rule in the selection path with no override at all, which is
+// what makes them worth naming apart from defaultExcludes below: "lnpm's
+// default" and "never publishable" are different claims, and before #321 both
+// lived in one list and neither could be told from the other.
+//
+// The difference is what a maintainer can do about it. A defaultExcludes entry
+// yields to a maintainer who names the path in "files" or negates it in an
+// ignore file; an entry here yields to nothing, and naming one in "files" earns
+// a warning instead (warnHardReservedFilesEntry). "main" outranks neither list —
+// that is docs/adr/0004's boundary and #321 did not move it — so it is not the
+// axis these two differ on.
+//
+// The membership rule is npm's, not lnpm's invention, but npm publishes two
+// lists and this one does not line up with either exactly. Read from
+// docs.npmjs.com/cli/v11/configuring-npm/package-json, "files":
+//
+//   - npm's "always ignored by default" list is the long one: *.orig, .*.swp,
+//     .DS_Store, ._*, .git, .hg, .lock-wscript, .npmrc, .svn, .wafpickle-N, CVS,
+//     config.gypi, node_modules, npm-debug.log, package-lock.json,
+//     pnpm-lock.yaml, yarn.lock, bun.lockb. Every entry here except the last
+//     block is on it, the "/**" entries being lnpm's second spelling of a name
+//     already there rather than extra names.
+//   - npm's "cannot be included even if specified in the files globs" list is
+//     the short one, and it is the true analogue of this list: .git, .npmrc,
+//     node_modules, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lockb.
+//
+// So lnpm is stricter than npm on five entries — .hg, .svn, CVS, .DS_Store and
+// *.orig, which npm ignores by default but will include for a "files" glob —
+// and looser on four, the lockfiles, which lnpm does not exclude at all. Neither
+// gap is #321's to close: which names belong in the lists was out of scope, and
+// only where the line falls between them was in it. Adding a name here takes a
+// reason of the kind npm's short list takes — that publishing it is never what
+// anyone meant — rather than a reason of the kind defaultExcludes takes.
+//
+// Two near-misses are worth naming so a later reader does not read parity into
+// the overlap. npm's ".*.swp" is narrower than lnpm's "*.swp", and npm's
+// "npm-debug.log" is narrower than lnpm's "*.log"; #321 left both of lnpm's
+// broader forms on the overridable side rather than narrow them to npm's
+// spelling in order to move them here.
+//
+// The last block is lnpm's and yalc's own state. Those files record absolute
+// paths on the machine that wrote them, so publishing one leaks the maintainer's
+// home directory layout into a tarball, which is the same "never what anyone
+// meant" test the npm entries pass.
+//
+// .DS_Store is here and Thumbs.db is in defaultExcludes below. That asymmetry
+// looks like an oversight and is not: npm force-ignores the first and not the
+// second, and matching npm's line is the rule this list follows. Do not "fix" it
+// by moving one to join the other.
+var hardReservedExcludes = []string{
 	".git",
 	".git/**",
-	".gitignore",
-	".gitattributes",
 	".hg",
 	".hg/**",
 	".svn",
@@ -84,13 +132,12 @@ var defaultExcludes = []string{
 	"CVS",
 	"CVS/**",
 	".DS_Store",
-	"Thumbs.db",
+	".npmrc",
 	"node_modules",
 	"node_modules/**",
-	".npmrc",
-	".npmignore",
-	".yalc",
-	".yalc/**",
+	"*.orig",
+
+	// lnpm's and yalc's own state, each of which records absolute host paths.
 	".lnpm",
 	".lnpm/**",
 	"lnpm.lock",
@@ -100,9 +147,80 @@ var defaultExcludes = []string{
 	// path per linked package. The patterns here are literal, not prefixes, so
 	// "lnpm.lock" above does not cover it.
 	lockfile.RetreatFileName,
+	".yalc",
+	".yalc/**",
 	"yalc.lock",
+}
+
+// defaultExcludes are patterns excluded unless the package selects them anyway.
+// They are what lnpm withholds from a package that has not asked for them, and
+// the maintainer's two selection rules outrank them: a "files" entry naming the
+// path, and an "!" negation in an ignore file.
+//
+// The two do not have equal reach, and the asymmetry is forced rather than
+// chosen. A "files" field turns off the ignore chain for the two whitelist arms
+// that select ordinary paths — isIncluded and mainEntry — because #318 makes a
+// "files" entry beat .npmignore and .gitignore. An "!" negation says nothing to
+// those arms, so "files": ["dist"] with "!dist/.env" still refuses dist/.env.
+// Naming the path in "files" is the route for such a package.
+//
+// One arm still consults the chain, and the negation still reaches through it:
+// isDefaultInclude. Its paths are the defaultIncludes set, which overlaps this
+// list — a root file matching an include stem (readme, license, licence,
+// changelog, changes, history) *and* one of the suffix patterns here (*.log,
+// *~, *.tgz, *.swp, *.swo). So "!changes.log" does re-include changes.log under
+// a "files" whitelist. package.json is the one defaultIncludes entry outside the
+// overlap; nothing here matches it.
+//
+// TestPackNegationDoesNotOverrideInWhitelistMode pins the rule and
+// TestPackNegationOverridesInWhitelistModeForDefaultIncludes pins the exception.
+// What that arm does under a whitelist is #360's subject, not #321's; this
+// documents it rather than changing it.
+//
+// "main" does not, and the asymmetry is deliberate rather than an oversight.
+// A "files" entry and an "!" negation say "publish this"; "main" says "this is
+// the entry point", and treating that as publication consent would ship a .env,
+// a log or a *.tgz on the strength of one manifest field. The check that keeps
+// main out is explicit, in collectFiles' mainEntry arm, because the arm does not
+// consult the ignore chain this list now rides in. docs/adr/0004 records the
+// boundary; TestPackMainCannotDefeatDefaultExcludes pins it.
+//
+// No pattern here appears on either npm list quoted above — not the short
+// "cannot be included" one, which is the line hardReservedExcludes draws, and
+// not the long "always ignored by default" one either. Every entry is lnpm's own
+// addition. "*.swp" and "*.log" are the two close calls and are discussed above,
+// since npm's ".*.swp" and "npm-debug.log" are both narrower.
+//
+// Three consequences are worth saying out loud rather than leaving to be
+// rediscovered:
+//
+//   - ".env" and ".env.*" are overridable, and that is #321's whole point.
+//     ".env.example" is a template rather than a secret and publishing it is
+//     ordinary, and before the split there was no way to do it. It follows that
+//     "files": [".env"] publishes .env — which is what npm does too, since npm
+//     ignores .env on neither list. lnpm is stricter than npm by default here
+//     and no longer stricter than npm when the maintainer names that exact path.
+//     Naming a directory containing it does not count; see collectFiles'
+//     isIncluded arm. main ".env" is still refused; see above.
+//   - ".gitignore" and ".gitattributes" are listed here, but naming one in
+//     "files" does not publish it. filterGitFiles runs over the finished set in
+//     Pack and drops both unconditionally, by basename, at every depth. That
+//     filter predates #321 and is not part of this precedence chain.
+//   - ".npmignore" is the odd one out, and the asymmetry is real rather than
+//     apparent: filterGitFiles has no entry for it, so "files": [".npmignore"]
+//     does publish it where the two git files above cannot be published at all.
+//     TestPackFilesEntryNamingAnIgnoreFile pins all three. Publishing an
+//     .npmignore is
+//     harmless — it describes what was left out, not a secret — so #321 left it
+//     overridable rather than hard-reserving it, which would have been a
+//     membership change and out of scope. #398 tracks reconciling filterGitFiles
+//     with these lists; the inconsistency lives there, not in this list.
+var defaultExcludes = []string{
+	".gitignore",
+	".gitattributes",
+	".npmignore",
+	"Thumbs.db",
 	"*.log",
-	"*.orig",
 	"*.swp",
 	"*.swo",
 	"*~",
@@ -111,26 +229,32 @@ var defaultExcludes = []string{
 	"*.tgz",
 }
 
-// lowerDefaultExcludes is defaultExcludes lower-cased once, for the
-// case-insensitive matching isDefaultExcluded does. It is derived rather than
-// written out so the two lists cannot drift: a new entry added above is folded
-// here whatever case it is spelled in.
+// lowerHardReservedExcludes and lowerDefaultExcludes are the two lists
+// lower-cased once, for the case-insensitive matching isHardReserved and
+// isDefaultExcluded do. Both are derived rather than written out so a list and
+// its fold cannot drift: a new entry added above is folded here whatever case it
+// is spelled in.
 //
-// Lowering the patterns and not just the path is safe because no entry carries a
-// character class, brace or escape — the invariant
+// Lowering the patterns and not just the path is safe because no entry in either
+// list carries a character class, brace or escape — the invariant
 // docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md already
 // records, there for keeping the move to doublestar clear of this list. It
 // matters again here for a different reason: strings.ToLower would rewrite
 // "[A-Z]" into "[a-z]" and "\A" into "\a", changing what the pattern matches
 // rather than how it is cased. TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite
-// pins it.
-var lowerDefaultExcludes = func() []string {
-	lowered := make([]string, len(defaultExcludes))
-	for i, pattern := range defaultExcludes {
+// pins it, over both lists.
+var (
+	lowerHardReservedExcludes = lowerPatterns(hardReservedExcludes)
+	lowerDefaultExcludes      = lowerPatterns(defaultExcludes)
+)
+
+func lowerPatterns(patterns []string) []string {
+	lowered := make([]string, len(patterns))
+	for i, pattern := range patterns {
 		lowered[i] = strings.ToLower(pattern)
 	}
 	return lowered
-}()
+}
 
 // Pack determines which files should be included in a package publish
 func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
@@ -158,9 +282,121 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 		return nil, nil, err
 	}
 
+	warnHardReservedFilesEntry(pkgJSON.Files)
+	warnHardReservedIgnoreNegation(packageDir)
 	warnMainEntryNotPacked(pkgJSON.Main, mainEntry, files)
 
 	return pkgJSON, files, nil
+}
+
+// warnHardReservedFilesEntry reports "files" entries naming a path lnpm never
+// publishes. It warns and returns; it never fails the pack, and it never changes
+// what is packed.
+//
+// It reads the manifest's entries rather than the packed set, which is the
+// opposite of what its sibling warnMainEntryNotPacked does, and the reason is
+// that the packed set cannot answer this question. collectFiles prunes a
+// hard-reserved directory with filepath.SkipDir, so no path under node_modules
+// or .git is ever walked and no absence in the finished set distinguishes "the
+// guard held it back" from "it was not there". Deriving from the entries is the
+// only route that reports the two cases the issue names.
+//
+// It says nothing about defaultExcludes, on purpose. Naming ".env.example" in
+// "files" now publishes it, so there is nothing to report; that is the whole
+// point of the split.
+//
+// Known gap, pre-existing and not #321's: ".gitignore" and ".gitattributes" are
+// in defaultExcludes rather than here, so naming one warns nothing — yet
+// filterGitFiles still strips both from the finished set, so it still does not
+// ship. That filter is a separate pass with its own list and predates this
+// warning. Reconciling the two is tracked in #398.
+//
+// It is a plain fmt.Printf with a spelled-out "warning:" prefix for the reason
+// warnMainEntryNotPacked gives below: internal/cli's icon helpers are unexported
+// and internal/cli imports this package, so borrowing them would be an import
+// cycle.
+//
+// The message quotes the entry as the manifest spells it, not the normalized
+// form, because that is the string the reader will search package.json for.
+func warnHardReservedFilesEntry(filesField []string) {
+	for _, entry := range filesField {
+		if !namesHardReserved(entry) {
+			continue
+		}
+
+		fmt.Printf("warning: package.json \"files\" names %q, which lnpm never "+
+			"publishes; it will not be in the package\n", entry)
+	}
+}
+
+// warnHardReservedIgnoreNegation is warnHardReservedFilesEntry for the other
+// override mechanism. #321 gives a maintainer two ways to ask for a path lnpm
+// excludes by default — a "files" entry and an "!" negation — and a refused ask
+// should say so whichever way it was written.
+//
+// It reads the package root's ignore file only, through loadIgnorePatterns, so
+// it sees .npmignore or, where there is none, .gitignore. That is a narrower
+// reach than collectFiles', which reads one ignore file per directory, and it is
+// a real gap rather than an argument that nested files cannot matter: a
+// "!node_modules" written in src/.npmignore refuses src/node_modules and is
+// still silent here. Covering that would mean enumerating negations across every
+// scope ignoreLoader visits and plumbing the loader out of collectFiles, which is
+// more machinery than a warning is worth; the root file is where a maintainer
+// writing a negation against node_modules or .git would put it.
+//
+// Not a gap, and not worth serving: a negation inside a hard-reserved directory,
+// such as node_modules/.npmignore. collectFiles prunes those directories with
+// filepath.SkipDir before their ignore files are read, so the negation was never
+// consulted for any purpose.
+//
+// Like its sibling it reports the request rather than an observed drop, so it
+// fires for a negation against a path that is not on disk at all. The message
+// stays true either way — that path will not be in the package — and the
+// alternative is comparing against a packed set that cannot distinguish "held
+// back" from "absent".
+func warnHardReservedIgnoreNegation(packageDir string) {
+	for _, pattern := range loadIgnorePatterns(packageDir) {
+		if !strings.HasPrefix(pattern, "!") || !namesHardReserved(pattern[1:]) {
+			continue
+		}
+
+		fmt.Printf("warning: the package's ignore file negates %q, which lnpm "+
+			"never publishes; it will not be in the package\n", pattern)
+	}
+}
+
+// namesHardReserved reports whether one entry a maintainer wrote — a "files"
+// entry or the body of an "!" negation — plainly names a hard-reserved path.
+//
+// It is deliberately literal, matching npm's own reading of a "files" entry: a
+// leading "/" anchors rather than rooting, and a trailing "/" marks a directory,
+// so "node_modules", "/node_modules" and "node_modules/" all answer true. It
+// does not try to decide whether an arbitrary glob would have selected a
+// hard-reserved path — "*" against the built-in list is a question with no
+// useful answer, and #321 asks only for entries that name such a path plainly.
+//
+// An entry that is empty once normalized ("", "/", "//") means "ship
+// everything" to isIncluded rather than naming any path, so it names nothing to
+// report.
+//
+// A "./"-prefixed entry answers true, and the route is worth knowing because it
+// is not this function's normalization. "./node_modules" survives the trims
+// unchanged, and isHardReserved reaches applyIgnorePatterns, which matches an
+// unanchored separator-free pattern against filepath.Base — and Base of
+// "./node_modules" is "node_modules". So "files": ["./node_modules"] does warn.
+// Run and confirmed; TestPackWarnsWhenFilesNamesHardReserved carries the row,
+// which was added because nothing here exercised one and the comment claimed
+// the opposite.
+//
+// That is the right message by a coincidence rather than by design, and the
+// distinction matters if anyone touches either half. matchFilesField resolves no
+// leading "./" anywhere, so such an entry selects nothing whatever the built-in
+// lists say — a separate pre-existing defect, filed on its own. Do not "fix" the
+// normalization here to match: it would report a path the matcher still cannot
+// see, and the matcher is where that belongs.
+func namesHardReserved(entry string) bool {
+	normalized := strings.TrimSuffix(strings.TrimPrefix(entry, "/"), "/")
+	return normalized != "" && isHardReserved(normalized)
 }
 
 // requireManifestPacked refuses a packed set with no package.json in it. It is
@@ -366,13 +602,23 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 	fileCount := 0
 
 	// Load .npmignore or .gitignore patterns, from every directory on the way
-	// down to each path rather than the package root alone. They are kept apart
-	// from defaultExcludes because the two rank differently against the "files"
-	// whitelist: the user's patterns lose to it, defaultExcludes beat it.
+	// down to each path rather than the package root alone.
+	//
+	// defaultExcludes rides along inside this chain as its shallowest layer, so
+	// the two rank together against the "files" whitelist: both lose to it.
+	// hardReservedExcludes is the list kept apart, checked in the walk below and
+	// beaten by nothing.
 	ignores := newIgnoreLoader(packageDir)
 
 	// If files field is specified, use whitelist mode
 	useWhitelist := len(filesField) > 0
+
+	// Answers the defaultExcludes question for the two whitelist-mode arms
+	// below, which cannot ask the ignore chain: consulting it there would let
+	// the user's patterns drop a file the "files" field selected, which is the
+	// thing #318 landed. Unused in non-whitelist mode, where the seeded chain
+	// decides the whole tree.
+	softExcluded := newDefaultExcludedTree()
 
 	// First pass: collect all files
 	err := filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
@@ -402,12 +648,16 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 		// Normalize path separators for pattern matching
 		relPath = filepath.ToSlash(relPath)
 
-		// Check if excluded. defaultExcludes are checked on their own and
-		// first, because nothing overrides them — not a user "!" negation, not
-		// the "files" field.
-		if isDefaultExcluded(relPath) {
+		// The hard-reserved set is checked on its own and first, above every
+		// user-driven selection rule, because nothing overrides it — not a user
+		// "!" negation, not the "files" field, not "main".
+		//
+		// defaultExcludes is deliberately not asked here. It is seeded into the
+		// ignore chain instead (ignoreLoader.excludes), which is what lets a
+		// "files" entry or an "!" negation outrank it. #321.
+		if isHardReserved(relPath) {
 			if info.IsDir() {
-				// Nothing inside a default-excluded directory can be wanted, so
+				// Nothing inside a hard-reserved directory can be wanted, so
 				// the walk never descends. This is what keeps a large
 				// node_modules off the walk entirely.
 				return filepath.SkipDir
@@ -435,13 +685,21 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 		// package's manifest or a fixture and an ignore pattern still drops it.
 		// TestPackManifestForceIncludeIsRootAnchored pins it.
 		//
-		// This sits below the isDefaultExcluded check above, never above it: the
-		// built-in list is a guard lnpm applies on the user's behalf, and a
-		// guard anything can step around is not a guard (docs/adr/0004 for
-		// "main", docs/adr/0005 for the manifest). No defaultExcludes entry
+		// This sits below the isHardReserved check above, never above it: that
+		// list is a guard lnpm applies on the user's behalf, and a guard
+		// anything can step around is not a guard (docs/adr/0004 for "main",
+		// docs/adr/0005 for the manifest). No hardReservedExcludes entry
 		// matches package.json today, so no ordinary fixture can see that
-		// placement — TestPackManifestCannotDefeatDefaultExcludes puts one there
+		// placement — TestPackManifestCannotDefeatHardReserved puts one there
 		// for its own duration and goes red if this is hoisted.
+		//
+		// It sits *above* defaultExcludes, which is evaluated inside the ignore
+		// chain further down. That is a real precedence move and an inert one:
+		// no entry in either built-in list matches package.json, so no package
+		// can observe it. It is not an exemption carved out for the manifest —
+		// the manifest simply does not carry the explicit isDefaultExcluded
+		// check the mainEntry arm below does, because unlike a "main" it names
+		// nothing either list can plausibly grow. docs/adr/0005 records it.
 		isManifest := relPath == manifestFileName
 
 		// The user's ignore patterns decide the whole tree only when there is no
@@ -494,17 +752,51 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 				// package that does not load.
 				//
 				// The boundary in full: main beats the "files" whitelist and
-				// the user's ignore patterns, and loses to defaultExcludes.
-				// That split is the one isDefaultExcluded already argues — the
-				// user's patterns are a preference the user expressed, the
-				// built-in list is a guard lnpm applies on the user's behalf,
-				// and a guard that can be stepped around by naming the file in
-				// "main" is not a guard. It holds structurally rather than by a
-				// check here: isDefaultExcluded is evaluated in the walk above
-				// and returns early, so .env named as "main" never reaches this
-				// switch. TestPackMainCannotDefeatDefaultExcludes pins it and
-				// goes red if the force-include is hoisted above that check.
+				// the user's ignore patterns, and loses to both built-in
+				// exclusion lists. docs/adr/0004 states that boundary and #321
+				// did not move it. The two halves are enforced differently, and
+				// the difference is the thing to read carefully:
 				//
+				//   - hardReservedExcludes holds structurally. isHardReserved is
+				//     evaluated in the walk above and returns early, so .npmrc
+				//     named as "main" never reaches this switch.
+				//     TestPackMainCannotDefeatHardReserved pins it and goes red
+				//     if the force-include is hoisted above that check.
+				//   - defaultExcludes needs the explicit check below, and used
+				//     not to. Before #321 it was evaluated in the same early
+				//     return and this arm was unreachable for a .env; now it
+				//     lives inside ignoreLoader.excludes, which this arm
+				//     deliberately does not call — that is exactly how a "files"
+				//     entry overrides it. So the one line below is the whole
+				//     reason main does not inherit that override.
+				//     TestPackMainCannotDefeatDefaultExcludes goes red when it is
+				//     deleted; run and confirmed by deleting it, not by reading.
+				//
+				// The two lists are not treated alike here because they fail in
+				// opposite directions. Letting main override defaultExcludes
+				// would publish .env, a log or a *.tgz on the strength of one
+				// manifest field, which fails toward leaking; refusing it packs
+				// nothing and warnMainEntryNotPacked says why, which fails toward
+				// a message. #321 asked to make defaultExcludes overridable by
+				// the maintainer's *selection* rules, and left main where
+				// docs/adr/0004 put it.
+				//
+				// The isIncludedDirectly half is not "main overrides after
+				// all". It is the "files" field speaking for this path, and it
+				// has to be asked here because this arm runs first: without it,
+				// a manifest with "files": [".env.example"] and
+				// main ".env.example" returned right here and failed #321's own
+				// first acceptance criterion. main alone is still not consent —
+				// main ".env" with "files": ["dist"] is refused, and
+				// TestPackMainCannotDefeatDefaultExcludes pins that half.
+				//
+				// Reordering the arms would also fix that case and must not be
+				// done: the arm order carries #319's rule that main outranks the
+				// whitelist.
+				if softExcluded.covers(relPath) && !isIncludedDirectly(relPath, filesField) {
+					return nil
+				}
+
 				// This sits inside the whitelist branch on purpose. A package
 				// with no "files" field is left exactly as it was — there the
 				// user's patterns decide the whole tree, main included.
@@ -513,7 +805,39 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 			case isIncluded(relPath, filesField):
 				// npm documents that a file included with the "files" field
 				// cannot be excluded through .npmignore or .gitignore, so the
-				// user's ignore patterns are not consulted at all here.
+				// user's ignore patterns are not consulted at all here. Not
+				// consulting them is also what carries #321's override of
+				// defaultExcludes, since that list rides inside the same chain.
+				//
+				// The override is narrower than the inclusion, and this is the
+				// line that narrows it. A "files" entry overrides the list only
+				// for a path it names — "files": [".env.example"] publishes the
+				// template — and never for a path it merely contains, so
+				// "files": ["dist"] does not publish dist/.env, dist/app.log or
+				// dist/pkg.tgz. Naming a build directory is not a statement
+				// about whatever secrets landed inside it, and without this the
+				// commonest "files" field in existence would start shipping
+				// them.
+				//
+				// covers rather than isDefaultExcluded, so the same holds one
+				// level up: "files": ["src"] does not publish src/.env/config
+				// either. See defaultExcludedTree for why the ancestor question
+				// exists at all and what it costs the walk.
+				//
+				// The test runs only for paths defaultExcludes covers. Every
+				// other path keeps isIncluded's containment reach exactly as
+				// #318 landed it: dist/a.js still ships for "files": ["dist"]
+				// past a .gitignore naming dist.
+				//
+				// This is deliberately not npm's behaviour and the divergence is
+				// wider than it looks. npm does not ignore .env at all, so
+				// `npm publish` with "files": ["dist"] publishes dist/.env
+				// outright. lnpm withholds it by default and, since #321,
+				// publishes it when the maintainer names that path. Neither
+				// half of that matches npm; the README divergence list says so.
+				if softExcluded.covers(relPath) && !isIncludedDirectly(relPath, filesField) {
+					return nil
+				}
 			case isDefaultInclude(relPath):
 				// A default include arrives on its own steam rather than
 				// through the "files" field, so an ignore pattern still drops
@@ -679,7 +1003,22 @@ func (l *ignoreLoader) scopes(dir string) []ignoreScope {
 // agreeing: with a "files" whitelist the walk descends into ignored directories
 // on purpose (#349), so pruning is not there to do it.
 func (l *ignoreLoader) excludes(relPath string) bool {
-	excluded := false
+	// defaultExcludes is the chain's shallowest layer: a verdict already in
+	// hand before the package root's own ignore file speaks. Seeding it here
+	// rather than deciding it in the walk is what gives an "!" negation the last
+	// word over it, by the same last-match-wins rule that already lets a deeper
+	// ignore file overrule a shallower one. #321.
+	//
+	// A "files" entry outranks it by a different route and not through this
+	// function at all: the isIncluded arm of collectFiles' whitelist switch never
+	// calls excludes. Note that the mainEntry arm does not call it either, which
+	// is why that arm has to ask defaultExcludedTree.covers itself — not calling
+	// excludes is what an override *is* here, and "main" is not meant to be one.
+	//
+	// Note this reaches dirExcluded too, so a directory named by an overridable
+	// default is still pruned in non-whitelist mode exactly as it was before the
+	// split.
+	excluded := isDefaultExcluded(relPath)
 	for _, scope := range l.scopes(slashpath.Dir(relPath)) {
 		if scope.dir != "." && l.dirExcluded(scope.dir) {
 			return true
@@ -692,6 +1031,79 @@ func (l *ignoreLoader) excludes(relPath string) bool {
 		excluded = applyIgnorePatterns(subPath, scope.patterns, excluded)
 	}
 	return excluded
+}
+
+// defaultExcludedTree answers whether defaultExcludes covers a path or any
+// directory above it, memoizing the directory half.
+//
+// The ancestor question exists because #321 moved defaultExcludes out of the
+// walk. Before it, the walk asked the combined list per path and returned
+// filepath.SkipDir for a matching directory in *both* modes, so a directory
+// named .env.d or app.log was pruned and nothing under it could be selected.
+// Afterwards the list reaches a path only through ignoreLoader.excludes — which
+// whitelist mode skips on purpose — or through collectFiles' per-file checks,
+// which ask about the file's own path. That left "files": ["src"] publishing
+// src/.env/config: the file's own name is not default-excluded, and isIncluded
+// reached it by containment. The direct-match rule was defeated one level up.
+//
+// So the rule the two whitelist-mode call sites apply is: refuse a path whose
+// own name or any ancestor directory is default-excluded, unless a "files" entry
+// names that path directly.
+//
+// Two consequences follow and both are deliberate.
+//
+// Whitelist mode cannot prune a default-excluded directory. Whether a "files"
+// entry selects something inside one cannot be known without descending and
+// asking per file — a "files" entry may be a glob — so the walk descends and
+// pays for it. That is the same trade collectFiles already makes one block above
+// for ignored directories, and for the same reason: walking costs something,
+// publishing the wrong set costs more. Non-whitelist mode still prunes, through
+// the seeded chain in excludes, and is untouched.
+//
+// A directly named path under a default-excluded directory now packs where the
+// pre-#321 walk refused it — it pruned the directory, so nothing inside could be
+// selected: "files": ["src/.env/config"] ships that file, and
+// "files": [".env.d/keep.js"] ships that one. This is a narrow widening and it
+// follows from the rule that a direct name is consent — the same rule that makes
+// "files": ["dist/.env"] pack. TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch
+// carries a row for each so neither reads as an accident.
+//
+// It does not reuse ignoreLoader.dirVerdicts, which memoizes the same shape —
+// one verdict per directory, resolved up towards the root. That cache answers
+// ignoreLoader.excludes, which folds in the
+// user's .npmignore and .gitignore patterns — and in whitelist mode a "files"
+// entry outranks those (#318), so consulting it here would drop files the
+// whitelist asked for. The two questions differ by exactly the thing #318
+// landed, so they need separate answers.
+type defaultExcludedTree struct {
+	dirVerdicts map[string]bool
+}
+
+func newDefaultExcludedTree() *defaultExcludedTree {
+	return &defaultExcludedTree{dirVerdicts: make(map[string]bool)}
+}
+
+// covers reports whether relPath or any directory above it is default-excluded.
+// relPath is slash-separated and relative to the package root.
+func (t *defaultExcludedTree) covers(relPath string) bool {
+	return isDefaultExcluded(relPath) || t.dirCovers(slashpath.Dir(relPath))
+}
+
+// dirCovers is covers for a directory, memoized. It terminates because
+// slashpath.Dir walks strictly up and returns "." for a single-segment path,
+// which is the package root and is never excluded.
+func (t *defaultExcludedTree) dirCovers(dir string) bool {
+	if dir == "." || dir == "/" || dir == "" {
+		return false
+	}
+
+	if verdict, ok := t.dirVerdicts[dir]; ok {
+		return verdict
+	}
+
+	verdict := isDefaultExcluded(dir) || t.dirCovers(slashpath.Dir(dir))
+	t.dirVerdicts[dir] = verdict
+	return verdict
 }
 
 // dirExcluded is excludes memoized for a directory. It terminates because the
@@ -751,18 +1163,50 @@ func readIgnoreFile(path string) []string {
 //
 // It follows gitignore semantics: every pattern is evaluated and the last one
 // that matches decides the outcome, so a later "!pattern" re-includes a path an
-// earlier pattern excluded. collectFiles evaluates defaultExcludes in a call of
-// their own, which is what keeps a user negation from re-including a
-// default-excluded path such as .env or node_modules.
+// earlier pattern excluded. collectFiles evaluates hardReservedExcludes in a call
+// of their own and above every selection rule, which is what keeps a user
+// negation from re-including node_modules or .npmrc. defaultExcludes gets no
+// such treatment: ignoreLoader.excludes seeds it into the chain, precisely so a
+// negation can re-include .env.example (#321).
 func isExcluded(relPath string, patterns []string) bool {
 	return applyIgnorePatterns(relPath, patterns, false)
 }
 
-// isDefaultExcluded reports whether the built-in force-exclude set covers
-// relPath, matching case-insensitively.
+// isHardReserved reports whether the hard-reserved set covers relPath, matching
+// case-insensitively for the reasons isDefaultExcluded gives below — the fold
+// arrived (#317) while the two sets were still one list, and splitting them
+// keeps it on both halves rather than choosing one.
 //
-// defaultExcludes is a guard lnpm applies on the user's behalf rather than a
-// preference the user expressed, and a guard that can be stepped around by
+// This is the set with no override. collectFiles asks it first in the walk,
+// above every user-driven selection rule, and Pack warns when a "files" entry
+// names a path it covers (warnHardReservedFilesEntry).
+func isHardReserved(relPath string) bool {
+	return isExcluded(strings.ToLower(relPath), lowerHardReservedExcludes)
+}
+
+// isDefaultExcluded reports whether the overridable half of the built-in
+// exclusion set covers relPath, matching case-insensitively.
+//
+// It is not the whole guard and has not been since #321 split the list: the half
+// nothing can override is isHardReserved above. This half is seeded into the
+// ignore chain by ignoreLoader.excludes, so a user "!" negation outranks it, and
+// the isIncluded arm of collectFiles' whitelist switch never consults the chain
+// at all, so a "files" entry outranks it too.
+//
+// Neither arm of that switch consults the chain, in fact, so both call back into
+// this list explicitly — the isIncluded arm through defaultExcludedTree.covers,
+// which also asks about ancestor directories, and the mainEntry arm through the
+// same helper. Two guard sites, not one. The mainEntry call is what keeps "main"
+// from inheriting the override (docs/adr/0004 has the why); the isIncluded call
+// is what keeps the override to directly named paths. Deleting either leaves the
+// other green, so a revert check has to name which one it is testing —
+// docs/agents/verification-discipline.md spells the two experiments out.
+//
+// The reasoning below is the fold's, so it covers both halves and isHardReserved
+// points here rather than restating it.
+//
+// A built-in exclusion is a guard lnpm applies on the user's behalf rather than
+// a preference the user expressed, and a guard that can be stepped around by
 // holding shift is not a guard: matched case-sensitively, ".ENV", ".Env.local"
 // and ".NPMRC" all shipped while ".env" and ".npmrc" did not. On macOS and
 // Windows those name the same file, so whether a secret was protected came down
@@ -941,41 +1385,161 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // a package with no "files" field. isExcluded skips such a pattern for the same
 // reason, so neither function filters a path out on the strength of one.
 func isIncluded(relPath string, patterns []string) bool {
+	return matchFilesField(relPath, patterns) != filesMatchNone
+}
+
+// isIncludedDirectly reports whether some "files" entry names relPath itself,
+// rather than reaching it only as the contents of a directory the entry names.
+//
+// It exists for one caller and one question. #321 lets a "files" entry override
+// defaultExcludes, and the override is per named path: "files": [".env.example"]
+// publishes that template, and "files": ["dist"] must not thereby publish
+// dist/.env, dist/app.log or dist/pkg.tgz — an entry naming a build directory is
+// not a statement about the secrets that may have landed in it. collectFiles
+// asks this only for paths defaultExcludes covers; every other path keeps
+// isIncluded's containment reach exactly as #318 landed it.
+func isIncludedDirectly(relPath string, patterns []string) bool {
+	return matchFilesField(relPath, patterns) == filesMatchDirect
+}
+
+// filesMatch is how a "files" entry reached a path: not at all, by containing
+// the directory it sits in, or by naming the path itself.
+//
+// The distinction is drawn by which branch of matchFilesField fired and by
+// nothing else. It is deliberately not inferred from the text of the pattern:
+// #318's first attempt at a related question compared pattern text lexically and
+// broke on glob entries, whose reach cannot be read off the string.
+type filesMatch int
+
+const (
+	filesMatchNone filesMatch = iota
+	// filesMatchContains: the entry swept the path in rather than naming it —
+	// by naming an ancestor ("dist" reaching dist/a.js), by naming a subtree
+	// ("dist/**"), by ending in a bare wildcard segment ("dist/*", "*", "**"),
+	// or by naming nothing at all (the degenerate "").
+	filesMatchContains
+	// filesMatchDirect: the entry named this path. Either literally
+	// ("dist/.env"), or as a glob whose last segment constrains the name
+	// ("*.env", ".env.*", "dist/*.env").
+	filesMatchDirect
+)
+
+// matchFilesField reports the strongest way any entry in patterns reaches
+// relPath. Direct beats contains, so one entry naming the path outranks another
+// merely containing it: "files": ["dist", "dist/.env"] publishes dist/.env.
+//
+// The boundary is a glob's final segment, and it is the one to know. A bare "*"
+// or "**" there sweeps a directory and names nothing, so "dist", "dist/*" and
+// "dist/**" all agree: none publishes a default-excluded dist/.env. A segment
+// that constrains the name does name, so "dist/*.env", ".env.*" and "*.example"
+// all publish what they match.
+//
+// An earlier draft split "dist/*" from "dist/**", on the reasoning that
+// filepath.Match's "*" cannot cross a separator so the first picks out one level
+// rather than a tree. True, and beside the point: it made "files": ["*"] publish
+// every overridable-list file at the package root, and it made the three
+// spellings of "ship everything" — "", "." and "*" — disagree with each other.
+// The question is whether the entry said anything about the name, not how deep
+// it reaches.
+//
+// The branches below and their order are unchanged from the single-verdict
+// isIncluded this was split out of; only the returns are. Note the trailing
+// "/**" branch continues rather than falling through to the glob branch, as it
+// did before, so "dist/**" never reaches filepath.Match.
+func matchFilesField(relPath string, patterns []string) filesMatch {
+	best := filesMatchNone
+
 	for _, pattern := range patterns {
 		pattern = strings.TrimPrefix(pattern, "/")
 		if !strings.Contains(pattern, "*") {
 			pattern = strings.TrimSuffix(pattern, "/")
 		}
 
-		if pattern == "" {
-			return true
-		}
+		var match filesMatch
+		switch {
+		case pattern == "":
+			// The degenerate entry ships everything, so it contains every path
+			// and names none. That keeps "files": [""] shipping what a package
+			// with no "files" field ships, which is what it has always meant —
+			// and a package with no "files" field does not ship .env.
+			match = filesMatchContains
 
-		// Direct match
-		if pattern == relPath {
-			return true
-		}
+		case pattern == relPath:
+			match = filesMatchDirect
 
-		// Directory match - if pattern is "dist", include "dist/anything"
-		if strings.HasPrefix(relPath, pattern+"/") {
-			return true
-		}
+		case strings.HasPrefix(relPath, pattern+"/"):
+			// "dist" reaching dist/anything.
+			match = filesMatchContains
 
-		// Handle ** patterns
-		if strings.HasSuffix(pattern, "/**") {
+		case strings.HasSuffix(pattern, "/**"):
 			prefix := strings.TrimSuffix(pattern, "/**")
 			if relPath == prefix || strings.HasPrefix(relPath, prefix+"/") {
-				return true
+				// Containment for both halves. The relPath == prefix half can
+				// only fire for a *file* literally named "dist" against the
+				// entry "dist/**", since collectFiles skips directories before
+				// asking: an odd fixture, and calling it containment costs
+				// nothing unless that file is also default-excluded.
+				match = filesMatchContains
 			}
-			continue
+
+		default:
+			if matched, _ := filepath.Match(pattern, relPath); matched {
+				// A glob names a path only if its last segment says something
+				// about the name. A trailing bare wildcard does not: "*" and
+				// "dist/*" are "everything here", which is a statement about a
+				// directory's contents and not about any file in it. Treating
+				// them as naming made "files": ["*"] publish .env, .env.local,
+				// app.log, pkg.tgz, Thumbs.db and the rest of the overridable
+				// list from a package that had said nothing about any of them.
+				//
+				// It also keeps the three spellings of "ship everything"
+				// agreeing. "", "." and "*" are one intent, and the first two
+				// are containment by the branches above; a "*" that named
+				// paths would have made the same manifest mean two different
+				// things depending on which spelling was chosen.
+				//
+				// Anything that constrains the segment still names: "*.example",
+				// ".env.*" and "dist/*.env" all pick out files by name rather
+				// than sweeping a directory.
+				if isBareWildcard(lastSegment(pattern)) {
+					match = filesMatchContains
+				} else {
+					match = filesMatchDirect
+				}
+			}
 		}
 
-		// Glob match
-		if matched, _ := filepath.Match(pattern, relPath); matched {
-			return true
+		if match > best {
+			best = match
+		}
+		if best == filesMatchDirect {
+			return best
 		}
 	}
-	return false
+
+	return best
+}
+
+// lastSegment returns the part of a slash-separated "files" entry after its
+// final "/", which is the segment that decides whether the entry names a file
+// or sweeps a directory. An entry with no "/" is its own last segment.
+func lastSegment(pattern string) string {
+	if i := strings.LastIndex(pattern, "/"); i >= 0 {
+		return pattern[i+1:]
+	}
+	return pattern
+}
+
+// isBareWildcard reports whether a path segment is nothing but a wildcard.
+//
+// Both spellings are here because filepath.Match, which is what isIncluded
+// globs with, reads "**" as an ordinary two-star segment rather than as a
+// subtree — "*" and "**" match exactly the same single segment through it. They
+// are the same statement, so they classify the same way. Note that "dist/**"
+// never reaches this: the trailing-"/**" branch above claims it first, and calls
+// it containment too, so the two spellings agree by two different routes.
+func isBareWildcard(segment string) bool {
+	return segment == "*" || segment == "**"
 }
 
 // isDefaultInclude reports whether relPath is in the always-included set: the
@@ -1110,11 +1674,15 @@ func ReadPackageJSON(dir string) (*PackageJSON, error) {
 // path would get an answer that ignores the ignore file next to it, so widen
 // this before adding one.
 //
-// It deliberately does not consult defaultExcludes. Those are lnpm's additions
-// to npm's rules, and this answers what a tool that reads only the project's own
-// rules would ship - which is what `npm publish` is. `lnpm check` uses it to ask
-// whether a file lnpm left in the project root is about to be published by
-// something other than lnpm.
+// It deliberately consults neither built-in exclusion list — not
+// hardReservedExcludes and not defaultExcludes. Those are lnpm's own rules, and
+// this answers what a tool that reads only the project's own rules would ship -
+// which is what `npm publish` is. `lnpm check` uses it to ask whether a file
+// lnpm left in the project root is about to be published by something other than
+// lnpm.
+//
+// #321 split one list into those two and did not change this: it consulted
+// neither half before and consults neither now.
 func ExcludedByProjectRules(dir string, filesField []string, relPath string) bool {
 	if len(filesField) > 0 && !isIncluded(relPath, filesField) && !isDefaultInclude(relPath) {
 		return true

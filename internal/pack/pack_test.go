@@ -791,18 +791,22 @@ func TestPackNpmignoreNegationReincludesFile(t *testing.T) {
 	}
 }
 
-// TestIsExcludedDefaultExcludesCannotBeNegated proves a user "!" pattern cannot
-// re-include a default-excluded path when the two lists are concatenated: the
-// last matching pattern wins, so a default exclude always has the final say.
-// collectFiles reaches the same answer by evaluating defaultExcludes on their
-// own, where a user negation is not in the list to begin with.
-func TestIsExcludedDefaultExcludesCannotBeNegated(t *testing.T) {
+// TestIsExcludedHardReservedCannotBeNegated proves a user "!" pattern cannot
+// re-include a hard-reserved path when the two lists are concatenated: the last
+// matching pattern wins, so a hard-reserved entry always has the final say.
+// collectFiles reaches the same answer by a different route — it evaluates
+// hardReservedExcludes on its own and above every selection rule, where a user
+// negation is not in the list to begin with.
+//
+// The .env row this test used to carry moved to
+// TestIsExcludedDefaultExcludesCanBeNegated below when #321 split the list. That
+// is the behaviour change, not a hole here.
+func TestIsExcludedHardReservedCannotBeNegated(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
 		userPats []string
 	}{
-		{"negated .env", ".env", []string{"!.env"}},
 		{"negated node_modules file", "node_modules/foo", []string{"!node_modules/foo"}},
 		{"negated node_modules dir", "node_modules", []string{"!node_modules"}},
 		{"negated .npmrc", ".npmrc", []string{"!.npmrc"}},
@@ -811,33 +815,67 @@ func TestIsExcludedDefaultExcludesCannotBeNegated(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			patterns := append(append([]string{}, tt.userPats...), defaultExcludes...)
+			patterns := append(append([]string{}, tt.userPats...), hardReservedExcludes...)
 			if !isExcluded(tt.path, patterns) {
-				t.Errorf("isExcluded(%q, user %v + defaults) = false, want true: a user negation must not re-include a default exclude", tt.path, tt.userPats)
+				t.Errorf("isExcluded(%q, user %v + hard-reserved) = false, want true: a user negation must not re-include a hard-reserved path", tt.path, tt.userPats)
 			}
 		})
 	}
 }
 
-// TestPackDefaultExcludesWinInWhitelistMode proves default excludes still win
-// when package.json has a "files" whitelist naming them and .npmignore tries to
-// negate them: defaultExcludes are evaluated first and on their own, ahead of
-// both the user's patterns and the whitelist.
-func TestPackDefaultExcludesWinInWhitelistMode(t *testing.T) {
+// TestIsExcludedDefaultExcludesCanBeNegated is the matcher-level half of #321,
+// and the exact inverse of the test above. defaultExcludes is seeded into the
+// ignore chain rather than evaluated above it, which in matcher terms means the
+// user's patterns run *after* it — so a negation is the last match and wins.
+//
+// The concatenation order here is the one ignoreLoader.excludes produces:
+// defaults first, the user's patterns after. Reversing it is what the old
+// single-list arrangement did, and it is why nothing could override the list.
+func TestIsExcludedDefaultExcludesCanBeNegated(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		userPats []string
+	}{
+		{"negated .env.example", ".env.example", []string{"!.env.example"}},
+		{"negated .env", ".env", []string{"!.env"}},
+		{"negated log", "app.log", []string{"!app.log"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns := append(append([]string{}, defaultExcludes...), tt.userPats...)
+			if isExcluded(tt.path, patterns) {
+				t.Errorf("isExcluded(%q, defaults + user %v) = true, want false: a user negation must be able to re-include an overridable default", tt.path, tt.userPats)
+			}
+		})
+	}
+}
+
+// TestPackHardReservedWinsInWhitelistMode proves the hard-reserved set still
+// wins when package.json has a "files" whitelist naming its entries and
+// .npmignore tries to negate them: hardReservedExcludes is evaluated first and
+// on its own, ahead of both the user's patterns and the whitelist.
+//
+// The .env rows this test used to carry are now
+// TestPackFilesEntryOverridesDefaultExcludes, which asserts the opposite. That
+// is #321's change: .env moved to the overridable list, and only the entries
+// still on npm's force-ignore list are pinned here.
+func TestPackHardReservedWinsInWhitelistMode(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	pkgJSON := `{
 		"name": "whitelist-defaults",
 		"version": "1.0.0",
-		"files": ["dist", ".env", "node_modules"]
+		"files": ["dist", ".npmrc", "node_modules"]
 	}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte(pkgJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte("!.env\n!node_modules\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".npmignore"), []byte("!.npmrc\n!node_modules\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("SECRET=1"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".npmrc"), []byte("//registry:_authToken=deadbeef"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -870,9 +908,9 @@ func TestPackDefaultExcludesWinInWhitelistMode(t *testing.T) {
 	if !packed["dist/index.js"] {
 		t.Errorf("expected whitelisted file %q to be packed, packed set was %v", "dist/index.js", packed)
 	}
-	for _, name := range []string{".env", "node_modules/dep/index.js"} {
+	for _, name := range []string{".npmrc", "node_modules/dep/index.js"} {
 		if packed[name] {
-			t.Errorf("default-excluded %q was packed: a user negation must not re-include it", name)
+			t.Errorf("hard-reserved %q was packed: neither a \"files\" entry nor a user negation may re-include it", name)
 		}
 	}
 }
@@ -1158,11 +1196,17 @@ func TestHashFiles(t *testing.T) {
 	}
 }
 
-// TestDefaultExcludesStillExclude pins what every defaultExcludes entry keeps
-// out, one entry at a time. defaultExcludes is the security guard — it is what
-// stops a publish shipping .env, .git or node_modules — and it runs through the
-// same matcher as the user's ignore patterns, so a change to that matcher can
-// widen a publish without any test of user-facing behavior noticing.
+// TestDefaultExcludesStillExclude pins what every built-in exclusion entry keeps
+// out on its own, one entry at a time, over both hardReservedExcludes and
+// defaultExcludes. Together they are what stops a publish shipping .env, .git or
+// node_modules unasked, and both run through the same matcher as the user's
+// ignore patterns, so a change to that matcher can widen a publish without any
+// test of user-facing behavior noticing.
+//
+// It asks the matcher one pattern at a time, so it says nothing about which list
+// a pattern is in or what outranks it. Precedence is pinned by the Pack-level
+// tests — TestPackFilesEntryOverridesDefaultExcludes and
+// TestPackHardReservedWinsInWhitelistMode — not here.
 //
 // What this does and does not establish. The paths below are hand-authored, not
 // derived from the matcher's behavior before any particular change, and none of
@@ -1174,10 +1218,10 @@ func TestHashFiles(t *testing.T) {
 // and TestIsExcludedBraceAlternation are the tests that did that job.
 //
 // Its value is forward-looking: it is a pin against drift, and specifically
-// against the guard growing a hole. The completeness check fails the build when
-// a defaultExcludes entry is added with no case here, or with an empty one.
+// against a guard growing a hole. The completeness check fails the build when an
+// entry in either list is added with no case here, or with an empty one.
 func TestDefaultExcludesStillExclude(t *testing.T) {
-	// Each case names a defaultExcludes pattern and paths it must exclude on
+	// Each case names a built-in exclusion pattern and paths it must exclude on
 	// its own.
 	tests := []struct {
 		pattern string
@@ -1220,12 +1264,14 @@ func TestDefaultExcludesStillExclude(t *testing.T) {
 	for _, tt := range tests {
 		covered[tt.pattern] = len(tt.paths)
 	}
-	for _, pattern := range defaultExcludes {
+	// Both halves of the split, so an entry cannot escape coverage by moving
+	// from one list to the other.
+	for _, pattern := range append(append([]string{}, hardReservedExcludes...), defaultExcludes...) {
 		switch n, ok := covered[pattern]; {
 		case !ok:
-			t.Errorf("defaultExcludes entry %q has no case here: every default exclude needs one, or the guard can grow a hole unnoticed", pattern)
+			t.Errorf("built-in exclusion entry %q has no case here: every one needs one, or the guard can grow a hole unnoticed", pattern)
 		case n == 0:
-			t.Errorf("defaultExcludes entry %q is listed with no paths, so it asserts nothing", pattern)
+			t.Errorf("built-in exclusion entry %q is listed with no paths, so it asserts nothing", pattern)
 		}
 	}
 
@@ -1269,9 +1315,14 @@ func TestDefaultExcludesAreLiteralNotPrefixes(t *testing.T) {
 		})
 	}
 
-	// .envrc survives the entire default list, not just the two .env entries.
-	if isExcluded(".envrc", defaultExcludes) {
-		t.Error("isExcluded(\".envrc\", defaultExcludes) = true, want false: README documents .envrc as published")
+	// .envrc survives both lists in full, not just the two .env entries.
+	for name, list := range map[string][]string{
+		"hardReservedExcludes": hardReservedExcludes,
+		"defaultExcludes":      defaultExcludes,
+	} {
+		if isExcluded(".envrc", list) {
+			t.Errorf("isExcluded(\".envrc\", %s) = true, want false: README documents .envrc as published", name)
+		}
 	}
 }
 
@@ -1491,53 +1542,94 @@ func TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform(t *testing.T) {
 //
 // Only the built-in set folds case. TestUserIgnorePatternsStayCaseSensitive pins
 // the other side of that line.
+//
+// #321 split that set in two, and the fold has to survive on both halves —
+// splitting a guard is a routine way to drop one of its properties. So each row
+// asks the function that owns its path rather than one combined predicate: a row
+// asking isDefaultExcluded about ".NPMRC" would go green on a bug that folded
+// neither, if the combined answer were taken instead. The `hard` column says
+// which list the path belongs to; the completeness check in
+// TestDefaultExcludesStillExclude is what stops an entry existing in neither.
 func TestDefaultExcludesMatchCaseInsensitively(t *testing.T) {
+	// isDefaultExcluded and isHardReserved have identical signatures, so a row
+	// naming the wrong one still compiles. The `hard` flag is placed beside the
+	// path for that reason: it reads as data rather than as a function value
+	// someone can copy-paste past.
+	excludedBy := func(hard bool, path string) bool {
+		if hard {
+			return isHardReserved(path)
+		}
+		return isDefaultExcluded(path)
+	}
+
 	tests := []struct {
 		path string
+		hard bool
 		want bool
 	}{
 		// The names from the issue. Each is the same file as its lowercase form
-		// on a case-insensitive filesystem.
-		{".ENV", true},
-		{".Env", true},
-		{".Env.local", true},
-		{".NPMRC", true},
-		{"Node_Modules/evil/index.js", true},
-		{"Node_Modules", true},
+		// on a case-insensitive filesystem. #321 put .env on the overridable
+		// side of the split and .npmrc and node_modules on the hard-reserved
+		// side, so the issue's own names now span both halves — which is why
+		// checking the fold on both halves is not ceremony.
+		{".ENV", false, true},
+		{".Env", false, true},
+		{".Env.local", false, true},
+		{".NPMRC", true, true},
+		{"Node_Modules/evil/index.js", true, true},
+		{"Node_Modules", true, true},
 
 		// The lowercase forms keep working. Folding case must widen the guard,
 		// never move it.
-		{".env", true},
-		{".env.local", true},
-		{".npmrc", true},
-		{"node_modules/dep/index.js", true},
+		{".env", false, true},
+		{".env.local", false, true},
+		{".npmrc", true, true},
+		{"node_modules/dep/index.js", true, true},
 
 		// Entries that carry uppercase in the list itself fold the same way, in
 		// both directions.
-		{"src/.ds_store", true},
-		{"src/.DS_Store", true},
-		{"thumbs.db", true},
-		{"cvs/Root", true},
-		{".GIT/config", true},
-		{"DEBUG.LOG", true},
-		{"pkg-1.0.0.TGZ", true},
+		{"src/.ds_store", true, true},
+		{"src/.DS_Store", true, true},
+		{"thumbs.db", false, true},
+		{"cvs/Root", true, true},
+		{".GIT/config", true, true},
+		{"DEBUG.LOG", false, true},
+		{"pkg-1.0.0.TGZ", false, true},
 
-		// Folding case must not turn a default exclude into a prefix. README
+		// Folding case must not turn a built-in exclude into a prefix. README
 		// documents .envrc as published, and that has to hold however it is
-		// typed.
-		{".envrc", false},
-		{".ENVRC", false},
-		{"src/.EnvRc", false},
-		{"ENV", false},
-		{"Node_Modules_Backup/dep.js", false},
-		{"LOGGER.JS", false},
-		{"index.js", false},
+		// typed. The `hard` column is arbitrary on these rows: a path no list
+		// covers must be reported false by both, and the loop below asks both
+		// on every row.
+		{".envrc", false, false},
+		{".ENVRC", false, false},
+		{"src/.EnvRc", false, false},
+		{"ENV", false, false},
+		{"Node_Modules_Backup/dep.js", false, false},
+		{"LOGGER.JS", false, false},
+		{"index.js", false, false},
+	}
+
+	setName := func(hard bool) string {
+		if hard {
+			return "isHardReserved"
+		}
+		return "isDefaultExcluded"
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			if got := isDefaultExcluded(tt.path); got != tt.want {
-				t.Errorf("isDefaultExcluded(%q) = %v, want %v", tt.path, got, tt.want)
+			if got := excludedBy(tt.hard, tt.path); got != tt.want {
+				t.Errorf("%s(%q) = %v, want %v", setName(tt.hard), tt.path, got, tt.want)
+			}
+
+			// The other half must always say false: no path here is covered by
+			// both lists. Without this, a row could pass on a split that left an
+			// entry duplicated across the two, which would make the overridable
+			// half unoverridable again — the exact bug #321 fixes, reintroduced
+			// where no packing test would look.
+			if excludedBy(!tt.hard, tt.path) {
+				t.Errorf("%s(%q) = true as well: the two built-in lists must not both cover a path, or the overridable half stops being overridable", setName(!tt.hard), tt.path)
 			}
 		})
 	}
@@ -1551,18 +1643,22 @@ func TestDefaultExcludesMatchCaseInsensitively(t *testing.T) {
 //
 // The invariant is already recorded in
 // docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md ("No
-// defaultExcludes entry contains a brace or a character class"), where it is
-// what kept the move to doublestar away from the default list. Nothing enforced
-// it, so this test does.
+// entry in either list ... contains a brace or a character class"), where it is
+// what kept the move to doublestar away from the built-in lists. That sentence
+// read "No defaultExcludes entry" until #321 split the list and reworded it;
+// re-read the ADR before quoting it again. Nothing enforced the invariant, so
+// this test does.
 //
-// It is deliberately narrow. The fold is derived from defaultExcludes rather
-// than written out beside it, so a new entry is folded automatically and needs
-// no case in TestDefaultExcludesMatchCaseInsensitively; a metacharacter is the
-// one way a new entry can break the fold silently.
+// It is deliberately narrow. Each fold is derived from its list rather than
+// written out beside it, so a new entry is folded automatically and needs no
+// case in TestDefaultExcludesMatchCaseInsensitively; a metacharacter is the one
+// way a new entry can break the fold silently.
 func TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite(t *testing.T) {
-	for _, pattern := range defaultExcludes {
+	// Both halves: lowerHardReservedExcludes and lowerDefaultExcludes are
+	// derived the same way, so the invariant is the same one twice.
+	for _, pattern := range append(append([]string{}, hardReservedExcludes...), defaultExcludes...) {
 		if i := strings.IndexAny(pattern, `[]{}\`); i >= 0 {
-			t.Errorf("defaultExcludes entry %q contains %q: lowering it for the case-insensitive match would rewrite the pattern, not just its case — a class becomes [a-z] and an escape becomes \\a. See docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md, which records that no entry carries one",
+			t.Errorf("built-in exclusion entry %q contains %q: lowering it for the case-insensitive match would rewrite the pattern, not just its case — a class becomes [a-z] and an escape becomes \\a. See docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md, which records that no entry carries one",
 				pattern, pattern[i])
 		}
 	}
@@ -1626,10 +1722,11 @@ func TestPackMixedCaseSecretsNeverShip(t *testing.T) {
 // built-in force-exclude set folds case, a pattern the user wrote in .npmignore
 // or .gitignore does not.
 //
-// The two are different kinds of rule, and they fail in opposite directions.
-// defaultExcludes is a guard lnpm applies on the user's behalf, and a guard that
-// can be stepped around by holding shift is not a guard; folding it only ever
-// withholds more. A user's ignore pattern is a preference, and folding it would
+// The two are different kinds of rule, and they fail in opposite directions. A
+// built-in exclusion is a guard lnpm applies on the user's behalf, and a guard
+// that can be stepped around by holding shift is not a guard; folding it only
+// ever withholds more. That holds for both halves of the list #321 split, which
+// is why both fold. A user's ignore pattern is a preference, and folding it would
 // drop files the author never asked to drop. See isDefaultExcluded for the rest
 // of the reasoning, including why matching git is not one of the reasons — git
 // folds ignore matching itself when core.ignorecase is set, as it is by default
@@ -1991,40 +2088,49 @@ func TestPackEmptyMainChangesNothing(t *testing.T) {
 	}, "a manifest with no main selects nothing extra")
 }
 
-// TestPackMainCannotDefeatDefaultExcludes pins the far side of the boundary the
+// TestPackMainCannotDefeatHardReserved pins the far side of the boundary the
 // force-include opens. main beats the "files" whitelist and the user's ignore
-// patterns; it must never beat lnpm's built-in force-exclude set.
+// patterns; it must never beat hardReservedExcludes.
 //
-// The distinction is the one isDefaultExcluded already records: the user's
-// ignore patterns are a preference the user expressed, defaultExcludes is a
-// guard lnpm applies on the user's behalf. A guard that can be stepped around by
-// naming the file in "main" is not a guard — it would make the manifest a way to
-// smuggle .env, .npmrc or anything out of node_modules past the one list that
-// exists to hold them back. docs/adr/0004 records the boundary.
+// Its sibling TestPackMainCannotDefeatDefaultExcludes pins the other built-in
+// list. The two are separate tests because #321 left them enforced by different
+// mechanisms — this one structurally, that one by an explicit check — and a
+// single test could not report which had broken.
+//
+// The distinction is the one hardReservedExcludes records: that list is what is
+// never publishable by any route, and a rule that can be stepped around by
+// naming the file in "main" is not that — it would make the manifest a way to
+// smuggle .npmrc or anything out of node_modules past the one list that exists
+// to hold them back. docs/adr/0004 records the boundary, with a note recording
+// what #321 moved off it.
 //
 // The property holds structurally rather than by a check in the force-include
-// itself: collectFiles evaluates isDefaultExcluded in the walk and returns early,
-// above the whitelist branch the force-include lives in. Nothing pinned that
-// before — TestPackDefaultExcludesWinInWhitelistMode predates the force-include
-// and does not exercise main — so a refactor hoisting the force-include above the
-// isDefaultExcluded check would open the hole with every other test still green.
-// This is the test that goes red on it: hoisted there, the .env and .npmrc rows
-// pack [.env dist/a.js package.json] and [.npmrc dist/a.js package.json]. Run and
-// confirmed.
+// itself: collectFiles evaluates isHardReserved in the walk and returns early,
+// above the whitelist branch the force-include lives in. Nothing else pins that
+// — TestPackHardReservedWinsInWhitelistMode does not exercise main — so a
+// refactor hoisting the force-include above the isHardReserved check would open
+// the hole with every other test still green. This is the test that goes red on
+// it: hoisted there, the .npmrc row packs [.npmrc dist/a.js package.json]. Run
+// and confirmed at this commit by moving the mainEntry arm above the
+// isHardReserved check.
 //
-// The two root rows are the load-bearing ones. The node_modules row is held up by
-// a second, independent barrier and stays green under that same hoist: the
-// isDefaultExcluded check returns filepath.SkipDir for the node_modules
-// directory, so the walk never reaches the nested file for any per-file check to
-// see. It is kept as a row because that pruning is worth pinning too, but it is
-// not what catches a hoisted force-include — do not read it as covering the .env
-// case.
-func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
+// The .npmrc row is the load-bearing one. The node_modules row is held up by a
+// second, independent barrier and stays green under that same hoist: the
+// isHardReserved check returns filepath.SkipDir for the node_modules directory,
+// so the walk never reaches the nested file for any per-file check to see. It is
+// kept as a row because that pruning is worth pinning too, but it is not what
+// catches a hoisted force-include — do not read it as covering the .npmrc case.
+//
+// The .env row this test used to carry moved to
+// TestPackMainCannotDefeatDefaultExcludes, which asserts the same outcome
+// against the list .env now lives in. That leaves one root row here where there
+// were two; see docs/agents/verification-discipline.md on why a row held up by
+// pruning is not a substitute for it.
+func TestPackMainCannotDefeatHardReserved(t *testing.T) {
 	tests := []struct {
 		name string
 		main string
 	}{
-		{"dotenv", ".env"},
 		{"npmrc", ".npmrc"},
 		{"nested in node_modules", "node_modules/evil/index.js"},
 	}
@@ -2046,9 +2152,80 @@ func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
 			assertPackedSet(t, tmpDir, []string{
 				"dist/a.js",
 				"package.json",
-			}, "main overrides the user's ignore patterns but never lnpm's "+
-				"built-in force-exclude set, so naming "+tt.main+" in \"main\" "+
-				"must not ship it")
+			}, "main overrides the user's ignore patterns but never the "+
+				"hard-reserved set, so naming "+tt.main+" in \"main\" must "+
+				"not ship it")
+		})
+	}
+}
+
+// TestPackMainCannotDefeatDefaultExcludes is the other half of the boundary
+// docs/adr/0004 draws, and #321 changed how it is enforced without changing what
+// it says. main ".env" does not ship .env.
+//
+// Before #321 nothing pinned this arm specifically, and nothing needed to: the
+// single built-in list was evaluated in the walk above the whitelist branch, so
+// a .env named in "main" never reached the force-include at all and
+// TestPackMainCannotDefeatHardReserved's .env row passed on the strength of that
+// early return. Splitting the list moved defaultExcludes into
+// ignoreLoader.excludes, which this arm deliberately does not call — not calling
+// it is what an override is there — so the property now rests on the arm's own
+// `softExcluded.covers(relPath) && !isIncludedDirectly(relPath, filesField)`.
+// covers is ancestor-aware, so a main under a covered directory is refused too;
+// the isIncludedDirectly half is the exception TestPackMainNamedByFilesFieldIsPacked
+// pins, where a "files" entry naming the same path supplies the consent "main"
+// does not.
+//
+// That is why this test exists rather than being folded back into the
+// hard-reserved one. Run and confirmed by deleting that check: every row here
+// packs the excluded file, while TestPackMainCannotDefeatHardReserved stays
+// fully green.
+//
+// The warning half matters as much as the packed set. Refusing the file is only
+// the safe failure if the maintainer is told, and warnMainEntryNotPacked is what
+// tells them — the file is on disk, so validation.ValidatePackage's os.Stat
+// passes and nothing else on the publish path would say a word.
+func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
+	tests := []struct {
+		name string
+		main string
+	}{
+		{"dotenv", ".env"},
+		{"dotenv variant", ".env.production"},
+		{"log", "debug.log"},
+		{"tarball", "pkg-1.0.0.tgz"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "main-vs-default",
+					"version": "1.0.0",
+					"main": "` + tt.main + `",
+					"files": ["dist"]
+				}`,
+				"dist/a.js": "module.exports = {}",
+				tt.main:     "SECRET=hunter2",
+			})
+
+			var packed []string
+			out := capturePackStdout(t, func() {
+				packed = packedRelPaths(t, tmpDir)
+			})
+
+			if strings.Join(packed, "\n") != "dist/a.js\npackage.json" {
+				t.Errorf("naming %q in \"main\" must not ship it: main beats the "+
+					"user's ignore patterns but neither built-in exclusion list "+
+					"(docs/adr/0004)\npacked: %v", tt.main, packed)
+			}
+			if !strings.Contains(out, "warning:") {
+				t.Errorf("Pack() refused to pack the main %q and said nothing; the "+
+					"file is on disk, so validation.ValidatePackage passes and "+
+					"publish would report success on a package that does not "+
+					"load\ngot stdout: %q", tt.main, out)
+			}
 		})
 	}
 }
@@ -2059,9 +2236,15 @@ func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
 // docs/adr/0001's direction rule, so it is the one to read the ADR beside.
 //
 // The ignore file names the entry point by basename rather than by its
-// directory on purpose. A "lib/" pattern would prune the directory during the
-// walk, so this fixture would pass on the strength of the walk never reaching
-// the file, which tests nothing about the branch under test.
+// directory on purpose, though not for the reason this comment gave until #321
+// corrected it. It claimed a "lib/" pattern would prune the directory during the
+// walk; whitelist mode does not prune on ignore patterns — collectFiles skips
+// the ignore check entirely when there is a "files" field, which is #318's rule
+// — so the walk reaches lib/index.js either way and the fixture would still
+// exercise the branch. The basename spelling is kept because it also matches the
+// non-whitelist sibling TestPackMainRespectsIgnorePatternsWithoutFilesWhitelist,
+// where pruning is real and the two fixtures are meant to differ only in the
+// "files" field.
 func TestPackMainSurvivesIgnorePatternsUnderFilesWhitelist(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeMainEntryTree(t, tmpDir, map[string]string{
@@ -2575,38 +2758,46 @@ func TestPackSucceedsWhenManifestIsPacked(t *testing.T) {
 	}, "the backstop must not fire on a package whose manifest is packed")
 }
 
-// TestPackManifestCannotDefeatDefaultExcludes pins where the manifest
-// force-include sits in collectFiles: below the isDefaultExcluded check, never
-// above it. #301 puts the manifest beyond the reach of the user's own rules; it
-// does not exempt it from lnpm's built-in guard, for the reason docs/adr/0004
-// gives for "main" and docs/adr/0005 repeats for the manifest — a guard anything
-// can step around is not a guard.
+// TestPackManifestCannotDefeatHardReserved pins where the manifest
+// force-include sits in collectFiles: below the isHardReserved check, never
+// above it. #301 puts the manifest beyond the reach of the user's own rules and
+// of the overridable defaults; it does not exempt it from the hard-reserved set,
+// for the reason docs/adr/0004 gives for "main" and docs/adr/0005 repeats for
+// the manifest — a rule anything can step around is not one.
 //
-// No ordinary fixture can see that placement, because no defaultExcludes entry
-// matches package.json, so this test puts one there for its own duration and
-// asks which wins. Below the guard, the manifest is dropped and Pack then
+// It mutated defaultExcludes before #321 split the list. Both mutations express
+// the same intent, but only this one still tests it: the manifest force-include
+// now sits *above* the overridable defaults on purpose, so seeding package.json
+// into defaultExcludes would leave Pack succeeding and the test would fail for
+// the new correct behaviour rather than for the bug it exists to catch.
+//
+// No ordinary fixture can see that placement, because no hardReservedExcludes
+// entry matches package.json, so this test puts one there for its own duration
+// and asks which wins. Below the guard, the manifest is dropped and Pack then
 // refuses via requireManifestPacked; hoisted above it, the manifest ships past
 // the guard and Pack succeeds. Run and confirmed red under that hoist
-// (isDefaultExcluded consulted as "&& !isManifest"): both rows reported
+// (isHardReserved consulted as "&& !isManifest"): both rows reported
 // `packed: [index.js package.json]`.
 //
-// lowerDefaultExcludes is recomputed alongside defaultExcludes because
-// isDefaultExcluded reads only the lowered copy. Run and confirmed: dropping the
-// lowered line leaves the guard exactly as it was, and the test then fails with
+// package.json is appended to lowerHardReservedExcludes as well as to
+// hardReservedExcludes, because isHardReserved reads only the lowered copy —
+// appended rather than recomputed, which is the wording docs/adr/0005's
+// amendment settles on. Run and confirmed: dropping the lowered line leaves the
+// guard exactly as it was, and the test then fails with
 // the same `packed: [index.js package.json]` a real hoist produces — a failure
 // that looks like the bug this test exists to catch but is not it.
 //
 // This mutates package-level state, so it must not call t.Parallel() and must
 // not run beside a test that does. No test in this package calls it.
-func TestPackManifestCannotDefeatDefaultExcludes(t *testing.T) {
-	originalExcludes, originalLowered := defaultExcludes, lowerDefaultExcludes
+func TestPackManifestCannotDefeatHardReserved(t *testing.T) {
+	originalExcludes, originalLowered := hardReservedExcludes, lowerHardReservedExcludes
 	t.Cleanup(func() {
-		defaultExcludes, lowerDefaultExcludes = originalExcludes, originalLowered
+		hardReservedExcludes, lowerHardReservedExcludes = originalExcludes, originalLowered
 	})
 	// New slices rather than append-in-place, so the restored originals cannot
 	// share a backing array with the mutated copies.
-	defaultExcludes = append(append([]string{}, originalExcludes...), manifestFileName)
-	lowerDefaultExcludes = append(append([]string{}, originalLowered...), manifestFileName)
+	hardReservedExcludes = append(append([]string{}, originalExcludes...), manifestFileName)
+	lowerHardReservedExcludes = append(append([]string{}, originalLowered...), manifestFileName)
 
 	tests := []struct {
 		name     string
@@ -2637,15 +2828,866 @@ func TestPackManifestCannotDefeatDefaultExcludes(t *testing.T) {
 					names = append(names, f.RelPath)
 				}
 				sort.Strings(names)
-				t.Fatalf("Pack() succeeded with package.json in defaultExcludes; "+
-					"the manifest force-include has been hoisted above the "+
-					"built-in guard, which is what makes the guard steppable\n"+
-					"packed: %v", names)
+				t.Fatalf("Pack() succeeded with package.json in "+
+					"hardReservedExcludes; the manifest force-include has been "+
+					"hoisted above the hard-reserved check, which is what makes "+
+					"that list steppable\npacked: %v", names)
 			}
 			if !strings.Contains(err.Error(), "package.json") {
 				t.Errorf("Pack() must fail through requireManifestPacked, which "+
 					"names the missing file\ngot: %v", err)
 			}
+		})
+	}
+}
+
+// TestPackWithNothingNamedExplicitlyKeepsBuiltInExcludesOut is the
+// unchanged-behaviour half of #321. Splitting the built-in exclusion list into a
+// hard-reserved set and an overridable one moves *where* the overridable half is
+// evaluated — out of the walk's first check and into the shallowest layer of the
+// ignore chain — and a package that names nothing explicitly must not be able to
+// tell.
+//
+// So this is a characterization test, not a red-green one. It was written before
+// the split, run against the unsplit code and observed green there; it is here to
+// go red if the move changes what an ordinary package ships.
+//
+// Every path below is drawn from the built-in lists except three. index.js and
+// README.md are the positive controls, and they ship. coverage/report.html is
+// excluded by the fixture's own .npmignore rather than by either built-in list —
+// it is here so the assertion cannot pass on a walk that has stopped consulting
+// the user's patterns at all, which is a different bug the built-in paths alone
+// would not catch. Everything else was excluded before the split and must stay
+// excluded after it.
+//
+// The .npmignore line is not decoration for the same reason. It puts a real
+// ignore scope in the chain, so the seeded verdict has to survive being carried
+// through applyIgnorePatterns rather than being returned from a chain with no
+// scopes in it at all.
+func TestPackWithNothingNamedExplicitlyKeepsBuiltInExcludesOut(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json":              `{"name":"nothing-explicit","version":"1.0.0"}`,
+		".npmignore":                "coverage/\n",
+		"index.js":                  "module.exports = {}",
+		"README.md":                 "# nothing-explicit",
+		".env":                      "SECRET=1",
+		".env.example":              "SECRET=",
+		"app.log":                   "noise",
+		"pkg-1.0.0.tgz":             "tarball",
+		"merged.js.orig":            "<<<<<<< HEAD",
+		".npmrc":                    "//registry:_authToken=deadbeef",
+		"Thumbs.db":                 "cruft",
+		"node_modules/dep/index.js": "dep",
+		"coverage/report.html":      "<html></html>",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		"README.md",
+		"index.js",
+		"package.json",
+	}, "a package that names nothing explicitly must ship exactly what it "+
+		"shipped before the hard-reserved/overridable split")
+}
+
+// TestPackFilesEntryOverridesDefaultExcludes is #321's headline case. A
+// "files" entry naming .env.example could not publish it: isDefaultExcluded ran
+// first in the walk, above every user-driven selection rule, so the ".env.*"
+// entry in the built-in list won and there was no way to ship the template.
+//
+// .env sits in the same fixture as the control. It is not named by "files", so
+// the overridable default still holds it back — the entry overrides the default
+// for the path it names and for nothing else.
+func TestPackFilesEntryOverridesDefaultExcludes(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "files-beats-default",
+			"version": "1.0.0",
+			"files": ["index.js", ".env.example"]
+		}`,
+		"index.js":     "module.exports = {}",
+		".env.example": "API_KEY=",
+		".env":         "API_KEY=hunter2",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		".env.example",
+		"index.js",
+		"package.json",
+	}, "a \"files\" entry must override the overridable half of the built-in "+
+		"exclusion list, and must not widen it to a sibling it does not name")
+}
+
+// TestPackNegationOverridesDefaultExcludes is the other direction #321 asks for:
+// an "!" negation in .npmignore re-including an overridable default, in a
+// package with no "files" field at all.
+//
+// The negation is the only rule in the ignore file, so nothing here depends on
+// last-match-wins between two user patterns; what it depends on is the
+// overridable set being seeded *into* the ignore chain rather than decided above
+// it, which is the only way a user pattern can be the last word on it.
+func TestPackNegationOverridesDefaultExcludes(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{"name":"negation-beats-default","version":"1.0.0"}`,
+		".npmignore":   "!.env.example\n",
+		"index.js":     "module.exports = {}",
+		".env.example": "API_KEY=",
+		".env":         "API_KEY=hunter2",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		".env.example",
+		"index.js",
+		"package.json",
+	}, "an \"!\" negation must re-include an overridable default, and .env, "+
+		"which nothing negates, must stay out")
+}
+
+// TestPackEnvExampleFixtureFromIssue321 is fixture J from the issue, verbatim:
+// "files": ["index.js", ".env.example", "app.log"] plus an .npmignore holding
+// "!.env.example". It packed [index.js, package.json] — .env.example was matched
+// by the ".env.*" entry in the built-in list and app.log by "*.log", and neither
+// the whitelist nor the negation could reach them.
+//
+// It is kept separate from the two single-mechanism tests above because it is the
+// case both mechanisms fire on at once, and because app.log arrives through
+// "files" alone with no negation behind it.
+//
+// Both revert directions were run against this fixture, per
+// docs/agents/verification-discipline.md, and both are red:
+//
+//   - Remove the fix — seed ignoreLoader.excludes with false again and put
+//     isDefaultExcluded back in the walk beside isHardReserved. This fixture
+//     packs [index.js package.json], which is the set #321 reports verbatim.
+//     TestPackFilesEntryOverridesDefaultExcludes and
+//     TestPackNegationOverridesDefaultExcludes report the same. Eight rows of
+//     TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch join them —
+//     every row where an entry names a path directly, since with the list back
+//     in the walk no entry can name anything past it — along with
+//     TestPackFilesEntryNamingAnIgnoreFile/.npmignore and
+//     TestPackMainNamedByFilesFieldIsPacked/files_names_the_path_main_names.
+//   - Move the fix back before the exclusion pass — keep the seed but let the
+//     walk check isDefaultExcluded too. Identical output: the seed is shadowed
+//     by the early return, so keeping it changes nothing. That is the direction
+//     worth running, because a reader who saw only the seed added would think
+//     the fix was in place.
+//
+// Neither direction touches TestPackMainCannotDefeatDefaultExcludes or
+// TestPackMainCannotDefeatHardReserved, which stay green under both: "main" is
+// refused either way. Those have revert checks of their own; see each.
+func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "fixture-j",
+			"version": "1.0.0",
+			"files": ["index.js", ".env.example", "app.log"]
+		}`,
+		".npmignore":   "!.env.example\n",
+		"index.js":     "module.exports = {}",
+		".env.example": "API_KEY=",
+		"app.log":      "started",
+	})
+
+	assertPackedSet(t, tmpDir, []string{
+		".env.example",
+		"app.log",
+		"index.js",
+		"package.json",
+	}, "issue #321 fixture J must ship every path the manifest names")
+}
+
+// TestPackWarnsWhenFilesNamesHardReserved is #321's other acceptance criterion:
+// node_modules and .git stay unpackable when named explicitly in "files", and
+// naming one says so out loud instead of dropping it in silence. Silence is the
+// failure mode the issue is about — before the split there was no way to publish
+// .env.example and no message explaining that either.
+//
+// The warning is derived from the "files" entries, not from the walk, and it has
+// to be: node_modules and .git are pruned at the directory level, so a "files"
+// entry naming a path inside one never reaches a walked path for any per-file
+// check to notice.
+//
+// The four rows are not equal evidence on their packed-set half. Disabling the
+// isHardReserved check in the walk and running this test is what established
+// which is which — not reading the code. Two red, two green:
+//
+//   - .npmrc reported `packed: [.npmrc index.js package.json]` and
+//     node_modules reported `packed: [index.js node_modules/dep/index.js
+//     package.json]`. Both are real evidence that the check is what refuses the
+//     entry.
+//   - .git stayed green. filterGitFiles runs over the finished set in Pack and
+//     drops anything under .git whatever collectFiles decided, so this row
+//     cannot fail for the reason the test is about. It is kept because #321
+//     names .git, and it is the weakest row in the file — do not read it as
+//     covering the hard-reserved check.
+//   - "./node_modules" stayed green too, for a third reason again: matchFilesField
+//     resolves no leading "./", so the entry selects nothing whatever the
+//     built-in lists say. Its value is entirely in the warning half — it is the
+//     row that caught namesHardReserved's comment claiming such an entry is
+//     refused in silence, when the basename fold makes it warn.
+//
+// The warning half is load-bearing on all four rows, since nothing else in the
+// codebase produces that message.
+func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+		files map[string]string
+	}{
+		{
+			name:  "npmrc",
+			entry: ".npmrc",
+			files: map[string]string{".npmrc": "//registry:_authToken=deadbeef"},
+		},
+		{
+			name:  "node_modules",
+			entry: "node_modules",
+			files: map[string]string{"node_modules/dep/index.js": "dep"},
+		},
+		{
+			name:  "dot git",
+			entry: ".git",
+			files: map[string]string{".git/config": "[core]"},
+		},
+		{
+			name:  "dot slash prefixed",
+			entry: "./node_modules",
+			files: map[string]string{"node_modules/dep/index.js": "dep"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			tree := map[string]string{
+				"package.json": `{
+					"name": "files-vs-hard-reserved",
+					"version": "1.0.0",
+					"files": ["index.js", "` + tt.entry + `"]
+				}`,
+				"index.js": "module.exports = {}",
+			}
+			for rel, content := range tt.files {
+				tree[rel] = content
+			}
+			writeMainEntryTree(t, tmpDir, tree)
+
+			var packed []string
+			out := capturePackStdout(t, func() {
+				packed = packedRelPaths(t, tmpDir)
+			})
+
+			if strings.Join(packed, "\n") != "index.js\npackage.json" {
+				t.Errorf("naming %q in \"files\" must not publish it\npacked: %v", tt.entry, packed)
+			}
+			if !strings.Contains(out, "warning:") || !strings.Contains(out, tt.entry) {
+				t.Errorf("Pack() must warn that the \"files\" entry %q names a path "+
+					"lnpm never publishes; dropping it in silence is the failure "+
+					"mode #321 is about\ngot stdout: %q", tt.entry, out)
+			}
+		})
+	}
+}
+
+// TestPackDoesNotWarnForOrdinaryFilesEntries is the negative half. A warning
+// that fires on healthy manifests is one every reader learns to skip past, and
+// the overridable rows are the ones that would fire if the warning were wired to
+// the wrong list — .env.example naming a path lnpm *does* now publish must be
+// silent.
+func TestPackDoesNotWarnForOrdinaryFilesEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "ordinary-files",
+			"version": "1.0.0",
+			"files": ["dist", ".env.example", "app.log", "node_modules_backup"]
+		}`,
+		"dist/a.js":                        "module.exports = {}",
+		".env.example":                     "API_KEY=",
+		"app.log":                          "started",
+		"node_modules_backup/dep/index.js": "dep",
+	})
+
+	out := capturePackStdout(t, func() {
+		_ = packedRelPaths(t, tmpDir)
+	})
+
+	if strings.Contains(out, "warning:") {
+		t.Errorf("Pack() warned about \"files\" entries it publishes just fine\ngot stdout: %q", out)
+	}
+}
+
+// TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch pins how far
+// #321's override reaches. A "files" entry overrides defaultExcludes for a path
+// it names and never for a path it merely contains.
+//
+// The first draft of #321 got this wrong in the direction that widens a publish.
+// isIncluded matches by directory prefix, and the whitelist arm consults no
+// ignore rules, so "files": ["dist"] — the commonest "files" field there is —
+// packed dist/.env, dist/app.log and dist/pkg.tgz, none of which origin/main
+// shipped. The narrowing check in collectFiles' isIncluded arm is what stops it.
+//
+// The check has three separable parts and each was reverted on its own. Every
+// figure below was measured against this table as it now stands — sixteen rows —
+// after the bare-wildcard rule landed, not carried over from an earlier draft.
+//
+// Delete the whole check at the isIncluded arm: eight rows red, eight green.
+// The eight red, with what each packs — "directory entry"
+// [dist/.env dist/README.md dist/a.js dist/app.log dist/pkg.tgz package.json];
+// "subtree glob entry" and "bare wildcard segment" both
+// [dist/.env dist/a.js package.json]; "bare wildcard at the root"
+// [.env app.log index.js package.json pkg-1.0.0.tgz]; "double bare wildcard at
+// the root" [.env index.js package.json]; "direct entry outranks"
+// [dist/.env dist/a.js dist/app.log package.json], leaking the log beside the
+// .env it was right about; "directory entry ... subdirectory"
+// [package.json src/.env/config src/a.js]; "degenerate entry"
+// [.env index.js package.json]. The eight green are the seven rows that assert
+// only a direct name, plus "dot entry". Note "direct entry outranks" is red
+// despite carrying a direct entry: its dist/.env still packs, and it fails on
+// the dist/app.log its containing entry leaks.
+//
+// Swap softExcluded.covers back to isDefaultExcluded, keeping the rest: exactly
+// one row red, "directory entry does not reach a file under a default-excluded
+// subdirectory". That row is the only guard on the ancestor half — every other
+// containment row names a file that is itself default-excluded and stays green
+// without it.
+//
+// Classify every filepath.Match hit as direct again, undoing the bare-wildcard
+// rule: exactly three rows red — "bare wildcard segment" packs
+// [dist/.env dist/a.js package.json], "bare wildcard at the root" packs
+// [.env app.log index.js package.json pkg-1.0.0.tgz], and "double bare wildcard
+// at the root" packs [.env index.js package.json]. Nothing else moves, which is
+// the evidence that the rule only ever narrows.
+//
+// The boundary is a glob's final segment: a bare "*" or "**" sweeps a
+// directory, anything that constrains the segment names files. So "dist/*",
+// "dist/**" and "dist" agree — all three are "everything in dist", which says
+// nothing about any particular file in it — while "dist/*.env", ".env.*" and
+// "*.example" name what they match.
+//
+// An earlier draft had "dist/*" naming paths, on the reasoning that
+// filepath.Match's "*" cannot cross a separator so the entry picks out one
+// level rather than a tree. That is true and it is not the question. It also
+// made "files": ["*"] publish .env, app.log and pkg-1.0.0.tgz from a manifest
+// that had named none of them, and it split the three spellings of "ship
+// everything" — "", "." and "*" — so that two kept .env out and the third did
+// not. The rows below pin all three agreeing.
+//
+// The three "ship everything" rows are not equal evidence, and the difference is
+// measured rather than reasoned. "degenerate entry" and "bare wildcard at the
+// root" both go red when the narrowing check is deleted, so each pins the
+// classification. "dot entry" stays green under every revert in this file: "."
+// matches nothing at all in isIncluded — not the package root, not anything
+// under it — so .env is unpacked there however the classification behaves. It is
+// in the table because the required set names it, not because it guards
+// anything. That "." selects nothing is a separate pre-existing defect about
+// entries npm resolves and lnpm does not, tracked on its own.
+//
+// This is not npm's behaviour, and the divergence is wider than one rule. npm
+// does not ignore .env at all, so `npm publish` with "files": ["dist"]
+// publishes dist/.env outright. lnpm withholds it by default and publishes it
+// when the maintainer names that exact path.
+func TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch(t *testing.T) {
+	tests := []struct {
+		name  string
+		files string
+		tree  map[string]string
+		want  []string
+	}{
+		{
+			name:  "directory entry does not reach a default-excluded file inside it",
+			files: `["dist"]`,
+			tree: map[string]string{
+				"dist/a.js":      "module.exports = {}",
+				"dist/.env":      "SECRET=hunter2",
+				"dist/app.log":   "started",
+				"dist/pkg.tgz":   "tarball",
+				"dist/README.md": "# dist",
+			},
+			want: []string{"dist/README.md", "dist/a.js", "package.json"},
+		},
+		{
+			name:  "subtree glob entry is containment too",
+			files: `["dist/**"]`,
+			tree: map[string]string{
+				"dist/a.js": "module.exports = {}",
+				"dist/.env": "SECRET=hunter2",
+			},
+			want: []string{"dist/a.js", "package.json"},
+		},
+		{
+			name:  "entry naming the path exactly",
+			files: `["dist/.env"]`,
+			tree: map[string]string{
+				"dist/a.js": "module.exports = {}",
+				"dist/.env": "SECRET=hunter2",
+			},
+			want: []string{"dist/.env", "package.json"},
+		},
+		{
+			name:  "bare wildcard segment is containment",
+			files: `["dist/*"]`,
+			tree: map[string]string{
+				"dist/a.js": "module.exports = {}",
+				"dist/.env": "SECRET=hunter2",
+			},
+			want: []string{"dist/a.js", "package.json"},
+		},
+		{
+			name:  "bare wildcard at the root is containment",
+			files: `["*"]`,
+			tree: map[string]string{
+				"index.js":      "module.exports = {}",
+				".env":          "SECRET=hunter2",
+				"app.log":       "started",
+				"pkg-1.0.0.tgz": "tarball",
+			},
+			want: []string{"index.js", "package.json"},
+		},
+		{
+			name:  "double bare wildcard at the root is containment",
+			files: `["**"]`,
+			tree: map[string]string{
+				"index.js": "module.exports = {}",
+				".env":     "SECRET=hunter2",
+			},
+			want: []string{"index.js", "package.json"},
+		},
+		{
+			name:  "glob constraining the segment names the path",
+			files: `["index.js", "*.example"]`,
+			tree: map[string]string{
+				"index.js":     "module.exports = {}",
+				".env.example": "API_KEY=",
+				".env":         "API_KEY=hunter2",
+			},
+			want: []string{".env.example", "index.js", "package.json"},
+		},
+		{
+			name:  "glob constraining the segment by prefix names the path",
+			files: `["index.js", ".env.*"]`,
+			tree: map[string]string{
+				"index.js":     "module.exports = {}",
+				".env.example": "API_KEY=",
+				".env":         "API_KEY=hunter2",
+			},
+			want: []string{".env.example", "index.js", "package.json"},
+		},
+		{
+			name:  "nested glob constraining the segment names the path",
+			files: `["dist/*.env"]`,
+			tree: map[string]string{
+				"dist/a.js": "module.exports = {}",
+				"dist/.env": "SECRET=hunter2",
+			},
+			want: []string{"dist/.env", "package.json"},
+		},
+		{
+			name:  "direct entry outranks a containing entry beside it",
+			files: `["dist", "dist/.env"]`,
+			tree: map[string]string{
+				"dist/a.js":    "module.exports = {}",
+				"dist/.env":    "SECRET=hunter2",
+				"dist/app.log": "started",
+			},
+			want: []string{"dist/.env", "dist/a.js", "package.json"},
+		},
+		{
+			name:  "directory entry does not reach a file under a default-excluded subdirectory",
+			files: `["src"]`,
+			tree: map[string]string{
+				"src/a.js":        "module.exports = {}",
+				"src/.env/config": "SECRET=hunter2",
+			},
+			want: []string{"package.json", "src/a.js"},
+		},
+		{
+			name:  "entry naming a path under a default-excluded directory",
+			files: `["src/.env/config"]`,
+			tree: map[string]string{
+				"src/a.js":        "module.exports = {}",
+				"src/.env/config": "SECRET=hunter2",
+			},
+			want: []string{"package.json", "src/.env/config"},
+		},
+		{
+			name:  "entry naming a path under a glob-matched excluded directory",
+			files: `[".env.d/keep.js"]`,
+			tree: map[string]string{
+				".env.d/keep.js": "module.exports = {}",
+				".env.d/drop.js": "module.exports = {}",
+			},
+			want: []string{".env.d/keep.js", "package.json"},
+		},
+		{
+			name:  "dot entry",
+			files: `["."]`,
+			tree: map[string]string{
+				"index.js": "module.exports = {}",
+				".env":     "SECRET=hunter2",
+			},
+			want: []string{"package.json"},
+		},
+		{
+			name:  "degenerate entry ships what no files field ships",
+			files: `[""]`,
+			tree: map[string]string{
+				"index.js": "module.exports = {}",
+				".env":     "SECRET=hunter2",
+			},
+			want: []string{"index.js", "package.json"},
+		},
+		{
+			name:  "root entry naming the path exactly",
+			files: `[".env.example"]`,
+			tree: map[string]string{
+				".env.example": "API_KEY=",
+				".env":         "API_KEY=hunter2",
+			},
+			want: []string{".env.example", "package.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			tree := map[string]string{
+				"package.json": `{
+					"name": "direct-match",
+					"version": "1.0.0",
+					"files": ` + tt.files + `
+				}`,
+			}
+			for rel, content := range tt.tree {
+				tree[rel] = content
+			}
+			writeMainEntryTree(t, tmpDir, tree)
+
+			assertPackedSet(t, tmpDir, tt.want,
+				"a \"files\" entry overrides defaultExcludes for a path it names "+
+					"and never for a path it only contains")
+		})
+	}
+}
+
+// TestPackWarnsWhenIgnoreNegationNamesHardReserved covers the second override
+// mechanism #321 introduced. A maintainer can ask for a default-excluded path
+// with a "files" entry or with an "!" negation, and a refused ask must say so
+// whichever way it was written — TestPackWarnsWhenFilesNamesHardReserved is the
+// same claim for the other half.
+//
+// The npmignore and gitignore rows are not redundant. loadIgnorePatterns tries
+// .npmignore first and falls back to .gitignore only when there is none, so a
+// warning wired to one filename alone would stay green on the other row.
+//
+// The nested row records a gap rather than a guarantee, and it asserts silence
+// on purpose so the gap is visible in the test file rather than only in a
+// comment. warnHardReservedIgnoreNegation reads the package root's ignore file
+// only, so a negation in src/.npmignore is refused without a word. Serving it
+// would mean plumbing ignoreLoader's scopes out of collectFiles.
+func TestPackWarnsWhenIgnoreNegationNamesHardReserved(t *testing.T) {
+	tests := []struct {
+		name       string
+		ignoreFile string
+		line       string
+		wantWarn   bool
+	}{
+		{"npmignore", ".npmignore", "!node_modules\n", true},
+		{"gitignore", ".gitignore", "!node_modules\n", true},
+		{"dot git", ".npmignore", "!.git\n", true},
+		{"trailing slash", ".npmignore", "!node_modules/\n", true},
+		{"ordinary negation", ".npmignore", "dist/\n!dist/keep.js\n", false},
+		{"overridable default", ".npmignore", "!.env.example\n", false},
+		{"nested ignore file is not read", "src/.npmignore", "!node_modules\n", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json":  `{"name":"negation-warning","version":"1.0.0"}`,
+				tt.ignoreFile:   tt.line,
+				"index.js":      "module.exports = {}",
+				"src/nested.js": "module.exports = {}",
+			})
+
+			out := capturePackStdout(t, func() {
+				if _, _, err := Pack(tmpDir); err != nil {
+					t.Errorf("Pack() error: %v", err)
+				}
+			})
+
+			if got := strings.Contains(out, "warning:"); got != tt.wantWarn {
+				t.Errorf("Pack() warned = %v, want %v for %s containing %q\ngot stdout: %q",
+					got, tt.wantWarn, tt.ignoreFile, tt.line, out)
+			}
+		})
+	}
+}
+
+// TestPackFilesEntryNamingAnIgnoreFile pins an asymmetry #321 created among the
+// three ignore-file entries in defaultExcludes. All three became overridable,
+// but only .npmignore actually publishes when named: filterGitFiles runs over
+// the finished set and drops .gitignore and .gitattributes by basename at every
+// depth, whatever collectFiles decided.
+//
+// Before the split none of the three could be published at all, so the
+// difference is new and user-visible. It is pinned rather than left to a comment
+// because a comment claiming it would be exactly the kind of assertion that goes
+// stale when #398 reconciles filterGitFiles with these lists — this test is what
+// will go red and make that reconciliation deliberate.
+//
+// Publishing an .npmignore is harmless: it describes what was left out, not a
+// secret. That is why #321 left it overridable rather than hard-reserving it,
+// which would have been a membership change and out of scope.
+func TestPackFilesEntryNamingAnIgnoreFile(t *testing.T) {
+	tests := []struct {
+		entry    string
+		wantPack bool
+	}{
+		{".npmignore", true},
+		{".gitignore", false},
+		{".gitattributes", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.entry, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "names-an-ignore-file",
+					"version": "1.0.0",
+					"files": ["index.js", "` + tt.entry + `"]
+				}`,
+				"index.js": "module.exports = {}",
+				tt.entry:   "node_modules\n",
+			})
+
+			want := []string{"index.js", "package.json"}
+			why := "filterGitFiles strips this from the finished set whatever " +
+				"the \"files\" field says"
+			if tt.wantPack {
+				want = []string{tt.entry, "index.js", "package.json"}
+				why = "no safety pass covers .npmignore, so naming it publishes it"
+			}
+			assertPackedSet(t, tmpDir, want, why)
+		})
+	}
+}
+
+// TestPackMainNamedByFilesFieldIsPacked is #321's first acceptance criterion —
+// `"files": [".env.example"]` packs `.env.example` — in the one arrangement that
+// failed it after the split. Setting "main" to the same path made the mainEntry
+// arm of collectFiles' whitelist switch fire first, and that arm refuses a
+// default-excluded path, so the manifest's own "files" entry was never consulted
+// and the template did not ship.
+//
+// The fix is the isIncludedDirectly half of that arm's check, not a reordering
+// of the arms: the arm order carries #319's rule that main outranks the
+// whitelist, and moving it would trade this bug for that one.
+//
+// Both halves are here because they are the two sides of docs/adr/0004's
+// boundary and only having both shows where the line is. A "files" entry naming
+// the path is consent and packs it; "main" naming it, with the whitelist silent
+// on that path, is not consent and is refused with a warning.
+// TestPackMainCannotDefeatDefaultExcludes carries the refusal at more depth.
+func TestPackMainNamedByFilesFieldIsPacked(t *testing.T) {
+	tests := []struct {
+		name     string
+		files    string
+		want     []string
+		wantWarn bool
+	}{
+		{
+			name:     "files names the path main names",
+			files:    `["index.js", ".env.example"]`,
+			want:     []string{".env.example", "index.js", "package.json"},
+			wantWarn: false,
+		},
+		{
+			name:     "files is silent on the path main names",
+			files:    `["index.js"]`,
+			want:     []string{"index.js", "package.json"},
+			wantWarn: true,
+		},
+		{
+			name:     "files only contains the directory main names",
+			files:    `["index.js", "cfg"]`,
+			want:     []string{"cfg/keep.js", "index.js", "package.json"},
+			wantWarn: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			main := ".env.example"
+			tree := map[string]string{
+				"index.js":     "module.exports = {}",
+				".env.example": "API_KEY=",
+			}
+			if strings.Contains(tt.files, "cfg") {
+				main = "cfg/.env.example"
+				tree = map[string]string{
+					"index.js":         "module.exports = {}",
+					"cfg/keep.js":      "module.exports = {}",
+					"cfg/.env.example": "API_KEY=",
+				}
+			}
+			tree["package.json"] = `{
+				"name": "main-named-by-files",
+				"version": "1.0.0",
+				"main": "` + main + `",
+				"files": ` + tt.files + `
+			}`
+			writeMainEntryTree(t, tmpDir, tree)
+
+			var packed []string
+			out := capturePackStdout(t, func() {
+				packed = packedRelPaths(t, tmpDir)
+			})
+
+			if strings.Join(packed, "\n") != strings.Join(tt.want, "\n") {
+				t.Errorf("packed set mismatch: a \"files\" entry naming the path is "+
+					"consent and \"main\" naming it is not\n got: %v\nwant: %v", packed, tt.want)
+			}
+			if got := strings.Contains(out, "warning:"); got != tt.wantWarn {
+				t.Errorf("Pack() warned = %v, want %v for main %q with files %s\ngot stdout: %q",
+					got, tt.wantWarn, main, tt.files, out)
+			}
+		})
+	}
+}
+
+// TestPackNegationDoesNotOverrideInWhitelistMode pins the limit on #321's second
+// override mechanism. An "!" negation re-includes a default-excluded path only
+// in a package with no "files" field.
+//
+// It is not a gap. A "files" field turns the ignore chain off for the two arms
+// that select ordinary paths, isIncluded and mainEntry — that is #318's rule
+// that a "files" entry beats .npmignore and .gitignore — and defaultExcludes
+// rides inside that same chain, so a negation has nowhere to speak for the paths
+// they handle. The route for such a package is naming the path in "files", which
+// the row below does as its control.
+//
+// The rule is limited to those two arms, and the limit is load-bearing: the
+// third arm, isDefaultInclude, does still consult the chain, and a negation does
+// reach through it. dist/.env is not a defaultIncludes match, so this fixture is
+// unaffected — but a comment claiming no arm consults the chain would be false.
+// TestPackNegationOverridesInWhitelistModeForDefaultIncludes has that case.
+//
+// Pinned because the two mechanisms read as interchangeable everywhere they are
+// described, and nothing else asserts that they are not.
+// TestPackNegationOverridesDefaultExcludes is scoped to a package with no "files"
+// field and would stay green however whitelist mode behaved.
+func TestPackNegationDoesNotOverrideInWhitelistMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		files string
+		want  []string
+	}{
+		{
+			name:  "negation alone does not re-include",
+			files: `["dist"]`,
+			want:  []string{"dist/a.js", "package.json"},
+		},
+		{
+			name:  "naming the path in files does",
+			files: `["dist", "dist/.env"]`,
+			want:  []string{"dist/.env", "dist/a.js", "package.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "negation-in-whitelist-mode",
+					"version": "1.0.0",
+					"files": ` + tt.files + `
+				}`,
+				".npmignore": "!dist/.env\n",
+				"dist/a.js":  "module.exports = {}",
+				"dist/.env":  "SECRET=hunter2",
+			})
+
+			assertPackedSet(t, tmpDir, tt.want,
+				"an \"!\" negation says nothing under a \"files\" whitelist, because "+
+					"the isIncluded and mainEntry arms do not consult the "+
+					"ignore chain (#318)")
+		})
+	}
+}
+
+// TestPackNegationOverridesInWhitelistModeForDefaultIncludes is the exception to
+// the test above, and the reason its rule had to be narrowed rather than merely
+// stated. Two of collectFiles' three whitelist arms skip the ignore chain —
+// isIncluded and mainEntry — but isDefaultInclude does not: it re-consults
+// ignores.excludes, and defaultExcludes is seeded into that chain. So for the
+// paths that arm handles, an "!" negation is the last match and wins, under a
+// "files" whitelist.
+//
+// Which paths those are is the intersection of the two built-in lists, derived
+// from the lists as they stand rather than from an example: a root file whose
+// name matches a defaultIncludes stem (readme, license, licence, changelog,
+// changes, history) and also matches one of the suffix patterns in
+// defaultExcludes (*.log, *~, *.tgz, *.swp, *.swo). Run and confirmed over a
+// candidate sweep — changes.log, README.md~, history.log, license.tgz,
+// HISTORY.SWO and their case variants are all in both lists. package.json is the
+// one defaultIncludes entry outside the intersection: no defaultExcludes pattern
+// matches it, and it has an arm of its own regardless.
+//
+// This is a characterization test. It passed the first time it was run, which is
+// the point — nothing here changes the isDefaultInclude arm, whose behaviour
+// under a whitelist is #360's subject. It exists because the negation boundary
+// was documented as "no arm consults the chain", which is false, and a rule
+// stated in prose but asserted nowhere is how that got through review twice.
+func TestPackNegationOverridesInWhitelistModeForDefaultIncludes(t *testing.T) {
+	tests := []struct {
+		name       string
+		ignoreLine string
+		want       []string
+	}{
+		{
+			name:       "no negation",
+			ignoreLine: "",
+			want:       []string{"index.js", "package.json"},
+		},
+		{
+			name:       "negation re-includes through the default-include arm",
+			ignoreLine: "!changes.log\n",
+			want:       []string{"changes.log", "index.js", "package.json"},
+		},
+		{
+			name:       "same for an editor backup of a default include",
+			ignoreLine: "!README.md~\n",
+			want:       []string{"README.md~", "index.js", "package.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "negation-vs-default-include",
+					"version": "1.0.0",
+					"files": ["index.js"]
+				}`,
+				".npmignore":  tt.ignoreLine,
+				"index.js":    "module.exports = {}",
+				"changes.log": "v1",
+				"README.md~":  "# draft",
+			})
+
+			assertPackedSet(t, tmpDir, tt.want,
+				"the isDefaultInclude arm still consults the ignore chain, so a "+
+					"negation reaches a path in both built-in lists even under a "+
+					"\"files\" whitelist")
 		})
 	}
 }

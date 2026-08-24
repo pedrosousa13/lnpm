@@ -50,10 +50,12 @@ hard error where `filepath.Match` read the brace literally, and both call sites
 discard the error, so the glob branch returns false: `src/{tmpl.txt` used to
 match a file of that name and now only the exact-full-path branch catches it.
 
-None of this reaches the default exclusion list. No `defaultExcludes` entry
-contains a brace or a character class, so `.env`, `.env.*`, `node_modules`,
-`.git` and the rest match exactly as they did — `TestDefaultExcludesStillExclude`
-pins a case per entry and fails the build when an entry is added without one, and
+None of this reaches the built-in exclusion lists. No entry in either list
+(`hardReservedExcludes` or `defaultExcludes`, one list at the time this was
+written and split by #321) contains a brace or a character class, so `.env`,
+`.env.*`, `node_modules`, `.git` and the rest match exactly as they did —
+`TestDefaultExcludesStillExclude` pins a case per entry, over both lists, and
+fails the build when an entry is added without one, and
 `TestDefaultExcludesAreLiteralNotPrefixes` pins that `.envrc` is still published.
 The entries ending in `/**` never reach the glob engine at all: the
 trailing-`/**` branch returns before it.
