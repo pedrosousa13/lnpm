@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.3.0](https://github.com/pedrosousa13/lnpm/compare/v2.2.1...v2.3.0) (2026-08-24)
+
+
+### Features
+
+* **push:** list the packed files on a steady-state push ([#397](https://github.com/pedrosousa13/lnpm/issues/397)) ([7fdf579](https://github.com/pedrosousa13/lnpm/commit/7fdf579b69143a7b485108fb67ff21c9dac415bc)), closes [#372](https://github.com/pedrosousa13/lnpm/issues/372)
+
+
+### Bug Fixes
+
+* **db:** report unreadable link data instead of dropping it ([#393](https://github.com/pedrosousa13/lnpm/issues/393)) ([bbf03c1](https://github.com/pedrosousa13/lnpm/commit/bbf03c1e8a0128918ee4033da805375f11fd9554)), closes [#355](https://github.com/pedrosousa13/lnpm/issues/355)
+* **gc:** stop claiming a package row it did not delete ([#395](https://github.com/pedrosousa13/lnpm/issues/395)) ([30e0ae8](https://github.com/pedrosousa13/lnpm/commit/30e0ae8fa85708626c338aacc1f4e9747073fb2a)), closes [#358](https://github.com/pedrosousa13/lnpm/issues/358)
+* **link:** refuse read-only link queries through a symlinked .lnpm ([#401](https://github.com/pedrosousa13/lnpm/issues/401)) ([9fa924e](https://github.com/pedrosousa13/lnpm/commit/9fa924e84852149263b26b27e53199332df5508c)), closes [#340](https://github.com/pedrosousa13/lnpm/issues/340)
+* **pack:** glob a "files" entry with the engine ignore patterns use ([#350](https://github.com/pedrosousa13/lnpm/issues/350)) ([50bf8b7](https://github.com/pedrosousa13/lnpm/commit/50bf8b723c4595f96e77e69ebaf091ef08e66614))
+* **pack:** let a files entry override defaultExcludes, or warn when it cannot ([#400](https://github.com/pedrosousa13/lnpm/issues/400)) ([5ecf0a0](https://github.com/pedrosousa13/lnpm/commit/5ecf0a0fb9dcf7c9970f49bf3e10231f020dbdd8)), closes [#321](https://github.com/pedrosousa13/lnpm/issues/321)
+* **pack:** resolve a leading "./" in a "files" entry ([#346](https://github.com/pedrosousa13/lnpm/issues/346)) ([37b3f91](https://github.com/pedrosousa13/lnpm/commit/37b3f91d9ef0f87e1098e2ab2dc41fbdc129d3a7))
+* **pack:** skip an unreadable directory the package already excludes ([#348](https://github.com/pedrosousa13/lnpm/issues/348)) ([6ce2a3b](https://github.com/pedrosousa13/lnpm/commit/6ce2a3b6160c3826ee6fd79327d871e79f276890))
+* **tests:** stop test binaries reading the machine's own config ([#396](https://github.com/pedrosousa13/lnpm/issues/396)) ([f86c2ec](https://github.com/pedrosousa13/lnpm/commit/f86c2ec181cf456520eee134b34d96f6821c9d3e)), closes [#371](https://github.com/pedrosousa13/lnpm/issues/371)
+
 ## [2.2.1](https://github.com/pedrosousa13/lnpm/compare/v2.2.0...v2.2.1) (2026-08-23)
 
 > **Relocated your `node_modules`?** lnpm now refuses to link or unlink through a
