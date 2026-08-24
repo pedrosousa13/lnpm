@@ -54,8 +54,71 @@ type FileInfo struct {
 // are pre-existing and left alone.
 const manifestFileName = "package.json"
 
-// defaultIncludes are files always included regardless of config
-var defaultIncludes = []string{
+// changelogNames are the three always-included names lnpm adds to npm's set.
+// npm's own set is package.json, README*, LICENSE*/LICENCE* and nothing else;
+// README's npm-divergence bullet records these three as deliberate.
+//
+// They share one extension list rather than carrying three of their own, and
+// that is a decision rather than a convenience. The three are one concept — the
+// file a package keeps its release notes in — so the spellings lnpm accepts for
+// one are the spellings it accepts for all three by construction. Three
+// per-name lists would let a later edit accept CHANGELOG.rst and refuse
+// HISTORY.rst, and nothing in the code would say why.
+var changelogNames = []string{"CHANGELOG", "CHANGES", "HISTORY"}
+
+// changelogExtensions is the accepted extension set for changelogNames, and the
+// one place it is written down. Membership is deliberately small, because every
+// member widens a hole that fails open: these files ship past a "files"
+// whitelist, so an extension accepted here is an extension a maintainer cannot
+// hold back by writing "files" correctly.
+//
+// Each member, with its reason:
+//
+//   - "" — no extension. "CHANGELOG" with no suffix is the oldest spelling and
+//     still common. It is also the form that tells the two candidate fixes
+//     apart: a narrowing written as "match the old prefix glob, then reject by
+//     extension" drops it, because there is no extension to accept.
+//   - ".md" — Markdown, the dominant spelling today.
+//   - ".markdown" — the unabbreviated spelling of the same format. Accepting
+//     one and refusing the other would be arbitrary.
+//   - ".txt" — plain text. Recorded by the maintainer on #360, superseding that
+//     issue's own example: the hole being closed is *arbitrary* extensions, and
+//     plain text is one of the two or three ways a changelog is really spelled,
+//     especially in older packages. Refusing it would break real packages to
+//     close a hole it is not part of.
+//   - ".rst" — reStructuredText, named by the maintainer on #360.
+//
+// Deliberately out: ".db", ".sqlite", ".json", ".log" and every other extension
+// not listed. Those name data, not documentation, and a root history.db shipping
+// past a "files": ["dist"] whitelist is the bug #360 fixed. A package that
+// really wants one of them published names it in "files"; that route is
+// unaffected. ".adoc" and ".html" are the closest calls and are still out — a
+// changelog is written in them rarely enough that naming it in "files" is the
+// smaller cost.
+var changelogExtensions = []string{"", ".md", ".markdown", ".txt", ".rst"}
+
+// defaultIncludes are files always included regardless of config.
+//
+// The first block is npm's set, spelled as prefix globs, and it is left exactly
+// as it is. README* does force-include a root readme.db, which is the same shape
+// as the changelog bug #360 closed — but npm behaves that way too, and matching
+// npm on npm's own entries is the choice this list makes. The asymmetry with the
+// block below is deliberate, not an oversight; do not "fix" it by globbing the
+// changelog names again or by narrowing these.
+//
+// The second block is the changelog names, one entry per name-and-extension
+// pair, replacing the "CHANGELOG*", "CHANGES*" and "HISTORY*" globs #360 found.
+// Those globs matched any root file whose name merely started with one of the
+// three words, whatever its extension, so a "files": ["dist"] whitelist did not
+// hold back a root history.db — an OWASP A01 failure that fails open, since it
+// ships a file the author never selected.
+//
+// isDefaultInclude lower-cases both the pattern and the path, so one spelling
+// per entry answers for every casing. That is why the generated entries are
+// spelled once while the npm block above carries each name twice: the doubling
+// is redundant and predates this list's matcher growing a ToLower, and #363
+// removes it. Adding cased duplicates here would only give #363 more to delete.
+var defaultIncludes = append([]string{
 	"package.json",
 	"README*",
 	"readme*",
@@ -63,12 +126,20 @@ var defaultIncludes = []string{
 	"license*",
 	"LICENCE*",
 	"licence*",
-	"CHANGELOG*",
-	"changelog*",
-	"CHANGES*",
-	"changes*",
-	"HISTORY*",
-	"history*",
+}, changelogIncludes()...)
+
+// changelogIncludes expands changelogNames against changelogExtensions. The
+// entries carry no glob metacharacter, so filepath.Match compares each as a
+// literal — TestIsDefaultInclude pins the resulting membership, which is where
+// to read the expansion rather than inferring it from here.
+func changelogIncludes() []string {
+	out := make([]string, 0, len(changelogNames)*len(changelogExtensions))
+	for _, name := range changelogNames {
+		for _, ext := range changelogExtensions {
+			out = append(out, name+ext)
+		}
+	}
+	return out
 }
 
 // hardReservedExcludes are patterns nothing publishes. Not a "files" entry, not
@@ -166,16 +237,19 @@ var hardReservedExcludes = []string{
 //
 // One arm still consults the chain, and the negation still reaches through it:
 // isDefaultInclude. Its paths are the defaultIncludes set, which overlaps this
-// list — a root file matching an include stem (readme, license, licence,
-// changelog, changes, history) *and* one of the suffix patterns here (*.log,
-// *~, *.tgz, *.swp, *.swo). So "!changes.log" does re-include changes.log under
-// a "files" whitelist. package.json is the one defaultIncludes entry outside the
-// overlap; nothing here matches it.
+// list — a root file matching one of that set's glob entries (readme, license,
+// licence) *and* one of the suffix patterns here (*.log, *~, *.tgz, *.swp,
+// *.swo). So "!readme.log" does re-include readme.log under a "files" whitelist.
+//
+// The overlap used to include the changelog names, when they were globs too, and
+// "!changes.log" was this paragraph's example. #360 replaced those globs with an
+// explicit name-plus-extension set, and no spelling it accepts matches any
+// pattern here — run and confirmed by testing isDefaultExcluded over every entry
+// changelogIncludes produces, none of which matched. package.json is outside the
+// overlap for the same reason it always was; nothing here matches it.
 //
 // TestPackNegationDoesNotOverrideInWhitelistMode pins the rule and
 // TestPackNegationOverridesInWhitelistModeForDefaultIncludes pins the exception.
-// What that arm does under a whitelist is #360's subject, not #321's; this
-// documents it rather than changing it.
 //
 // "main" does not, and the asymmetry is deliberate rather than an oversight.
 // A "files" entry and an "!" negation say "publish this"; "main" says "this is
@@ -2029,8 +2103,8 @@ func isBareWildcard(segment string) bool {
 // somewhere below the root. #320.
 //
 // The separator check is deliberately made before filepath.Match rather than
-// left to it. defaultIncludes entries are globs ("README*"), and filepath.Match
-// reads its separator from the platform. On Linux, "*" stops at "/", so
+// left to it. Some defaultIncludes entries are globs ("README*"), and
+// filepath.Match reads its separator from the platform. On Linux, "*" stops at "/", so
 // filepath.Match("readme*", "dist/readme.md") is false — run and confirmed — and
 // dropping filepath.Base alone would look sufficient here. It would only be
 // sufficient here: Windows builds path_windows.go, where the separator is "\"
@@ -2045,13 +2119,15 @@ func isBareWildcard(segment string) bool {
 // filepath.Separator is "/" on each and the two spellings agree there anyway.
 //
 // Rejected: anchoring with strings.HasPrefix(relPath, pattern). It cannot
-// express the "*" the entries are written with — HasPrefix compares "*" as an
-// ordinary byte, so only the "package.json" entry could ever fire, and it would
-// fire on "package.jsonc" too. Stripping the "*" and prefix-matching the stem
-// repairs that and reintroduces the bug this function exists to fix: "changes"
-// then prefix-matches "changes/secret.txt". Both spellings were run against the
-// table in TestIsDefaultInclude; the package.jsonc and changes/secret.txt rows
-// are what fail them.
+// express the "*" the glob entries are written with — HasPrefix compares "*" as
+// an ordinary byte, so only the entries carrying no "*" could ever fire, and
+// each of those would over-fire on a longer name: "package.jsonc" for
+// "package.json", and since #360 "CHANGELOG.mdx" for "CHANGELOG.md" and
+// "CHANGELOG.md" for "CHANGELOG" itself. Stripping the "*" and prefix-matching
+// the stem repairs the glob half and reintroduces the bug this function exists
+// to fix: "readme" then prefix-matches "readme/secret.txt". Both spellings were
+// run against the table in TestIsDefaultInclude; the package.jsonc and
+// readme/secret.txt rows are what fail them.
 func isDefaultInclude(relPath string) bool {
 	// collectFiles hands over a relPath already through filepath.ToSlash, so
 	// "/" is the separator it will carry. The filepath.Separator half defends
