@@ -1335,6 +1335,36 @@ func applyIgnorePatterns(relPath string, patterns []string, excluded bool) bool 
 // with the reasoning
 // and the rejected alternatives in
 // docs/adr/0003-ignore-patterns-glob-with-doublestar-syntax-and-all.md.
+//
+// Case is never folded here, on any platform: a user's pattern matches the path
+// as spelled. That is a decided divergence from git (#353), not an unexamined
+// default. isDefaultExcluded's comment holds the git behaviour and the reasons
+// the built-in lists fold where these do not; it stays the single copy of that
+// reasoning, and what follows is only what #353 added to it.
+//
+// The divergence was measured, on git 2.43.0, against a .gitignore holding
+// "secret.txt" with SECRET.TXT on disk: core.ignorecase=false leaves it
+// untracked and `git check-ignore` exits 1, while core.ignorecase=true drops it
+// from `git status` and check-ignore prints the matching rule. lnpm behaves like
+// the first of those everywhere. That much was run. What was *not* run is git's
+// probe: that git-init(1) and git-clone(1) "probe and set core.ignoreCase true
+// if appropriate when the repository is created" is quoted from git-config(1),
+// because the probe only turns the setting on for a case-insensitive
+// filesystem, and this was measured on a case-sensitive one — where git init
+// leaves core.ignorecase unset altogether.
+//
+// #353 weighed two alternatives and rejected both, named here so the next reader
+// does not reopen the question. Probing the filesystem at pack time and folding
+// to match git makes a tarball's contents depend on the machine that packed it,
+// and puts a filesystem probe in the pack path. Folding unconditionally diverges
+// from git on Linux instead, and silently stops publishing files that ship today
+// — the direction that loses content from a package. What was kept instead is
+// fail-open for a file the author asked to withhold, and README's npm-divergence
+// list says so in those terms. It reaches author-chosen exclusions only, since
+// the built-in lists fold on every platform regardless.
+//
+// TestUserIgnorePatternsStayCaseSensitive pins this side of the line, and
+// TestDefaultExcludesMatchCaseInsensitively the other.
 func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated bool) bool {
 	// "dir/**" matches the directory and everything under it.
 	if strings.HasSuffix(pattern, "/**") {

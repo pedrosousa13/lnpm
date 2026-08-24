@@ -1917,7 +1917,12 @@ func TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform(t *testing.T) {
 // was simply absent for anyone who typed the name differently.
 //
 // Only the built-in set folds case. TestUserIgnorePatternsStayCaseSensitive pins
-// the other side of that line.
+// the other side of that line, and #353 settled that the line stays where it is,
+// so what stops the two rules being collapsed into one is this test plus
+// TestPackMixedCaseSecretsNeverShip below. Measured: giving isDefaultExcluded
+// and isHardReserved an unfolded isExcluded turns twelve of the twenty-four rows
+// here red, and that end-to-end test with them, while
+// TestUserIgnorePatternsStayCaseSensitive stays green.
 //
 // #321 split that set in two, and the fold has to survive on both halves —
 // splitting a guard is a routine way to drop one of its properties. So each row
@@ -2098,6 +2103,15 @@ func TestPackMixedCaseSecretsNeverShip(t *testing.T) {
 // built-in force-exclude set folds case, a pattern the user wrote in .npmignore
 // or .gitignore does not.
 //
+// #353 examined that line and kept it, so what this test pins is now a decided
+// divergence rather than the default #317 happened to leave behind. Probing the
+// filesystem at pack time and folding unconditionally were both weighed and
+// rejected; matchesIgnorePattern's doc comment carries the decision and the two
+// rejected options. The consequence accepted with it is that on macOS and
+// Windows a pattern which hides a file from git may not withhold it from a
+// publish — fail-open on a file the author asked to withhold — which is why the
+// last assertion below requires SECRET.TXT to ship rather than to be held back.
+//
 // The two are different kinds of rule, and they fail in opposite directions. A
 // built-in exclusion is a guard lnpm applies on the user's behalf, and a guard
 // that can be stepped around by holding shift is not a guard; folding it only
@@ -2105,12 +2119,28 @@ func TestPackMixedCaseSecretsNeverShip(t *testing.T) {
 // is why both fold. A user's ignore pattern is a preference, and folding it would
 // drop files the author never asked to drop. See isDefaultExcluded for the rest
 // of the reasoning, including why matching git is not one of the reasons — git
-// folds ignore matching itself when core.ignorecase is set, as it is by default
-// on macOS and Windows.
+// folds ignore matching itself when core.ignorecase is set, which git init and
+// git clone set on a case-insensitive filesystem, as macOS's and Windows'
+// defaults are.
 //
 // This test is what fails if the fold is applied to the shared matcher
 // (applyIgnorePatterns or matchesIgnorePattern) rather than to the built-in set
-// alone.
+// alone. The two spellings are not equivalent, and both were measured. Lowering
+// relPath and every pattern at the top of applyIgnorePatterns turns three of the
+// five assertions below red — both isExcluded rows and the one requiring
+// SECRET.TXT to have been packed — and under that spelling this is the only test
+// in the package that moves; the built-in-list tests stay green, since folding
+// an already-lowered path a second time changes nothing. Lowering relPath,
+// baseName and pattern at the top of matchesIgnorePattern instead turns only two
+// of the five red: the isExcluded("Dist/app.js", ["dist/"]) row stays green
+// there, because applyIgnorePatterns resolves a trailing-"/" pattern inline and
+// continues without ever calling matchesIgnorePattern. So the directory-pattern
+// row pins applyIgnorePatterns alone, and only the other two rows cover both
+// sites.
+//
+// It has no subtests either way, so it prints a single top-level "--- FAIL"
+// line and none of the subtest shape; a run filtered to subtest lines reports it
+// as absent rather than as red.
 func TestUserIgnorePatternsStayCaseSensitive(t *testing.T) {
 	if isExcluded("SECRET.TXT", []string{"secret.txt"}) {
 		t.Error(`isExcluded("SECRET.TXT", ["secret.txt"]) = true, want false: only the built-in exclusion list folds case, a pattern the user wrote does not`)

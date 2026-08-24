@@ -16,8 +16,9 @@ That makes a wrong comment worse than no comment. Seven were caught false in a s
 work, each having survived the author's own review:
 
 - *"git is case-sensitive"*, used to justify not folding case in ignore patterns. Git folds
-  whenever `core.ignorecase` is set, which it sets by default on macOS and Windows — the two
-  platforms the comment was arguing about.
+  whenever `core.ignorecase` is set, which `git init` and `git clone` set on a case-insensitive
+  filesystem — the default on macOS and Windows, the two platforms the comment was arguing
+  about.
 - *"`strings.ToLower` does not catch the Kelvin sign"*, offered as a Unicode limitation. It
   does: `U+212A` maps to `k`. Dotless `ı` was the real example.
 - *"the rule #233 set"*, attributing gc's count-what-you-reclaimed rule. `git log -S` shows it
