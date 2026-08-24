@@ -3,15 +3,20 @@ package cli
 import (
 	"os"
 	"testing"
+
+	"github.com/pedrosousa13/lnpm/internal/testenv"
 )
 
 // templateAfterInit records the root command's version template as the package
 // init left it, before any test mutates the build stamps.
 var templateAfterInit string
 
+// testenv.Run also redirects the config loader at a temp directory before the
+// first test runs, so no test in this package reads the machine's own
+// ~/.lnpm/config.yaml (#371).
 func TestMain(m *testing.M) {
 	templateAfterInit = rootCmd.VersionTemplate()
-	os.Exit(m.Run())
+	os.Exit(testenv.Run(m))
 }
 
 func TestVersionTemplateShowsCommitAndDateWhenStamped(t *testing.T) {
