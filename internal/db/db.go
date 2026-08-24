@@ -902,7 +902,52 @@ func (db *DB) ListPackages() ([]*Package, error) {
 	return packages, err
 }
 
-// DeletePackage deletes a package by ID
+// DeletePackage deletes a package by ID, and refuses the delete whenever it
+// cannot see that package's complete link set.
+//
+// The rule is one rule for all three shapes - an index entry that will not
+// parse, an entry naming a row the store does not hold, and a row that will not
+// parse - and it is GetLinksForPackage's rule, on the very same index. One index
+// should have one reading of what its damage means, and a writer that tore down
+// what a reader refuses to describe would be the disagreement in its most
+// expensive form.
+//
+// Each shape used to be swallowed, and each did its own damage:
+//
+// The index entry was unmarshalled with the error discarded, leaving linkIDs
+// nil, so the loop never ran and no link row was deleted - and then the
+// links_by_package key was deleted anyway, the one thing that named those rows.
+// The rows survived as orphans, still named by links_by_project, reachable from
+// no package index at all.
+//
+// The row reads are worse, because the loop deleted regardless. A row is read
+// only to learn which project's index to scrub, and the scrub was skipped on any
+// row that could not be read while links.Delete ran on it either way. An
+// unparseable row was therefore deleted with its ID left in links_by_project:
+// a dangling ID, manufactured by lnpm out of damage it could have reported, and
+// the shipped bug behind the dangling IDs GetLinksForProject has to tolerate
+// today. A missing row did not create one - the ID was already dangling - but
+// the pass went on to delete the links_by_package key, which was the last thing
+// that could have led a repair back to it.
+//
+// Failing is the whole remedy. The error comes back out of the Update closure,
+// so bolt rolls the transaction back and the name index, the tags, the files and
+// the package record are as they were; nothing is half deleted. Repairing
+// instead would mean scanning the links bucket for every row naming this
+// package and rebuilding the index from it, which is a wider change than
+// reporting the damage and letting lnpm doctor name it.
+//
+// None of these errors is reachable from gc, the only caller outside tests. Its
+// pass calls GetLinksForPackage on every package before it removes any, and that
+// reads this same index and returns on these same three shapes, so a store
+// holding one aborts the run before removePackages is reached at all - and it
+// aborts on any package's damage, not only on the one being collected. gc also
+// discards this method's error at its call site, so a refusal would be silent
+// there even if it did arrive; that discard is #358, not this change. What is
+// written here is therefore defence in depth rather than a live path, and no
+// claim is made that a user can currently see it fire. The tests below drive it
+// directly, which is the only thing that does today. It is what holds the
+// guarantee for the next caller and for a gc whose guard moves.
 func (db *DB) DeletePackage(id int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -935,22 +980,27 @@ func (db *DB) DeletePackage(id int64) error {
 		// Clean up any links referencing this package so we don't leave
 		// orphaned link rows or dangling index entries.
 		pkgKey := itob(id)
-		if linkData := byPackage.Get(pkgKey); linkData != nil {
-			var linkIDs []int64
-			_ = json.Unmarshal(linkData, &linkIDs)
-			for _, linkID := range linkIDs {
-				// Determine the project this link belonged to, then scrub the
-				// link ID from that project's index.
-				if ld := links.Get(itob(linkID)); ld != nil {
-					var l Link
-					if json.Unmarshal(ld, &l) == nil {
-						removeIDFromIndex(byProject, itob(l.ProjectID), linkID)
-					}
-				}
-				_ = links.Delete(itob(linkID))
-			}
-			_ = byPackage.Delete(pkgKey)
+		linkIDs, err := indexIDs(byPackage, pkgKey, "package")
+		if err != nil {
+			return err
 		}
+		for _, linkID := range linkIDs {
+			// The row is read for the project it names, which is the only way
+			// to learn which links_by_project entry has to be scrubbed. A row
+			// that cannot be read therefore cannot be deleted either: the ID
+			// would go on being named by an index nothing can find it from.
+			ld := links.Get(itob(linkID))
+			if ld == nil {
+				return fmt.Errorf("the link index for package %d names link %d, which the database does not hold; run lnpm doctor to see what else the store disagrees about", id, linkID)
+			}
+			var l Link
+			if err := json.Unmarshal(ld, &l); err != nil {
+				return fmt.Errorf("link %d, which package %d is linked by, will not parse: %w; run lnpm doctor to see what else the store disagrees about", linkID, id, err)
+			}
+			removeIDFromIndex(byProject, itob(l.ProjectID), linkID)
+			_ = links.Delete(itob(linkID))
+		}
+		_ = byPackage.Delete(pkgKey)
 
 		_ = packages.Delete(itob(id))
 		_ = files.Delete(itob(id))
@@ -1057,22 +1107,26 @@ func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
 // shapes without the caller having to know which one it has. Per ADR-0001 the
 // direction decides, and the first shape widens what a destructive pass removes.
 //
-// This changes what a caller that discards the error sees, which is a real
-// behaviour change and not only a tightening. doctor.go's orphaned-link check is
-// the one such caller, and on the second shape above its count goes from 0 to 1:
-// it used to see a healthy project with a real path, and now sees no project at
-// all. Counting a damaged record as something to look at is the better answer,
-// but it is a change, and doctor's discarded error is tracked in #355.
+// Both callers check the error. gc aborts the pass, and doctor's orphaned-link
+// check abandons itself and reports the read rather than counting it (#355).
+// Neither reaches the returned project on this path, so the second shape above
+// no longer decides anything: it used to be read as a healthy project with a
+// real path, which is how a damaged record went unremarked, and there is now
+// nothing to read it as.
 //
-// The error deliberately does not point at lnpm doctor, though the sibling
-// message in indexIDs does. There the pointer is honest; here doctor discards
-// this very error (#355), reports the link as orphaned and advises gc
-// --fix-links, which is the command that just aborted - so the pointer would
-// route the user in a circle. #355 can add it back once doctor can honour it.
+// The error points at lnpm doctor, as the sibling message in indexIDs does.
+// While doctor discarded this error it could not: doctor reported the link as
+// orphaned and advised gc --fix-links, the command that had just aborted on this
+// very error, so the pointer would have closed a loop. doctor abandons that
+// check now and names what it could not read, so the pointer leads somewhere the
+// user has not already been. It is redundant in the one case where doctor is
+// itself the command printing it, which is the lesser cost: gc is the caller
+// that aborts, and two errors met on one code path disagreeing about where to
+// look next is worse than one of them repeating the command already running.
 //
 // GetProjectByPath has the identical allocate-then-unmarshal shape and is left
 // alone here, to keep this change on the gc path; retreat.go discards its error
-// the same way. Both are #355.
+// the same way. Both are #391.
 func (db *DB) GetProjectByID(id int64) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1085,7 +1139,7 @@ func (db *DB) GetProjectByID(id int64) (*Project, error) {
 		}
 		var found Project
 		if err := json.Unmarshal(data, &found); err != nil {
-			return fmt.Errorf("the record of project %d will not parse: %w", id, err)
+			return fmt.Errorf("the record of project %d will not parse: %w; run lnpm doctor to see what else the store disagrees about", id, err)
 		}
 		proj = &found
 		return nil
@@ -1437,10 +1491,12 @@ func (db *DB) InsertLink(link *Link) error {
 // and tolerating it would be tolerating the class of damage the other two cases
 // refuse.
 //
-// Deliberately no wider a claim than that. DeletePackage does not hold the same
-// line on links_by_project: an entry there it cannot parse leaves the rows
-// undeleted and the index unscrubbed while the links_by_package key goes anyway.
-// That, and the readers still swallowing this damage, are #355.
+// Deliberately no wider a claim than that. links_by_project has no such history:
+// until #355 DeletePackage deleted a link row it could not read without
+// scrubbing that row's ID from the project's index first, because the scrub
+// needed the project ID the unreadable row held. The row went and the index went
+// on naming it, so stores in the wild hold genuinely dangling IDs there.
+// GetLinksForProject therefore skips one rather than erroring, and says why.
 //
 // Returning the links read so far alongside the error was rejected: a caller
 // that checks the error is no better off for them, and one that does not gets a
@@ -1479,7 +1535,79 @@ func (db *DB) GetLinksForPackage(packageID int64) ([]*Link, error) {
 	return result, nil
 }
 
-// GetLinksForProject returns all links for a project
+// GetLinksForProject returns every link a project has, and reports rather than
+// hides one it could not read.
+//
+// linksOfProject is the only caller outside tests, and it keys the answer by
+// package name for pull, remove and retreat. Not for the tag path, which never
+// reads this index: moveLinksTx carries links across a tag move by reading
+// links_by_package, and touches this one only to scrub a duplicate it deletes,
+// when the project already holds a link on the destination version. A link it
+// genuinely moves keeps its ID here, because the project goes on holding that
+// link and only the package it points at changes. What a link
+// missing from this answer costs is therefore whatever those three commands do
+// with a name they cannot find, and it differs at each:
+//
+// pull reads it for the channel a project follows. An absent name reads as the
+// default tag, so the package resolves through the name index to whatever latest
+// points at, and a project that asked for beta is relinked onto the stable
+// release with its lock rewritten to match. That silent carry-over onto latest
+// is the one outcome the lookup was added to prevent.
+//
+// remove and retreat read it for the link rows to delete. Both read it once, up
+// front, before they touch anything - but they look a package's name up in the
+// result only at the point of deleting its row, which is after they have taken
+// that package out of node_modules and rewritten package.json. A name missing
+// from the answer therefore leaves the row and nothing else, which is the wrong
+// half to keep: the store goes on recording a project as consuming a package
+// whose files it no longer has, and gc reads that row as a live consumer and
+// keeps the version alive on the strength of it. In retreat's case that outlives
+// the user removing lnpm from the project altogether.
+//
+// An unreadable index entry does all of that at once, for every package the
+// project holds, because it hides the whole list rather than one row of it. Per
+// ADR-0001 the direction decides, and each of these leaves behind or carries
+// across something the command was asked to settle.
+//
+// An index entry naming a row that is not there is skipped, and that is a
+// deliberate disagreement with GetLinksForPackage, which errors on the same
+// shape. The claim GetLinksForPackage makes is about links_by_package alone,
+// where every writer scrubs the ID inside the transaction that deletes the row,
+// so a dangling ID means the file was damaged. links_by_project has no such
+// history. Until #355 DeletePackage's loop deleted a link row unconditionally
+// but scrubbed this index only when it could parse the row, because the row is
+// where the project ID to scrub under is written. An unparseable row was
+// therefore deleted with its ID left behind here: a dangling ID lnpm made
+// itself. That is shipped behaviour, and while the loop is strict as of this
+// change, nothing repairs the stores it already damaged.
+//
+// All three callers return the error rather than carrying on, so erroring here
+// would refuse pull, remove and retreat outright on such a store - and those are
+// the repair paths. remove is how a package is taken out of a project, retreat
+// is the documented way out of lnpm entirely, and both would abort before
+// touching anything. A user whose store lnpm damaged would be locked out of the
+// commands they would reach for, with nothing to send them to. So the dangling
+// ID is skipped instead.
+//
+// Nothing else catches it. gc does reach this index - through DeleteLink when it
+// clears an orphaned link, and through DeletePackage's removeIDFromIndex when it
+// collects a version - but neither inspects the IDs it keeps. removeIDFromIndex
+// filters one ID out and carries every other one forward unexamined, so a
+// dangling ID survives into the new entry. DeleteLink is worse than that: it
+// discards the unmarshal of the entry, and because an entry it could not read
+// yields an empty result it then deletes the whole entry rather than one ID of
+// it, dropping every link the entry named. That is #392, and not this change's
+// to fix.
+//
+// Reads of this index are strict about the two shapes above - InsertLink and
+// this function both refuse an entry that will not parse - but no read anywhere
+// is strict about a dangling ID, which is the point: the damage this tolerates
+// is genuinely tolerated rather than caught downstream, and that is why the
+// other two shapes are refused without exception.
+//
+// Returning the links read so far alongside the error was rejected for the same
+// reason as in GetLinksForPackage: a caller that checks the error gains nothing
+// from them, and one that does not gets a short list that looks complete.
 func (db *DB) GetLinksForProject(projectID int64) ([]*Link, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1489,29 +1617,29 @@ func (db *DB) GetLinksForProject(projectID int64) ([]*Link, error) {
 		links := tx.Bucket(bucketLinks)
 		byProject := tx.Bucket(bucketLinksByProject)
 
-		data := byProject.Get(itob(projectID))
-		if data == nil {
-			return nil
-		}
-
-		var linkIDs []int64
-		if err := json.Unmarshal(data, &linkIDs); err != nil {
-			return nil
+		linkIDs, err := indexIDs(byProject, itob(projectID), "project")
+		if err != nil {
+			return err
 		}
 
 		for _, id := range linkIDs {
 			linkData := links.Get(itob(id))
-			if linkData != nil {
-				var link Link
-				if json.Unmarshal(linkData, &link) == nil {
-					result = append(result, &link)
-				}
+			if linkData == nil {
+				continue // A dangling ID pre-#355 DeletePackage left behind.
 			}
+			var link Link
+			if err := json.Unmarshal(linkData, &link); err != nil {
+				return fmt.Errorf("link %d, which project %d holds, will not parse: %w; run lnpm doctor to see what else the store disagrees about", id, projectID, err)
+			}
+			result = append(result, &link)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return result, err
+	return result, nil
 }
 
 // DeleteLink removes a link
@@ -1585,7 +1713,35 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 	})
 }
 
-// GetProjectsForPackage returns all projects linked to a package
+// GetProjectsForPackage returns every project linked to a package, and reports
+// rather than hides a link or a record it could not read.
+//
+// publish --push, push and status all read this to decide which projects get the
+// new version, so a consumer missing from the answer is a project left on the
+// old one while the run reports success. It walks links_by_package, the index
+// GetLinksForPackage reads, and holds the same line on it: an entry that will not
+// parse, and an entry naming a row that is not there, are both errors. The
+// reasoning is that function's, and two readers of one index disagreeing about
+// what its damage means would be the worse outcome. A project record that will
+// not parse is an error for the same reason it is one in GetProjectByID (#292):
+// damage is damage wherever it is met.
+//
+// A link naming a project record that is not there is skipped, and that shape
+// alone. It is the one piece of missing data lnpm already has a first-class
+// answer for: doctor counts it as an orphaned link and gc files it under
+// "project not found in database" and removes it under --fix-links. Erroring
+// would break publish --push, push and status on a store in exactly the state
+// the repair exists to fix, refusing to run right up to the command that would
+// clear it.
+//
+// Note what is not being claimed. No lnpm flow deletes a project record - there
+// is no DeleteProject - so this is not a state the tool manufactures, and a
+// directory the user removed leaves the record in place and is classified
+// separately, as projectGone. The justification is only that the repair path
+// exists and is reached by carrying on, not that the state is routine.
+//
+// Returning the projects read so far alongside the error was rejected as in
+// GetLinksForPackage: a short list that looks complete is the bug.
 func (db *DB) GetProjectsForPackage(packageID int64) ([]*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1596,35 +1752,38 @@ func (db *DB) GetProjectsForPackage(packageID int64) ([]*Project, error) {
 		byPackage := tx.Bucket(bucketLinksByPackage)
 		projects := tx.Bucket(bucketProjects)
 
-		data := byPackage.Get(itob(packageID))
-		if data == nil {
-			return nil
-		}
-
-		var linkIDs []int64
-		if err := json.Unmarshal(data, &linkIDs); err != nil {
-			return nil
+		linkIDs, err := indexIDs(byPackage, itob(packageID), "package")
+		if err != nil {
+			return err
 		}
 
 		for _, id := range linkIDs {
 			linkData := links.Get(itob(id))
-			if linkData != nil {
-				var link Link
-				if json.Unmarshal(linkData, &link) == nil {
-					projData := projects.Get(itob(link.ProjectID))
-					if projData != nil {
-						var proj Project
-						if json.Unmarshal(projData, &proj) == nil {
-							result = append(result, &proj)
-						}
-					}
-				}
+			if linkData == nil {
+				return fmt.Errorf("the link index for package %d names link %d, which the database does not hold; run lnpm doctor to see what else the store disagrees about", packageID, id)
 			}
+			var link Link
+			if err := json.Unmarshal(linkData, &link); err != nil {
+				return fmt.Errorf("link %d, which package %d is linked by, will not parse: %w; run lnpm doctor to see what else the store disagrees about", id, packageID, err)
+			}
+
+			projData := projects.Get(itob(link.ProjectID))
+			if projData == nil {
+				continue // An orphaned link, which gc --fix-links removes.
+			}
+			var proj Project
+			if err := json.Unmarshal(projData, &proj); err != nil {
+				return fmt.Errorf("the record of project %d, which link %d names, will not parse: %w; run lnpm doctor to see what else the store disagrees about", link.ProjectID, id, err)
+			}
+			result = append(result, &proj)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return result, err
+	return result, nil
 }
 
 // --- File operations ---

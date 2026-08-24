@@ -106,8 +106,19 @@ func RunDoctor() error {
 		// issue and the check abandoned, which is what doctor does with anything
 		// it cannot answer.
 		var tagsErr error
+		// The links are the other half of the same question, and a package whose
+		// link index will not parse is one this check can call neither linked nor
+		// unlinked. Read as no links it counts as an orphan, and the fix printed
+		// below sends the user to gc - which reads that same index, refuses it and
+		// aborts, so the advice contradicts what happens next. Abandoned the same
+		// way the tags are.
+		var linksErr error
 		for _, pkg := range packages {
-			links, _ := database.GetLinksForPackage(pkg.ID)
+			links, err := database.GetLinksForPackage(pkg.ID)
+			if err != nil {
+				linksErr = fmt.Errorf("failed to read the links of %s: %w", pkg.Name, err)
+				break
+			}
 			if len(links) > 0 {
 				continue
 			}
@@ -124,7 +135,11 @@ func RunDoctor() error {
 			}
 			orphanedCount++
 		}
-		if tagsErr != nil {
+		if linksErr != nil {
+			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("  %v\n", linksErr)
+			issues++
+		} else if tagsErr != nil {
 			fmt.Printf("%s ERROR\n", iconFail())
 			fmt.Printf("  %v\n", tagsErr)
 			issues++
@@ -140,10 +155,27 @@ func RunDoctor() error {
 		fmt.Print("Checking for orphaned links... ")
 		orphanedLinks := 0
 		unreachableLinks := 0
+		// Both reads this check makes decide the count, so neither can be
+		// discarded and leave a number worth printing. A package whose link index
+		// will not parse contributes none of its links, and a project record that
+		// will not parse is read as a project that is not there - one counted as
+		// orphaned when it may not be, or missed when it is. Either way the fix
+		// below is advice drawn from a tally doctor cannot stand behind, so the
+		// check is abandoned and the read reported instead, as the two above it
+		// are.
+		var linkErr error
 		for _, pkg := range packages {
-			links, _ := database.GetLinksForPackage(pkg.ID)
+			links, err := database.GetLinksForPackage(pkg.ID)
+			if err != nil {
+				linkErr = fmt.Errorf("failed to read the links of %s: %w", pkg.Name, err)
+				break
+			}
 			for _, link := range links {
-				proj, _ := database.GetProjectByID(link.ProjectID)
+				proj, err := database.GetProjectByID(link.ProjectID)
+				if err != nil {
+					linkErr = fmt.Errorf("failed to read a project %s is linked into: %w", pkg.Name, err)
+					break
+				}
 				if proj == nil {
 					orphanedLinks++
 					continue
@@ -162,15 +194,24 @@ func RunDoctor() error {
 					unreachableLinks++
 				}
 			}
+			if linkErr != nil {
+				break
+			}
 		}
-		if orphanedLinks > 0 {
+		if linkErr != nil {
+			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("  %v\n", linkErr)
+			issues++
+		} else if orphanedLinks > 0 {
 			fmt.Printf("%s %d orphaned link(s)\n", iconWarn(), orphanedLinks)
 			fmt.Println("  Fix: Run 'lnpm gc --fix-links' to clean up")
 			warnings++
 		} else {
 			fmt.Printf("%s OK\n", iconOK())
 		}
-		if unreachableLinks > 0 {
+		// Behind the same abandonment as the count above it: the sweep stopped
+		// early, so this tally is as partial as that one.
+		if linkErr == nil && unreachableLinks > 0 {
 			// No fix is offered, and that is the point of separating these:
 			// there is nothing to clean up. The project may be on a drive that
 			// is merely unplugged, and gc will decline to judge it too.

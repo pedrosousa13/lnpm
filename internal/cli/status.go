@@ -70,7 +70,7 @@ func RunStatus() error {
 	for _, pkg := range packages {
 		projects, err := database.GetProjectsForPackage(pkg.ID)
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to get the projects on %s@%s: %w", pkg.Name, pkg.Version, err)
 		}
 		for _, proj := range projects {
 			if _, ok := projectMap[proj.Path]; !ok {
@@ -262,9 +262,11 @@ func RunList(showStore bool, packageName string, showProjects bool) error {
 // history itself goes further and fails on a version record it cannot parse, for
 // the reason GetPackageVersions gives.
 //
-// One gap remains below that line: GetProjectsForPackage drops a link row it
-// cannot read, so a consumer can still go unnamed. Fixing it means changing a
-// lookup four other commands share, which is not this listing's to do.
+// The consumer lookup holds that line too, since #355: a link row or an index
+// entry it cannot read is an error rather than a consumer quietly missing from
+// the row. The one shape it still passes over is a link naming a project record
+// that is gone, which is an orphaned link rather than damage - doctor reports it
+// and `gc --fix-links` removes it.
 func RunListVersions(packageName string) error {
 	if packageName == "" {
 		return fmt.Errorf("--versions needs a package name: try 'lnpm list <package> --versions'")

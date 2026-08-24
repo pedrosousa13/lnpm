@@ -836,6 +836,350 @@ func TestGetLinksForPackage_ReturnsNothingForAPackageNothingLinks(t *testing.T) 
 	}
 }
 
+// TestGetLinksForProject_ErrorsOnAnIndexEntryThatWillNotUnmarshal pins the
+// project-side twin of the links_by_package case above.
+//
+// An entry read as no IDs is a project told it consumes nothing while its
+// node_modules is full of links lnpm put there. linksOfProject hands that to
+// pull, remove and retreat: pull then reads every package as following the
+// default tag and carries a beta consumer onto latest, and remove and retreat
+// find no name to match when they reach the delete, having taken the files out
+// by then - so every row survives, and gc goes on reading each one as a live
+// consumer.
+func TestGetLinksForProject_ErrorsOnAnIndexEntryThatWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	_, link := seedLink(t, database)
+
+	putRaw(t, database, bucketLinksByProject, itob(link.ProjectID), []byte("[ not ids"))
+
+	links, err := database.GetLinksForProject(link.ProjectID)
+	if err == nil {
+		t.Fatalf("GetLinksForProject() returned %d link(s) and no error for an index entry it could not read", len(links))
+	}
+	if links != nil {
+		t.Errorf("GetLinksForProject() returned %d link(s) alongside its error", len(links))
+	}
+}
+
+// TestGetLinksForProject_ErrorsOnALinkRowThatWillNotUnmarshal pins the row half,
+// which costs one package rather than all of them.
+//
+// remove and retreat look a package's name up in this list to find the row to
+// delete, and they reach that lookup after taking the package out of
+// node_modules. A dropped row is a name they cannot find there, so the database
+// row stays behind while the files it recorded are gone, and nothing tells the
+// user it was there.
+func TestGetLinksForProject_ErrorsOnALinkRowThatWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	_, link := seedLink(t, database)
+
+	putRaw(t, database, bucketLinks, itob(link.ID), []byte("{ not a link"))
+
+	links, err := database.GetLinksForProject(link.ProjectID)
+	if err == nil {
+		t.Fatalf("GetLinksForProject() returned %d link(s) and no error for a row it could not read", len(links))
+	}
+	if links != nil {
+		t.Errorf("GetLinksForProject() returned %d link(s) alongside its error", len(links))
+	}
+}
+
+// TestGetLinksForProject_SkipsAnIndexEntryNamingNoLinkRow pins the asymmetry
+// with GetLinksForPackage, which errors on this same shape.
+//
+// A dangling ID in links_by_package is unreachable except through damage to the
+// file. links_by_project is not. Until #355 DeletePackage's loop deleted a link
+// row unconditionally while scrubbing this index only when it could parse the
+// row - the row being where the project ID to scrub under is written - so an
+// unparseable row was deleted with its ID left behind. Stores carry those
+// dangling IDs today and nothing repairs them, and all three callers return the
+// error rather than carrying on - so erroring would refuse pull, remove and
+// retreat outright on a store lnpm's own bug damaged, which is to say it would
+// lock the user out of the commands that clean a project up.
+//
+// The fixture deletes the row directly rather than by replaying that loop. The
+// loop is strict as of #355 and can no longer produce the state, and a test that
+// reproduced it would have to pin behaviour deliberately removed; what is under
+// test is how the reader treats a dangling ID, not how one is made. The
+// DeletePackage tests below hold the loop to never making another.
+func TestGetLinksForProject_SkipsAnIndexEntryNamingNoLinkRow(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	_, link := seedLink(t, database)
+
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLinks).Delete(itob(link.ID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to remove the link row: %v", err)
+	}
+
+	links, err := database.GetLinksForProject(link.ProjectID)
+	if err != nil {
+		t.Fatalf("GetLinksForProject() error = %v for a dangling ID pre-#355 DeletePackage left behind", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("GetLinksForProject() returned %d link(s) for an index naming one row that is gone", len(links))
+	}
+}
+
+// TestGetProjectsForPackage_ErrorsOnAnIndexEntryThatWillNotUnmarshal pins the
+// index half for the consumer lookup publish, push and status read.
+//
+// It walks links_by_package, the same index GetLinksForPackage reads, so an
+// entry it cannot parse hides every consumer the package has: `lnpm publish
+// --push` would report nothing to push while projects go on holding the old
+// version.
+func TestGetProjectsForPackage_ErrorsOnAnIndexEntryThatWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, _ := seedLink(t, database)
+
+	putRaw(t, database, bucketLinksByPackage, itob(pkg.ID), []byte("[ not ids"))
+
+	projects, err := database.GetProjectsForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetProjectsForPackage() returned %d project(s) and no error for an index entry it could not read", len(projects))
+	}
+	if projects != nil {
+		t.Errorf("GetProjectsForPackage() returned %d project(s) alongside its error", len(projects))
+	}
+}
+
+// TestGetProjectsForPackage_ErrorsOnALinkRowThatWillNotUnmarshal pins the row
+// half: one consumer dropped from a push list is one project left on a version
+// the user believes it was moved off.
+func TestGetProjectsForPackage_ErrorsOnALinkRowThatWillNotUnmarshal(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	putRaw(t, database, bucketLinks, itob(link.ID), []byte("{ not a link"))
+
+	projects, err := database.GetProjectsForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetProjectsForPackage() returned %d project(s) and no error for a row it could not read", len(projects))
+	}
+	if projects != nil {
+		t.Errorf("GetProjectsForPackage() returned %d project(s) alongside its error", len(projects))
+	}
+}
+
+// TestGetProjectsForPackage_ErrorsOnAnIndexEntryNamingNoLinkRow pins that this
+// reader holds the same line on links_by_package that GetLinksForPackage does.
+//
+// Every path that deletes a link row scrubs the ID from that index inside one
+// bolt transaction, so a dangling ID there means the file was damaged. The two
+// readers of one index must not disagree about what its damage means.
+func TestGetProjectsForPackage_ErrorsOnAnIndexEntryNamingNoLinkRow(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLinks).Delete(itob(link.ID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to remove the link row: %v", err)
+	}
+
+	projects, err := database.GetProjectsForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetProjectsForPackage() returned %d project(s) and no error for an index entry naming no row", len(projects))
+	}
+	if projects != nil {
+		t.Errorf("GetProjectsForPackage() returned %d project(s) alongside its error", len(projects))
+	}
+}
+
+// TestGetProjectsForPackage_ErrorsOnAProjectRecordThatWillNotParse pins the last
+// read this lookup makes.
+//
+// A record that will not parse is damage wherever it is met, and dropping the
+// project here costs what dropping the link costs: a consumer missing from the
+// push list. GetProjectByID already refuses this shape, from #292.
+func TestGetProjectsForPackage_ErrorsOnAProjectRecordThatWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	putRaw(t, database, bucketProjects, itob(link.ProjectID), []byte("{ not a project"))
+
+	projects, err := database.GetProjectsForPackage(pkg.ID)
+	if err == nil {
+		t.Fatalf("GetProjectsForPackage() returned %d project(s) and no error for a record it could not read", len(projects))
+	}
+	if projects != nil {
+		t.Errorf("GetProjectsForPackage() returned %d project(s) alongside its error", len(projects))
+	}
+}
+
+// TestGetProjectsForPackage_SkipsALinkNamingNoProjectRecord pins the one shape
+// this lookup goes on tolerating.
+//
+// A link whose project record is gone is the one piece of missing data lnpm
+// already answers for: doctor counts it as an orphaned link, and gc files it
+// under "project not found in database" and removes it under --fix-links.
+// Erroring would break publish --push, push and status on a store in exactly
+// the state that repair exists to fix.
+func TestGetProjectsForPackage_SkipsALinkNamingNoProjectRecord(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketProjects).Delete(itob(link.ProjectID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to remove the project record: %v", err)
+	}
+
+	projects, err := database.GetProjectsForPackage(pkg.ID)
+	if err != nil {
+		t.Fatalf("GetProjectsForPackage() error = %v for an orphaned link, which gc --fix-links repairs", err)
+	}
+	if len(projects) != 0 {
+		t.Errorf("GetProjectsForPackage() returned %d project(s) for a link naming no record", len(projects))
+	}
+}
+
+// seedDeletablePackage records the state DeletePackage tears down: a package
+// with a file and a link. The three tests below each damage one part of it and
+// hold the delete to leaving the rest alone.
+func seedDeletablePackage(t *testing.T, d *DB) (*Package, *Link) {
+	t.Helper()
+
+	pkg, link := seedLink(t, d)
+	if err := d.InsertFiles(pkg.ID, []*FileEntry{{
+		PackageID:    pkg.ID,
+		RelativePath: "index.js",
+		ContentHash:  "f1",
+		Size:         1,
+	}}); err != nil {
+		t.Fatalf("Failed to seed the package's files: %v", err)
+	}
+	return pkg, link
+}
+
+// assertNothingDeleted reads back every key a delete removes, so a refusal is
+// held to leaving the store as it was rather than only to reporting an error.
+//
+// The name index is in the list because it is the proof that bolt rolled the
+// transaction back: DeletePackage clears it before it ever reads the link index,
+// so it is the one key a refusal cannot have skipped over.
+func assertNothingDeleted(t *testing.T, d *DB, pkg *Package, link *Link) {
+	t.Helper()
+
+	err := d.db.View(func(tx *bolt.Tx) error {
+		for _, want := range []struct {
+			what   string
+			bucket []byte
+			key    []byte
+		}{
+			{"the package record", bucketPackages, itob(pkg.ID)},
+			{"the package's files", bucketFiles, itob(pkg.ID)},
+			{"the package's link index", bucketLinksByPackage, itob(pkg.ID)},
+			{"the project's link index", bucketLinksByProject, itob(link.ProjectID)},
+			{"the name index, which it clears before it reads the link index", bucketPackagesByName, []byte(pkg.Name)},
+		} {
+			if tx.Bucket(want.bucket).Get(want.key) == nil {
+				t.Errorf("DeletePackage() removed %s after refusing the delete; bolt has to roll the whole transaction back", want.what)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeletePackage_DeletesNothingWhenTheLinkIndexWillNotParse pins the first of
+// the three shapes that make the package's link set unreadable.
+//
+// The delete used to discard this unmarshal error. linkIDs was nil, so the loop
+// below never ran and no link row was deleted, and then the links_by_package key
+// was deleted anyway - the one thing that named those rows. The rows became
+// orphans: still there, still named by links_by_project, reachable from no
+// package index at all.
+func TestDeletePackage_DeletesNothingWhenTheLinkIndexWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedDeletablePackage(t, database)
+
+	damaged := []byte("[ not ids")
+	putRaw(t, database, bucketLinksByPackage, itob(pkg.ID), damaged)
+
+	if err := database.DeletePackage(pkg.ID); err == nil {
+		t.Fatal("DeletePackage() reported success for a package whose link index it could not read")
+	}
+
+	assertNothingDeleted(t, database, pkg, link)
+	err := database.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(bucketLinks).Get(itob(link.ID)) == nil {
+			t.Error("DeletePackage() removed a link row after failing to read the index that names it")
+		}
+		if after := tx.Bucket(bucketLinksByPackage).Get(itob(pkg.ID)); !bytes.Equal(after, damaged) {
+			t.Errorf("DeletePackage() left the link index as %q, want the damaged entry %q it could not read", after, damaged)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeletePackage_DeletesNothingWhenALinkRowWillNotParse pins the shape that
+// manufactured the dangling links_by_project IDs this issue is about.
+//
+// The loop reads each row only to learn which project to scrub the ID from, and
+// a row it could not parse skipped the scrub - but the delete of the row ran
+// regardless. The row went, the project's index went on naming it, and the ID
+// dangled. That is lnpm damaging its own store out of damage it could have
+// reported, and it is why GetLinksForProject has to tolerate a dangling ID
+// today.
+func TestDeletePackage_DeletesNothingWhenALinkRowWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedDeletablePackage(t, database)
+
+	damaged := []byte("{ not a link")
+	putRaw(t, database, bucketLinks, itob(link.ID), damaged)
+
+	if err := database.DeletePackage(pkg.ID); err == nil {
+		t.Fatal("DeletePackage() reported success for a package holding a link row it could not read")
+	}
+
+	assertNothingDeleted(t, database, pkg, link)
+	err := database.db.View(func(tx *bolt.Tx) error {
+		if after := tx.Bucket(bucketLinks).Get(itob(link.ID)); !bytes.Equal(after, damaged) {
+			t.Errorf("DeletePackage() left link row %d as %q, want the damaged row %q; deleting it without scrubbing the project index is what leaves a dangling ID", link.ID, after, damaged)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeletePackage_DeletesNothingWhenTheIndexNamesNoLinkRow pins the third
+// shape, which the loop used to walk straight past.
+//
+// A missing row means the link set this delete is working from is not the whole
+// one: the ID names a link whose project cannot be learned, so no index can be
+// scrubbed for it, and carrying on would delete the package while leaving
+// whatever that ID stood for unaccounted. GetLinksForPackage refuses this shape
+// on this same index, and a writer that tolerates what the reader refuses would
+// leave the two disagreeing about what the index's damage means.
+func TestDeletePackage_DeletesNothingWhenTheIndexNamesNoLinkRow(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedDeletablePackage(t, database)
+
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLinks).Delete(itob(link.ID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to remove the link row: %v", err)
+	}
+
+	if err := database.DeletePackage(pkg.ID); err == nil {
+		t.Fatal("DeletePackage() reported success for a package whose link index names a row the store does not hold")
+	}
+
+	assertNothingDeleted(t, database, pkg, link)
+}
+
 // --- Unreadable project records ----------------------------------------------
 
 // seedProject records one project and returns it with its assigned ID.
