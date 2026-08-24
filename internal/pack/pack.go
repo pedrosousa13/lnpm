@@ -2118,16 +2118,31 @@ func isBareWildcard(segment string) bool {
 // the check is load-bearing: Linux and macOS both build path_unix.go, so
 // filepath.Separator is "/" on each and the two spellings agree there anyway.
 //
-// Rejected: anchoring with strings.HasPrefix(relPath, pattern). It cannot
-// express the "*" the glob entries are written with — HasPrefix compares "*" as
-// an ordinary byte, so only the entries carrying no "*" could ever fire, and
-// each of those would over-fire on a longer name: "package.jsonc" for
-// "package.json", and since #360 "CHANGELOG.mdx" for "CHANGELOG.md" and
-// "CHANGELOG.md" for "CHANGELOG" itself. Stripping the "*" and prefix-matching
-// the stem repairs the glob half and reintroduces the bug this function exists
-// to fix: "readme" then prefix-matches "readme/secret.txt". Both spellings were
-// run against the table in TestIsDefaultInclude; the package.jsonc and
-// readme/secret.txt rows are what fail them.
+// Rejected: anchoring with strings.HasPrefix(relPath, pattern) in place of the
+// separator check. It cannot express the "*" the glob entries are written with —
+// HasPrefix compares "*" as an ordinary byte, so only the entries carrying no
+// "*" ever fire, and every one of those over-fires on a longer name.
+// Stripping the "*" and prefix-matching the stem repairs the under-match and
+// leaves the over-match, since a stem is a prefix.
+//
+// Both spellings were run against the table in TestIsDefaultInclude, with this
+// separator check removed so each was doing the anchoring itself. Measured:
+//
+//   - HasPrefix on the pattern as written: the six glob rows go red for
+//     under-matching — a root README.md stops being included at all — and eight
+//     rows go red for over-matching. package.jsonc is one; the other seven are
+//     the changelog entries, which have carried no "*" since #360 and so fire
+//     as bare prefixes: history.db, changes.sqlite, changelog.json,
+//     CHANGELOG.db, changesets.md, historybook.txt and the nested
+//     changes/secret.txt.
+//   - HasPrefix on the stem: the glob rows pass, and nine go red for
+//     over-matching — the eight above plus readme/secret.txt, which the first
+//     spelling could not reach because "readme*" is not a prefix of it.
+//
+// Note what changed with #360 here. Before it, "changes*" was a glob, so the
+// first spelling never reached changes/secret.txt and only the second one did.
+// Now "CHANGES" is a literal and is its own stem, so that row catches both. The
+// stem-only guarantee moved to readme/secret.txt, which is why that row exists.
 func isDefaultInclude(relPath string) bool {
 	// collectFiles hands over a relPath already through filepath.ToSlash, so
 	// "/" is the separator it will carry. The filepath.Separator half defends

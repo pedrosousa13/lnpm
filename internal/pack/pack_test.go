@@ -689,12 +689,17 @@ func TestIsDefaultInclude(t *testing.T) {
 		// ["dist"] whitelist did not hold back a root history.db.
 		//
 		// The extensionless rows are the ones that pin the *shape* of the fix
-		// rather than its effect. A narrowing spelled as "keep the glob, then
-		// reject by extension" passes every row in the first block that has a
-		// dot and every row in the second block, and fails exactly these three:
-		// "history.db" clears the glob and is rejected by the suffix test, but
-		// so is a bare "HISTORY", which has no suffix to accept. Run and
-		// confirmed against that spelling; see the commit that added this block.
+		// rather than its effect. The obvious wrong narrowing keeps the prefix
+		// glob and rejects by extension afterwards, so "history.db" clears the
+		// glob and is turned away by the suffix test — and so is a bare
+		// "HISTORY", which has no suffix to accept. Run and confirmed against
+		// that spelling: five rows red for under-matching (CHANGELOG, CHANGES,
+		// HISTORY, changelog, hIsToRy), two red for over-matching (changesets.md
+		// and historybook.txt, which still clear the prefix glob and do carry an
+		// accepted extension), and TestPackDefaultIncludesAnchoredToRoot red
+		// with root HISTORY missing from the packed set. Every arbitrary-
+		// extension row below stays green under it, which is what makes it look
+		// like a working fix.
 		{"CHANGELOG", true},
 		{"CHANGES", true},
 		{"HISTORY", true},
@@ -723,16 +728,15 @@ func TestIsDefaultInclude(t *testing.T) {
 		// names itself so.
 		{"changesets.md", false},
 		{"historybook.txt", false},
-		// A literal strings.HasPrefix(relPath, pattern) anchor can only fire on
-		// the entries carrying no "*", since HasPrefix compares "*" as an
-		// ordinary byte. Run against that spelling, the glob rows above fail for
-		// under-matching — a root README.md stops being included at all — and
-		// this row catches it over-including:
-		// strings.HasPrefix("package.jsonc", "package.json") is true, so a
-		// package.jsonc would ship past the whitelist. Since #360 the changelog
-		// entries carry no "*" either, so "changesets.md" below catches the same
-		// over-match a second way — HasPrefix("changesets.md", "CHANGES") folded
-		// is true.
+		// A strings.HasPrefix(relPath, pattern) anchor can only fire on the
+		// entries carrying no "*", since HasPrefix compares "*" as an ordinary
+		// byte. Run against that spelling — see isDefaultInclude's rejected-
+		// alternatives note, which carries the measured row lists — the glob
+		// rows above fail for under-matching, and this row catches it
+		// over-including: strings.HasPrefix("package.jsonc", "package.json") is
+		// true, so a package.jsonc would ship past the whitelist. Since #360 the
+		// changelog entries carry no "*" either, so the arbitrary-extension rows
+		// below catch the same over-match a second way.
 		{"package.jsonc", false},
 
 		// Below the root, no longer force-included. Every one of these was
@@ -745,22 +749,22 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"vendor/foo/package.json", false},
 		{"a/b/c/CHANGELOG.md", false},
 		// Two nested paths whose *directory* carries an always-included name,
-		// where every row above carries it in the basename.
+		// where every row above carries it in the basename. They guard the
+		// prefix-anchoring alternatives isDefaultInclude's doc comment rejects,
+		// and they do not guard the same one.
 		//
-		// Neither catches the literal HasPrefix spelling — run and confirmed,
-		// strings.HasPrefix("readme/secret.txt", "readme*") is false, so that
-		// spelling never reaches them and package.jsonc above is what holds it.
-		// What "readme/secret.txt" catches is the obvious repair to that
-		// spelling: strip the "*" and prefix-match the stem, at which point
-		// strings.HasPrefix("readme/secret.txt", "readme") is true and nested
-		// paths are admitted again.
+		// "readme/secret.txt" is the only row that catches stem-prefix
+		// anchoring and nothing else: strings.HasPrefix("readme*") is false, so
+		// the pattern-as-written spelling never reaches it, while stripping the
+		// "*" leaves "readme", which is a prefix of it.
 		//
-		// "changes/secret.txt" carried that duty until #360. It cannot any
-		// more: there is no "changes*" entry left to strip a "*" from, so the
-		// stem-prefix spelling never derives "changes" and the row goes green
-		// under it. It stays because it is still a true assertion and because
-		// #320's audit names it, but it is a plain nested-path row now;
-		// "readme/secret.txt" is the one guarding the stem-prefix repair.
+		// "changes/secret.txt" catches both spellings, and did not before #360.
+		// The entry was "changes*" then, and HasPrefix("changes/secret.txt",
+		// "changes*") is false — the row was recorded as catching that spelling
+		// once and did not, which docs/agents/verification-discipline.md keeps
+		// as an example. Now "CHANGES" is a literal, so it is its own stem and
+		// both spellings admit the path. Run and confirmed against both, with
+		// the separator check removed so each was doing the anchoring itself.
 		{"readme/secret.txt", false},
 		{"changes/secret.txt", false},
 	}
