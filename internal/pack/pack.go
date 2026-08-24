@@ -379,21 +379,34 @@ func warnHardReservedIgnoreNegation(packageDir string) {
 // everything" to isIncluded rather than naming any path, so it names nothing to
 // report.
 //
-// A "./"-prefixed entry answers true, and the route is worth knowing because it
-// is not this function's normalization. "./node_modules" survives the trims
-// unchanged, and isHardReserved reaches applyIgnorePatterns, which matches an
-// unanchored separator-free pattern against filepath.Base — and Base of
-// "./node_modules" is "node_modules". So "files": ["./node_modules"] does warn.
-// Run and confirmed; TestPackWarnsWhenFilesNamesHardReserved carries the row,
-// which was added because nothing here exercised one and the comment claimed
-// the opposite.
+// A "./"-prefixed entry naming a hard-reserved path at the root answers true,
+// and the route is worth knowing because it is not this function's
+// normalization. "./node_modules" survives the trims unchanged, and
+// isHardReserved reaches applyIgnorePatterns, which matches an unanchored
+// separator-free pattern against filepath.Base — and Base of "./node_modules"
+// is "node_modules". So "files": ["./node_modules"] does warn. Run and
+// confirmed; TestPackWarnsWhenFilesNamesHardReserved carries the row, which was
+// added because nothing here exercised one and the comment claimed the
+// opposite.
 //
-// That is the right message by a coincidence rather than by design, and the
-// distinction matters if anyone touches either half. matchFilesField resolves no
-// leading "./" anywhere, so such an entry selects nothing whatever the built-in
-// lists say — a separate pre-existing defect, filed on its own. Do not "fix" the
-// normalization here to match: it would report a path the matcher still cannot
-// see, and the matcher is where that belongs.
+// It answers by that coincidence rather than by design, and #346 is what makes
+// the distinction matter. matchFilesField now resolves a leading "./", so
+// "files": ["./node_modules"] selects what "node_modules" would and is refused
+// by the walk's isHardReserved check like any other entry — that row is real
+// evidence for the check as of #346, where before it stayed green for want of
+// anything selected at all. The two halves agree today by two different routes.
+//
+// Aligning the normalization here is out of scope rather than unnecessary, and
+// the difference is measured, not inferred. For a root entry the spellings
+// already agree: "./node_modules" and "node_modules" both true, "./.git" and
+// ".git" both true, "./dist" and "dist" both false. For a *nested* entry they do
+// not. namesHardReserved("node_modules/dep") is true, because applyIgnorePatterns
+// prefix-matches; namesHardReserved("./node_modules/dep") is false, because that
+// prefix test sees a leading "./" and the basename test sees "dep". So
+// "files": ["./node_modules/dep"] is dropped in silence where the unprefixed
+// spelling says so out loud — and silence is the failure mode #321 is about.
+// Only the warning is affected; the walk prunes node_modules either way. #402
+// carries that gap, and it belongs there rather than in a drive-by trim here.
 func namesHardReserved(entry string) bool {
 	normalized := strings.TrimSuffix(strings.TrimPrefix(entry, "/"), "/")
 	return normalized != "" && isHardReserved(normalized)
@@ -1371,19 +1384,51 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // handled below. So "lib/**/*.js" excludes lib/top.js as an ignore pattern but
 // does not include it as a "files" entry.
 //
+// A leading "./" is dropped too, and npm agrees: "./dist" ships the tarball
+// "dist" ships (#346). One is dropped, and it is dropped before the "/" —
+// matchFilesField's own comment carries the npm runs behind both details.
+//
+// That is where the two matchers stop agreeing, and the divergence is decided
+// rather than overlooked. isExcluded leaves a leading "./" in place, so a
+// ".gitignore" line reading "./dist" ignores nothing. Both halves were run
+// rather than reasoned: on git 2.43.0 a .gitignore holding "./dist" leaves
+// dist/index.js untracked while one holding "dist" ignores it, and here
+// isExcluded("dist/index.js", ["./dist"]) is false against a true for ["dist"].
+// An ignore file is git's format even when it is spelled .npmignore, and a
+// "files" entry is npm's, so each side follows its own tool. #346 names this
+// asymmetry as a thing to record rather than remove;
+// TestIsExcludedDoesNotResolveLeadingDotSlash pins it from both sides, and
+// applying matchFilesField's trim to applyIgnorePatterns turns that test red.
+//
 // A trailing "/" marks a directory whose contents are included, and is dropped
 // only from patterns with no glob metacharacter. npm does not read a trailing
 // slash on a glob as a directory marker, so "dist/**/" matches nothing and
 // must not be normalized into "dist/**", which matches everything under dist.
 //
-// So "dist", "/dist", "dist/" and "/dist/" are all equivalent, as they are to
-// npm, and "dist/**" and "/dist/**" are equivalent to each other. "dist/**/"
-// is equivalent to none of them.
+// So "dist", "/dist", "dist/", "/dist/" and "./dist" are all equivalent, as
+// they are to npm, and "dist/**", "/dist/**" and "./dist/**" are equivalent to
+// each other. "dist/**/" is equivalent to none of them, and neither is
+// "./dist/**/".
 //
-// An entry that is empty once normalized — "", "/" or "//" — includes
-// everything, which is what npm does with it: all three ship the same files as
-// a package with no "files" field. isExcluded skips such a pattern for the same
-// reason, so neither function filters a path out on the strength of one.
+// An entry that is empty once normalized — "", "/", "//" or "./" — includes
+// everything, which is what npm does with it: all four ship the same files as a
+// package with no "files" field. isExcluded declines to filter a path out on any
+// of the four as well, so neither function drops one on the strength of a
+// degenerate entry — but it reaches that answer by two routes, and only one of
+// them is a degenerate skip. "", "/" and "//" are skipped there without being
+// consulted: the first two hit the empty-pattern guard, and "//" hits the
+// empty-directory guard inside the trailing-slash branch. "./" hits neither,
+// because isExcluded resolves no leading "./" — it reads the entry as the
+// directory pattern "." and simply matches nothing.
+//
+// A slash *run* in front of a real path is a separate question and still open:
+// "//dist" normalizes to "/dist" here and selects nothing, where npm 11.16.0
+// ships dist. #403.
+//
+// A bare "." is not one of them, however much it looks like one. npm 11.16.0
+// ships only the always-included set for "files": ["."] — run and confirmed on
+// a fixture package — so it selects nothing here either, and #346 left it alone
+// deliberately rather than by omission.
 func isIncluded(relPath string, patterns []string) bool {
 	return matchFilesField(relPath, patterns) != filesMatchNone
 }
@@ -1437,10 +1482,10 @@ const (
 // An earlier draft split "dist/*" from "dist/**", on the reasoning that
 // filepath.Match's "*" cannot cross a separator so the first picks out one level
 // rather than a tree. True, and beside the point: it made "files": ["*"] publish
-// every overridable-list file at the package root, and it made the three
-// spellings of "ship everything" — "", "." and "*" — disagree with each other.
-// The question is whether the entry said anything about the name, not how deep
-// it reaches.
+// every overridable-list file at the package root, and it split the spellings of
+// "ship everything": the degenerate entries classify as containment, so a "*"
+// that named paths disagreed with them. The question is whether the entry said
+// anything about the name, not how deep it reaches.
 //
 // The branches below and their order are unchanged from the single-verdict
 // isIncluded this was split out of; only the returns are. Note the trailing
@@ -1450,6 +1495,47 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 	best := filesMatchNone
 
 	for _, pattern := range patterns {
+		// One leading "./" comes off, and it comes off before the "/" trim
+		// below. Both halves of that were measured against npm 11.16.0 rather
+		// than reasoned:
+		//
+		//   ["./dist"]    ships dist, exactly as ["dist"] does — #346
+		//   ["././dist"]  ships nothing, so npm resolves one "./" and not a run
+		//   ["/./dist"]   ships nothing, so a "./" behind the anchor is not one
+		//   [".//dist"]   ships dist, since the "/" trim still runs afterwards
+		//
+		// Trimming "/" first flips both of the slash-mixed rows, measured:
+		// "/./dist" becomes "./dist" and then "dist", selecting dist from an
+		// entry npm selects nothing for, while ".//dist" keeps its inner "/"
+		// and selects nothing where npm ships dist.
+		//
+		// Note what this deliberately does not touch. A bare "." is left alone
+		// and therefore still selects nothing, which looks like the bug above
+		// and is not: ["."] ships only the always-included set under npm
+		// 11.16.0, while ["./"], [""], ["/"] and ["//"] all ship everything.
+		// Run and confirmed on a fixture package for each spelling.
+		//
+		// Every branch below then sees a string byte-identical to the
+		// unprefixed spelling, which is what makes the two classify the same
+		// rather than merely select the same paths. A "./dist" reaching
+		// filepath.Match whole would have been a direct match, and #321's rule
+		// would have published dist/.env from an entry naming the directory
+		// only.
+		//
+		// Only the "files" side resolves this. isExcluded deliberately does not
+		// — see isIncluded's doc comment for why the two differ.
+		//
+		// No platform split hides in this, unlike the separator questions
+		// isDefaultInclude and isExcluded both have. The trim is a literal byte
+		// compare against "./" and its output is the unprefixed spelling itself,
+		// so whatever filepath.Match does with a "\" separator on Windows it
+		// does identically for both spellings, and
+		// TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm asserts that
+		// equality on every CI platform as well as a fixed answer. A Windows-
+		// style ".\\dist" is a different entry and is not handled — nothing here
+		// has ever read "\" as a separator, since collectFiles hands over paths
+		// already through filepath.ToSlash.
+		pattern = strings.TrimPrefix(pattern, "./")
 		pattern = strings.TrimPrefix(pattern, "/")
 		if !strings.Contains(pattern, "*") {
 			pattern = strings.TrimSuffix(pattern, "/")
@@ -1492,11 +1578,19 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 				// app.log, pkg.tgz, Thumbs.db and the rest of the overridable
 				// list from a package that had said nothing about any of them.
 				//
-				// It also keeps the three spellings of "ship everything"
-				// agreeing. "", "." and "*" are one intent, and the first two
-				// are containment by the branches above; a "*" that named
-				// paths would have made the same manifest mean two different
-				// things depending on which spelling was chosen.
+				// It also keeps the spellings of "ship everything" classifying
+				// alike. "", "/", "//" and "./" reach the degenerate branch
+				// above and are containment there; "*" and "**" arrive here and
+				// have to agree, or the same manifest would mean two different
+				// things depending on which spelling was chosen. How far each
+				// reaches is a separate question — filepath.Match stops "*" and
+				// "**" at a separator where npm's glob does not, which is #350.
+				//
+				// A bare "." is not on that list. It looks like it belongs and
+				// does not: npm 11.16.0 ships only the always-included set for
+				// ["."] — run and confirmed on a fixture package — so it is not
+				// a spelling of this intent, it classifies as filesMatchNone,
+				// and nothing here has to agree with it.
 				//
 				// Anything that constrains the segment still names: "*.example",
 				// ".env.*" and "dist/*.env" all pick out files by name rather
