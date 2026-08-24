@@ -273,6 +273,29 @@ func RunPushTagged(skipHooks bool, tag string) error {
 		return fmt.Errorf("failed to update package: %w", err)
 	}
 
+	// The packed set, in finishPublish's format and for its reasons (#372
+	// carries #322's finding onto this path): a count cannot show that a secret
+	// was packed, and this is the run that packed it. Uncapped, as there, since
+	// a list truncated at N cannot be trusted to hold the entry being looked for.
+	//
+	// Printed here rather than at the returns below, and once rather than at
+	// each of them: every return past this point is reached with the files
+	// already packed, so repeating the block would only give the same lines more
+	// places to drift apart. It sits after the store and database writes, so a
+	// run that failed at either of those lists nothing.
+	//
+	// What it lists is what the store holds under newHash, on both of the
+	// branches above. The one that reused storePath wrote nothing this run, but
+	// pack.HashFiles folds each file's RelPath, ContentHash and permission bits
+	// into newHash, so an entry already sitting under that hash holds this exact
+	// set.
+	//
+	// The slice is the one packed above, so the listing costs no second walk.
+	var listing strings.Builder
+	listing.WriteString("  Packed:\n")
+	writePackedPaths(&listing, files, "    ")
+	fmt.Print(listing.String())
+
 	// Get linked projects
 	projects, err := database.GetProjectsForPackage(pkg.ID)
 	if err != nil {

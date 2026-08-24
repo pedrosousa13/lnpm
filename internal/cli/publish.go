@@ -411,8 +411,9 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 	//
 	// push reaches this only through RunPushTagged's "not published yet"
 	// branch, which delegates the first publish here. A steady-state push does
-	// its own packing and storing and prints no list; #322 is about publish, so
-	// that half is left as it is.
+	// its own packing and storing, and prints the same block itself (#372), so
+	// the two halves of push list alike; keep the format here and there
+	// together.
 	var listing strings.Builder
 	listing.WriteString("  Packed:\n")
 	writePackedPaths(&listing, files, "    ")
