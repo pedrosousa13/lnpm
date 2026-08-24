@@ -212,6 +212,63 @@ in this file is a measurement with a date on it, not a fact.**
 A single-line revert that moves one row is still a real revert — but only if you
 checked that the rows you expected to stay green actually did.
 
+### The walk's error branch, added by #348
+
+#348 put a second decision into `collectFiles`' walk callback: a directory whose read failed is
+skipped when the package's rules already exclude it, and aborts otherwise. Its two standard
+directions are "delete the block" and "skip every unreadable directory rather than only excluded
+ones", and both are worth running. Measured on 2026-08-24, each preceded by `go vet ./...` and
+each read for the package result line rather than for silence:
+
+- **Delete the whole skip block.** Three rows over two tests —
+  `TestPackSkipsAnUnreadableExcludedDirectory` (both rows, `no_files_field` and `files_field`)
+  and `TestPackSkipsAnUnreadableHardReservedDirectory`.
+- **Skip every unreadable directory**, by discarding the predicate's verdict. All six rows of
+  `TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked`.
+
+Two narrower ones matter more than either, because each isolates a term whose obvious reading is
+wrong:
+
+- **Swap `filesFieldMayReach` for `matchFilesField(relPath, filesField) == filesMatchNone`.**
+  This is the predicate a reader reaches for first, and it is wrong: `matchFilesField` answers
+  how an entry reaches a path, not whether one could reach *past* it, so
+  `matchFilesField("coverage", ["coverage/report.html"])` is `filesMatchNone` for a directory the
+  entry plainly selects into. Two rows red —
+  `TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked/a_files_entry_reaching_a_path_inside_it`
+  and `.../a_files_entry_reaching_it_by_double_star`. Note what stays green: every skip row, and
+  the four other abort rows. A run that only checked "does anything fail" would have called the
+  wrong predicate covered.
+- **Delete the `isHardReserved` term from `unreadableDirIsExcluded`.**
+  `TestPackSkipsAnUnreadableHardReservedDirectory` alone. It is the only term that answers for an
+  unreadable `node_modules` under a package with no `.gitignore` naming it, since `node_modules`
+  is in `hardReservedExcludes` and not in `defaultExcludes`.
+
+The callback's guards each move exactly one test, and one of them does not fail so much as
+crash: deleting `info != nil` panics inside `TestPackAbortsWhenAChildCannotBeStatted`, because
+`filepath.Walk` passes a nil `FileInfo` on both of its lstat-failure shapes. Deleting
+`relPath != "."` turns `TestCollectFilesAbortsWhenThePackageRootCannotBeRead` red and nothing
+else.
+
+The third guard is the interesting one, because **its revert is green and that is the answer, not
+a gap**. Deleting `info.IsDir()` moves nothing: every error site `filepath.Walk` has passes
+either a directory's `info` or nil, so `info != nil` already implies a directory. The guard is
+kept for a shape a later Go release might add, in the sense `mainEntryPath`'s comment uses, and
+the comment says so. Do not read the green as missing coverage and do not delete the guard on the
+strength of it — but do re-run it, because the day it starts moving a row is the day the
+enumeration above went stale.
+
+One more, outside the walk entirely: the "a file-level read error is unaffected" criterion is
+pinned by `TestPackAbortsOnAnUnreadableFile`, and the revert that moves it is swallowing
+`hashErr` in `collectFiles`' second pass. Nothing in the skip logic is on that path — the walk
+lstats the file successfully and selects it, and `HashFile` is what fails — so a reviewer looking
+for that criterion in the walk will not find it.
+
+Two things about reading these runs. Four of the six tests named above have **no subtests**, so
+they print only a top-level `--- FAIL:` line — the same shape that went uncounted twice in the
+section above. And **B-prime does not apply to this fix at all**: the walk's error branch can
+only skip or abort, never select, so there is no placement of it that ships a path. Do not write
+a hoist-above-`isHardReserved` experiment here and read its green as coverage.
+
 The general lesson is the one that generalises past `pack`: **when a fix moves a check from an
 implicit position to an explicit one, the revert direction moves with it.** Reverting the old
 placement no longer tests anything, and a reviewer reading only the ADR would write the wrong
