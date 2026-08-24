@@ -416,12 +416,21 @@ func TestPublishDryRunRunsPrePublishButNotPostPublish(t *testing.T) {
 	// This is the test that caught the defect - CI run 32634796756, Windows
 	// only, `pre_publish hook failed: command failed: exit status 1`, with Linux
 	// and macOS green on the same commit - and it catches it without needing a
-	// space in the marker path, because the command string as a whole contains
-	// spaces and that alone was enough for syscall.EscapeArg to rewrite the
-	// quotes QuoteArg had added. What it does not cover is a space inside the
-	// path itself, since CI's temp directory has none. That case is
-	// TestCommandRunsAQuotedPath in internal/shellcmd, which builds a directory
-	// with a space in its name rather than hoping the machine supplies one.
+	// space in the marker path. appendEscapeArg (syscall/exec_windows.go) sets
+	// needsBackslash on a `"` or a `\` and hasSpace on a space or tab; the `\"`
+	// rewrite runs whenever needsBackslash is set, and hasSpace decides only
+	// whether the result is wrapped. So it is the quotes QuoteArg adds that
+	// force the rewrite - spaces are neither necessary nor sufficient.
+	// Unquoted, the same string is already needsBackslash from the path's own
+	// backslashes, but no backslash is immediately followed by a quote, so
+	// nothing is doubled and the outer wrap is all cmd.exe has to strip. That
+	// is why the unquoted spelling worked and this one did not.
+	//
+	// What this test does not cover is a space inside the path itself, since
+	// CI's temp directory has none. That case is TestCommandRunsAQuotedPath in
+	// internal/shellcmd, which builds a directory with a space in its name
+	// rather than hoping the machine supplies one. Both pass on Windows as of
+	// CI run 32767343693.
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	env.writeFile(cfgPath, "hooks:\n"+
 		"  pre_publish: "+yamlQuote("echo ran > "+shellcmd.QuoteArg(pre))+"\n"+

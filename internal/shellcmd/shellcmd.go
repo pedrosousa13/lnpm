@@ -6,23 +6,34 @@
 // stated contract rather than an implicit one.
 //
 // The Windows half is the reason Command is split across build-tagged files.
-// exec.Command("cmd", "/C", s) leaves os/exec to build the child command line
-// with syscall.EscapeArg, which quotes for CommandLineToArgvW - the C runtime's
-// parser - and rewrites an inner double quote as \". cmd.exe implements a
-// different parser and does not read \" as an escape: it takes the backslash
-// literally and lets the quote close the quoted run. Microsoft's own cmd
-// reference spells the rules cmd.exe does apply, and os/exec's Command doc
-// names cmd.exe as one of the exceptions to its quoting, pointing at
-// SysProcAttr.CmdLine for exactly this case. So shellcmd_windows.go sets
-// CmdLine and shellcmd_unix.go does not, and SysProcAttr carries that field
-// only on Windows.
+// With exec.Command("cmd", "/C", s) the child command line is built by
+// syscall.StartProcess, whose makeCmdLine escapes every argument with
+// appendEscapeArg - the rewrite syscall.EscapeArg documents. That quotes for
+// CommandLineToArgvW, the C runtime's parser, and turns an inner double quote
+// into \". cmd.exe implements a different parser and does not read \" as an
+// escape: it takes the backslash literally and lets the quote close the quoted
+// run. Microsoft's own cmd reference spells the rules cmd.exe does apply, and
+// os/exec's Command doc names cmd.exe as one of the exceptions to its quoting,
+// pointing at SysProcAttr.CmdLine for exactly this case. So
+// shellcmd_windows.go sets CmdLine and shellcmd_unix.go does not, and
+// SysProcAttr carries that field only on Windows.
 //
-// Known limitation, recorded rather than worked around: cmd.exe has no escape
-// for a double quote inside a quoted string, so QuoteArg cannot deliver an
-// argument containing one on Windows. Nothing in this repo hits that, because a
-// double quote is one of the characters Microsoft's file-naming rules reserve
-// in a Windows path component, and QuoteArg's only production caller quotes a
-// path.
+// Two limitations are recorded rather than worked around.
+//
+// First, cmd.exe has no escape for a double quote inside a quoted string, so
+// QuoteArg cannot deliver an argument containing one on Windows. Nothing in
+// this repo hits that, because a double quote is one of the characters
+// Microsoft's file-naming rules reserve in a Windows path component, and
+// QuoteArg's only production caller quotes a path.
+//
+// Second, a command string that *begins* with a double quote is still mangled,
+// and #375 did not change that. cmd.exe's /C rule preserves quotes only for a
+// string holding exactly one quoted pair that names an executable; otherwise it
+// strips the first quote and the last quote of the whole string. So an editor
+// configured as "C:\Program Files\Editor\ed.exe" reaches cmd as
+// C:\Program Files\Editor\ed.exe" "...\config.yaml once QuoteArg has added the
+// second pair. This is not a regression - appendEscapeArg mangled the same
+// string a different way before - and it was left out of #375's scope.
 package shellcmd
 
 import (
