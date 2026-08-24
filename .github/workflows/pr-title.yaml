@@ -21,7 +21,7 @@ jobs:
       # release-please parses. A non-conventional title is silently dropped
       # from the changelog and the version bump.
       - name: Check PR title
-        uses: amannn/action-semantic-pull-request@v5
+        uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
