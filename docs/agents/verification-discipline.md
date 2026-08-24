@@ -306,6 +306,50 @@ package directories.
 When a claim can only be checked on a platform you cannot run, say which half you ran and which
 half you read.
 
+### `internal/shellcmd`, added by #375
+
+This package is the sharpest case of a split like that, so it is worth naming what each half of
+its revert check can and cannot settle. Measured on 2026-08-24 on Linux, each run preceded by
+`go vet ./...` and each read for the `ok`/`FAIL <package>` result line rather than for silence:
+
+- **Revert the fix.** One red row: `TestQuoteForCmdQuotesForCmdExe/a_double_quote`, on
+  `quoteForCmd("a\"b") = "\"a\\\"b\""`. Every other row stays green, including all four of
+  `TestCommandRunsAQuotedPath` — because the `SysProcAttr.CmdLine` half of the fix is invisible
+  to a Linux run. **That half's revert was never run, on any platform.** Run 32634796756 shows
+  `TestPublishDryRunRunsPrePublishButNotPostPublish` failing on Windows alone with
+  `pre_publish hook failed: command failed: exit status 1`, but that run *predates* the fix and
+  is not a revert of it; concluding that reverting would reproduce it is reasoning, and is
+  labelled here rather than counted as a measurement.
+
+  What is measured is the forward direction, on Windows CI run **32767343693**:
+  `TestCommandRunsAQuotedPath`'s `a_space`, `a_single_quote` and `an_ampersand` rows PASS there
+  rather than skip, `a_double_quote` SKIPs by design, and
+  `TestPublishDryRunRunsPrePublishButNotPostPublish` passes with `shellcmd.QuoteArg` restored.
+  Confirming the rows *ran* and did not skip is the point — see "Confirm the run you are
+  reading" below.
+- **A plausible wrong fix: quote for cmd.exe on every platform**, by dropping QuoteArg's
+  `runtime.GOOS` branch. Two red tests —
+  `TestQuoteArgMatchesTheShellCommandStarts`, which **has no subtests** and so prints only the
+  unindented `--- FAIL:` shape, and `TestCommandRunsAQuotedPath/a_double_quote`. Note which rows
+  stay green: `a space`, `a single quote` and `an ampersand` all pass, because `sh` accepts a
+  double-quoted string too. Only the row whose fixture name contains the character the two
+  shells disagree about moves.
+- **Is `TestCommandRunsAQuotedPath` vacuous?** No — but the two directions above move only one
+  of its four rows between them, which is why a third experiment was needed. Reverting the fix
+  leaves all four green on Linux, because the bug is Windows-only; the cmd-quoting-everywhere
+  direction moves `a_double_quote` and nothing else. So neither says anything about
+  `a_space`, `a_single_quote` or `an_ampersand` — the three rows Windows CI actually runs.
+  Making `quoteForSh` return its argument unchanged turns **all four rows red**, each for its
+  own reason: three cannot open the marker, and `an ampersand` exits 127 with
+  `sh: 1: and: not found`. The test measures the quoting, not the existence of a shell.
+
+The lesson that generalises: a build-tagged fix has a revert direction per tag, and the one you
+can run locally may not be the one the bug lives in. Split the pure part out — `quoteForCmd` and
+`quoteForSh` are deliberately free of any build tag, and `QuoteArg` branches at run time instead,
+so both compile and are exercised on every platform. That is what turned "Windows only, read from
+the docs" into "Windows only for one of the two halves" — and that remaining half is the one
+run 32767343693 settled, forward rather than by revert.
+
 ## Confirm the run you are reading
 
 Before treating CI as evidence, confirm a run exists for the exact SHA you pushed

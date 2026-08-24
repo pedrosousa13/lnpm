@@ -14,6 +14,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/cli"
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 )
 
 // dryRunHeading is the prefix of the line a dry run prints above its file list.
@@ -407,36 +408,33 @@ func TestPublishDryRunRunsPrePublishButNotPostPublish(t *testing.T) {
 	pre := filepath.Join(markers, "pre.txt")
 	post := filepath.Join(markers, "post.txt")
 
-	// The marker paths go into the hook command unquoted, which is why an
-	// unquotable one has to skip rather than run.
+	// The marker paths go through shellcmd.QuoteArg. This test used to paste
+	// them in unquoted and skip when the temp path held a space, because
+	// QuoteArg's output did not survive shellcmd.Command on Windows. #375 fixed
+	// that, so the quoting is back and the skip is gone.
 	//
-	// shellcmd.QuoteArg was the obvious spelling and it fails on Windows: the
-	// hook runs through shellcmd.Command as `cmd /C <string>`, and os/exec
-	// escapes that string with syscall.EscapeArg, which wraps an argument
-	// containing spaces in quotes and rewrites an inner `"` as `\"`. cmd.exe
-	// does not read `\"` as an escaped quote - it takes the backslash
-	// literally - so the redirection target arrives mangled and the hook exits
-	// 1. Observed on CI, run 32634796756: `pre_publish hook failed: command
-	// failed: exit status 1`, Windows only, with Linux and macOS green on the
-	// same commit.
+	// This is the test that caught the defect - CI run 32634796756, Windows
+	// only, `pre_publish hook failed: command failed: exit status 1`, with Linux
+	// and macOS green on the same commit - and it catches it without needing a
+	// space in the marker path. appendEscapeArg (syscall/exec_windows.go) sets
+	// needsBackslash on a `"` or a `\` and hasSpace on a space or tab; the `\"`
+	// rewrite runs whenever needsBackslash is set, and hasSpace decides only
+	// whether the result is wrapped. So it is the quotes QuoteArg adds that
+	// force the rewrite - spaces are neither necessary nor sufficient.
+	// Unquoted, the same string is already needsBackslash from the path's own
+	// backslashes, but no backslash is immediately followed by a quote, so
+	// nothing is doubled and the outer wrap is all cmd.exe has to strip. That
+	// is why the unquoted spelling worked and this one did not.
 	//
-	// Unquoted, the whole command still contains spaces, so EscapeArg wraps it
-	// once and cmd.exe strips that outer pair - which is the shape cmd expects.
-	// That only holds while the paths themselves have no spaces, hence the
-	// skip. Go's t.TempDir sits under TMPDIR, so this is a property of the
-	// machine, not of the test.
-	//
-	// The underlying quoting defect belongs to internal/shellcmd, not to this
-	// test, and no test covered a custom hook before this one - which is why it
-	// surfaced here. Filed separately rather than fixed under #322.
-	if strings.ContainsAny(pre+post, " \t") {
-		t.Skipf("temp path contains a space, which the hook command cannot quote on Windows: %s", markers)
-	}
-
+	// What this test does not cover is a space inside the path itself, since
+	// CI's temp directory has none. That case is TestCommandRunsAQuotedPath in
+	// internal/shellcmd, which builds a directory with a space in its name
+	// rather than hoping the machine supplies one. Both pass on Windows as of
+	// CI run 32767343693.
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	env.writeFile(cfgPath, "hooks:\n"+
-		"  pre_publish: "+yamlQuote("echo ran > "+pre)+"\n"+
-		"  post_publish: "+yamlQuote("echo ran > "+post)+"\n")
+		"  pre_publish: "+yamlQuote("echo ran > "+shellcmd.QuoteArg(pre))+"\n"+
+		"  post_publish: "+yamlQuote("echo ran > "+shellcmd.QuoteArg(post))+"\n")
 	t.Setenv("LNPM_CONFIG", cfgPath)
 	config.ResetForTesting()
 	t.Cleanup(config.ResetForTesting)
