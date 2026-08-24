@@ -4,7 +4,13 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.x.x   | :white_check_mark: |
+| 2.x     | :white_check_mark: |
+| 1.x     | :x:                |
+
+This table is not generated. The maintainer updates it by hand when the
+supported line changes, which in practice means at a major release. Whether
+release tooling should own it instead is undecided, and is tracked in
+[#389](https://github.com/pedrosousa13/lnpm/issues/389).
 
 ## Security Considerations
 
