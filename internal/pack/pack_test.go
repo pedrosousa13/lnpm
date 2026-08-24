@@ -643,11 +643,15 @@ func TestIsExcludedDoesNotResolveLeadingDotSlash(t *testing.T) {
 	}
 }
 
-// TestIsDefaultInclude pins the always-included set to the package root.
+// TestIsDefaultInclude pins the always-included set to the package root, and
+// since #360 its membership as well.
 //
-// The nested rows below all used to answer true: isDefaultInclude matched
-// filepath.Base(relPath), so a README, LICENSE or CHANGES anywhere in the tree
-// was force-included past a "files" whitelist. Regression test for #320.
+// The nested rows below whose *basename* is an always-included name all used to
+// answer true: isDefaultInclude matched filepath.Base(relPath), so a README,
+// LICENSE or CHANGES anywhere in the tree was force-included past a "files"
+// whitelist. Regression test for #320. The two rows whose basename is not such a
+// name — the ones with an always-included word in a *directory* segment — were
+// false before #320 as well, and guard something else; see their own comment.
 //
 // The nested rows are also the platform guard, and the Windows CI job is where
 // they earn their keep — on Linux and macOS they were already true. Both build
@@ -680,18 +684,77 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"README.anything", true},
 		{"src/index.ts", false},
 		{"dist/index.js", false},
-		// "package.json" is the only entry carrying no "*", so it is the only
-		// one a literal strings.HasPrefix(relPath, pattern) anchor could ever
-		// fire on: HasPrefix compares "*" as an ordinary byte, so every other
-		// entry matches nothing. Run against that spelling, the glob rows above
-		// fail for under-matching — a root README.md stops being included at
-		// all — and this row is the only one that catches it over-including:
-		// strings.HasPrefix("package.jsonc", "package.json") is true, so a
-		// package.jsonc would ship past the whitelist.
+
+		// The changelog family, narrowed by #360 from a prefix glob to an
+		// explicit name-plus-extension set. Before it, every row in the second
+		// block below answered true, because "history*" and "changes*" matched
+		// any root file whose name merely started with the word — a "files":
+		// ["dist"] whitelist did not hold back a root history.db.
+		//
+		// The extensionless rows are the ones that pin the *shape* of the fix
+		// rather than its effect. The obvious wrong narrowing keeps the prefix
+		// glob and rejects by extension afterwards, so "history.db" clears the
+		// glob and is turned away by the suffix test — and so is a bare
+		// "HISTORY", which has no suffix to accept. Run and confirmed against
+		// that spelling: five rows red for under-matching (CHANGELOG, CHANGES,
+		// HISTORY, changelog, hIsToRy), two red for over-matching (changesets.md
+		// and historybook.txt, which still clear the prefix glob and do carry an
+		// accepted extension), and TestPackDefaultIncludesAnchoredToRoot red
+		// with root HISTORY missing from the packed set. Every arbitrary-
+		// extension row below stays green under it, which is what makes it look
+		// like a working fix.
+		{"CHANGELOG", true},
+		{"CHANGES", true},
+		{"HISTORY", true},
+		{"changelog", true},
+		// The maintainer's second comment on #360 names CHANGES.txt, HISTORY.txt
+		// and CHANGELOG.txt in those words, so all three are pinned literally
+		// rather than left to the generated set to imply. The CHANGES one is the
+		// pre-existing changes.txt row in the block above, which that decision
+		// is the reason for keeping.
+		{"CHANGELOG.txt", true},
+		{"HISTORY.txt", true},
+		{"CHANGES.md", true},
+		{"HISTORY.rst", true},
+		{"changelog.rst", true},
+		{"history.markdown", true},
+		// Case-folding is unchanged: the matcher lower-cases both sides, so a
+		// single spelling per entry answers for every casing of it. That is why
+		// the entries #360 added are written once where the older README/LICENSE
+		// entries are doubled; #363 removes the doubling.
+		{"ChangeLog.MD", true},
+		{"hIsToRy", true},
+
+		// Arbitrary extensions, no longer force-included. #360.
+		{"history.db", false},
+		{"changes.sqlite", false},
+		{"changelog.json", false},
+		{"CHANGELOG.db", false},
+		// Two root files whose names *start* with an accepted stem and carry an
+		// accepted extension. They catch a narrowing that keeps prefix matching
+		// on the stem and only constrains the extension, which both of these
+		// would pass. No claim is made about either being a name some tool
+		// emits; what the rows guard holds regardless.
+		{"changesets.md", false},
+		{"historybook.txt", false},
+		// A strings.HasPrefix(relPath, pattern) anchor can only fire on the
+		// entries carrying no "*", since HasPrefix compares "*" as an ordinary
+		// byte. Run against that spelling — see isDefaultInclude's rejected-
+		// alternatives note, which carries the measured row lists — the glob
+		// rows above fail for under-matching, and this row catches it
+		// over-including: strings.HasPrefix("package.jsonc", "package.json") is
+		// true, so a package.jsonc would ship past the whitelist. Since #360 the
+		// changelog entries carry no "*" either, so the arbitrary-extension rows
+		// below catch the same over-match a second way.
 		{"package.jsonc", false},
 
-		// Below the root, no longer force-included. Every one of these was
-		// true before #320.
+		// Below the root, no longer force-included. Every row down to
+		// a/b/c/CHANGELOG.md was true before #320, because the matcher ran on
+		// filepath.Base and each of their basenames matched an entry. The two
+		// directory-name rows after them were false then too — Base
+		// ("changes/secret.txt") is "secret.txt", which matches nothing — so
+		// they are not #320 regressions and their own comment says what they
+		// are for.
 		{"docs/README.md", false},
 		{"dist/README.md", false},
 		{"internal-docs/README.private", false},
@@ -699,15 +762,24 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"vendor/foo/LICENSE", false},
 		{"vendor/foo/package.json", false},
 		{"a/b/c/CHANGELOG.md", false},
-		// A nested path whose *directory* carries an always-included name,
-		// where every row above carries it in the basename. This does not
-		// catch the literal HasPrefix spelling — run and confirmed,
-		// strings.HasPrefix("changes/secret.txt", "changes*") is false, so
-		// that spelling never reaches it and package.jsonc above is what
-		// holds it. What this row catches is the obvious repair to that
-		// spelling: strip the "*" and prefix-match the stem, at which point
-		// strings.HasPrefix("changes/secret.txt", "changes") is true and
-		// nested paths are admitted again.
+		// Two nested paths whose *directory* carries an always-included name,
+		// where every row above carries it in the basename. They guard the
+		// prefix-anchoring alternatives isDefaultInclude's doc comment rejects,
+		// and they do not guard the same one.
+		//
+		// "readme/secret.txt" is the only row that catches stem-prefix
+		// anchoring and nothing else: strings.HasPrefix("readme*") is false, so
+		// the pattern-as-written spelling never reaches it, while stripping the
+		// "*" leaves "readme", which is a prefix of it.
+		//
+		// "changes/secret.txt" catches both spellings, and did not before #360.
+		// The entry was "changes*" then, and HasPrefix("changes/secret.txt",
+		// "changes*") is false — the row was recorded as catching that spelling
+		// once and did not, which docs/agents/verification-discipline.md keeps
+		// as an example. Now "CHANGES" is a literal, so it is its own stem and
+		// both spellings admit the path. Run and confirmed against both, with
+		// the separator check removed so each was doing the anchoring itself.
+		{"readme/secret.txt", false},
 		{"changes/secret.txt", false},
 	}
 
@@ -2222,14 +2294,19 @@ func TestUserIgnorePatternsStayCaseSensitive(t *testing.T) {
 //     defaultIncludes. It is in the fixture so that a fix which anchored by
 //     rejecting every path with a separator *after* the whitelist had already
 //     spoken would be caught here.
-//   - "history.db" at the root ships. #320 lists it among the four paths a
-//     ["dist"] whitelist wrongly shipped, but at the root it is not an instance
-//     of the depth bug: it matches the "history*" entry in defaultIncludes as a
-//     root path, and root paths are exactly what the always-included set is for.
-//     Whether "HISTORY*" belongs in that set at all — npm's does not contain it,
-//     as README's divergence list records — is out of scope for #320, which the
-//     brief states in those words. "data/history.db" below is the same name at
-//     depth and is dropped, which is the part #320 is about.
+//   - "history.db" at the root does not ship, and until #360 it did. It is the
+//     fourth of the four paths #320 lists as wrongly shipped past a ["dist"]
+//     whitelist, and the only one that was not an instance of the depth bug: at
+//     the root it matched the "history*" entry, and root paths are what the
+//     always-included set is for, so anchoring could not reach it. #320 left it
+//     packed and said so here, calling the membership of the set out of scope in
+//     its brief's own words. #360 narrowed "HISTORY*" to an explicit set of
+//     documentation extensions, and a ".db" is not among them, so the root copy
+//     now falls to the whitelist like any other unnamed file. "data/history.db"
+//     below is the same name at depth and was already dropped by #320. Both stay
+//     in the fixture: the two are dropped by two different rules, and the pair is
+//     what keeps #320's depth split visible now that the root copy no longer
+//     ships.
 func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -2251,9 +2328,13 @@ func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
 		"files": ["dist"]
 	}`)
 
-	// Root: the always-included set, which must keep working.
+	// Root: the always-included set, which must keep working. CHANGELOG.md and
+	// HISTORY are the two forms #360 must not have cost — the markdown one and
+	// the extensionless one.
 	write("README.md", "# anchored-includes")
 	write("LICENSE", "MIT")
+	write("CHANGELOG.md", "## 1.0.0")
+	write("HISTORY", "1.0.0 first release")
 	write("history.db", "root history")
 
 	// Whitelisted.
@@ -2281,18 +2362,20 @@ func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
+		"CHANGELOG.md",
+		"HISTORY",
 		"LICENSE",
 		"README.md",
 		"dist/README.md",
 		"dist/index.js",
-		"history.db",
 		"package.json",
 	}
 
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("packed set mismatch: the always-included set must match at the "+
-			"package root only, so a \"files\" whitelist of [\"dist\"] ships nothing "+
-			"below the root that it did not name\n got: %v\nwant: %v", got, want)
+			"package root only and by documentation name, so a \"files\" whitelist "+
+			"of [\"dist\"] ships nothing below the root that it did not name, and no "+
+			"root file whose name merely starts with a changelog word\n got: %v\nwant: %v", got, want)
 	}
 }
 
@@ -4101,19 +4184,25 @@ func TestPackNegationDoesNotOverrideInWhitelistMode(t *testing.T) {
 //
 // Which paths those are is the intersection of the two built-in lists, derived
 // from the lists as they stand rather than from an example: a root file whose
-// name matches a defaultIncludes stem (readme, license, licence, changelog,
-// changes, history) and also matches one of the suffix patterns in
-// defaultExcludes (*.log, *~, *.tgz, *.swp, *.swo). Run and confirmed over a
-// candidate sweep — changes.log, README.md~, history.log, license.tgz,
-// HISTORY.SWO and their case variants are all in both lists. package.json is the
-// one defaultIncludes entry outside the intersection: no defaultExcludes pattern
-// matches it, and it has an arm of its own regardless.
+// name matches one of the *glob* entries in defaultIncludes (readme, license,
+// licence) and also matches one of the suffix patterns in defaultExcludes
+// (*.log, *~, *.tgz, *.swp, *.swo). package.json is outside the intersection —
+// no defaultExcludes pattern matches it, and it has an arm of its own regardless.
 //
-// This is a characterization test. It passed the first time it was run, which is
-// the point — nothing here changes the isDefaultInclude arm, whose behaviour
-// under a whitelist is #360's subject. It exists because the negation boundary
-// was documented as "no arm consults the chain", which is false, and a rule
-// stated in prose but asserted nowhere is how that got through review twice.
+// The changelog names were in the intersection until #360 and are not any more,
+// which is why this test's fixture changed with it. They used to be globs too,
+// so changes.log, history.log and HISTORY.SWO were all in both lists; #360
+// replaced the globs with an explicit name-plus-extension set, and no accepted
+// spelling of a changelog matches any defaultExcludes pattern. Run and confirmed
+// by testing isDefaultExcluded over every entry changelogIncludes produces: none
+// matched. readme.log is what carries the row now — include=true, exclude=true,
+// measured the same way.
+//
+// This is a characterization test for the negation boundary itself, and that
+// half is unchanged: it passed the first time it was run. It exists because the
+// boundary was documented as "no arm consults the chain", which is false, and a
+// rule stated in prose but asserted nowhere is how that got through review
+// twice.
 func TestPackNegationOverridesInWhitelistModeForDefaultIncludes(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -4127,8 +4216,8 @@ func TestPackNegationOverridesInWhitelistModeForDefaultIncludes(t *testing.T) {
 		},
 		{
 			name:       "negation re-includes through the default-include arm",
-			ignoreLine: "!changes.log\n",
-			want:       []string{"changes.log", "index.js", "package.json"},
+			ignoreLine: "!readme.log\n",
+			want:       []string{"index.js", "package.json", "readme.log"},
 		},
 		{
 			name:       "same for an editor backup of a default include",
@@ -4146,10 +4235,10 @@ func TestPackNegationOverridesInWhitelistModeForDefaultIncludes(t *testing.T) {
 					"version": "1.0.0",
 					"files": ["index.js"]
 				}`,
-				".npmignore":  tt.ignoreLine,
-				"index.js":    "module.exports = {}",
-				"changes.log": "v1",
-				"README.md~":  "# draft",
+				".npmignore": tt.ignoreLine,
+				"index.js":   "module.exports = {}",
+				"readme.log": "v1",
+				"README.md~": "# draft",
 			})
 
 			assertPackedSet(t, tmpDir, tt.want,
