@@ -1040,3 +1040,162 @@ func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
 		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
 	}
 }
+
+// --- Confirming and reporting package deletion -------------------------------
+
+// seedRemovablePackage records a package with a store entry on disk and returns
+// the record with its assigned ID.
+//
+// Each caller passes its own size, because the summary's freed total is what
+// says which packages it counted: two packages of the same size cannot tell
+// "counted the one that succeeded" from "counted the one that failed".
+func seedRemovablePackage(t *testing.T, database *db.DB, storeRoot, name, hash string, size int64) *db.Package {
+	t.Helper()
+
+	entry := filepath.Join(storeRoot, name, hash)
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("seed the store entry of %s: %v", name, err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "index.js"), []byte("payload"), 0644); err != nil {
+		t.Fatalf("seed the store entry file of %s: %v", name, err)
+	}
+	pkg := &db.Package{
+		Name:        name,
+		Version:     "1.0.0",
+		ContentHash: hash,
+		StorePath:   entry,
+		TotalSize:   size,
+	}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert %s: %v", name, err)
+	}
+	return pkg
+}
+
+// TestRemovePackagesReportsAFailedRowDelete pins the per-package half of #358:
+// the row delete's error was discarded and both counters advanced regardless,
+// so gc reported freeing bytes it had not freed while the row was still there.
+//
+// It calls removePackages directly rather than going through RunGC, and that is
+// forced rather than a shortcut. The only failure DeletePackage has per package
+// is a link set it cannot read (#355), and RunGC calls GetLinksForPackage on
+// every package before it removes any — the same index, refusing the same three
+// shapes — so a store damaged this way aborts the run before removePackages is
+// reached at all. TestRunGCAbortsWhenALinkIndexEntryCannotBeRead pins that
+// abort on this very damage. removePackages is unexported and these tests are in
+// its package, so calling it is what reaches the branch.
+func TestRemovePackagesReportsAFailedRowDelete(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	stuck := seedRemovablePackage(t, database, storeRoot, "stuck-pkg", "aaaa000000000000", 4096)
+	healthy := seedRemovablePackage(t, database, storeRoot, "healthy-pkg", "bbbb000000000000", 1024)
+
+	// An index entry that will not parse is the first of the three shapes
+	// DeletePackage refuses, and the one that hides every link a package has.
+	damageDatabase(t, "links_by_package", linkKey(stuck.ID), []byte("[ not ids"))
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		removePackages(database, storeRoot, []*db.Package{stuck, healthy})
+	})
+
+	if !strings.Contains(out, "Failed to remove stuck-pkg") {
+		t.Errorf("gc did not report the failed row delete, output was:\n%s", out)
+	}
+	// The reason it failed, not only that it did.
+	if !strings.Contains(out, "will not parse") {
+		t.Errorf("gc swallowed the error DeletePackage returned, output was:\n%s", out)
+	}
+	// One success, and freed is the successful package's size alone: 5.00 KB
+	// here would be the pre-fix sum of both.
+	if !strings.Contains(out, "Removed 1 package(s), freed 1.00 KB") {
+		t.Errorf("gc did not count the one row it actually deleted, output was:\n%s", out)
+	}
+
+	packages, err := database.ListPackages()
+	if err != nil {
+		t.Fatalf("list packages: %v", err)
+	}
+	if len(packages) != 1 || packages[0].Name != "stuck-pkg" {
+		t.Errorf("after the run the store holds %d package(s), want only stuck-pkg, whose row the delete refused", len(packages))
+	}
+}
+
+// TestRemovePackagesReportsEveryFailedRowDeleteWithoutASummary pins the run
+// where nothing survives to be counted.
+//
+// The failure is driven by closing the database handle before the deletes, the
+// same device TestReapTempDirsRequiresTheDatabaseLock and
+// TestRemoveOrphanedLinksReportsEveryFailedDelete use. It is a transaction-level
+// failure, so it is all-or-nothing across the pass, which is exactly the case
+// this test wants.
+//
+// No summary is printed at all when nothing was removed. "Removed 0 package(s),
+// freed 0 B" under a success icon is a clean success over a run that achieved
+// nothing, and the per-package failure lines above it are the report.
+func TestRemovePackagesReportsEveryFailedRowDeleteWithoutASummary(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	first := seedRemovablePackage(t, database, storeRoot, "first-pkg", "aaaa000000000000", 4096)
+	second := seedRemovablePackage(t, database, storeRoot, "second-pkg", "bbbb000000000000", 1024)
+
+	if err := database.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		removePackages(database, storeRoot, []*db.Package{first, second})
+	})
+
+	for _, name := range []string{"first-pkg", "second-pkg"} {
+		if !strings.Contains(out, "Failed to remove "+name) {
+			t.Errorf("the failed row delete of %s was not reported, output was:\n%s", name, out)
+		}
+	}
+	if !strings.Contains(out, "database not open") {
+		t.Errorf("gc swallowed the error DeletePackage returned, output was:\n%s", out)
+	}
+	if strings.Contains(out, "Removed") {
+		t.Errorf("gc claimed it removed packages it did not remove, output was:\n%s", out)
+	}
+	if strings.Contains(out, iconOK()) {
+		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
+	}
+}
+
+// TestRunGCPrintsAHealthyRunUnchanged pins the whole of what gc prints when
+// every step of a package collection succeeds, exactly and in order.
+//
+// It is a full-output comparison rather than a set of Contains checks because
+// what it guards is an absence: #358 adds a failure line and an early return to
+// this path, and a substring assertion cannot notice a line that appeared where
+// none should be, or one that stopped being printed.
+//
+// One of #358's three changes is out of this test's reach, and deliberately so
+// rather than by oversight. It seeds no temp directories, so reapTempDirs
+// returns on an empty sweep before it can reach the early return added there,
+// and this test would not notice that return appearing or vanishing. Driving it
+// would mean seeding a temp directory, which changes the healthy run this exists
+// to pin. captureStdout gives
+// gc a pipe rather than a terminal, so the icons render as their plain ASCII
+// fallbacks here.
+func TestRunGCPrintsAHealthyRunUnchanged(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+	seedRemovablePackage(t, database, storeRoot, "orphan-pkg", "cccc000000000000", 2048)
+
+	out := captureStdout(t, func() {
+		if err := RunGC(false, "", false, true); err != nil {
+			t.Fatalf("RunGC() error = %v", err)
+		}
+	})
+
+	want := "Found 1 orphaned package(s):\n" +
+		"  - orphan-pkg@1.0.0 (2.00 KB)\n" +
+		"Total size: 2.00 KB\n" +
+		"\n" +
+		iconOK() + " Removed 1 package(s), freed 2.00 KB\n"
+	if out != want {
+		t.Errorf("gc printed:\n%s\nwant:\n%s", out, want)
+	}
+}

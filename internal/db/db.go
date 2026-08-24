@@ -937,17 +937,19 @@ func (db *DB) ListPackages() ([]*Package, error) {
 // package and rebuilding the index from it, which is a wider change than
 // reporting the damage and letting lnpm doctor name it.
 //
-// None of these errors is reachable from gc, the only caller outside tests. Its
-// pass calls GetLinksForPackage on every package before it removes any, and that
-// reads this same index and returns on these same three shapes, so a store
-// holding one aborts the run before removePackages is reached at all - and it
-// aborts on any package's damage, not only on the one being collected. gc also
-// discards this method's error at its call site, so a refusal would be silent
-// there even if it did arrive; that discard is #358, not this change. What is
-// written here is therefore defence in depth rather than a live path, and no
-// claim is made that a user can currently see it fire. The tests below drive it
-// directly, which is the only thing that does today. It is what holds the
-// guarantee for the next caller and for a gc whose guard moves.
+// None of these errors is reachable from a whole gc run, the only caller outside
+// tests. Its pass calls GetLinksForPackage on every package before it removes
+// any, and that reads this same index and returns on these same three shapes, so
+// a store holding one aborts the run before removePackages is reached at all -
+// and it aborts on any package's damage, not only on the one being collected. A
+// refusal that did arrive would be seen: #358 has since made removePackages
+// report it and stop counting the package as removed, where this method's error
+// was discarded at that call site when the above was written. What is written
+// here is therefore defence in depth rather than a live path, and no claim is
+// made that a user can currently see it fire. The things that drive it today
+// call this method or removePackages directly, which is what the tests below and
+// internal/cli's TestRemovePackagesReportsAFailedRowDelete do. It is what holds
+// the guarantee for the next caller and for a gc whose guard moves.
 func (db *DB) DeletePackage(id int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()

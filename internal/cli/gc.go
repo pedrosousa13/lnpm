@@ -383,13 +383,14 @@ func pinnedByTag(tags map[string]string, hash string) bool {
 // read "- Link to X", and a user matching a failure to a finding should see the
 // same words.
 //
-// The summary is skipped entirely when nothing was removed, and that is a
-// divergence from the two blocks below, which print theirs with a count of zero:
-// removePackages prints "Removed 0 package(s), freed 0 B" under a success icon
-// when every removal failed. This block is the one being fixed today, so it
-// diverges rather than repeating that - a clean success over nothing achieved is
-// the defect, not a house style. #358 tracks the same defects in the package
-// block. The per-link failure lines above are the report in this case.
+// The summary is skipped entirely when nothing was removed, and the two blocks
+// below now skip theirs on the same rule: a clean success over nothing achieved
+// is the defect, not a house style. This block diverged alone when #291 landed,
+// because it was the one being fixed that day and the other two still printed
+// "Removed 0 package(s), freed 0 B" and "Reclaimed 0 temp director(ies), freed
+// 0 B" under a success icon; #358 settled the question the other way round and
+// brought them into line. The per-link failure lines above are the report in
+// this case.
 //
 // It is a function rather than an inline block for the reason removePackages is
 // one, and for a second: no damage to the link buckets can drive a failure here.
@@ -416,9 +417,38 @@ func removeOrphanedLinks(database *db.DB, links []linkToRemove) {
 	fmt.Printf("%s Removed %d orphaned link(s)\n", iconOK(), removed)
 }
 
-// removePackages deletes each package's store entry and then its database row.
-// It is a function rather than an inline block so gc can decline it and still go
-// on to sweep temp directories, which is a separate decision.
+// removePackages deletes each package's store entry and then its database row,
+// and reports how many packages it actually removed. It is a function rather
+// than an inline block so gc can decline it and still go on to sweep temp
+// directories, which is a separate decision.
+//
+// Both halves count successes rather than candidates, because gc must not claim
+// what it did not reclaim: #273 established that for the store half, and #358
+// for the database half. The row delete used to discard its error and advance
+// removed and freed regardless, so a refused delete was reported as bytes freed
+// while the row was still there - and wherever the half above had run, that row
+// was left naming a store entry it had already removed, which is a worse end
+// state than either half failing alone.
+//
+// A refused row delete is not fatal to the run, for the reason removeOrphanedLinks
+// gives: it leaves a stale record rather than anything a project depends on, and
+// gc can be re-run. What a re-run meets is the entry gone and the row still
+// there, and RemoveEntry reads an absent entry as removed, so the retry turns on
+// whether the row delete can succeed this time.
+//
+// The summary is skipped entirely when nothing was removed, as
+// removeOrphanedLinks and reapTempDirs skip theirs. This block is only reached
+// once the user has confirmed a non-empty list, so removed == 0 here means every
+// removal failed, and the per-package failure lines above are the report.
+//
+// A per-package failure is drivable here, which is what separates this from
+// removeOrphanedLinks. #355 made DeletePackage refuse the delete whenever it
+// cannot read the package's complete link set, so damaging one package's link
+// index fails that package and leaves the rest of the pass alone. A whole gc run
+// cannot deliver one: the scan calls GetLinksForPackage on every package first,
+// which reads the same index and refuses the same shapes, so a store damaged
+// that way aborts before this function is called. The test therefore calls this
+// directly, and says so.
 func removePackages(database *db.DB, storeRoot string, packagesToRemove []*db.Package) {
 	removed := 0
 	var freed int64
@@ -441,9 +471,15 @@ func removePackages(database *db.DB, storeRoot string, packagesToRemove []*db.Pa
 			}
 		}
 		// Remove from database
-		_ = database.DeletePackage(pkg.ID)
+		if err := database.DeletePackage(pkg.ID); err != nil {
+			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), pkg.Name, err)
+			continue
+		}
 		removed++
 		freed += pkg.TotalSize
+	}
+	if removed == 0 {
+		return
 	}
 	fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), removed, formatSize(freed))
 }
@@ -565,6 +601,26 @@ func reapTempDirs(database *db.DB, s *store.Store, projectPaths []string, dryRun
 		}
 		removed++
 		freed += t.size
+	}
+	// The summary is skipped entirely when nothing was removed, as
+	// removeOrphanedLinks and removePackages skip theirs; that block's doc
+	// comment carries the reasoning. The count of what was found is still
+	// returned, because gc's closing line asks whether there was anything to
+	// clean up and not whether the sweep managed it.
+	//
+	// Unlike the other two this rule has no test behind it, and the reason is a
+	// limit on the test rather than on the code. Reaching it needs every
+	// os.RemoveAll in the loop to fail. They can: internal/store's
+	// blockMarkerRemoval records that permissions, an open handle on Windows and
+	// a full disk all reach a removal as an error. What it also records is that
+	// none of those behaves the same way everywhere - the obstruction it settled
+	// on works only because os.Remove refuses a non-empty directory, which
+	// os.RemoveAll deletes without complaint, and a directory mode denies
+	// nothing on Windows or as root. So there is no obstruction to RemoveAll
+	// that holds on every platform lnpm builds for. That conclusion is drawn
+	// here from what blockMarkerRemoval documents; it does not state it.
+	if removed == 0 {
+		return total, nil
 	}
 	fmt.Printf("%s Reclaimed %d temp director(ies), freed %s\n", iconOK(), removed, formatSize(freed))
 	return total, nil
