@@ -284,6 +284,102 @@ func TestPushReportsCoherentProjectCounts(t *testing.T) {
 	env.AssertLiveLink(liveProject, "count-lib", pkgDir)
 }
 
+// A steady-state push - the package is already in the store - prints the packed
+// file list, the same one and in the same format as publish. That is the path
+// push spends its life on: the branch that delegates a first publish to
+// finishPublish runs once per package, this one runs on every edit afterwards,
+// which is when a secret is most likely to arrive.
+//
+// Two things pin the branch rather than trusting the fixture. The database is
+// read before the push, because RunPushTagged's branch condition is exactly
+// "GetPackageByName returned nil" - a non-nil row here means the delegating
+// branch cannot be taken. And the output must not carry the line that branch
+// prints, so a future change routing this back through finishPublish fails the
+// test instead of passing it by accident.
+//
+// A project is linked so the run leaves through the returns that report
+// per-project results. The test below it leaves through the no-linked-projects
+// one; both are reached with the files packed, so both have to list.
+//
+// The fixture is dryRunFiles rather than this file's usual single index.js:
+// publish's list tests share it because filepath.Walk does not visit those paths
+// in the order a sort by RelPath puts them in, so the ordering half of
+// assertListsInOrder tests the sort rather than passing for free.
+func TestPushPrintsThePackedFileListWhenAlreadyInTheStore(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-steady-pkg", "1.0.0", dryRunFiles)
+	projectDir := env.newProject("push-steady-project")
+	env.addPkg(projectDir, "push-steady-pkg", false, false)
+
+	stored, err := env.Database.GetPackageByName("push-steady-pkg")
+	if err != nil {
+		t.Fatalf("Failed to look up the published package: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("Expected push-steady-pkg to be in the store before the push; without it this test covers the first-publish path instead")
+	}
+
+	// An edit, so this push stores new content rather than finding the entry the
+	// publish above wrote already complete. The unchanged case is the test below.
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'edited';")
+	want := packedPaths(t, pkgDir)
+
+	out := captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("Failed to push: %v", err)
+		}
+	})
+	if strings.Contains(out, "not published yet") {
+		t.Fatalf("Expected the steady-state push path, but push delegated to publish.\nOutput:\n%s", out)
+	}
+	if !strings.Contains(out, "Updating 1 linked projects") {
+		t.Fatalf("Expected the returns that report linked projects.\nOutput:\n%s", out)
+	}
+
+	assertListsInOrder(t, out, want, publishIndent)
+}
+
+// A push that packs nothing new prints the list too, and the bytes the store
+// holds for the package are the same after the run as before it.
+//
+// That second half is the honest reading of the snapshot, and it is as far as a
+// test at this level can go. It is not evidence that push took its reuse branch
+// rather than calling store.Store, because store.Store early-returns when
+// CheckComplete passes (internal/store/store.go:110), so the entry is left alone
+// whether or not push asks for it to be rewritten. Push's branch is an
+// optimisation on top of a guarantee the store already makes, not the guarantee
+// itself; delete the branch and this test stays green. Nothing observable from
+// here separates the two, so the assertion is written for what it can see.
+//
+// The snapshot covers the content-addressed tree alone, not the whole store
+// root, because a push rewrites the package's file manifest in lnpm.db whether
+// or not the hash moved - deliberately, per the comment in RunPushTagged - so
+// the database file is expected to differ.
+func TestPushWithNothingNewListsAndLeavesTheStoredBytesUnchanged(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("push-unchanged-pkg", "1.0.0", dryRunFiles)
+	want := packedPaths(t, pkgDir)
+
+	storeTree := filepath.Join(env.StoreDir, "store")
+	before := storeSnapshot(t, storeTree)
+
+	env.chdir(pkgDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunPush(false); err != nil {
+			t.Fatalf("Failed to push: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "No linked projects to update") {
+		t.Fatalf("Expected push's no-linked-projects return.\nOutput:\n%s", out)
+	}
+	assertListsInOrder(t, out, want, publishIndent)
+	assertSnapshotsEqual(t, before, storeSnapshot(t, storeTree), "a push with nothing new changed the stored bytes")
+}
+
 // statLinkedFiles returns the identity of each relative path inside a linked
 // package, keyed by that path, for comparison with os.SameFile across a push.
 func statLinkedFiles(t *testing.T, projectDir, pkg string, rels ...string) map[string]os.FileInfo {
