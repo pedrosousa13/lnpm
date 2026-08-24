@@ -98,10 +98,10 @@ func TestLinkAndUnlink(t *testing.T) {
 	}
 
 	// Test IsLinked
-	if !linker.IsLinked("my-package") {
+	if !mustIsLinked(t, linker, "my-package") {
 		t.Error("IsLinked(my-package) = false, want true")
 	}
-	if linker.IsLinked("other-package") {
+	if mustIsLinked(t, linker, "other-package") {
 		t.Error("IsLinked(other-package) = true, want false")
 	}
 
@@ -130,7 +130,7 @@ func TestLinkAndUnlink(t *testing.T) {
 	}
 
 	// Verify IsLinked returns false
-	if linker.IsLinked("my-package") {
+	if mustIsLinked(t, linker, "my-package") {
 		t.Error("IsLinked(my-package) = true after unlink, want false")
 	}
 }
@@ -428,7 +428,7 @@ func TestLinkMultiplePackages(t *testing.T) {
 	}
 
 	for _, pkgName := range packages {
-		if !linker.IsLinked(pkgName) {
+		if !mustIsLinked(t, linker, pkgName) {
 			t.Errorf("IsLinked(%s) = false, want true", pkgName)
 		}
 	}
@@ -439,13 +439,13 @@ func TestLinkMultiplePackages(t *testing.T) {
 	}
 
 	// Verify only pkg-b unlinked
-	if linker.IsLinked("pkg-b") {
+	if mustIsLinked(t, linker, "pkg-b") {
 		t.Error("IsLinked(pkg-b) = true after unlink, want false")
 	}
-	if !linker.IsLinked("pkg-a") {
+	if !mustIsLinked(t, linker, "pkg-a") {
 		t.Error("IsLinked(pkg-a) = false, want true")
 	}
-	if !linker.IsLinked("pkg-c") {
+	if !mustIsLinked(t, linker, "pkg-c") {
 		t.Error("IsLinked(pkg-c) = false, want true")
 	}
 
@@ -468,6 +468,20 @@ func linkPackage(t *testing.T, linker *Linker, storeRoot, packageName string) {
 	if _, err := linker.Link(packageName, storePath, files); err != nil {
 		t.Fatalf("Link(%s) error: %v", packageName, err)
 	}
+}
+
+// mustIsLinked answers IsLinked, failing the test if the query refused to
+// answer. Every caller drives a project whose .lnpm is an ordinary directory, so
+// a refusal there is a broken fixture rather than the behaviour under test - the
+// tests that do want the refusal call IsLinked directly and read the error.
+func mustIsLinked(t *testing.T, linker *Linker, packageName string) bool {
+	t.Helper()
+
+	linked, err := linker.IsLinked(packageName)
+	if err != nil {
+		t.Fatalf("IsLinked(%s) error: %v", packageName, err)
+	}
+	return linked
 }
 
 // assertLinked fails unless ListLinked reports exactly want, in any order.

@@ -823,11 +823,38 @@ func (l *Linker) determineLinkType(storePath string) LinkType {
 	return HardLink
 }
 
-// IsLinked checks if a package is linked in the project
-func (l *Linker) IsLinked(packageName string) bool {
+// IsLinked reports whether a package is linked in the project, or refuses to
+// answer when it cannot ask the question safely.
+//
+// The refusal is requireRealLnpmDirs', the same predicate Link, LinkSource and
+// Unlink refuse on, and it is here for the reason it is there: a .lnpm the
+// checkout replaced with a link points os.Stat at some other directory, and a
+// package that happens to exist over there comes back reported as this
+// project's. Nothing is written, so this is misreporting rather than #313's data
+// loss - but a false yes is still an answer about a directory the project does
+// not own.
+//
+// A bare bool had nowhere to put "I could not ask", and the two false answers
+// are not the same fact: one says the package is not linked, the other that the
+// project is not in a state where the question means anything. The second
+// return value is what separates them.
+//
+// No production code calls this today; the tests in this package are its only
+// callers, and nothing outside internal/link references it at all. The guard is
+// here to close the hole before a caller exists, rather than after one arrives
+// with it open.
+//
+// The refusal has no opt-out. requireRealNodeModulesDirs' comment records why
+// the write paths give .lnpm none - nobody relocates a project's .lnpm - and a
+// read is not a weaker case for the same rule.
+func (l *Linker) IsLinked(packageName string) (bool, error) {
+	if err := l.requireRealLnpmDirs(packageName); err != nil {
+		return false, err
+	}
+
 	lnpmPath := filepath.Join(l.projectPath, ".lnpm", packageName)
 	_, err := os.Stat(lnpmPath)
-	return err == nil
+	return err == nil, nil
 }
 
 // IsLiveLinked reports whether .lnpm/{package} is a live link at the package's
@@ -846,14 +873,54 @@ func (l *Linker) IsLinked(packageName string) bool {
 // a junction. Under GODEBUG=winsymlink=0 the retained modePreGo1_23 returns
 // ModeSymlink for both tags instead. Accepting either bit therefore covers a
 // Unix symlink, a Windows symlink and a junction under both settings.
-func (l *Linker) IsLiveLinked(packageName string) bool {
+//
+// It refuses through requireRealLnpmDirs for the reason IsLinked does, and this
+// is the query where it matters most: publish, push and pull all ask it before
+// they call Link, so without it the first thing those commands do on a hostile
+// checkout is look outside the project, and #313's refusal only arrives one step
+// later. Measured against the unguarded build: with .lnpm a link at a directory
+// holding its own live link, IsLiveLinked returned true, err = nil.
+//
+// Note that the two link tests here answer different questions and must not be
+// collapsed. requireRealLnpmDirs asks whether .lnpm and the scope directory are
+// real directories of the project's; the mode test below asks whether the entry
+// lnpm itself created inside them is a live link, where being a link is the
+// wanted answer.
+func (l *Linker) IsLiveLinked(packageName string) (bool, error) {
+	if err := l.requireRealLnpmDirs(packageName); err != nil {
+		return false, err
+	}
+
 	info, err := os.Lstat(filepath.Join(l.projectPath, ".lnpm", packageName))
-	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0
+	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0, nil
 }
 
-// ListLinked returns all packages linked in the project
+// ListLinked returns all packages linked in the project, or refuses to list
+// anything when it cannot read the project's own .lnpm.
+//
+// This is the query that would put names from outside the project into command
+// output if anything printed it: os.ReadDir follows a .lnpm the checkout
+// replaced with a link and reports whatever the target holds. Measured against
+// the unguarded build, a project whose .lnpm pointed at a directory holding
+// pkg-a and pkg-b listed exactly those two, err = nil.
+//
+// "If anything printed it" is load-bearing. No production code calls this today
+// - the tests in this package are its only callers - so no user has ever seen
+// those names: for this query the disclosure is latent rather than live. #380
+// tracks the missing caller. The guard is here so that whoever adds one
+// inherits a query that cannot leak, rather than having to notice this on the
+// way past.
+//
+// Nothing partial is returned alongside a refusal, for the same forward-looking
+// reason: a caller that printed what it got before checking the error would
+// publish the names anyway, and that mistake is much easier to not make possible
+// than to catch in review.
 func (l *Linker) ListLinked() ([]string, error) {
 	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
+	if err := requireRealDir("project's .lnpm", lnpmDir); err != nil {
+		return nil, err
+	}
+
 	entries, err := os.ReadDir(lnpmDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -870,7 +937,7 @@ func (l *Linker) ListLinked() ([]string, error) {
 		// reject a leading dot on either segment, so nothing linked after it
 		// can land here — but a .lnpm populated before it is not revalidated,
 		// and such an entry stays hidden from this listing.
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 
@@ -879,7 +946,19 @@ func (l *Linker) ListLinked() ([]string, error) {
 		// dot-prefixed skip applies here: a relink temp directory is a sibling
 		// of its target, which for a scoped package is inside the scope.
 		if strings.HasPrefix(entry.Name(), "@") {
-			scopeEntries, err := os.ReadDir(filepath.Join(lnpmDir, entry.Name()))
+			scopeDir := filepath.Join(lnpmDir, entry.Name())
+			// The scope directory gets requireRealLnpmDirs' second check, and
+			// it has to be made here rather than after the IsDir test below.
+			// Measured: os.ReadDir reports a linked scope with IsDir() false, so
+			// that test already stops the descent and no name from the target
+			// ever reaches the listing - but it stops it silently, leaving a
+			// hostile checkout reading as a project with one scope fewer. Asked
+			// while the entry is still visible, the same arrangement the write
+			// paths refuse is refused here too.
+			if err := requireRealDir("package scope", scopeDir); err != nil {
+				return nil, err
+			}
+			scopeEntries, err := os.ReadDir(scopeDir)
 			if err != nil {
 				// Unlink removes a scope directory as soon as it empties, so a
 				// concurrent unlink of the last package in this scope can delete
@@ -897,6 +976,27 @@ func (l *Linker) ListLinked() ([]string, error) {
 					packages = append(packages, entry.Name()+"/"+scoped.Name())
 				}
 			}
+			continue
+		}
+
+		// Anything that is not a directory is not a linked package. A live link
+		// reads this way too, so the listing does not report one.
+		//
+		// This test used to sit at the top of the loop, above the scope branch.
+		// Moving it below is what lets the scope guard see a linked @org at all,
+		// and it changes one behaviour beyond that, deliberately: an entry named
+		// @something that is not a directory - a stray regular file, say - used
+		// to be skipped silently and now fails the whole listing, with
+		// requireRealDir's "is not a directory - remove it and re-run".
+		//
+		// That is the answer the write paths already give the same project, and
+		// it was measured rather than assumed: against a .lnpm holding a regular
+		// file named @stray, Link("@stray/pkg") and ListLinked() return
+		// byte-identical messages. Reporting a scope as read when it could not be
+		// read is the half worth avoiding; a non-@ entry that is not a directory
+		// is still skipped, as before, since nothing was ever descended into for
+		// one. TestListLinkedRefusesANonDirectoryScope pins both halves.
+		if !entry.IsDir() {
 			continue
 		}
 

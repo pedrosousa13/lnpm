@@ -342,7 +342,18 @@ func RunPushTagged(skipHooks bool, tag string) error {
 			// the source directory being pushed. Relinking it from the store
 			// would replace its live link with a snapshot copy and silently end
 			// the live updates it was added for.
-			if linker.IsLiveLinked(pkg.Name) {
+			//
+			// A refusal here - the project's .lnpm is not a directory the
+			// project owns - travels on the result struct's existing err field
+			// and is printed against that project like any other push failure.
+			// Reporting it as skipped would claim the project was fine when
+			// nothing about it could be established.
+			live, err := linker.IsLiveLinked(pkg.Name)
+			if err != nil {
+				results <- result{path: p.Path, err: err}
+				return
+			}
+			if live {
 				results <- result{path: p.Path, skipped: true}
 				return
 			}

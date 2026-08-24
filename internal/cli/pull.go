@@ -88,7 +88,19 @@ func RunPull(packageNames []string) error {
 		// is nothing to refresh: relinking it from the store would replace the
 		// live link with a snapshot copy and silently end the live updates the
 		// consumer was relying on.
-		if linker.IsLiveLinked(name) {
+		//
+		// A refusal - the project's .lnpm is not a directory the project owns -
+		// joins the per-package failures collected below rather than being
+		// reported as a skip, which would claim the package was deliberately
+		// left alone when nothing about it could be established. It is recorded
+		// before the "Pulling <name>... " line is printed, matching every other
+		// failure that happens this early.
+		live, liveErr := linker.IsLiveLinked(name)
+		if liveErr != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", name, liveErr))
+			continue
+		}
+		if live {
 			fmt.Printf("Pulling %s... skipped (live link to source)\n", name)
 			liveLinked++
 			continue
