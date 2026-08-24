@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -460,6 +461,140 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 			assertNoRawGlyphs(t, out)
 		})
 	}
+}
+
+// TestRunDoctorDoesNotAdviseGCForAPackageWhoseLinksItCannotRead pins the
+// orphaned-package check's posture on a read it cannot complete.
+//
+// Links are what tells an orphan from a version somebody is using, so a package
+// whose link index will not parse used to be counted as an orphan and the user
+// sent to `lnpm gc` - which reads the same index, refuses, and aborts. Advice
+// contradicting outcome. doctor reports what it could not read and offers no
+// fix, the way the tags read beside it already does.
+func TestRunDoctorDoesNotAdviseGCForAPackageWhoseLinksItCannotRead(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	newDoctorStore(t, dir)
+	pkg, _ := seedDoctorLink(t)
+
+	damageDatabase(t, "links_by_package", linkKey(pkg.ID), []byte("[ not ids"))
+
+	out, err := runDoctor(t)
+
+	if line := doctorCheckLine(t, out, "Checking for orphaned packages... "); !strings.Contains(line, "ERROR") {
+		t.Errorf("orphaned-package check reported %q for a link index it could not read, want an error; output was:\n%s", line, out)
+	}
+	if strings.Contains(out, "Run 'lnpm gc' to remove unused packages") {
+		t.Errorf("RunDoctor advised gc for a package whose links it could not read; gc reads the same index and aborts. Output was:\n%s", out)
+	}
+	if !strings.Contains(out, "the link index for package") {
+		t.Errorf("RunDoctor did not say what it could not read, output was:\n%s", out)
+	}
+	if err == nil {
+		t.Errorf("RunDoctor() = nil after failing to read a package's links, want an error; output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorReportsLinksTheOrphanedLinkCheckCannotRead pins the same posture
+// for the check below it, which had no error path at all.
+//
+// It counted the links it managed to read and printed OK when that came to
+// zero, so a store whose link index will not parse was reported healthy. That is
+// the quietest possible answer to real damage.
+func TestRunDoctorReportsLinksTheOrphanedLinkCheckCannotRead(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	newDoctorStore(t, dir)
+	pkg, _ := seedDoctorLink(t)
+
+	damageDatabase(t, "links_by_package", linkKey(pkg.ID), []byte("[ not ids"))
+
+	out, err := runDoctor(t)
+
+	if line := doctorCheckLine(t, out, "Checking for orphaned links... "); !strings.Contains(line, "ERROR") {
+		t.Errorf("orphaned-link check reported %q for a link index it could not read, want an error; output was:\n%s", line, out)
+	}
+	if strings.Contains(out, "--fix-links") {
+		t.Errorf("RunDoctor advised gc --fix-links from a count it could not stand behind, output was:\n%s", out)
+	}
+	if err == nil {
+		t.Errorf("RunDoctor() = nil after failing to read a package's links, want an error; output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorReportsAProjectRecordTheOrphanedLinkCheckCannotRead pins the
+// second read that check makes, and it is the one #292's triage singled out.
+//
+// encoding/json populates every field it decoded before a type mismatch, so a
+// partially decoded project used to come back with a real Path still on disk and
+// the link read as healthy. GetProjectByID returns nothing with its error now,
+// which turns that into a link counted as orphaned - a count doctor cannot stand
+// behind either way while the error is discarded. The package's links are left
+// readable here so the check above passes and this one is on its own.
+//
+// The fixture is that type mismatch and not a syntax error, because only this
+// shape reaches what the paragraph above describes: name takes a string, so the
+// document parses, id and path decode, and the decode then fails with a Path
+// that is a real directory this test created. A truncated document would decode
+// nothing, leave Path empty, and exercise the shape that was always visible.
+func TestRunDoctorReportsAProjectRecordTheOrphanedLinkCheckCannotRead(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	newDoctorStore(t, dir)
+	_, proj := seedDoctorLink(t)
+
+	damageDatabase(t, "projects", linkKey(proj.ID),
+		fmt.Appendf(nil, `{"id":%d,"path":%q,"name":123}`, proj.ID, proj.Path))
+
+	out, err := runDoctor(t)
+
+	if line := doctorCheckLine(t, out, "Checking for orphaned links... "); !strings.Contains(line, "ERROR") {
+		t.Errorf("orphaned-link check reported %q for a project record it could not read, want an error; output was:\n%s", line, out)
+	}
+	if strings.Contains(out, "--fix-links") {
+		t.Errorf("RunDoctor advised gc --fix-links for a project record it could not read, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "the record of project") {
+		t.Errorf("RunDoctor did not say what it could not read, output was:\n%s", out)
+	}
+	if err == nil {
+		t.Errorf("RunDoctor() = nil after failing to read a project record, want an error; output was:\n%s", out)
+	}
+}
+
+// seedDoctorLink plants one package consumed by one project in the database the
+// following RunDoctor call reads, and returns both.
+//
+// The package carries no StorePath, so the store-entry checks have nothing to
+// fault and the link checks are what the run reports on.
+func seedDoctorLink(t *testing.T) (*db.Package, *db.Project) {
+	t.Helper()
+
+	database := openDoctorDB(t)
+	pkg := &db.Package{Name: "linked-pkg", Version: "1.0.0", ContentHash: "0123456789abcdef"}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+	proj := &db.Project{Path: t.TempDir(), Name: "consumer"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if err := database.InsertLink(&db.Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+	return pkg, proj
+}
+
+// doctorCheckLine returns the line of doctor's report that begins with prefix,
+// so a scenario can assert what one check said without matching text another
+// check happened to print.
+func doctorCheckLine(t *testing.T, out, prefix string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	t.Fatalf("RunDoctor printed no %q line, output was:\n%s", prefix, out)
+	return ""
 }
 
 // requireNotADirectoryError skips tests that need a path under a plain file to
