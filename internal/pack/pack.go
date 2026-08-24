@@ -636,6 +636,110 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 	// First pass: collect all files
 	err := filepath.Walk(packageDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// A directory that could not be read, which the package's own rules
+			// already exclude, is skipped rather than aborting the pack (#348).
+			// Nothing under it would have been packed, so skipping publishes
+			// nothing the maintainer did not ask for and docs/adr/0001's rule —
+			// that a swallowed error which *widens* a publish is a bug — is not
+			// engaged.
+			//
+			// Read docs/adr/0001 before changing the direction here, because the
+			// obvious paraphrase of it is backwards. It is about direction and
+			// says so outright: "The rule is about direction, not about
+			// severity." Aborting on a directory that would have been packed is
+			// the *narrowing* side, which the ADR explicitly leaves as "a
+			// judgement call to make case by case" rather than a bug, and on
+			// severity it ranks narrowing as the milder outcome — publishing too
+			// few "is visible to the one running the command", where a wrongly
+			// published path "is not recoverable by the person it surprises". So
+			// the abort below is not the ADR enforcing itself. It is #348's
+			// triage making the judgement call the ADR hands over, and the
+			// reason is downstream rather than severity-ranked: a tarball
+			// missing a file it should contain installs and then fails to load.
+			//
+			// The prune further down cannot do this, and that is why the check
+			// is here. filepath.Walk reads a directory before it calls the
+			// callback for it:
+			//
+			//	names, err := readDirNames(path)
+			//	err1 := walkFn(path, info, err)
+			//
+			// so the read error and the callback arrive together and returning
+			// filepath.SkipDir is already too late. Read from
+			// $(go env GOROOT)/src/path/filepath/path.go on Go 1.26.7, which is
+			// also where the facts below come from.
+			//
+			// The walk has three error shapes, not two, and info is valid on
+			// exactly one of them:
+			//
+			//   - this one, a directory whose read failed. info came from the
+			//     parent's lstat rather than from the failed read, which is what
+			//     makes the directory question answerable at all.
+			//   - a child whose lstat failed, `fileInfo, err := lstat(filename)`,
+			//     where os.Lstat returns a nil FileInfo alongside its error.
+			//   - the walk root's own lstat failing, which Walk reports as
+			//     `fn(root, nil, err)` before walk is ever entered. Also nil.
+			//
+			// So the nil test below is load-bearing rather than defensive:
+			// without it the second shape panics, run and confirmed by deleting
+			// it. Both nil shapes abort, which is what keeps a file-level read
+			// error out of this fix — a nil info cannot be told directory from
+			// file, so the path it names may be one the package asked for.
+			//
+			// The IsDir test beside it is the opposite case and is here on
+			// purpose, in the sense mainEntryPath's comment above uses: it
+			// defends no reachable caller today. Every error site listed above
+			// passes either a directory's info or nil, so info != nil already
+			// implies a directory — deleting IsDir turns no test red, run and
+			// confirmed, which is the evidence for the claim rather than a gap
+			// in the tests. It is what keeps the guard true if a later Go
+			// release grows a fourth shape.
+			//
+			// Known gap, disclosed here because this is where it would be
+			// closed. A directory with its read bit but not its execute bit
+			// (mode 0444) produces no error for itself — readdir succeeds — and
+			// then fails the lstat of every child, so it aborts under a "files"
+			// field, where the walk descends into excluded directories, and
+			// packs cleanly without one, where the prune below stops it first.
+			// Mode 0000 behaves alike in both. It is *not* unclosable: the
+			// child's path is known even when its info is nil, and
+			// unreadableDirIsExcluded answers "excluded" for a path inside an
+			// excluded subtree in both modes — run and confirmed for
+			// coverage/report.html under a .gitignore naming coverage/, with no
+			// "files" field and with ["dist"] — so closing it would swallow
+			// nothing on a packable path. It is left open because #348 is
+			// scoped to the
+			// unreadable directory, and because a nil info cannot be told
+			// directory from file, so the predicate would be answering about a
+			// path of unknown kind — a different question from the one this code
+			// answers. TestPackAbortsWhenAChildCannotBeStatted pins the current
+			// behaviour so a change to it is deliberate.
+			//
+			// Returning nil is enough to continue. This directory's own walk
+			// returns the callback's verdict unchanged, and the parent's loop
+			// moves to the next sibling on a nil; filepath.SkipDir would work
+			// too and says no more.
+			//
+			// The relPath != "." guard is not decoration. The package root's own
+			// read failure has to abort — Walk hands it to the callback the same
+			// way — and under a "files" field the predicate below matches each
+			// entry against the root's one segment, the literal ".", which an
+			// ordinary entry such as "dist" does not match. It would call the
+			// package root excluded and the walk would then return no error and
+			// no files.
+			// TestCollectFilesAbortsWhenThePackageRootCannotBeRead pins it.
+			//
+			// Every error is treated alike rather than only a permission error.
+			// An excluded directory contributes nothing to the package whatever
+			// stopped it being read, so narrowing to os.ErrPermission would only
+			// abort on the rarer causes for no gain.
+			if rel, relErr := filepath.Rel(packageDir, path); relErr == nil && info != nil && info.IsDir() {
+				relPath := filepath.ToSlash(rel)
+				if relPath != "." && unreadableDirIsExcluded(relPath, ignores, filesField, mainEntry) {
+					fmt.Printf("warning: could not read %q, which this package excludes; skipping it (%v)\n", relPath, err)
+					return nil
+				}
+			}
 			return err
 		}
 
@@ -933,6 +1037,162 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 	}
 
 	return filesToHash, nil
+}
+
+// unreadableDirIsExcluded reports whether a directory the walk could not read
+// can be skipped: whether the package's own rules already put every path at or
+// under it outside the pack. relPath is slash-separated, relative to the package
+// root, and never "." — the package root itself is nothing's exclusion and its
+// failure to read is a real abort.
+//
+// It asks a different question per mode because the modes exclude by different
+// rules, and asking one rule in both would be wrong twice over.
+//
+// Without a "files" field the ignore chain decides the whole tree, so this asks
+// exactly what the walk's own prune asks. A directory the chain excludes is one
+// the prune would have refused to descend into.
+//
+// With one, the chain decides nothing (#318) and the whitelist switch answers
+// instead. It has four selecting arms and two of them are anchored to the
+// package root, so neither can select anything inside a directory: the manifest
+// arm tests relPath == manifestFileName exactly, and isDefaultInclude rejects any
+// path carrying a "/". That leaves the mainEntry arm, which ships "main"
+// whatever the whitelist says (#319) and whatever the ignore files say
+// (docs/adr/0004), and the isIncluded arm, which is the "files" entries
+// themselves.
+//
+// hardReservedExcludes is asked first and in both modes, because it is the one
+// rule no mode overrides. It is not covered by either branch below: node_modules
+// is on that list and not in defaultExcludes, so a package with no .gitignore
+// naming it gets no answer from the ignore chain.
+func unreadableDirIsExcluded(relPath string, ignores *ignoreLoader, filesField []string, mainEntry string) bool {
+	if isHardReserved(relPath) {
+		return true
+	}
+
+	if len(filesField) == 0 {
+		return ignores.excludes(relPath)
+	}
+
+	if mainEntry == relPath || strings.HasPrefix(mainEntry, relPath+"/") {
+		return false
+	}
+	return !filesFieldMayReach(relPath, filesField)
+}
+
+// filesFieldMayReach reports whether any "files" entry could select a path at or
+// under dir, both given slash-separated and relative to the package root.
+//
+// It is sound in the abort direction and only in that direction: it may answer
+// true for an entry that would in fact have selected nothing there, and it must
+// never answer false for one that could have selected something. Its one caller
+// skips a directory on a false, so a wrong false publishes a package missing a
+// file the maintainer asked for, while a wrong true fails the pack with the
+// error naming the directory. When it cannot decide, it answers true.
+//
+// matchFilesField is not this predicate and cannot stand in for it, which is the
+// trap this function exists to avoid: matchFilesField("coverage",
+// ["coverage/report.html"]) is filesMatchNone — run and confirmed — because the
+// entry names neither coverage nor an ancestor of it, and the entry plainly
+// selects into it all the same. It answers "does this entry reach this path";
+// the question here is "could this entry reach past this path".
+//
+// The rule is a segment-by-segment walk of the entry against the directory:
+//
+//   - An entry that runs out of segments while every one matched named an
+//     ancestor of dir, so it contains the whole subtree. Reaches.
+//   - An entry whose segments all matched, with dir also exhausted, named dir
+//     itself or describes paths below it. Reaches.
+//   - A "**" segment stands for any number of segments, including dir's
+//     remaining ones, so whatever follows it describes a path under dir.
+//     Reaches, without looking further.
+//   - Otherwise the segments have to match one for one, and the first that does
+//     not ends it: no path under dir can be selected through this entry.
+//
+// The soundness argument is that only the last bullet ever returns false, and it
+// returns false only after a segment of the entry failed to match the
+// corresponding segment of dir. Any path at or under dir carries dir's segments
+// as its own prefix, so that same segment would fail against any such path too.
+// The three reaching bullets are the conservative side and are allowed to be
+// generous: "coverage/**/x.js" is called reaching for dir "coverage" whether or
+// not an x.js is there to find, which costs an abort naming a directory that
+// could not be read.
+//
+// Segments are compared with doublestar, the engine matchFilesField itself globs
+// with since #350, and with a literal string compare first — that is the escape
+// hatch docs/adr/0003 leans on and matchFilesField's own literal branches carry:
+// doublestar.Match("weird{a,b}", "weird{a,b}") is false because braces expand —
+// run and confirmed — and the entry still names that directory. A segment
+// doublestar will not parse is undecidable here and reaches.
+//
+// That undecidable branch is what keeps the split honest against a brace, which
+// is the one construct that can span a separator: doublestar.Match with
+// "a{b,c/d}/x.js" matches "ac/d/x.js", run and confirmed, so splitting the entry
+// on "/" cuts the brace across segments — three of them for that entry, not two
+// halves. The segment holding the opening "{" is unbalanced and doublestar
+// rejects it — Match("a{b,c", "ac") is a syntax error, also run — so the entry
+// reaches rather than being decided from a segment that no longer means what it
+// did. That segment is the first one the walk reaches at or after the brace, and
+// every segment ahead of the brace is intact, so a genuine mismatch there still
+// ends the walk.
+//
+// The entry is normalized through normalizeFilesEntry, the same call
+// matchFilesField makes, so the two read the same string by construction rather
+// than by two copies staying in step. The trailing-slash and degenerate
+// spellings then fall
+// out of the walk rather than being special-cased: "" reaches everything,
+// "dist/*/" fails at its first segment against a directory named coverage, and
+// "coverage/*/" is called reaching for "coverage" though matchFilesField selects
+// nothing for it — run and confirmed, and generous in the allowed direction.
+func filesFieldMayReach(dir string, patterns []string) bool {
+	dirSegments := strings.Split(dir, "/")
+
+	for _, pattern := range patterns {
+		pattern = normalizeFilesEntry(pattern)
+		if pattern == "" {
+			// The degenerate entry ships everything, matchFilesField's first
+			// branch. Splitting it would give one empty segment, which matches
+			// no directory name.
+			return true
+		}
+
+		if segmentsReach(strings.Split(pattern, "/"), dirSegments) {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentsReach is filesFieldMayReach for one entry, already normalized and
+// split. Its rule and the argument for it are in that function's comment.
+func segmentsReach(patternSegments, dirSegments []string) bool {
+	for i, dirSegment := range dirSegments {
+		if i == len(patternSegments) {
+			// The entry named an ancestor of the directory.
+			return true
+		}
+
+		patternSegment := patternSegments[i]
+		if patternSegment == "**" {
+			return true
+		}
+		if patternSegment == dirSegment {
+			continue
+		}
+
+		matched, err := doublestar.Match(patternSegment, dirSegment)
+		if err != nil {
+			// An entry the glob engine will not parse cannot be decided.
+			return true
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Every segment of the directory was matched, so the entry named it or
+	// describes paths below it.
+	return true
 }
 
 // ignoreScope is one ignore file's patterns together with the directory they
@@ -1558,52 +1818,13 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 	best := filesMatchNone
 
 	for _, pattern := range patterns {
-		// One leading "./" comes off, and it comes off before the "/" trim
-		// below. Both halves of that were measured against npm 11.16.0 rather
-		// than reasoned:
-		//
-		//   ["./dist"]    ships dist, exactly as ["dist"] does — #346
-		//   ["././dist"]  ships nothing, so npm resolves one "./" and not a run
-		//   ["/./dist"]   ships nothing, so a "./" behind the anchor is not one
-		//   [".//dist"]   ships dist, since the "/" trim still runs afterwards
-		//
-		// Trimming "/" first flips both of the slash-mixed rows, measured:
-		// "/./dist" becomes "./dist" and then "dist", selecting dist from an
-		// entry npm selects nothing for, while ".//dist" keeps its inner "/"
-		// and selects nothing where npm ships dist.
-		//
-		// Note what this deliberately does not touch. A bare "." is left alone
-		// and therefore still selects nothing, which looks like the bug above
-		// and is not: ["."] ships only the always-included set under npm
-		// 11.16.0, while ["./"], [""], ["/"] and ["//"] all ship everything.
-		// Run and confirmed on a fixture package for each spelling.
-		//
-		// Every branch below then sees a string byte-identical to the
-		// unprefixed spelling, which is what makes the two classify the same
-		// rather than merely select the same paths. A "./dist" reaching the
-		// glob engine whole would have been a direct match, and #321's rule
-		// would have published dist/.env from an entry naming the directory
-		// only.
-		//
-		// Only the "files" side resolves this. isExcluded deliberately does not
-		// — see isIncluded's doc comment for why the two differ.
-		//
-		// No platform split hides in this. The trim is a literal byte compare
-		// against "./" and its output is the unprefixed spelling itself, so both
-		// spellings reach the glob branch identically, and
-		// TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm asserts that
-		// equality on every CI platform as well as a fixed answer. Since #350
-		// there is nothing platform-dependent left to worry about here anyway:
-		// doublestar's separator is always "/", unlike filepath.Match, whose is
-		// the platform's — the split isDefaultInclude still has to guard against.
-		// A Windows-style ".\\dist" is a different entry and is not handled —
-		// nothing here has ever read "\" as a separator, since collectFiles hands
-		// over paths already through filepath.ToSlash.
-		pattern = strings.TrimPrefix(pattern, "./")
-		pattern = strings.TrimPrefix(pattern, "/")
-		if !strings.Contains(pattern, "*") {
-			pattern = strings.TrimSuffix(pattern, "/")
-		}
+		// Every branch below sees a string byte-identical to the unprefixed
+		// spelling, which is what makes "./dist" and "dist" classify the same
+		// rather than merely select the same paths. A "./dist" reaching the glob
+		// engine whole would have been a direct match, and #321's rule would
+		// have published dist/.env from an entry naming the directory only.
+		// normalizeFilesEntry carries the npm runs behind each trim.
+		pattern = normalizeFilesEntry(pattern)
 
 		var match filesMatch
 		switch {
@@ -1711,6 +1932,61 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 	}
 
 	return best
+}
+
+// normalizeFilesEntry puts one "files" entry into the spelling every matcher
+// reads it in. It is shared rather than copied: matchFilesField and
+// filesFieldMayReach have to agree on the string byte for byte, and the second
+// was first written with its own copy of these lines and a comment asserting the
+// two stayed in step. lowerPatterns above is the same call — derive, do not
+// duplicate — and this repo has already had a corrected sentence's twin go stale
+// nine lines away.
+//
+// One leading "./" comes off, and it comes off before the "/" trim. Both halves
+// of that were measured against npm 11.16.0 rather than reasoned:
+//
+//	["./dist"]    ships dist, exactly as ["dist"] does — #346
+//	["././dist"]  ships nothing, so npm resolves one "./" and not a run
+//	["/./dist"]   ships nothing, so a "./" behind the anchor is not one
+//	[".//dist"]   ships dist, since the "/" trim still runs afterwards
+//
+// Trimming "/" first flips both of the slash-mixed rows, measured: "/./dist"
+// becomes "./dist" and then "dist", selecting dist from an entry npm selects
+// nothing for, while ".//dist" keeps its inner "/" and selects nothing where npm
+// ships dist.
+//
+// A trailing "/" comes off only an entry with no "*". npm does not read a
+// trailing slash on a glob as a directory marker, so "dist/**/" matches nothing
+// and must not be normalized into "dist/**", which matches everything under
+// dist. isIncluded's doc comment carries that measurement, and matchFilesField's
+// trailing-"/" branch is what answers the glob spellings this leaves alone.
+//
+// Note what this deliberately does not touch. A bare "." is left alone and
+// therefore still selects nothing, which looks like a bug and is not: ["."]
+// ships only the always-included set under npm 11.16.0, while ["./"], [""],
+// ["/"] and ["//"] all ship everything. Run and confirmed on a fixture package
+// for each spelling.
+//
+// Only the "files" side resolves this. isExcluded deliberately does not — see
+// isIncluded's doc comment for why the two differ.
+//
+// No platform split hides in this. Each trim is a literal byte compare and its
+// output is the unprefixed spelling itself, so both spellings reach the glob
+// branch identically, and TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm
+// asserts that equality on every CI platform as well as a fixed answer. Since
+// #350 there is nothing platform-dependent left to worry about here anyway:
+// doublestar's separator is always "/", unlike filepath.Match, whose is the
+// platform's — the split isDefaultInclude still has to guard against. A
+// Windows-style ".\\dist" is a different entry and is not handled — nothing here
+// has ever read "\" as a separator, since collectFiles hands over paths already
+// through filepath.ToSlash.
+func normalizeFilesEntry(pattern string) string {
+	pattern = strings.TrimPrefix(pattern, "./")
+	pattern = strings.TrimPrefix(pattern, "/")
+	if !strings.Contains(pattern, "*") {
+		pattern = strings.TrimSuffix(pattern, "/")
+	}
+	return pattern
 }
 
 // lastSegment returns the part of a slash-separated "files" entry after its
