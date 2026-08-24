@@ -369,10 +369,21 @@ var filesMatchNames = map[filesMatch]string{
 // spellings, and pins the shared answer so a row cannot pass by both spellings
 // being equally broken.
 //
-// The two filesMatchNone rows are as load-bearing as the rest. A normalization
+// The three filesMatchNone rows are as load-bearing as the rest. A normalization
 // wide enough to make "./dist/**/" select something would have repaired an entry
 // npm ships nothing for, and "lib" is the row that fails if a bug makes every
 // "./"-prefixed entry match everything rather than nothing.
+//
+// Two of the three carry "dist/**/", against a path under dist and against the
+// bare "dist" itself, and the second is #350's trap rather than a duplicate of
+// the first. doublestar.Match("dist/**/", "dist") is true where
+// filepath.Match's was false — run and confirmed — so moving the glob branch to
+// doublestar without guarding the trailing "/" makes that entry reach a *file*
+// named dist. It would also classify it filesMatchDirect, since
+// lastSegment("dist/**/") is "" and an empty segment is not a bare wildcard, and
+// #321 lets a direct match override defaultExcludes. npm 11.16.0 ships nothing
+// at all for "files": ["dist/**/"] — run on a fixture package — so the entry
+// must name nothing.
 //
 // How the trim is ordered against the leading-"/" trim is pinned elsewhere:
 // TestIsIncludedPatternForms carries the ".//dist", "/./dist" and "././dist"
@@ -393,6 +404,9 @@ func TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm(t *testing.T) {
 		{"glob constraining the segment", "dist/.env", "dist/*.env", filesMatchDirect},
 		{"trailing slash directory", "dist/index.js", "dist/", filesMatchContains},
 		{"trailing slash on a glob", "dist/cli/index.js", "dist/**/", filesMatchNone},
+		{"trailing slash on a glob, the bare prefix", "dist", "dist/**/", filesMatchNone},
+		{"double star spanning zero segments", "lib/top.js", "lib/**/*.js", filesMatchDirect},
+		{"bare double star reaching a nested path", "dist/index.js", "**", filesMatchContains},
 		{"unrelated directory", "dist/index.js", "lib", filesMatchNone},
 	}
 
@@ -410,6 +424,170 @@ func TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm(t *testing.T) {
 					"npm reads a leading \"./\" as no part of the name, so the two "+
 					"spellings must classify the same",
 					tt.relPath, "./"+tt.entry, filesMatchNames[dotted], tt.entry, filesMatchNames[plain])
+			}
+		})
+	}
+}
+
+// TestMatchFilesFieldGlobsWithDoublestar is #350's core claim: the "files"
+// matcher globs with the same engine the ignore matcher uses, so "**" spans zero
+// or more path segments on both sides of the package.
+//
+// Every row was checked against npm 11.16.0 with `npm pack --dry-run --json` on
+// one fixture package, holding index.js, lib/top.js, lib/sub/a.js,
+// lib/sub/a.txt, lib/a/b/c.js, lib/keep.js, dist/index.js, dist/cli/index.js,
+// src/weirda.txt, weirda.txt, weirdb.txt, weirda/x.txt, a.txt, b.txt, !.txt,
+// {tmpl.txt, a file literally named weird{a,b}.txt and a directory literally
+// named weird{a,b}. Every entry below was run against that one tree, so the
+// answers are comparable to each other and not stitched from several fixtures.
+// Rows marked "Divergence" are the ones where lnpm's answer differs from that
+// run; every other row selects what npm selects.
+//
+// The character-class and unbalanced-brace rows are what ADR-0003 cites for the
+// two syntax consequences it records on this side. npm ships !.txt and b.txt for
+// "files": ["[!a].txt"] and not a.txt, so doublestar reading "[!a]" as a
+// negation is parity rather than a widening; and npm ships the literal
+// {tmpl.txt for ["{tmpl.txt"], which lnpm matches through the pattern == relPath
+// compare, since doublestar treats the unbalanced brace as a hard error and the
+// glob branch discards it.
+//
+// The classification half is lnpm's own — npm has no equivalent of #321 — and is
+// asserted rather than reduced to a boolean because a direct match overrides
+// defaultExcludes and containment does not.
+//
+// Six rows diverge, in four groups, and each group is deliberate:
+//
+//   - The two rows where a single "*" stops at a separator. npm ships
+//     dist/cli/index.js for "files": ["dist/*"], and ships the whole tree for
+//     ["*"], because it expands a *directory* a pattern matches into its entire
+//     subtree. Neither glob engine does that — doublestar.Match("dist/*",
+//     "dist/cli/index.js") is false, same as filepath.Match's — so the gap is
+//     npm's tree expansion and not the "**" fix. #350 measured it and left it
+//     standing; matchFilesField expands a directory only for a literal name, via
+//     the HasPrefix branch.
+//
+//   - "brace alternation reaches the literal spelling too": npm ships weirda.txt
+//     and weirdb.txt and *not* the file named weird{a,b}.txt. lnpm ships all
+//     three, because matchFilesField compares pattern against relPath as a string
+//     before anything globs. That is the escape hatch ADR-0003 relies on for the
+//     ignore side, and here it diverges from npm in the maintainer's favour: the
+//     literal file stays reachable.
+//
+//   - The two "weird{a,b}/**" rows, which invert npm rather than merely differ
+//     from it. npm ships weirda/x.txt and not weird{a,b}/x.txt for that entry —
+//     minimatch expands the braces and the literal directory becomes
+//     unreachable. lnpm ships the opposite pair, because the trailing-"/**"
+//     branch compares strings and the entry never reaches the glob engine at
+//     all; doublestar.Match("weird{a,b}/**", "weird{a,b}/x.txt") is false, run
+//     and confirmed. That branch is the same escape hatch, kept here because
+//     matchesIgnorePattern still has its own copy and ADR-0003 leans on it. These
+//     two rows are the only thing pinning it: deleting the branch turns nothing
+//     red without them, and turns exactly these two red with them. Both measured.
+//
+//   - "extglob is minimatch syntax doublestar does not have". npm globs a "files"
+//     entry with minimatch, which has extglob; doublestar does not, and
+//     filepath.Match did not either, so this is inherited rather than introduced
+//     by #350. npm ships a.txt and b.txt for "files": ["+(a|b).txt"] and for
+//     ["@(a|b).txt"]; lnpm selects nothing for either. Fails closed, like the
+//     "dist/*" group. ("!(a).txt" is not a fourth spelling to test here: npm
+//     ships nothing for it, reading the leading "!" as a negated entry rather
+//     than as extglob, so it would not distinguish the two engines.)
+//
+// "trailing slash on a glob names nothing" is not one of the six — npm ships
+// nothing for ["dist/**/"] or ["dist/*/"] either. It is called out here only
+// because the empty last segment is the trap #350 had to guard; see
+// TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm.
+func TestMatchFilesFieldGlobsWithDoublestar(t *testing.T) {
+	tests := []struct {
+		name    string
+		relPath string
+		entry   string
+		want    filesMatch
+	}{
+		{"double star spans zero segments", "lib/top.js", "lib/**/*.js", filesMatchDirect},
+		{"double star spans one segment", "lib/sub/a.js", "lib/**/*.js", filesMatchDirect},
+		{"double star spans two segments", "lib/a/b/c.js", "lib/**/*.js", filesMatchDirect},
+		{"the last segment still constrains", "lib/sub/a.txt", "lib/**/*.js", filesMatchNone},
+
+		{"bare double star reaches the root", "index.js", "**", filesMatchContains},
+		{"bare double star reaches a nested path", "dist/cli/index.js", "**", filesMatchContains},
+		{"bare single star stays at the root", "index.js", "*", filesMatchContains},
+		// Divergence: npm ships this path for this entry.
+		{"bare single star does not cross a separator", "dist/index.js", "*", filesMatchNone},
+
+		{"subtree glob reaches any depth", "dist/cli/index.js", "dist/**", filesMatchContains},
+		{"single star reaches one level", "dist/index.js", "dist/*", filesMatchContains},
+		// Divergence: npm ships this path for this entry.
+		{"single star does not expand a matched directory", "dist/cli/index.js", "dist/*", filesMatchNone},
+
+		{"trailing slash on a glob names nothing", "dist", "dist/**/", filesMatchNone},
+		{"trailing slash on a glob reaches nothing under it", "dist/cli/index.js", "dist/**/", filesMatchNone},
+		{"trailing slash on a single star names nothing", "dist/cli", "dist/*/", filesMatchNone},
+
+		{"brace alternation expands", "weirda.txt", "weird{a,b}.txt", filesMatchDirect},
+		{"brace alternation expands the other arm", "weirdb.txt", "weird{a,b}.txt", filesMatchDirect},
+		// Divergence: npm does not ship the literal file for this entry.
+		{"brace alternation reaches the literal spelling too", "weird{a,b}.txt", "weird{a,b}.txt", filesMatchDirect},
+		{"brace alternation never reaches a basename", "src/weirda.txt", "weird{a,b}.txt", filesMatchNone},
+
+		{"a character class negates with !", "b.txt", "[!a].txt", filesMatchDirect},
+		{"a character class negation is not a literal !", "!.txt", "[!a].txt", filesMatchDirect},
+		{"a character class negation excludes its member", "a.txt", "[!a].txt", filesMatchNone},
+		{"an unbalanced brace is answered before the glob", "{tmpl.txt", "{tmpl.txt", filesMatchDirect},
+		// Divergence: npm ships this path for this entry.
+		{"extglob is minimatch syntax doublestar does not have", "a.txt", "+(a|b).txt", filesMatchNone},
+		// Divergence, both rows: npm ships the expanded directory and not the
+		// literal one, and lnpm does the reverse.
+		{"a literal-brace directory keeps its subtree entry", "weird{a,b}/x.txt", "weird{a,b}/**", filesMatchContains},
+		{"a brace subtree entry does not expand", "weirda/x.txt", "weird{a,b}/**", filesMatchNone},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchFilesField(tt.relPath, []string{tt.entry})
+			if got != tt.want {
+				t.Errorf("matchFilesField(%q, [%q]) = %s, want %s",
+					tt.relPath, tt.entry, filesMatchNames[got], filesMatchNames[tt.want])
+			}
+		})
+	}
+}
+
+// TestIsIncludedAndIsExcludedAgreeOnDoubleStar is the asymmetry #350 was filed
+// for, stated from both sides at once. It is also this change's second revert
+// direction: it goes red if the "files" side is put back on filepath.Match, and
+// equally red if the *ignore* side is moved off doublestar instead, because each
+// row asserts a fixed answer for both matchers rather than only that they agree.
+//
+// "lib/**/*.js" against lib/top.js is the row from the issue. It read true as an
+// ignore pattern and false as a "files" entry, so one package held two meanings
+// for "**".
+//
+// The "*/keep.js" rows are the control on the other direction: a single "*"
+// stops at a separator in doublestar too, so making the two agree did not make
+// either wider than "**" required.
+func TestIsIncludedAndIsExcludedAgreeOnDoubleStar(t *testing.T) {
+	tests := []struct {
+		name    string
+		relPath string
+		pattern string
+		want    bool
+	}{
+		{"double star spans zero segments", "lib/top.js", "lib/**/*.js", true},
+		{"double star spans one segment", "lib/sub/a.js", "lib/**/*.js", true},
+		{"double star spans two segments", "lib/a/b/c.js", "lib/**/*.js", true},
+		{"the last segment still constrains", "lib/sub/a.txt", "lib/**/*.js", false},
+		{"single star reaches one level", "lib/keep.js", "*/keep.js", true},
+		{"single star does not cross a separator", "lib/sub/keep.js", "*/keep.js", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIncluded(tt.relPath, []string{tt.pattern}); got != tt.want {
+				t.Errorf("isIncluded(%q, [%q]) = %v, want %v", tt.relPath, tt.pattern, got, tt.want)
+			}
+			if got := isExcluded(tt.relPath, []string{tt.pattern}); got != tt.want {
+				t.Errorf("isExcluded(%q, [%q]) = %v, want %v", tt.relPath, tt.pattern, got, tt.want)
 			}
 		})
 	}
@@ -1193,23 +1371,29 @@ func TestPackFilesFieldWinsOverGitignore(t *testing.T) {
 // tell in advance which directories a glob selects out of, so the walk has to
 // descend into the ignored directory and ask isIncluded per file.
 //
-// lib/top.js is in dropFiles for "lib/**/*.js" on purpose. It is not packed
-// even with no ignore file present: filepath.Match does not let "**" span a
-// path separator, so the three-segment pattern never matches a two-segment
-// path. That is a pre-existing isIncluded limitation, independent of the
-// whitelist-versus-ignore precedence under test, and the case is here to pin it
-// so it is not mistaken for a bug in that precedence.
+// lib/top.js is in wantFiles for "lib/**/*.js", and it used to be in dropFiles.
+// It was held back because matchFilesField globbed with filepath.Match, whose
+// "**" is an ordinary two-star segment that cannot span a separator, so the
+// three-segment pattern never reached a two-segment path. #350 moved the "files"
+// side onto doublestar, where "**" spans zero or more segments, and the row
+// moved with it. npm 11.16.0 ships lib/top.js for that entry — run on a fixture
+// package — so the row now pins parity rather than a limitation.
 //
-// Regression test for #318.
+// The "*/keep.js" row is the control and did not move. A bare "*" segment means
+// the same thing to both engines, so lib/keep.js is still selected and
+// lib/drop.js still is not, and the engine swap shows up here as exactly one row
+// changing rather than the table going permissive.
+//
+// Regression test for #318, updated by #350.
 func TestPackFilesFieldGlobReachesIntoIgnoredDirectory(t *testing.T) {
 	tests := []struct {
 		name      string
 		filesJSON string
-		wantFile  string
+		wantFiles []string
 		dropFiles []string
 	}{
-		{"double star glob", `["lib/**/*.js"]`, "lib/sub/a.js", []string{"lib/sub/a.txt", "lib/top.js"}},
-		{"single star directory glob", `["*/keep.js"]`, "lib/keep.js", []string{"lib/drop.js"}},
+		{"double star glob", `["lib/**/*.js"]`, []string{"lib/sub/a.js", "lib/top.js"}, []string{"lib/sub/a.txt"}},
+		{"single star directory glob", `["*/keep.js"]`, []string{"lib/keep.js"}, []string{"lib/drop.js"}},
 	}
 
 	for _, tt := range tests {
@@ -1228,7 +1412,7 @@ func TestPackFilesFieldGlobReachesIntoIgnoredDirectory(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			for _, rel := range append([]string{tt.wantFile}, tt.dropFiles...) {
+			for _, rel := range append(append([]string{}, tt.wantFiles...), tt.dropFiles...) {
 				path := filepath.Join(tmpDir, filepath.FromSlash(rel))
 				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 					t.Fatal(err)
@@ -1248,8 +1432,10 @@ func TestPackFilesFieldGlobReachesIntoIgnoredDirectory(t *testing.T) {
 				packed[f.RelPath] = true
 			}
 
-			if !packed[tt.wantFile] {
-				t.Errorf("expected %q, selected by files %s, to be packed despite the .gitignore; packed set was %v", tt.wantFile, tt.filesJSON, packed)
+			for _, rel := range tt.wantFiles {
+				if !packed[rel] {
+					t.Errorf("expected %q, selected by files %s, to be packed despite the .gitignore; packed set was %v", rel, tt.filesJSON, packed)
+				}
 			}
 			for _, rel := range tt.dropFiles {
 				if packed[rel] {
@@ -3587,6 +3773,42 @@ func TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch(t *testing.T) {
 					"and never for a path it only contains")
 		})
 	}
+}
+
+// TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes is where #350 and
+// #321 meet. Moving the "files" matcher onto doublestar made "**" reach every
+// path in the tree instead of only the package root, so the same entry now
+// sweeps strictly more files in — and the whole point of #321's classification is
+// that sweeping is not consent. A bare "**" says nothing about any name, so
+// .env and dist/.env stay out while everything else comes in.
+//
+// TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch has a "**" row
+// already, and this is not a duplicate of it: that row's tree is flat, so it
+// stayed green throughout #350 — filepath.Match already matched a root path
+// against "**". Only a nested tree distinguishes the two engines, which is why
+// dist/a.js is here.
+//
+// npm 11.16.0 ships every file in the tree for "files": ["**"], .env and
+// dist/.env included — run on a fixture package holding exactly those four paths
+// — because npm has no default exclusion for .env at all. The divergence is
+// #321's, not #350's, and README's divergence list records it.
+func TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "double-star-sweep",
+			"version": "1.0.0",
+			"files": ["**"]
+		}`,
+		"index.js":  "module.exports = {}",
+		"dist/a.js": "module.exports = {}",
+		".env":      "SECRET=hunter2",
+		"dist/.env": "SECRET=hunter2",
+	})
+
+	assertPackedSet(t, tmpDir, []string{"dist/a.js", "index.js", "package.json"},
+		"a bare \"**\" sweeps the whole tree in and still names nothing, so it "+
+			"cannot override defaultExcludes")
 }
 
 // TestPackWarnsWhenIgnoreNegationNamesHardReserved covers the second override
