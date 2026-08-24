@@ -393,15 +393,20 @@ func pinnedByTag(tags map[string]string, hash string) bool {
 // this case.
 //
 // It is a function rather than an inline block for the reason removePackages is
-// one, and for a second: no damage to the link buckets can drive a failure here.
-// Every error DeleteLink meets inside its transaction is swallowed - a link row
-// that will not parse is skipped by the lookup, and a link ID that is not found
-// returns nil - which was confirmed by damaging both a row and an index entry
-// and getting a nil error back. What is left is transaction-level, from
-// bolt.Update's Begin or its Commit, and that is all-or-nothing across the pass.
-// So a total failure is drivable by calling this with a closed handle, as
-// TestReapTempDirsRequiresTheDatabaseLock calls the sweep, and a partial one
-// cannot be constructed at all without a fake database.
+// one, and for a second: the failure it reports can now be one link's rather
+// than the whole pass's. #392 made DeleteLink refuse a link index entry it
+// cannot parse instead of deleting the entry, and the refusal comes back out of
+// its transaction, so the damaged entry stops that one delete and the loop goes
+// on to the links whose entries are readable. When this comment was written no
+// damage to the link buckets could drive a failure here at all, and only a
+// whole-pass one - bolt.Update's Begin or its Commit, which a closed handle
+// drives, as TestReapTempDirsRequiresTheDatabaseLock drives the temp sweep - was
+// constructible.
+//
+// Two shapes still come back nil and are not this loop's to catch: a link row
+// that will not parse is skipped by DeleteLink's own lookup, and a link ID that
+// lookup does not find is not an error. The first is a defect recorded on
+// DeleteLink rather than fixed here.
 func removeOrphanedLinks(database *db.DB, links []linkToRemove) {
 	removed := 0
 	for _, l := range links {

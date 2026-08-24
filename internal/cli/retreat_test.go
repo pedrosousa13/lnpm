@@ -697,6 +697,83 @@ func damageProjectRecord(t *testing.T, damage func(stored *db.Project) []byte) {
 	damageDatabase(t, "projects", linkKey(stored.ID), damage(stored))
 }
 
+// seedLinkedPackage registers the current directory as a project, records one
+// version of name, and links the two - the store state remove and retreat clean
+// up from. It returns the package's ID, which is the links_by_package key a
+// caller damages to make the link delete refuse.
+//
+// The package index is the one to damage rather than the project index, because
+// remove and retreat both read the project index through linksOfProject before
+// the removal loop and would refuse there instead, never reaching the delete.
+// Each test using this asserts that the removal it was driving really happened,
+// which is what says the delete was reached at all.
+func seedLinkedPackage(t *testing.T, name string) int64 {
+	t.Helper()
+
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := database.InsertProject(&db.Project{Path: cwd, Name: "victim-project", PackageManager: "npm"}); err != nil {
+		t.Fatalf("register the project: %v", err)
+	}
+	stored, err := database.GetProjectByPath(cwd)
+	if err != nil || stored == nil {
+		t.Fatalf("the store does not answer for %s (project %v, err %v); this fixture would never reach the link delete", cwd, stored, err)
+	}
+
+	pkg := &db.Package{Name: name, Version: "1.0.0", ContentHash: "0123456789abcdef", StorePath: filepath.Join(t.TempDir(), name)}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("record the package: %v", err)
+	}
+	if err := database.InsertLink(&db.Link{PackageID: pkg.ID, ProjectID: stored.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("link the package: %v", err)
+	}
+	return pkg.ID
+}
+
+// TestRunRetreatReportsALinkItCouldNotDelete pins retreat's half of #392's
+// caller audit.
+//
+// The delete used to report nothing whatever it met, so retreat had nothing to
+// discard. Now that an index entry it cannot read refuses the delete, the
+// discard would leave the store holding a row saying this project consumes a
+// package whose files retreat has just removed, with nothing said about it.
+//
+// Retreat does not abort on it, and that is the ADR-0001 direction rather than
+// leniency: the entry is met after the package's files, its package.json
+// dependency and its lock entry are already gone, so there is nothing left to
+// hold back - and the store row that survives is what lnpm doctor exists to
+// name. What is refused here is silence.
+func TestRunRetreatReportsALinkItCouldNotDelete(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+	pkgID := seedLinkedPackage(t, "my-package")
+
+	damageDatabase(t, "links_by_package", linkKey(pkgID), []byte("[ not ids"))
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	if !strings.Contains(out, "my-package") || !strings.Contains(out, "will not parse") {
+		t.Errorf("retreat said nothing about the link record it could not delete, output was:\n%s", out)
+	}
+	// The retreat itself did happen, so it must not be reported as incomplete:
+	// "incomplete" here means package.json still carries a file:.lnpm reference,
+	// and it does not.
+	if err != nil {
+		t.Errorf("RunRetreat() = %v after a store row it could not delete, want nil: the files, package.json and lnpm.lock were all retreated", err)
+	}
+	pkgJSON := readFileString(t, filepath.Join(project, "package.json"))
+	if !strings.Contains(pkgJSON, `"my-package":"^1.0.0"`) {
+		t.Errorf("retreat did not restore my-package's original version, package.json is now:\n%s", pkgJSON)
+	}
+}
+
 // retypeStoredField re-marshals the record lnpm wrote and replaces one field's
 // value with a number, which is what the wrong-type damage shape looks like on a
 // record the store really holds.

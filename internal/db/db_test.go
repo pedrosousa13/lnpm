@@ -1180,6 +1180,173 @@ func TestDeletePackage_DeletesNothingWhenTheIndexNamesNoLinkRow(t *testing.T) {
 	assertNothingDeleted(t, database, pkg, link)
 }
 
+// --- Unreadable link index entries on the link-delete path -------------------
+
+// assertLinkDeleteRolledBack holds a refused DeleteLink to leaving the store as
+// it was: the row it was asked to delete, the entry it could not read, and the
+// other index's entry are all still there.
+//
+// damagedBucket carries the bytes a test wrote with putRaw, and intactBucket the
+// entry DeleteLink would have rewritten had it not refused. Both are checked
+// because the two blocks ran one after the other: the by-package one used to
+// have finished its own delete by the time the by-project one met damage, so a
+// fix that only stops the second block would still have lost the first entry.
+func assertLinkDeleteRolledBack(t *testing.T, d *DB, link *Link, damagedBucket, damagedKey, damaged, intactBucket, intactKey []byte) {
+	t.Helper()
+
+	err := d.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(bucketLinks).Get(itob(link.ID)) == nil {
+			t.Errorf("DeleteLink() removed link row %d after refusing the delete; bolt has to roll the whole transaction back", link.ID)
+		}
+		if after := tx.Bucket(damagedBucket).Get(damagedKey); !bytes.Equal(after, damaged) {
+			t.Errorf("DeleteLink() left %s as %q, want the damaged entry %q it could not read; every link ID it named is gone", damagedBucket, after, damaged)
+		}
+		intact := tx.Bucket(intactBucket).Get(intactKey)
+		if intact == nil {
+			t.Errorf("DeleteLink() removed the %s entry after refusing the delete", intactBucket)
+			return nil
+		}
+		var ids []int64
+		if err := json.Unmarshal(intact, &ids); err != nil {
+			t.Errorf("the %s entry no longer parses after a refused delete: %v", intactBucket, err)
+			return nil
+		}
+		for _, id := range ids {
+			if id == link.ID {
+				return nil
+			}
+		}
+		t.Errorf("the %s entry holds %v after a refused delete, want link %d still named", intactBucket, ids, link.ID)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeleteLink_LeavesAPackageIndexEntryItCannotRead pins #392 on the
+// links_by_package half.
+//
+// The scrub discarded its unmarshal, so an entry that would not parse decoded to
+// no IDs at all. The filter loop then produced an empty slice, which the scrub
+// reads as "this package has no links left" and answers by deleting the whole
+// entry - dropping every link ID it named to remove one. Per ADR-0001 the
+// direction decides: that widens a delete out of an error, so the entry is left
+// alone and the delete is refused, as DeletePackage does with this same index.
+func TestDeleteLink_LeavesAPackageIndexEntryItCannotRead(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	damaged := []byte("[ not ids")
+	putRaw(t, database, bucketLinksByPackage, itob(pkg.ID), damaged)
+
+	if err := database.DeleteLink(pkg.ID, link.ProjectID); err == nil {
+		t.Fatal("DeleteLink() reported success for a package index entry it could not read")
+	}
+
+	assertLinkDeleteRolledBack(t, database, link,
+		bucketLinksByPackage, itob(pkg.ID), damaged,
+		bucketLinksByProject, itob(link.ProjectID))
+}
+
+// TestDeleteLink_LeavesAProjectIndexEntryItCannotRead pins the same defect on
+// links_by_project, which carried its own copy of the scrub.
+//
+// Fixing one index and not the other is a partial fix, and this half costs more
+// than the other: a project's entry names every package it consumes, so losing
+// it strands the lot.
+func TestDeleteLink_LeavesAProjectIndexEntryItCannotRead(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	damaged := []byte("[ not ids")
+	putRaw(t, database, bucketLinksByProject, itob(link.ProjectID), damaged)
+
+	if err := database.DeleteLink(pkg.ID, link.ProjectID); err == nil {
+		t.Fatal("DeleteLink() reported success for a project index entry it could not read")
+	}
+
+	assertLinkDeleteRolledBack(t, database, link,
+		bucketLinksByProject, itob(link.ProjectID), damaged,
+		bucketLinksByPackage, itob(pkg.ID))
+}
+
+// TestDeleteLink_DeletesAnIndexEntryThatGenuinelyBecomesEmpty pins the case the
+// two above have to stay distinguishable from, and it is the distinction that
+// was the defect: an entry left holding no IDs is a package nothing links any
+// more, and its key has to go. Reading an unreadable entry as that same
+// "nothing left" is what turned one damaged entry into the loss of every ID it
+// named, so a fix that refused both would be no fix at all.
+func TestDeleteLink_DeletesAnIndexEntryThatGenuinelyBecomesEmpty(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	if err := database.DeleteLink(pkg.ID, link.ProjectID); err != nil {
+		t.Fatalf("DeleteLink() = %v for a readable store, want nil", err)
+	}
+
+	err := database.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(bucketLinks).Get(itob(link.ID)) != nil {
+			t.Errorf("DeleteLink() left link row %d behind", link.ID)
+		}
+		for _, left := range []struct {
+			bucket []byte
+			key    []byte
+		}{
+			{bucketLinksByPackage, itob(pkg.ID)},
+			{bucketLinksByProject, itob(link.ProjectID)},
+		} {
+			if after := tx.Bucket(left.bucket).Get(left.key); after != nil {
+				t.Errorf("DeleteLink() left %s holding %q, want the key gone once no ID is left", left.bucket, after)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeleteLink_RemovesOnlyTheDeletedIDFromASharedEntry pins the ordinary path
+// the refusal above must not swallow: an entry naming several links keeps the
+// ones the delete was not for.
+func TestDeleteLink_RemovesOnlyTheDeletedIDFromASharedEntry(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	secondPath := filepath.FromSlash("/projects/second-consumer")
+	if err := database.InsertProject(&Project{Path: secondPath, Name: "second-consumer"}); err != nil {
+		t.Fatalf("Failed to insert the second project: %v", err)
+	}
+	second, err := database.GetProjectByPath(secondPath)
+	if err != nil || second == nil {
+		t.Fatalf("Failed to read the second project back: %v", err)
+	}
+	kept := &Link{PackageID: pkg.ID, ProjectID: second.ID, LinkType: "hardlink"}
+	if err := database.InsertLink(kept); err != nil {
+		t.Fatalf("Failed to insert the second link: %v", err)
+	}
+
+	if err := database.DeleteLink(pkg.ID, link.ProjectID); err != nil {
+		t.Fatalf("DeleteLink() = %v for a readable store, want nil", err)
+	}
+
+	err = database.db.View(func(tx *bolt.Tx) error {
+		var ids []int64
+		if err := json.Unmarshal(tx.Bucket(bucketLinksByPackage).Get(itob(pkg.ID)), &ids); err != nil {
+			t.Errorf("the package index no longer parses: %v", err)
+			return nil
+		}
+		if len(ids) != 1 || ids[0] != kept.ID {
+			t.Errorf("the package index holds %v, want only link %d, the one the delete was not for", ids, kept.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
 // --- Unreadable project records ----------------------------------------------
 
 // seedProject records one project and returns it with its assigned ID.

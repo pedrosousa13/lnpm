@@ -991,16 +991,13 @@ func TestRunGCDryRunKeepsOrphanedLinks(t *testing.T) {
 // The failure is driven by closing the database handle before the deletes, which
 // is the same device TestReapTempDirsRequiresTheDatabaseLock uses. It is not the
 // only failure DeleteLink has - bolt.Update also returns what its Commit returns
-// - but it is the only one a test can drive, and every one of them is
-// transaction-level and so all-or-nothing across the pass.
+// - but both are transaction-level, so this test is the whole-pass shape.
 //
-// No per-link failure exists to drive. Damaging a link row and damaging its
-// index entry were both tried and both return a nil error: the damaged row is
-// skipped by the ForEach that looks the ID up, and a link ID that is not found
-// is not an error. That is why this test covers a total failure and there is no
-// partial one beside it - a partial failure cannot be constructed without a fake
-// database, and a fake database here would be scaffolding that distorts the
-// code it is meant to test.
+// The per-link shape is the test below, and it did not exist when this one was
+// written: damaging a link's index entry used to come back nil, because the
+// delete wrote over the entry rather than refusing it. Damaging a link row still
+// comes back nil - DeleteLink's own lookup skips a row it cannot parse - and
+// that is a defect recorded on DeleteLink rather than one this loop can catch.
 func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 	seedCollectableLink(t, database, storeRoot)
@@ -1038,6 +1035,82 @@ func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
 	}
 	if strings.Contains(out, iconOK()) {
 		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
+	}
+}
+
+// TestRemoveOrphanedLinksSkipsOnlyTheLinkItCouldNotDelete pins gc's side of
+// #392: one link index entry gc cannot read costs that link's delete and no
+// other, and the count it prints is of the deletes that happened.
+//
+// It is the caller half of the same fix. Refusing the delete inside DeleteLink
+// is only worth having if the command that drives it stops there rather than
+// counting the row as removed, and #329 is the reason that is asserted instead
+// of assumed - making a read strict is half the work, and the half that goes
+// wrong is a caller that carries on as though the answer had come back.
+func TestRemoveOrphanedLinksSkipsOnlyTheLinkItCouldNotDelete(t *testing.T) {
+	storeRoot, database := newGCStore(t)
+
+	damaged := seedRemovableOrphanedLink(t, database, storeRoot, "damaged-pkg")
+	healthy := seedRemovableOrphanedLink(t, database, storeRoot, "healthy-pkg")
+
+	damageDatabase(t, "links_by_package", linkKey(damaged.packageID), []byte("[ not ids"))
+	database, err := db.GetDB()
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		removeOrphanedLinks(database, []linkToRemove{damaged, healthy})
+	})
+
+	if !strings.Contains(out, "will not parse") {
+		t.Errorf("gc swallowed the refusal of a link index entry it could not read, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "Removed 1 orphaned link(s)") {
+		t.Errorf("gc did not report exactly the one link it removed, output was:\n%s", out)
+	}
+
+	links, err := database.GetLinksForPackage(damaged.packageID)
+	if err == nil {
+		t.Errorf("the damaged package's link index reads cleanly after the refusal (%d link(s)); the entry was supposed to be left alone", len(links))
+	}
+	if links, err := database.GetLinksForPackage(healthy.packageID); err != nil || len(links) != 0 {
+		t.Errorf("the readable link was not deleted: %d link(s), err %v", len(links), err)
+	}
+}
+
+// seedRemovableOrphanedLink records a package, a project whose directory does
+// not exist, and the link between them - one gc's scan would file as orphaned -
+// and returns it in the shape removeOrphanedLinks takes.
+//
+// It differs from seedOrphanedLink above in owning its whole fixture: that one
+// hangs a second link off the package seedCollectableLink recorded, where the
+// test below needs two packages so that damaging one index entry leaves the
+// other readable.
+func seedRemovableOrphanedLink(t *testing.T, database *db.DB, storeRoot, name string) linkToRemove {
+	t.Helper()
+
+	entry := filepath.Join(storeRoot, name, "0123456789abcdef")
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	projectPath := filepath.Join(t.TempDir(), "gone", name)
+	proj := &db.Project{Path: projectPath, Name: name + "-consumer"}
+	if err := database.InsertProject(proj); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	pkg := &db.Package{Name: name, Version: "1.0.0", ContentHash: "0123456789abcdef", StorePath: entry}
+	if err := database.InsertPackage(pkg); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+	if err := database.InsertLink(&db.Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("insert link: %v", err)
+	}
+	return linkToRemove{
+		packageID:   pkg.ID,
+		projectID:   proj.ID,
+		projectPath: projectPath,
+		reason:      "project directory no longer exists",
 	}
 }
 

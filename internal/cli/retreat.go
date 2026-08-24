@@ -250,9 +250,22 @@ func RunRetreat(force bool, runInstall bool) error {
 		// lookup by name would find: the name index mirrors the default tag, so
 		// for a project on a tagged version that lookup names a different record
 		// and the delete would silently match nothing.
+		//
+		// A refused delete is reported and does not join refused (#392). The
+		// error became reachable when the delete stopped writing over a link
+		// index entry it could not read, and it arrives after this entry's
+		// node_modules symlink and its package.json file:.lnpm reference are
+		// both already gone, so there is nothing left to hold back. refused is
+		// not the place for it either: that count means package.json still
+		// carries a file:.lnpm reference, which reportRefused goes on to list
+		// under "Left in package.json, to remove by hand", and this entry's does
+		// not. What survives is a store row recording a consumer that is not one,
+		// which lnpm doctor names and the error already points at.
 		if database != nil && proj != nil {
 			if l, ok := held[name]; ok {
-				_ = database.DeleteLink(l.PackageID, proj.ID)
+				if err := database.DeleteLink(l.PackageID, proj.ID); err != nil {
+					fmt.Printf("    %s Removed %s, but its link record is still in the store: %v\n", iconWarn(), name, err)
+				}
 			}
 		}
 	}
