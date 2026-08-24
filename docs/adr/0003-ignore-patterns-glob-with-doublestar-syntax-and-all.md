@@ -62,14 +62,15 @@ trailing-`/**` branch returns before it.
 
 ## Consequences
 
-`**` now means two different things in one package. `isExcluded` globs with
-doublestar; `isIncluded`, which matches the `package.json` `files` whitelist,
-still uses `filepath.Match`. So `lib/**/*.js` excludes `lib/top.js` as an ignore
-pattern but does not include it as a `files` entry. That asymmetry is deliberate
-and left standing — `files` is a separate concern with its own npm-divergence
-already documented in README, and #316 is about the ignore path. A reader who
-finds the two functions side by side should not "make them consistent" without
-deciding that question on its own.
+`**` meant two different things in one package for the length of one issue.
+`isExcluded` globbed with doublestar; `isIncluded`, which matches the
+`package.json` `files` whitelist, still used `filepath.Match`. So `lib/**/*.js`
+excluded `lib/top.js` as an ignore pattern and did not include it as a `files`
+entry. #316 left that standing deliberately, because `files` decides what a
+publish selects rather than what an ignore rule drops, and that is a different
+blast radius. #350 then answered the question on its own terms and moved the
+`files` side onto doublestar too. The amendment at the end of this ADR records
+what that changed and what it did not.
 
 The same swap silently fixed a platform inconsistency nobody filed.
 `filepath.Match` reads its separator from the platform, and `collectFiles` hands
@@ -104,3 +105,96 @@ hand puts new untested logic in the function that decides whether `.env` and
 recoverable, since the person it surprises finds out after publishing. doublestar
 is already a direct dependency, exercised by workspace globbing, and its `**` is
 the semantics being copied in the first place.
+
+## Amendment: #350 puts the `files` side on the same engine
+
+`matchFilesField`, which serves the `package.json` `files` whitelist, globs with
+doublestar too now. `**` therefore means the same thing everywhere in the
+package: `files: ["lib/**/*.js"]` selects `lib/top.js` as well as
+`lib/sub/a.js`, and a bare `["**"]` selects the whole tree instead of the
+package root alone.
+
+**The syntax it inherits is not the same trade.** Everything above about braces
+and character classes applies to these patterns verbatim, and the direction of
+harm inverts. An `.npmignore` is git's format, so widening it moves away from the
+tool being imitated and a pattern that used to exclude a file stops doing so —
+that is the fail-open cost this ADR accepted. A `files` entry is npm's format,
+and npm globs it with minimatch, which is the dialect doublestar is closest to.
+Both widenings this ADR named above therefore move *toward* npm on this side,
+measured on npm 11.16.0 with `npm pack --dry-run` on a fixture package:
+
+- `files: ["weird{a,b}.txt"]` ships `weirda.txt` and `weirdb.txt` and not the
+  file literally named `weird{a,b}.txt`. doublestar now agrees on the first two.
+- `files: ["[!a].txt"]` ships `!.txt` and `b.txt` and not `a.txt` — the class is
+  a negation, as doublestar reads it and as `filepath.Match` did not.
+
+That is a claim about those two constructs, not about the dialects as wholes.
+doublestar is not minimatch: it has no extglob. `files: ["+(a|b).txt"]` and
+`["@(a|b).txt"]` each ship `a.txt` and `b.txt` under npm 11.16.0, while
+`doublestar.Match("+(a|b).txt", "a.txt")` is false — both run and confirmed — so
+an entry written in extglob selects nothing here and a file there. That is the
+same fail-closed shape as the `dist/*` gap below, it is not fixed by #350, and
+it was not made worse by it either: `filepath.Match` had no extglob to lose.
+`TestMatchFilesFieldGlobsWithDoublestar` carries the row.
+(`!(a).txt` is not evidence in this direction. npm ships nothing for it, because
+the leading `!` is read as a negated entry rather than as extglob.)
+
+The escape hatch survives on this side and is wider than it is on the ignore
+side. `matchFilesField` compares `pattern == relPath` before it globs, and a
+`files` entry is only ever matched against the full path, so a literal-brace
+entry still selects its file wherever it sits: `["weird{a,b}.txt"]` selects the
+literal file *as well as* the two npm ships. That is a divergence from npm in the
+maintainer's favour and is recorded in README's divergence list. The same holds
+for doublestar's strictness about malformed patterns — an unbalanced `{` is a
+hard error and the glob branch discards it — because `["{tmpl.txt"]` is answered
+by the string compare first. npm ships that file too, so the two agree here.
+Both runs confirmed on a fixture package; `TestMatchFilesFieldGlobsWithDoublestar`
+carries the rows.
+
+Two things did not change, deliberately:
+
+- **The subtree branch stays**, the one that answers an entry ending in a slash
+  and two stars. It compares strings, so `["weird{a,b}/**"]` still names that
+  literal directory and its contents, where doublestar would expand the braces.
+  That inverts npm exactly — npm ships `weirda/x.txt` and not
+  `weird{a,b}/x.txt` for that entry — and it is kept because
+  `matchesIgnorePattern` has its own copy of the branch, which the paragraphs
+  above lean on. Deleting it turns exactly the two rows that pin it red and
+  nothing else in the suite; both runs measured.
+- **A glob-matched directory is still not expanded into its subtree.** npm ships
+  `dist/cli/index.js` for `files: ["dist/*"]` and the whole tree for `["*"]`,
+  because it treats a pattern matching a *directory* as selecting everything
+  under it. Neither glob engine does that —
+  `doublestar.Match("dist/*", "dist/cli/index.js")` is false, exactly as
+  `filepath.Match`'s was — so the gap is npm's tree expansion rather than
+  anything `**` decides, and #350 measured it and left it standing. lnpm expands
+  a directory only when the entry names it literally.
+
+A trailing `/` on a glob needed a branch of its own once the engine changed.
+`filepath.Match("dist/**/", "dist")` was false, so `["dist/**/"]` selected
+nothing by accident; `doublestar.Match("dist/**/", "dist")` is true.
+`lastSegment("dist/**/")` is `""`, which is not a bare wildcard, so a naive swap
+would have classified that entry as *naming* a file called `dist` — and under
+#321 a named path overrides `defaultExcludes`. npm ships nothing at all for
+`["dist/**/"]` or `["dist/*/"]`, so `matchFilesField` now answers a glob with a
+trailing `/` with no match, on purpose rather than by accident.
+
+None of this reaches the built-in exclusion lists. `matchFilesField` never
+matches their entries at all — `hardReservedExcludes` is enforced by
+`isHardReserved` in the walk and `defaultExcludes` is seeded into the ignore
+chain — so the engine under the `files` field cannot move either list, and
+`TestDefaultExcludesStillExclude` stays green.
+
+#321's `filesMatch` classification is unchanged as well — `**` and `dist/*` still
+end in a bare wildcard segment, so they sweep files in without consenting to
+publish a default-excluded one. A wider-reaching `**` therefore selects strictly
+more files and still does not publish `.env`;
+`TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes` pins that.
+
+One platform split closes with the engine, by the same mechanism the ignore
+side's paragraph above records: `filepath.Match` reads its separator from the
+platform, so on Windows a `files` entry's `*` crossed a `/` freely. doublestar's
+does not — `Match` calls `matchWithSeparator(pattern, name, '/', …)` with the
+separator written in, read from `doublestar/v4@v4.10.0/match.go`. The Windows
+half is inherited from that earlier paragraph and was not re-run here; no local
+run can settle it, and CI is what covers the platform.

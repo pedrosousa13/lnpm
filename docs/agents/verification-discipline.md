@@ -146,19 +146,26 @@ own line, so there are two guard sites, not one:
   `TestPackMainNamedByFilesFieldIsPacked`. Every row of
   `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` stays green.
 - Delete the `isIncluded` arm's call and `"files": ["dist"]` ships `dist/.env`, `dist/app.log`
-  and `dist/pkg.tgz`. Measured: nine rows of eighteen in
-  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch`, plus
-  `TestPackNegationDoesNotOverrideInWhitelistMode/negation_alone_does_not_re-include`, and
-  every `main` test stays green. That test's other row, `naming_the_path_in_files_does`, stays
-  green and could not do otherwise: its `want` already holds `dist/.env`, so a guard whose
+  and `dist/pkg.tgz`. Measured: **ten red subtests, and eleven failing tests**, because one of
+  them has no subtests at all. The ten are nine rows of eighteen in
+  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` plus
+  `TestPackNegationDoesNotOverrideInWhitelistMode/negation_alone_does_not_re-include`; the
+  eleventh is `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes`, which #350 added.
+  Every `main` test stays green.
+  `TestPackNegationDoesNotOverrideInWhitelistMode`'s other row, `naming_the_path_in_files_does`,
+  stays green and could not do otherwise: its `want` already holds `dist/.env`, so a guard whose
   deletion only ever adds paths leaves the expected set untouched.
 
   The figure was eight of sixteen until #346 added two `./` rows and both experiments were
   re-run. `TestPackNegationDoesNotOverrideInWhitelistMode` was missing from this list before
   that re-run, and had not changed — the list was simply short. It was then entered here as
   "both rows", from a run whose output had been filtered to top-level test names: the whole
-  test showed red and the row count was inferred rather than read. Two failures of this
-  section's own rule, in the same bullet, one round apart. Read the subtest lines.
+  test showed red and the row count was inferred rather than read. #350 then added a test to
+  this experiment's blast radius and did not enter it here, so the list went short a third time
+  and a reviewer had to catch it. Note what makes that easy to do: a subtest-free test never
+  prints a `--- FAIL: Test.../sub` line, so any command grepping only for subtests reports it as
+  absent. **Read both `--- FAIL:` shapes — the subtest lines and the top-level ones — or read
+  the run unfiltered.** The classification paragraph below lost the same test the same way.
 
 An earlier draft of this section said only `mainEntry` called back, and a reviewer following it
 would have deleted one line, watched one test go red, and missed the second site entirely — which
@@ -169,9 +176,39 @@ Each guard site also has inner halves worth reverting on their own. Both read
 `softExcluded.covers(relPath) && !isIncludedDirectly(...)`; swapping `covers` back to
 `isDefaultExcluded` drops the ancestor-directory question and turns exactly one row red, and
 dropping `!isIncludedDirectly` turns a different single row red at the `mainEntry` arm. The
-classification behind `isIncludedDirectly` has a third: treating every `filepath.Match` hit as
-naming a path, rather than only those whose final glob segment constrains the name, turns exactly
-three rows red. A single-line revert that moves one row is still a real revert — but only if you
+classification behind `isIncludedDirectly` has a third: treating every glob hit as
+naming a path, rather than only those whose final glob segment constrains the name, turns nine
+subtests red, over three tests:
+
+```
+TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm/bare_double_star_reaching_a_nested_path
+TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm/bare_wildcard_segment
+TestMatchFilesFieldGlobsWithDoublestar/bare_double_star_reaches_a_nested_path
+TestMatchFilesFieldGlobsWithDoublestar/bare_double_star_reaches_the_root
+TestMatchFilesFieldGlobsWithDoublestar/bare_single_star_stays_at_the_root
+TestMatchFilesFieldGlobsWithDoublestar/single_star_reaches_one_level
+TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch/bare_wildcard_at_the_root_is_containment
+TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch/bare_wildcard_segment_is_containment
+TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch/double_bare_wildcard_at_the_root_is_containment
+```
+
+Those nine are subtests. **A tenth test fails and has no subtests**, so it prints no
+`--- FAIL: Test.../sub` line at all: `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes`
+packs `[.env dist/.env dist/a.js index.js package.json]` against a `want` of
+`[dist/a.js index.js package.json]`. It is the failure that matters most here — the revert makes
+`"files": ["**"]` ship both `.env` files — and it is exactly the one a subtest filter drops.
+
+That is the mirror image of the bullet above. There, output filtered to *top-level* names hid a
+subtest count. Here, output filtered to *subtest* lines hid a whole test. During #350's review
+this test was predicted red by one reading and reported green by another; the run settles it as
+red, and the disagreement existed only because neither `--- FAIL:` shape was read on its own
+terms.
+
+The figure was three until #350, which moved the `files` matcher onto doublestar and added rows
+pinning the same classification. It went stale inside the very sentence #350 edited: **a number
+in this file is a measurement with a date on it, not a fact.**
+
+A single-line revert that moves one row is still a real revert — but only if you
 checked that the rows you expected to stay green actually did.
 
 The general lesson is the one that generalises past `pack`: **when a fix moves a check from an

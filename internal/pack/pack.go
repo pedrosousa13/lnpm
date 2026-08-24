@@ -1373,16 +1373,30 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // against the full relative path: isIncluded never matches a basename, so
 // anchoring is already how it behaves and the "/" carries no information.
 // Contrast isExcluded, which keeps the leading "/" as its anchored flag
-// precisely because it does match basenames and must suppress that. Teaching
-// isIncluded to match basenames (npm's "files" does match a bare "*.md"
-// against a nested path) would mean handling anchoring here too.
+// precisely because it does match basenames and must suppress that.
 //
-// The two also glob through different engines, which is the more surprising
-// half of the asymmetry. isExcluded matches with doublestar, where "**" spans
-// zero or more path segments; isIncluded still uses filepath.Match, where "*"
-// never crosses a separator and "**" is understood only as the trailing "/**"
-// handled below. So "lib/**/*.js" excludes lib/top.js as an ignore pattern but
-// does not include it as a "files" entry.
+// Not matching basenames is npm parity, not a divergence, and an earlier draft
+// of this comment had it backwards — it claimed npm's "files" matches a bare
+// "*.md" against a nested path. It does not: on npm 11.16.0, "files": ["*.md"]
+// ships a root top.md and leaves docs/guide.md out, and ["guide.md"] ships
+// nothing at all against docs/guide.md. Run on a fixture package for each.
+// What did miss a root file was "**/*.md", and that was the "**" defect #350
+// fixed rather than anything about basenames.
+//
+// The two glob through the same engine, and did not always. isIncluded used
+// filepath.Match, where "*" never crosses a separator and "**" is an ordinary
+// two-star segment, so "lib/**/*.js" excluded lib/top.js as an ignore pattern
+// and did not include it as a "files" entry — one package, two meanings for
+// "**", and the "files" side silently shipped less than the manifest declared.
+// #350 moved this side onto doublestar as well.
+//
+// That inherits doublestar's whole dialect here too, as it did on the ignore
+// side. For the two constructs ADR-0003 named — brace alternation and "[!a]" as
+// a class negation — the widening moves toward npm rather than away from it,
+// since npm globs a "files" entry with minimatch and both are measured parity.
+// It does not follow that the dialects match: doublestar has no extglob, so an
+// entry like "+(a|b).txt" selects nothing here and a file under npm. ADR-0003
+// records both directions and that gap.
 //
 // A leading "./" is dropped too, and npm agrees: "./dist" ships the tarball
 // "dist" ships (#346). One is dropped, and it is dropped before the "/" —
@@ -1404,6 +1418,10 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // only from patterns with no glob metacharacter. npm does not read a trailing
 // slash on a glob as a directory marker, so "dist/**/" matches nothing and
 // must not be normalized into "dist/**", which matches everything under dist.
+// A glob keeping its slash is then answered by matchFilesField's own
+// trailing-"/" branch, which matches nothing on purpose. It used to fall through
+// to the glob engine and match nothing by accident, which stopped being true
+// when #350 changed the engine.
 //
 // So "dist", "/dist", "dist/", "/dist/" and "./dist" are all equivalent, as
 // they are to npm, and "dist/**", "/dist/**" and "./dist/**" are equivalent to
@@ -1479,18 +1497,33 @@ const (
 // that constrains the name does name, so "dist/*.env", ".env.*" and "*.example"
 // all publish what they match.
 //
-// An earlier draft split "dist/*" from "dist/**", on the reasoning that
-// filepath.Match's "*" cannot cross a separator so the first picks out one level
-// rather than a tree. True, and beside the point: it made "files": ["*"] publish
-// every overridable-list file at the package root, and it split the spellings of
-// "ship everything": the degenerate entries classify as containment, so a "*"
-// that named paths disagreed with them. The question is whether the entry said
-// anything about the name, not how deep it reaches.
+// An earlier draft split "dist/*" from "dist/**", on the reasoning that a single
+// "*" cannot cross a separator so the first picks out one level rather than a
+// tree. Still true of doublestar — doublestar.Match("dist/*", "dist/cli/index.js")
+// is false, run and confirmed — and still beside the point: it made
+// "files": ["*"] publish every overridable-list file at the package root, and it
+// split the spellings of "ship everything", since the degenerate entries
+// classify as containment and a "*" that named paths disagreed with them. The
+// question is whether the entry said anything about the name, not how deep it
+// reaches.
 //
 // The branches below and their order are unchanged from the single-verdict
-// isIncluded this was split out of; only the returns are. Note the trailing
-// "/**" branch continues rather than falling through to the glob branch, as it
-// did before, so "dist/**" never reaches filepath.Match.
+// isIncluded this was split out of; only the returns are, and the trailing-"/"
+// branch #350 added.
+//
+// The trailing "/**" branch is kept, and it is no longer redundant in the way it
+// looks. For an entry carrying no metacharacter ahead of the "/**" the glob
+// engine now reaches the same verdict, so deleting the branch changed nothing
+// measurable until #350 added the two rows that pin it; with those rows present,
+// deleting it turns exactly them red and nothing else in the suite. Both runs
+// measured.
+//
+// What it buys is the escape hatch ADR-0003 leans on. It compares strings, so an
+// entry like "weird{a,b}/**" still names that literal directory and its
+// contents, where doublestar expands the braces and matches nothing —
+// doublestar.Match("weird{a,b}/**", "weird{a,b}/x.txt") is false, run and
+// confirmed. matchesIgnorePattern has its own copy of the branch, so the two
+// sides keep that hatch together.
 func matchFilesField(relPath string, patterns []string) filesMatch {
 	best := filesMatchNone
 
@@ -1517,24 +1550,25 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 		//
 		// Every branch below then sees a string byte-identical to the
 		// unprefixed spelling, which is what makes the two classify the same
-		// rather than merely select the same paths. A "./dist" reaching
-		// filepath.Match whole would have been a direct match, and #321's rule
+		// rather than merely select the same paths. A "./dist" reaching the
+		// glob engine whole would have been a direct match, and #321's rule
 		// would have published dist/.env from an entry naming the directory
 		// only.
 		//
 		// Only the "files" side resolves this. isExcluded deliberately does not
 		// — see isIncluded's doc comment for why the two differ.
 		//
-		// No platform split hides in this, unlike the separator questions
-		// isDefaultInclude and isExcluded both have. The trim is a literal byte
-		// compare against "./" and its output is the unprefixed spelling itself,
-		// so whatever filepath.Match does with a "\" separator on Windows it
-		// does identically for both spellings, and
+		// No platform split hides in this. The trim is a literal byte compare
+		// against "./" and its output is the unprefixed spelling itself, so both
+		// spellings reach the glob branch identically, and
 		// TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm asserts that
-		// equality on every CI platform as well as a fixed answer. A Windows-
-		// style ".\\dist" is a different entry and is not handled — nothing here
-		// has ever read "\" as a separator, since collectFiles hands over paths
-		// already through filepath.ToSlash.
+		// equality on every CI platform as well as a fixed answer. Since #350
+		// there is nothing platform-dependent left to worry about here anyway:
+		// doublestar's separator is always "/", unlike filepath.Match, whose is
+		// the platform's — the split isDefaultInclude still has to guard against.
+		// A Windows-style ".\\dist" is a different entry and is not handled —
+		// nothing here has ever read "\" as a separator, since collectFiles hands
+		// over paths already through filepath.ToSlash.
 		pattern = strings.TrimPrefix(pattern, "./")
 		pattern = strings.TrimPrefix(pattern, "/")
 		if !strings.Contains(pattern, "*") {
@@ -1568,8 +1602,40 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 				match = filesMatchContains
 			}
 
+		case strings.HasSuffix(pattern, "/"):
+			// A glob entry with a trailing "/" names nothing, and this branch is
+			// what says so. npm reads the slash as part of the pattern rather
+			// than as a directory marker, and ships nothing for either spelling:
+			// "files": ["dist/**/"] and ["dist/*/"] both produce a tarball
+			// holding only the always-included set, run on a fixture package
+			// with npm 11.16.0.
+			//
+			// Almost everything that reaches here is a glob, because the trim
+			// above takes one trailing slash off an entry with no "*" — "dist/"
+			// arrived as "dist" and was answered by the branches above. A slash
+			// *run* is the exception: "dist//" keeps a slash and lands here. It
+			// selects nothing, exactly as it did before this branch existed,
+			// while npm 11.16.0 ships dist for it — run and confirmed.
+			//
+			// That divergence belongs to #403, which covers a slash run at
+			// either end of an entry: it was filed for the leading "//dist" and
+			// was broadened to this trailing case during #350, measurement
+			// included. Nothing here introduced it — before #350 the same entry
+			// reached filepath.Match("dist/", …) and missed just as widely. A
+			// fix there has to keep this branch's rule intact, since dropping a
+			// trailing slash from a *glob* would turn ["dist/**/"] into
+			// ["dist/**"] and ship a subtree npm ships nothing for.
+			//
+			// Leaving it to the glob branch would not merely select the wrong
+			// paths. doublestar.Match("dist/**/", "dist") is true where
+			// filepath.Match's was false, and lastSegment("dist/**/") is "",
+			// which isBareWildcard rejects — so the entry would classify as
+			// filesMatchDirect against a *file* named "dist" and, under #321,
+			// override defaultExcludes for it. An entry npm reads as naming
+			// nothing would have become an entry naming a path. #350.
+
 		default:
-			if matched, _ := filepath.Match(pattern, relPath); matched {
+			if matched, _ := doublestar.Match(pattern, relPath); matched {
 				// A glob names a path only if its last segment says something
 				// about the name. A trailing bare wildcard does not: "*" and
 				// "dist/*" are "everything here", which is a statement about a
@@ -1583,8 +1649,11 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 				// above and are containment there; "*" and "**" arrive here and
 				// have to agree, or the same manifest would mean two different
 				// things depending on which spelling was chosen. How far each
-				// reaches is a separate question — filepath.Match stops "*" and
-				// "**" at a separator where npm's glob does not, which is #350.
+				// reaches is a separate question, and since #350 they reach
+				// different distances while classifying alike: doublestar stops
+				// "*" at a separator and lets "**" span any number of them, so
+				// "**" sweeps the whole tree in and "*" only the package root.
+				// Both still name nothing.
 				//
 				// A bare "." is not on that list. It looks like it belongs and
 				// does not: npm 11.16.0 ships only the always-included set for
@@ -1626,12 +1695,20 @@ func lastSegment(pattern string) string {
 
 // isBareWildcard reports whether a path segment is nothing but a wildcard.
 //
-// Both spellings are here because filepath.Match, which is what isIncluded
-// globs with, reads "**" as an ordinary two-star segment rather than as a
-// subtree — "*" and "**" match exactly the same single segment through it. They
-// are the same statement, so they classify the same way. Note that "dist/**"
-// never reaches this: the trailing-"/**" branch above claims it first, and calls
-// it containment too, so the two spellings agree by two different routes.
+// Both spellings are here because both say the same thing about the name:
+// nothing. They no longer reach the same distance — since #350 isIncluded globs
+// with doublestar, where "*" stops at a separator and "**" spans any number of
+// them — but reach is not what this decides. Classifying them alike is what
+// keeps "files": ["*"] and ["**"] agreeing with the degenerate spellings of
+// "ship everything", none of which publishes a default-excluded path.
+//
+// Before #350 the two were identical here as well: filepath.Match read "**" as
+// an ordinary two-star segment, so both matched exactly one segment. The
+// classification did not have to change when that did.
+//
+// Note that "dist/**" never reaches this: the trailing-"/**" branch above claims
+// it first, and calls it containment too, so the two spellings agree by two
+// different routes.
 func isBareWildcard(segment string) bool {
 	return segment == "*" || segment == "**"
 }
