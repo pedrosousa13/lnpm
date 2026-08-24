@@ -55,8 +55,17 @@ type FileInfo struct {
 const manifestFileName = "package.json"
 
 // changelogNames are the three always-included names lnpm adds to npm's set.
-// npm's own set is package.json, README*, LICENSE*/LICENCE* and nothing else;
-// README's npm-divergence bullet records these three as deliberate.
+// npm's own set is package.json, README*, LICENSE*/LICENCE* and the file named
+// by "main" — the last of those is not an entry in any list, here or at npm, and
+// lnpm reaches it through collectFiles' mainEntry arm instead (docs/adr/0004).
+// README's npm-divergence bullet records these three names as deliberate.
+//
+// Run, not read, against npm 11.16.0 via "npm pack --dry-run --json" on a
+// package with "files": ["dist"]: root CHANGELOG, CHANGELOG.md, CHANGES.md and
+// HISTORY.md were all left out of the tarball, so these three really are lnpm's
+// addition rather than a spelling of something npm already does. The same run
+// shipped README.md and LICENSE, and a second one shipped a "main" of
+// lib/entry.js while dropping its sibling lib/other.js.
 //
 // They share one extension list rather than carrying three of their own, and
 // that is a decision rather than a convenience. The three are one concept — the
@@ -115,9 +124,11 @@ var changelogExtensions = []string{"", ".md", ".markdown", ".txt", ".rst"}
 //
 // isDefaultInclude lower-cases both the pattern and the path, so one spelling
 // per entry answers for every casing. That is why the generated entries are
-// spelled once while the npm block above carries each name twice: the doubling
-// is redundant and predates this list's matcher growing a ToLower, and #363
-// removes it. Adding cased duplicates here would only give #363 more to delete.
+// spelled once while README, LICENSE and LICENCE above are each spelled twice —
+// package.json is spelled once already, so the doubling is not even uniform. It
+// is redundant either way, it predates this list's matcher growing a ToLower,
+// and #363 removes it. Adding cased duplicates here would only give #363 more to
+// delete.
 var defaultIncludes = append([]string{
 	"package.json",
 	"README*",

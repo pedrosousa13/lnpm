@@ -646,9 +646,12 @@ func TestIsExcludedDoesNotResolveLeadingDotSlash(t *testing.T) {
 // TestIsDefaultInclude pins the always-included set to the package root, and
 // since #360 its membership as well.
 //
-// The nested rows below all used to answer true: isDefaultInclude matched
-// filepath.Base(relPath), so a README, LICENSE or CHANGES anywhere in the tree
-// was force-included past a "files" whitelist. Regression test for #320.
+// The nested rows below whose *basename* is an always-included name all used to
+// answer true: isDefaultInclude matched filepath.Base(relPath), so a README,
+// LICENSE or CHANGES anywhere in the tree was force-included past a "files"
+// whitelist. Regression test for #320. The two rows whose basename is not such a
+// name — the ones with an always-included word in a *directory* segment — were
+// false before #320 as well, and guard something else; see their own comment.
 //
 // The nested rows are also the platform guard, and the Windows CI job is where
 // they earn their keep — on Linux and macOS they were already true. Both build
@@ -704,7 +707,13 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"CHANGES", true},
 		{"HISTORY", true},
 		{"changelog", true},
+		// The maintainer's second comment on #360 names CHANGES.txt, HISTORY.txt
+		// and CHANGELOG.txt in those words, so all three are pinned literally
+		// rather than left to the generated set to imply. The CHANGES one is the
+		// pre-existing changes.txt row in the block above, which that decision
+		// is the reason for keeping.
 		{"CHANGELOG.txt", true},
+		{"HISTORY.txt", true},
 		{"CHANGES.md", true},
 		{"HISTORY.rst", true},
 		{"changelog.rst", true},
@@ -721,11 +730,11 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"changes.sqlite", false},
 		{"changelog.json", false},
 		{"CHANGELOG.db", false},
-		// A root file whose name *starts* with an accepted stem and carries an
-		// accepted extension. It catches a narrowing that keeps prefix matching
-		// on the stem and only constrains the extension: "changesets.md" would
-		// pass that, and it is a real filename — the changesets release tool
-		// names itself so.
+		// Two root files whose names *start* with an accepted stem and carry an
+		// accepted extension. They catch a narrowing that keeps prefix matching
+		// on the stem and only constrains the extension, which both of these
+		// would pass. No claim is made about either being a name some tool
+		// emits; what the rows guard holds regardless.
 		{"changesets.md", false},
 		{"historybook.txt", false},
 		// A strings.HasPrefix(relPath, pattern) anchor can only fire on the
@@ -739,8 +748,13 @@ func TestIsDefaultInclude(t *testing.T) {
 		// below catch the same over-match a second way.
 		{"package.jsonc", false},
 
-		// Below the root, no longer force-included. Every one of these was
-		// true before #320.
+		// Below the root, no longer force-included. Every row down to
+		// a/b/c/CHANGELOG.md was true before #320, because the matcher ran on
+		// filepath.Base and each of their basenames matched an entry. The two
+		// directory-name rows after them were false then too — Base
+		// ("changes/secret.txt") is "secret.txt", which matches nothing — so
+		// they are not #320 regressions and their own comment says what they
+		// are for.
 		{"docs/README.md", false},
 		{"dist/README.md", false},
 		{"internal-docs/README.private", false},
