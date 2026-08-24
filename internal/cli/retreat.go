@@ -298,8 +298,8 @@ func RunRetreat(force bool, runInstall bool) error {
 // still carrying file:.lnpm/{name} pointing at nothing, lnpm.lock stashed so a
 // re-run reports "No lnpm links found", and reportRefused telling the user lnpm
 // had written nothing for it. That is the state the leading-dot waiver in the
-// loop calls worse than pointless, for this same reason, forty lines above the
-// removal. Refusing outright leaves a project the user can still act on: the
+// loop calls worse than pointless, for this same reason, just above the removal
+// itself. Refusing outright leaves a project the user can still act on: the
 // error names the path and the override, and nothing has been touched.
 //
 // Why a preflight and not a check inside the loop. Both refuse, but only this
