@@ -1,9 +1,20 @@
 package main
 
 import (
+	"os"
 	"runtime/debug"
 	"testing"
+
+	"github.com/pedrosousa13/lnpm/internal/testenv"
 )
+
+// TestMain redirects the config loader at a temp directory before the first
+// test runs (#371). Nothing tested here reaches the loader today - pickVersion
+// is pure - but main links internal/cli, so a test that drove a command would,
+// and this stops that one reading the machine's own ~/.lnpm/config.yaml.
+func TestMain(m *testing.M) {
+	os.Exit(testenv.Run(m))
+}
 
 func buildInfo(version string) *debug.BuildInfo {
 	return &debug.BuildInfo{Main: debug.Module{Version: version}}

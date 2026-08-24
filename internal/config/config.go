@@ -111,6 +111,30 @@ func ResetForTesting() {
 	globalConfigOnce = sync.Once{}
 }
 
+// IsolateForTesting points LNPM_CONFIG at a config file inside dir and clears
+// the memoized config, so a test binary reads that path instead of whatever the
+// machine running it has at ~/.lnpm/config.yaml. The file does not have to
+// exist: loadConfigFile returns defaults when the path is missing, which is the
+// "no settings at all" state a test wants.
+// This should only be used in tests.
+//
+// It takes a directory rather than a *testing.T so that this file, which is
+// part of the shipped binary, need not import "testing". Check with
+// `go list -deps ./cmd/lnpm`: that import adds testing, runtime/trace and
+// internal/sysinfo to the binary's dependencies. It does not register the test
+// flags, contrary to the usual telling - testing.Init does that and "go test"
+// calls it, a split in place since Go 1.13 - so the cost is only the weight.
+// Callers wanting the whole lifecycle, temp directory included, use
+// internal/testenv.
+//
+// #371: without this, a package's tests read the developer's own config, so a
+// configured pre_publish hook really runs during the suite, and whichever test
+// loads the singleton first decides what every later test in that package sees.
+func IsolateForTesting(dir string) {
+	os.Setenv("LNPM_CONFIG", filepath.Join(dir, "config.yaml"))
+	ResetForTesting()
+}
+
 // getConfigPath returns the path to the config file
 func getConfigPath() string {
 	if configPath := os.Getenv("LNPM_CONFIG"); configPath != "" {
