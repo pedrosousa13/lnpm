@@ -775,8 +775,15 @@ func requireRefusedForADamagedRecord(t *testing.T, err error, out, project strin
 	if !strings.Contains(err.Error(), "will not parse") {
 		t.Errorf("RunRetreat() error = %v, want it to say the record will not parse", err)
 	}
-	if !strings.Contains(err.Error(), project) {
-		t.Errorf("RunRetreat() error = %v, want it to name the project directory %s", err, project)
+	// Resolved, because the error names the path the lookup normalized rather
+	// than the one the fixture handed it. GetProjectByPath runs its argument
+	// through normalizePath, which is filepath.EvalSymlinks, and on Windows that
+	// expands an 8.3 short name: a temp directory that arrives as
+	// C:\Users\RUNNER~1\... is named in the error as C:\Users\runneradmin\... .
+	// seedLinkedProject records the same asymmetry for the paths gc prints.
+	wantDir := resolvePath(project)
+	if !strings.Contains(err.Error(), wantDir) {
+		t.Errorf("RunRetreat() error = %v, want it to name the project directory %s", err, wantDir)
 	}
 	const lookupPrefix = "the record of the project at "
 	if !strings.HasPrefix(err.Error(), lookupPrefix) {
