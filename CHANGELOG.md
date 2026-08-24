@@ -2,6 +2,46 @@
 
 ## [2.3.0](https://github.com/pedrosousa13/lnpm/compare/v2.2.1...v2.3.0) (2026-08-24)
 
+> **Using a `files` field?** Three changes land together, and the packed set of an
+> existing package can move in both directions. Check with `lnpm publish` before
+> relying on it.
+>
+> A `files` entry now overrides the built-in "excluded unless you say otherwise"
+> list — but only for a path it **names directly**. `files: [".env.example"]`
+> ships that template; `files: ["dist"]` still keeps `dist/.env` out, because
+> naming a build directory is not a statement about what landed inside it. A
+> `main` entry is not a way in: it loses to both built-in lists and warns instead.
+> See [#321](https://github.com/pedrosousa13/lnpm/issues/321).
+>
+> An entry written `./dist` used to select **nothing**, publishing a package that
+> held only `package.json`. It now selects what `dist` does. A bare `.` still
+> selects nothing, which is what npm does with it. See
+> [#346](https://github.com/pedrosousa13/lnpm/issues/346).
+>
+> `files` entries now glob through the same engine as your ignore patterns, so
+> `**` spans zero or more path segments: `files: ["lib/**/*.js"]` now selects
+> `lib/top.js` as well as `lib/sub/a.js`. Brace alternation comes with it, so
+> `files: ["weird{a,b}.txt"]` matches `weirda.txt` and `weirdb.txt` — the file of
+> that literal name is still selected too, by an exact-path compare npm does not
+> have. One gap remains: a `files` entry ending in a wildcard does not expand a
+> directory it matched into that directory's subtree, where npm does, so `["*"]`
+> ships only the package root's own files. See
+> [#350](https://github.com/pedrosousa13/lnpm/issues/350) and
+> [#406](https://github.com/pedrosousa13/lnpm/issues/406).
+>
+> **A publish no longer aborts on an unreadable directory it already excludes.** A
+> root-owned `coverage/`, or a `.cache/` left by a tool running as another user,
+> used to fail the whole publish by name even when your ignore file excluded it.
+> It is now skipped with a warning. A directory that **would** have been packed
+> still aborts, because a package silently missing a file is worse than a failed
+> command. See [#348](https://github.com/pedrosousa13/lnpm/issues/348).
+>
+> **Symlinked your `.lnpm` directory?** Read-only link queries now refuse to
+> resolve through it, closing the same hole
+> [#339](https://github.com/pedrosousa13/lnpm/issues/339) closed for writes in
+> 2.2.1. There is no override for this one: the `follow_symlinked_node_modules`
+> setting governs `node_modules`, not `.lnpm`. See
+> [#340](https://github.com/pedrosousa13/lnpm/issues/340).
 
 ### Features
 
