@@ -1126,9 +1126,10 @@ func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
 // that aborts, and two errors met on one code path disagreeing about where to
 // look next is worse than one of them repeating the command already running.
 //
-// GetProjectByPath has the identical allocate-then-unmarshal shape and is left
-// alone here, to keep this change on the gc path; retreat.go discards its error
-// the same way. Both are #391.
+// GetProjectByPath had the identical allocate-then-unmarshal shape and was left
+// alone here, to keep this change on the gc path. It reads the same two shapes
+// the same way now; its own doc comment records how narrow the margin was that
+// kept the untightened shape from costing anything (#391).
 func (db *DB) GetProjectByID(id int64) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1284,7 +1285,62 @@ func (db *DB) SetProjectDevice(id int64, device uint64) error {
 	})
 }
 
-// GetProjectByPath returns a project by its path
+// GetProjectByPath returns a project by its path, or nil if no record answers
+// for it. A path the store does not know is not an error: that is the ordinary
+// state of every directory before the first 'lnpm add', so a caller that reaches
+// it has been given an answer rather than a failure to handle.
+//
+// A record that will not parse is an error, and nothing is returned with it.
+// That is #391, and it is the same correction #292 made to GetProjectByID -
+// see that method for what the two damage shapes decode to and why neither may
+// be handed back. This lookup carried the untightened shape longer because #355
+// deliberately kept its diff on the gc path, and the by-ID method is the one gc
+// reads through.
+//
+// The wrong-typed shape is worth spelling out, because how much of a record
+// survives it depends on which field was damaged, and one of the two answers
+// hands back a usable project ID. Measured on Go 1.26.7 against this struct
+// rather than reasoned about from the encoding/json documentation, which promises
+// less than either answer delivers - it does not guarantee that fields following
+// the mismatch are decoded at all.
+//
+// Damage to one of the fields that decodes without an UnmarshalJSON of its own -
+// path, name and package_manager, and device, which is a uint64 rather than a
+// string but takes the same route - costs that field alone. literalStore records
+// the type error through saveError and decoding carries on, so every other field
+// is populated and the ID survives wherever it sits, measured at both positions.
+// Damage to created_at or updated_at goes the other way:
+// time.Time carries its own UnmarshalJSON, and literalStore returns an
+// Unmarshaler's error rather than recording it, so the decode stops at that
+// field. What preceded it is kept and what followed is dropped, which means a
+// record damaged there ahead of id decodes to a project with every field zero.
+//
+// The first answer is the one that cost something, because it is the one that
+// leaves a project looking usable: a real project ID - the value DeleteLink
+// matches link rows on - out of a record this lookup had just failed to parse.
+// That is the shape the fixture behind retreat's wrong-typed case drives, on the
+// record the store really holds, failing if the ID does not survive; so it is
+// checked rather than argued.
+//
+// No command ever used such an ID, and the two that could have were covered
+// differently. remove binds this error at the lookup and returns it, so it never
+// reached the DeleteLink it would have taken the ID to. retreat discarded it, and
+// what stood in the way there was linksOfProject re-reading the same path in the
+// same block and refusing before the removal loop - a second reader, not a
+// decision retreat made. Returning nil is what makes that margin unnecessary, and
+// it is why this is a fix rather than a tidy-up: the ID was one unchecked caller
+// away from aiming a delete at rows that do exist.
+//
+// An index entry naming a project row the store does not hold still returns nil
+// with no error, unchanged. That is a disagreement between two buckets rather
+// than a record that will not parse, and the damage case #391 is about is the
+// unmarshal - the same one #292 drew around in GetProjectByID. Widening it here
+// would change what callers do about a store lnpm can still read.
+//
+// The error points at lnpm doctor, as the sibling messages in GetProjectByID and
+// indexIDs do. It names the path rather than the ID because the path is what the
+// caller asked with, which is the same reason GetProjectByID names the ID: a
+// user reading either message is handed back the identifier they arrived by.
 func (db *DB) GetProjectByPath(path string) (*Project, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1307,11 +1363,18 @@ func (db *DB) GetProjectByPath(path string) (*Project, error) {
 			return nil
 		}
 
-		proj = &Project{}
-		return json.Unmarshal(data, proj)
+		var found Project
+		if err := json.Unmarshal(data, &found); err != nil {
+			return fmt.Errorf("the record of the project at %s will not parse: %w; run lnpm doctor to see what else the store disagrees about", path, err)
+		}
+		proj = &found
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return proj, err
+	return proj, nil
 }
 
 // --- Link operations ---
