@@ -5,12 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/fsutil"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
-	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -146,17 +144,7 @@ func RunRemove(packageName string, all bool, yes bool) error {
 	}
 
 	// Run package manager install to restore removed packages
-	pm := config.DetectPackageManager(cwd)
-	installCmd := config.GetInstallCommand(pm)
-	fmt.Printf("Running %s...\n", installCmd)
-
-	cmd := shellcmd.Command(installCmd)
-	cmd.Dir = cwd
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("%s Install failed: %v\n", ui.IconWarn(), err)
-	}
+	runProjectInstallFn(cwd)
 
 	if failed > 0 {
 		return fmt.Errorf("%d of %d package(s) failed to remove", failed, len(packagesToRemove))
