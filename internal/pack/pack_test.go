@@ -10,6 +10,7 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -3382,7 +3383,7 @@ func TestPackMainCannotDefeatDefaultExcludes(t *testing.T) {
 					"user's ignore patterns but neither built-in exclusion list "+
 					"(docs/adr/0004)\npacked: %v", tt.main, packed)
 			}
-			if !strings.Contains(out, "warning:") {
+			if !strings.Contains(out, warnMarker()) {
 				t.Errorf("Pack() refused to pack the main %q and said nothing; the "+
 					"file is on disk, so validation.ValidatePackage passes and "+
 					"publish would report success on a package that does not "+
@@ -3568,6 +3569,28 @@ func capturePackStdout(t *testing.T, fn func()) string {
 	return out
 }
 
+// warnMarker is what a warning pack printed looks like at its start: the shared
+// marker and the space separating it from the message. Every one of pack's four
+// warnings is a "%s <message>" with ui.IconWarn() in front, so any of them
+// matches this and nothing narrower would — which is what the negative
+// assertions need, since they must fail on a warning they did not anticipate,
+// not only on the one their fixture was built for.
+//
+// The trailing space is not decoration. ui.IconWarn()'s undecorated form is the
+// single character "!", which occurs in ordinary prose and inside the ignore
+// patterns these fixtures negate ("!node_modules"), so a bare match would be a
+// false positive waiting for a fixture to supply one; none of those spellings is
+// followed by a space. The only other thing pack writes to stdout is
+// collectFiles' progress counter, which contains no "!" at all.
+//
+// It is ui.IconWarn() rather than a hardcoded "!" so the assertions follow the
+// fallback if it changes. Calling it here is safe because capturePackStdout has
+// already restored os.Stdout: under `go test` the test binary's stdout is a
+// pipe, not a character device, whether or not the shell running it has a
+// terminal - measured, with `script` supplying a pty, and the binary still saw
+// mode "prw-------". So decorate() is false at both the print and this call.
+func warnMarker() string { return ui.IconWarn() + " " }
+
 // TestPackWarnsWhenMainIsNotPacked covers the half of #319 the force-include
 // does not reach: a main that is still missing from the finished set.
 //
@@ -3622,7 +3645,7 @@ func TestPackWarnsWhenMainIsNotPacked(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Pack() must warn and continue, not fail: %v", err)
 			}
-			if !strings.Contains(out, "warning:") {
+			if !strings.Contains(out, warnMarker()) {
 				t.Errorf("Pack() printed no warning for a main that is not in the "+
 					"packed set; the publish would report success on a package that "+
 					"does not load\ngot stdout: %q", out)
@@ -3699,7 +3722,7 @@ func TestPackDoesNotWarnWhenMainIsPacked(t *testing.T) {
 				}
 			})
 
-			if strings.Contains(out, "warning:") {
+			if strings.Contains(out, warnMarker()) {
 				t.Errorf("Pack() warned about a main that needs no warning\ngot stdout: %q", out)
 			}
 		})
@@ -4287,7 +4310,7 @@ func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 			if strings.Join(packed, "\n") != "index.js\npackage.json" {
 				t.Errorf("naming %q in \"files\" must not publish it\npacked: %v", tt.entry, packed)
 			}
-			if !strings.Contains(out, "warning:") || !strings.Contains(out, tt.entry) {
+			if !strings.Contains(out, warnMarker()) || !strings.Contains(out, tt.entry) {
 				t.Errorf("Pack() must warn that the \"files\" entry %q names a path "+
 					"lnpm never publishes; dropping it in silence is the failure "+
 					"mode #321 is about\ngot stdout: %q", tt.entry, out)
@@ -4319,7 +4342,7 @@ func TestPackDoesNotWarnForOrdinaryFilesEntries(t *testing.T) {
 		_ = packedRelPaths(t, tmpDir)
 	})
 
-	if strings.Contains(out, "warning:") {
+	if strings.Contains(out, warnMarker()) {
 		t.Errorf("Pack() warned about \"files\" entries it publishes just fine\ngot stdout: %q", out)
 	}
 }
@@ -4684,7 +4707,7 @@ func TestPackWarnsWhenIgnoreNegationNamesHardReserved(t *testing.T) {
 				}
 			})
 
-			if got := strings.Contains(out, "warning:"); got != tt.wantWarn {
+			if got := strings.Contains(out, warnMarker()); got != tt.wantWarn {
 				t.Errorf("Pack() warned = %v, want %v for %s containing %q\ngot stdout: %q",
 					got, tt.wantWarn, tt.ignoreFile, tt.line, out)
 			}
@@ -4818,7 +4841,7 @@ func TestPackMainNamedByFilesFieldIsPacked(t *testing.T) {
 				t.Errorf("packed set mismatch: a \"files\" entry naming the path is "+
 					"consent and \"main\" naming it is not\n got: %v\nwant: %v", packed, tt.want)
 			}
-			if got := strings.Contains(out, "warning:"); got != tt.wantWarn {
+			if got := strings.Contains(out, warnMarker()); got != tt.wantWarn {
 				t.Errorf("Pack() warned = %v, want %v for main %q with files %s\ngot stdout: %q",
 					got, tt.wantWarn, main, tt.files, out)
 			}
