@@ -34,10 +34,22 @@ func TestRunRemoveReportsALinkItCouldNotDelete(t *testing.T) {
 
 	damageDatabase(t, "links_by_package", linkKey(pkgID), []byte("[ not ids"))
 
-	// remove always runs the project's package manager once it is done. An
-	// empty PATH leaves the shell itself unresolvable, so the run fails
-	// immediately and locally instead of installing anything.
+	// remove always runs the project's package manager once it is done. A PATH
+	// holding one empty directory leaves the shell itself unresolvable -
+	// shellcmd.Command runs through sh, and exec.Command looks sh up on PATH -
+	// so the run fails immediately and locally instead of installing anything.
+	// Run and confirmed: the captured output carries `! Install failed: exec:
+	// "sh": executable file not found in $PATH`.
 	t.Setenv("PATH", t.TempDir())
+
+	// The assertion below builds its expected marker with iconOK(), which is
+	// evaluated after captureStdout has put the real os.Stdout back. Inside the
+	// capture stdout is a pipe, so the captured text always holds the ASCII
+	// fallback; outside it, a test binary run straight in a terminal has a TTY
+	// and iconOK() would answer with the glyph instead, failing the test on
+	// nothing. NO_COLOR is checked before stdout is, so it pins both sides to
+	// the same answer however the test is run.
+	t.Setenv("NO_COLOR", "1")
 
 	var err error
 	out := captureStdout(t, func() { err = RunRemove("my-package", false, true) })
@@ -47,7 +59,15 @@ func TestRunRemoveReportsALinkItCouldNotDelete(t *testing.T) {
 	}
 	// Reached the delete rather than refusing earlier: the package really was
 	// unlinked and package.json really was restored.
-	if !strings.Contains(out, "Removed my-package") {
+	//
+	// The marker is matched, because the warning above prints "Removed
+	// my-package, but its link record is still in the store" and so contains
+	// the bare phrase. Asserting on the phrase alone could not fail once the
+	// first check passed - it would be satisfied by the very line that check
+	// was looking for. The success line is "  <ok> Removed my-package", and
+	// the warning's is "  <warn> Removed my-package, ...", so the icon is what
+	// tells them apart.
+	if !strings.Contains(out, iconOK()+" Removed my-package") {
 		t.Errorf("remove did not report the removal it did perform, output was:\n%s", out)
 	}
 	if err != nil {
