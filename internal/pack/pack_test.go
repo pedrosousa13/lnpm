@@ -2920,6 +2920,187 @@ func TestExcludedByProjectRulesAnchorsDefaultIncludesToRoot(t *testing.T) {
 	}
 }
 
+// writeRootNpmignore writes a root .npmignore naming ignored into dir, one
+// pattern per line.
+//
+// It is the whole fixture the two tests below need. ExcludedByProjectRules takes
+// the "files" field as a parameter and reads only the root ignore file from
+// disk, so there is no manifest to write - unlike
+// TestExcludedByProjectRulesAnchorsDefaultIncludesToRoot above, which writes one
+// and does not read it either.
+func writeRootNpmignore(t *testing.T, dir string, ignored []string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, ".npmignore"), []byte(strings.Join(ignored, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExcludedByProjectRulesFilesFieldBeatsIgnoreFile pins the precedence
+// between the "files" field and the root ignore file, which npm settles in the
+// "files" field's favour: a file included with "files" cannot be excluded
+// through .npmignore or .gitignore.
+//
+// collectFiles has followed that rule since #318 - the `case isIncluded(relPath,
+// filesField):` arm consults the user's patterns not at all - and this helper
+// did not, so the two disagreed. The disagreement was not academic. The only
+// caller, internal/cli/check.go:256, negates the answer to ask whether something
+// other than lnpm is about to publish the retreat snapshot, so a wrong "yes,
+// excluded" makes `lnpm check` stay quiet about a file npm would ship, and that
+// file records an absolute source path for every package that was linked.
+//
+// The always-included set is what makes this more than a one-line reordering.
+// README* and friends are exempt from the "files" whitelist only, never from an
+// ignore pattern - the rule collectFiles' isDefaultInclude arm states in as many
+// words - so only the isIncluded case may skip the ignore check. Widening the
+// exemption to cover a default include too - `return !isDefaultInclude(relPath)`
+// in place of the second branch - turns exactly one row red: "files does not name
+// it and the ignore file does". Measured, not predicted, and every other row of
+// this test stays green under it, so that row is the whole guard.
+func TestExcludedByProjectRulesFilesFieldBeatsIgnoreFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeRootNpmignore(t, tmpDir, []string{
+		lockfile.RetreatFileName,
+		"README.md",
+		"dist/keep.js",
+	})
+
+	tests := []struct {
+		name       string
+		filesField []string
+		relPath    string
+		want       bool
+		why        string
+	}{
+		{
+			name:       "files names it and the ignore file does too",
+			filesField: []string{lockfile.RetreatFileName},
+			relPath:    lockfile.RetreatFileName,
+			want:       false,
+			why:        "npm: a file included with \"files\" cannot be excluded through .npmignore",
+		},
+		{
+			name:       "files reaches it by containment and the ignore file names it",
+			filesField: []string{"dist"},
+			relPath:    "dist/keep.js",
+			want:       false,
+			why:        "isIncluded is the whole test in collectFiles' arm too, containment included",
+		},
+		{
+			name:       "files does not name it and the ignore file does",
+			filesField: []string{"dist"},
+			relPath:    "README.md",
+			want:       true,
+			why:        "the always-included set is exempt from the whitelist only, never from an ignore pattern",
+		},
+		{
+			name:       "files does not name it and the ignore file is silent",
+			filesField: []string{"dist"},
+			relPath:    "LICENSE",
+			want:       false,
+			why:        "the always-included set is still exempt from the whitelist itself",
+		},
+		{
+			name:       "outside the whitelist and not an always-included name",
+			filesField: []string{"dist"},
+			relPath:    "src/index.ts",
+			want:       true,
+			why:        "the whitelist alone excludes it, with no ignore rule involved",
+		},
+		{
+			name:       "no files field, the ignore file names it",
+			filesField: nil,
+			relPath:    lockfile.RetreatFileName,
+			want:       true,
+			why:        "with no whitelist the ignore file decides the whole tree, unchanged",
+		},
+		{
+			name:       "no files field, the ignore file is silent",
+			filesField: nil,
+			relPath:    "index.js",
+			want:       false,
+			why:        "with no whitelist and no matching pattern nothing excludes it, unchanged",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExcludedByProjectRules(tmpDir, tt.filesField, tt.relPath)
+			if got != tt.want {
+				t.Errorf("ExcludedByProjectRules(dir, %v, %q) = %v, want %v (%s)",
+					tt.filesField, tt.relPath, got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// TestExcludedByProjectRulesConsultsNoBuiltInExcludeList pins the half of this
+// helper's contract its doc comment states and #347's reordering puts at risk:
+// it answers what a tool reading only the project's own rules would ship, so
+// neither lnpm built-in list is consulted. Rewriting the branches around the
+// ignore chain is an invitation to "fix" the chain while standing in it.
+//
+// The two lists get separate rows because they are separate mistakes, and they
+// arrive here with different coverage already behind them. Each figure below was
+// run on this file as it stands, preceded by a clean `go vet ./...`, and read
+// from both `--- FAIL:` shapes plus the package result line:
+//
+//   - defaultExcludes was genuinely unreached before this test. Appending it to
+//     loadIgnorePatterns' result, in the fall-through, turns the first five rows
+//     red, leaves .npmrc green, and moves nothing in the tests package. Note
+//     that is not the spelling ignoreLoader uses: it seeds isDefaultExcluded as
+//     the walk's initial verdict instead, which is what lets an `!` negation
+//     have the last word over the list. Appending gives the list last-match-wins
+//     and the two diverge on any negation - the figure above is unaffected only
+//     because this fixture carries none.
+//     It looks like making two call sites agree, and it is not: `npm publish`
+//     ships .env, a *.log and a *.tgz outright, so the answer would stop being
+//     npm's while the doc comment still said it was.
+//
+//   - hardReservedExcludes already had end-to-end coverage, and .npmrc adds a
+//     unit-level row beside it rather than first coverage.
+//     TestCheckDetectsAPublishableRetreatSnapshot has pinned it since #294:
+//     lockfile.RetreatFileName is itself in hardReservedExcludes, so a helper
+//     consulting that list calls the snapshot excluded in every project there
+//     is, and check.go's negation silences the whole warning.
+//
+//     Placement decides the blast radius here, so the position has to be named
+//     with the figure. An isHardReserved check in the fall-through, immediately
+//     before isExcluded, reddens .npmrc and that check test and nothing else.
+//     The same check at the top of the function reddens two more, because above
+//     the whitelist block it outranks a "files" entry naming the path as well:
+//     TestExcludedByProjectRulesFilesFieldBeatsIgnoreFile's "files names it and
+//     the ignore file does too" row, and, in the tests package,
+//     TestCheckDetectsASnapshotTheFilesFieldNamesPastAnIgnoreFile. Both
+//     placements were run; the gap between them is why an enumeration that does
+//     not say where the check went is not reproducible.
+//
+//     Either way the lesson is one thing: the list meaning "lnpm never publishes
+//     this" is the wrong list for a question about what npm publishes.
+func TestExcludedByProjectRulesConsultsNoBuiltInExcludeList(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeRootNpmignore(t, tmpDir, []string{"loose.txt"})
+
+	tests := []struct {
+		relPath string
+		why     string
+	}{
+		{".env", "defaultExcludes holds .env; npm publishes it"},
+		{".env.local", "defaultExcludes holds .env.*"},
+		{"debug.log", "defaultExcludes holds *.log"},
+		{"pkg.tgz", "defaultExcludes holds *.tgz"},
+		{".gitattributes", "defaultExcludes holds .gitattributes"},
+		{".npmrc", "hardReservedExcludes holds .npmrc; this helper does not consult that list either"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.relPath, func(t *testing.T) {
+			if ExcludedByProjectRules(tmpDir, nil, tt.relPath) {
+				t.Errorf("ExcludedByProjectRules(dir, nil, %q) = true, want false (%s)", tt.relPath, tt.why)
+			}
+		})
+	}
+}
+
 // writeMainEntryTree writes rel -> content under root, delegating to
 // writeTestFile so a failure names the path it could not write. Keys are
 // slash-separated so the fixtures read the same on every platform.
