@@ -2500,6 +2500,56 @@ func isBareWildcard(segment string) bool {
 // A doublestar syntax error is a non-match here, as it is at the caller's own
 // Match: an entry the engine will not parse selects nothing rather than
 // everything.
+//
+// What it costs, because #406's issue asked for that measured rather than
+// argued. This runs one doublestar.Match per ancestor per path per guarded
+// entry, on every path in the tree and not only on the ones an entry ends up
+// selecting, so the shape is depth × entries. It is paid exactly where
+// whitelist mode is already at its most expensive: collectFiles' ignore-chain
+// prune is guarded on !useWhitelist, so a package with a "files" field has
+// always descended into every directory hardReservedExcludes does not stop.
+// #406 did not change that, so there was no pruning to lose — and nothing here
+// caches or reorders to make the number below smaller.
+//
+// Measured on 2026-08-25 on Linux, go1.26.7, four cores, against a fixture of
+// 4098 files: package.json and index.js at the root, and a deep/ tree of
+// breadth 4 and five levels of subdirectories — 1364 of them — holding four
+// files in each of the 1024 leaves. Every leaf file carries six directories
+// above it, so a walk to the root is six Match calls and the fixture forces
+// 24,576 of them. Pack was benchmarked at -benchtime 10x against worktrees of
+// 2ff5885 and 837fbbb, with the walk's progress Printfs stubbed out identically
+// on both sides so terminal writes stayed out of the timing — the per-1000 one
+// in all three runs below, the line-clearing one in the second and third.
+//
+// The isolating entry is "files": ["nomatch/*"]. Its last segment is a bare
+// wildcard, so every path walks all the way to the root, and nothing matches,
+// so both sides pack the same single file and the whole difference between them
+// is #406's branch and this function. Three runs, medians of six, six and ten
+// readings:
+//
+//	before   38.88 ms   40.08 ms   40.57 ms
+//	after    41.72 ms   42.61 ms   42.53 ms
+//	delta    +2.84      +2.53      +1.96
+//
+// About +2.5 ms on a 40 ms pack, so roughly +5% to +7% across those three runs.
+// Per path that is about 600 ns and per Match about 100 ns. In the first two
+// runs the before and after readings did not overlap at all; in the third they
+// did, the machine having been busier — 39.0-44.7 before against 41.6-50.1
+// after — which is the spread any of these numbers should be read against.
+//
+// The control is "files": ["nomatch"], the same entry without the wildcard. It
+// packs the same one file and never reaches this function at all, because
+// isBareWildcard rejects a literal last segment. Run beside the sweep in
+// the same process, ten readings each, it settles the delta without asking two
+// checkouts to have been equally loaded: on 837fbbb the sweeping entry costs
+// 42.53 ms against the literal one's 40.00, the same +2.5 ms, and on 2ff5885
+// there is no difference to find — 40.57 against 41.25, the sweep nominally the
+// faster of the two.
+//
+// Small, then, but not free, and the term to watch is depth rather than file
+// count: a tree twice as deep pays twice per path. The entry that pays most is
+// one that matches nothing, since a hit returns at the first ancestor it finds
+// and a miss walks to the root.
 func matchesAncestorDir(pattern, relPath string) bool {
 	for dir := slashpath.Dir(relPath); dir != "." && dir != "/" && dir != ""; dir = slashpath.Dir(dir) {
 		if matched, _ := doublestar.Match(pattern, dir); matched {

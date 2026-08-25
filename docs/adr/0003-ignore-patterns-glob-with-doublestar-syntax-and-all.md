@@ -132,9 +132,9 @@ That is a claim about those two constructs, not about the dialects as wholes.
 doublestar is not minimatch: it has no extglob. `files: ["+(a|b).txt"]` and
 `["@(a|b).txt"]` each ship `a.txt` and `b.txt` under npm 11.16.0, while
 `doublestar.Match("+(a|b).txt", "a.txt")` is false — both run and confirmed — so
-an entry written in extglob selects nothing here and a file there. That is the
-same fail-closed shape as the `dist/*` gap below, it is not fixed by #350, and
-it was not made worse by it either: `filepath.Match` had no extglob to lose.
+an entry written in extglob selects nothing here and a file there. That is a
+fail-closed shape, it is not fixed by #350, and it was not made worse by it
+either: `filepath.Match` had no extglob to lose.
 `TestMatchFilesFieldGlobsWithDoublestar` carries the row.
 (`!(a).txt` is not evidence in this direction. npm ships nothing for it, because
 the leading `!` is read as a negated entry rather than as extglob.)
@@ -151,7 +151,7 @@ by the string compare first. npm ships that file too, so the two agree here.
 Both runs confirmed on a fixture package; `TestMatchFilesFieldGlobsWithDoublestar`
 carries the rows.
 
-Two things did not change, deliberately:
+Two things did not change under #350, deliberately:
 
 - **The subtree branch stays**, the one that answers an entry ending in a slash
   and two stars. It compares strings, so `["weird{a,b}/**"]` still names that
@@ -161,14 +161,17 @@ Two things did not change, deliberately:
   `matchesIgnorePattern` has its own copy of the branch, which the paragraphs
   above lean on. Deleting it turns exactly the two rows that pin it red and
   nothing else in the suite; both runs measured.
-- **A glob-matched directory is still not expanded into its subtree.** npm ships
-  `dist/cli/index.js` for `files: ["dist/*"]` and the whole tree for `["*"]`,
-  because it treats a pattern matching a *directory* as selecting everything
-  under it. Neither glob engine does that —
-  `doublestar.Match("dist/*", "dist/cli/index.js")` is false, exactly as
-  `filepath.Match`'s was — so the gap is npm's tree expansion rather than
-  anything `**` decides, and #350 measured it and left it standing. lnpm expands
-  a directory only when the entry names it literally.
+- **A glob-matched directory was not expanded into its subtree**, and #406
+  closed that; the amendment below is the record. npm ships `dist/cli/index.js`
+  for `files: ["dist/*"]` and the whole tree for `["*"]`. Neither glob engine
+  does that — `doublestar.Match("dist/*", "dist/cli/index.js")` is false,
+  exactly as `filepath.Match`'s was — so the gap was npm's tree expansion rather
+  than anything `**` decides, which is why #350 measured it and left it
+  standing, with lnpm expanding a directory only when the entry named it
+  literally. Read the *reason* this bullet gave for npm's answer — that npm
+  treats a pattern matching a *directory* as selecting everything under it — as
+  the part #406 found wrong. npm's rule is narrower than that, and a fix written
+  to this bullet's summary would have shipped two subtrees npm does not.
 
 A trailing `/` on a glob needed a branch of its own once the engine changed.
 `filepath.Match("dist/**/", "dist")` was false, so `["dist/**/"]` selected
@@ -198,3 +201,54 @@ does not — `Match` calls `matchWithSeparator(pattern, name, '/', …)` with th
 separator written in, read from `doublestar/v4@v4.10.0/match.go`. The Windows
 half is inherited from that earlier paragraph and was not re-run here; no local
 run can settle it, and CI is what covers the platform.
+
+## Amendment: #406 expands a directory a bare wildcard matched
+
+The second bullet under "Two things did not change under #350" above recorded
+npm's tree expansion as measured and left standing. #406 closed it, and the half
+that belongs to this ADR is that the engine did not move to meet it:
+`doublestar.Match("dist/*", "dist/cli/index.js")` is still false, run and
+confirmed. `matchFilesField`'s default branch asks a second question instead —
+does the entry match a *directory* `relPath` sits under — and asks it only when
+the entry's last segment is a bare wildcard.
+
+That guard is the whole of the change, and the bullet's own wrong summary is why
+it has to be there. Re-run on npm 11.16.0 on 2026-08-25 with
+`npm pack --dry-run --json`, one entry at a time against a fixture package
+holding `index.js`, `dist/a.js`, `dist/cli/index.js`, `dist/cli/deep/z.js` and
+`lib/keep.js`:
+
+| entry | npm packs, besides `package.json` |
+| --- | --- |
+| `["dist/*"]` | the whole `dist` subtree, `dist/cli/deep/z.js` included |
+| `["*"]` | every file in the tree |
+| `["d*"]` | nothing |
+| `["dist/c*"]` | nothing |
+
+`d*` matches the directory `dist` and `dist/c*` matches `dist/cli` — both run
+against doublestar and confirmed — and npm expands neither. The reach is the
+last segment's and no other's, read from `processPackage` in npm-packlist
+10.0.4, the copy npm 11.16.0 bundles: an entry ending in `/*` has a second `*`
+appended before anything globs, so `dist/*` is globbed as `dist/**`, and an
+entry the walker cannot lstat is pushed as an inverted rule into a *synthetic
+ignore file* injected against `package.json`, alongside a leading `*` that
+ignores everything. There a bare `*` carries gitignore's match-at-any-depth
+meaning rather than a glob's, so `["*"]` becomes `*` then `!*` and re-includes
+the tree, while `["d*"]` becomes `*` then `!d*`, which un-ignores the directory
+`dist` and leaves every basename inside it still matched by the `*`.
+
+lnpm's packed set is identical to npm's, path for path, on all four rows above
+and on `["di*/*"]` and `["*/*"]` besides — the two that pin that a globbed
+prefix is allowed and that the expansion cannot reach a root file.
+
+None of this moves the `filesMatch` paragraph above. An ancestor hit is
+`filesMatchContains` and never `filesMatchDirect`, so an entry that swept a
+directory in still said nothing about any name inside it, and `files: ["*"]`
+reaches a `dist/.env` and still does not publish it.
+
+The cost is answered where it is paid, in `matchesAncestorDir`'s doc comment,
+because it is a property of the walk rather than of the engine: one
+`doublestar.Match` per ancestor per path per guarded entry, nothing pruned and
+nothing cached, and roughly +5% to +7% on a 4098-file fixture's pack for the
+entry that forces the walk to the root and matches nothing. That comment carries
+the fixture's shape, all three runs and their spread.
