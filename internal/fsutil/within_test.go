@@ -158,11 +158,15 @@ func TestWithinRootResolvesTheRootToo(t *testing.T) {
 // The two arguments do not have to be spelled alike: one can be relative and the
 // other absolute. That only works if each is made absolute before its symlinks
 // are followed, because filepath.Abs joins a relative path to whatever os.Getwd
-// reports - and os.Getwd returns $PWD when it names the current directory, which
-// a shell (and t.Chdir) sets to the spelling it was handed rather than to the
-// real one. Resolve first and absolutise after, and the relative side stops at
-// that unresolved spelling while the absolute side is fully resolved, so the two
-// are compared across different trees and every member reads as an escape.
+// reports - and on Unix os.Getwd returns $PWD whenever it is absolute and names
+// the current directory, which a shell (and t.Chdir) sets to the spelling it was
+// handed rather than to the real one. Resolve first and absolutise after, and
+// the relative side stops at that unresolved spelling while the absolute side is
+// fully resolved, so the two are compared across different trees and every
+// member reads as an escape. Windows and plan9 go straight to syscall.Getwd and
+// never consult $PWD, but the ordering is right there too: Abs joins to an
+// unresolved cwd on those platforms as well, so this row exercises the general
+// rule through the mechanism only Unix provides.
 //
 // The symlinked working directory here stands in for macOS, where /var is a link
 // to /private/var and a shell run under /var/folders/... reports exactly that.

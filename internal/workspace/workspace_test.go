@@ -135,13 +135,18 @@ func symlinkDirAt(t *testing.T, target, linkPath string) {
 	}
 }
 
-// assertRefusedEscape checks that err refuses member by name and says where it
-// landed.
+// assertRefusedEscape checks that err refuses member by name, says where it
+// landed, and stays recognisable as ErrMemberOutsideRoot. The last is what lets
+// Detect propagate the refusal from anywhere along its walk, so a message that
+// merely reads correctly is not enough.
 func assertRefusedEscape(t *testing.T, err error, member, outside string) {
 	t.Helper()
 
 	if err == nil {
 		t.Fatalf("Expected %s to be refused as an escape from the workspace root", member)
+	}
+	if !errors.Is(err, ErrMemberOutsideRoot) {
+		t.Errorf("Expected the refusal to wrap ErrMemberOutsideRoot, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), member) {
 		t.Errorf("Expected the error to name the member %s, got: %v", member, err)
@@ -535,6 +540,43 @@ func TestDetectMalformedPatternInAncestorReturnsError(t *testing.T) {
 	}
 	if ws != nil {
 		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+// The refusal has to reach the user from wherever the command was run, and
+// `lnpm publish` from inside a member directory is the ordinary monorepo
+// invocation. Detect finds the root config on a later iteration of the walk
+// there, so the starting-directory rule above would swallow the refusal and
+// report "no workspace found" - hiding both the member and where it pointed,
+// exactly as walking past a malformed pattern would hide the pattern.
+//
+// These rows are also the only place a globbing entry point is reached through
+// Detect with a symlink on disk: parsePackageJSONWorkspace and parsePnpmWorkspace
+// get one each. Every other containment case calls expandGlobs directly.
+func TestDetectRefusesAMemberSymlinkedOutsideTheRootFromASubdirectory(t *testing.T) {
+	for _, tc := range []struct{ name, file, contents string }{
+		{"package.json", "package.json", `{"name":"root","workspaces":["packages/*"]}`},
+		{"pnpm-workspace.yaml", "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "ws")
+			member := writePackage(t, root, "packages/package-a")
+			outside := writePackage(t, base, "outside/stolen")
+
+			link := filepath.Join(root, "packages", "escape")
+			symlinkDirAt(t, outside, link)
+
+			if err := os.WriteFile(filepath.Join(root, tc.file), []byte(tc.contents), 0644); err != nil {
+				t.Fatalf("Failed to write %s: %v", tc.file, err)
+			}
+
+			ws, err := Detect(member)
+			assertRefusedEscape(t, err, link, outside)
+			if ws != nil {
+				t.Errorf("Expected no workspace alongside the refusal, got %+v", ws)
+			}
+		})
 	}
 }
 

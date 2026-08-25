@@ -28,6 +28,12 @@ type Package struct {
 	Path    string
 }
 
+// ErrMemberOutsideRoot marks the refusal of a workspace member whose real path
+// falls outside the workspace root, so Detect can recognise that refusal
+// anywhere along its walk. requireWithinRoot raises it and carries the whole
+// message; this sentinel is only the phrase the message is built around.
+var ErrMemberOutsideRoot = errors.New("outside the workspace root")
+
 // Detect detects if the current directory is part of a monorepo workspace
 func Detect(startPath string) (*Workspace, error) {
 	// Walk up looking for workspace root
@@ -46,6 +52,16 @@ func Detect(startPath string) (*Workspace, error) {
 		// also catch a bad-pattern error raised by path.Match anywhere under
 		// detectWorkspaceAt. Nothing under there calls path.Match today.
 		if errors.Is(err, doublestar.ErrBadPattern) {
+			return nil, err
+		}
+		// A member that resolves outside the root is refused for the same
+		// reason and is unconditional for the same reason. It is found where
+		// the workspace config is, and `lnpm publish` run inside a member
+		// directory reaches that config on a later iteration - so narrowing
+		// this to the starting directory would swallow the refusal on the
+		// ordinary monorepo invocation and answer "no workspace found",
+		// naming neither the member nor the path it resolved to.
+		if errors.Is(err, ErrMemberOutsideRoot) {
 			return nil, err
 		}
 		// A config that will not read or will not parse aborts only in the
@@ -319,9 +335,19 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 // This runs only after the caller has stat'd the member's package.json, which
 // means the path was there a moment ago and resolvable. A resolution failure on
 // it is therefore anomalous rather than the ordinary "this match is not a
-// package" case, and it refuses instead of skipping: treating "I could not
-// look" as "it is fine" is the fail-open direction docs/adr/0001 exists to
-// correct.
+// package" case, and it refuses instead of skipping.
+//
+// Which way that cuts depends on which loop called. From the negation loop the
+// ADR decides it: skipping would drop an exclusion and publish the package the
+// maintainer excluded, the fail-open direction docs/adr/0001 exists to correct.
+// From the include loop it decides nothing, because refusing and skipping both
+// publish less and neither is fail-open - and the ADR files this exact case, a
+// member whose package.json was there moments earlier, under judgement call
+// rather than rule. The judgement made here is that such a member is a broken
+// workspace rather than a directory that merely is not a package, so it is worth
+// stopping the command over; one rule for both loops also keeps them from
+// drifting the way the ADR's "Considered options" warns two separately-decided
+// rules do.
 //
 // The failure can still come from the root rather than the member - a workspace
 // root deleted underneath the walk resolves no better than a member does - so
@@ -334,9 +360,9 @@ func requireWithinRoot(root, path string) error {
 		return fmt.Errorf("failed to check workspace member %s against the workspace root: %w", path, err)
 	}
 	if !within {
-		return fmt.Errorf("workspace member %s resolves to %s, which is outside the workspace root %s: "+
+		return fmt.Errorf("workspace member %s resolves to %s, which is %w %s: "+
 			"remove the pattern that matches it, or replace the link with a directory inside the root",
-			path, resolved, root)
+			path, resolved, ErrMemberOutsideRoot, root)
 	}
 	return nil
 }
