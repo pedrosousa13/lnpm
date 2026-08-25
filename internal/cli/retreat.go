@@ -205,13 +205,14 @@ func RunRetreat(force bool, runInstall bool) error {
 		// through Link, which validates the name again - strictly, so a
 		// dot-named entry retreated here cannot be restored.
 		//
-		// Removal entry point, which waives the three reservations that are not
-		// path checks: #325's leading dot, and #326's Windows device names and
-		// trailing dot or space. Every check above that keeps the node_modules
-		// delete inside the project still runs. Refusing a package on one of
-		// those grounds here would be worse than pointless: the RemoveAll of
-		// .lnpm below takes its files anyway, leaving a node_modules symlink and
-		// a package.json file:.lnpm/{name} reference pointing at nothing.
+		// Removal entry point, which waives three reservations - #325's leading
+		// dot, and #326's Windows device names and trailing dot or space. None
+		// of the three is a path check. Every check above that keeps the
+		// node_modules delete inside the project still runs. Refusing a package
+		// on one of those grounds here would be worse than pointless: the
+		// RemoveAll of .lnpm below takes its files anyway, leaving a
+		// node_modules symlink and a package.json file:.lnpm/{name} reference
+		// pointing at nothing.
 		if err := pack.ValidatePackageNameForRemoval(name); err != nil {
 			fmt.Printf("  %s Refused %s: not a valid package name: %v\n", iconWarn(), name, err)
 			refused = append(refused, name)

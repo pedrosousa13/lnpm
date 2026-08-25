@@ -22,11 +22,12 @@ const maxPackageNameLen = 214
 // .lnpm and in the store are dot-prefixed, so a package free to call itself
 // ".tmp-deadbeef" collides with the temp shape gc reclaims (#325).
 //
-// It rejects two more shapes for Windows' sake, on every platform, so a package
-// published from Linux is not unusable there (#326): a segment naming a DOS
-// device, and a segment ending in a dot or a space. See
-// windowsReservedDeviceNames and the trailing-character check in
-// validatePackageName for what each one is and is not backed by.
+// It reserves two more shapes for Windows' sake, on every platform, so a name
+// published from Linux stays portable there (#326): a segment naming a DOS
+// device, and a segment ending in a dot or a space. Only one of the two is a
+// reproduced failure — see windowsReservedDeviceNames and the
+// trailing-character check in validatePackageName for what each one is and is
+// not backed by.
 //
 // This validates a name at the boundary it is presented at; it revalidates
 // nothing already on disk. A .lnpm or a store populated before these rules can
@@ -54,9 +55,9 @@ func ValidatePackageName(name string) error {
 // guarded that surface. What keeps a removal inside the project is the "."/".."
 // segment check, the absolute-path check, the backslash check and the
 // two-segment limit, and every one of those still runs here. A leading dot, a
-// device name and a trailing dot are all names rather than routes: ".hidden-pkg",
-// "con" and "foo." each resolve to a child of .lnpm exactly like "hidden-pkg"
-// does.
+// device name and a trailing dot or space are all names rather than routes:
+// ".hidden-pkg", "con", "foo." and "foo " each resolve to a child of .lnpm
+// exactly like "hidden-pkg" does.
 //
 // The waiver is wider than those three shapes, though, and the extra case is
 // worth naming because it is not obvious: "@../pkg" is rejected by the strict
@@ -91,15 +92,21 @@ func ValidatePackageNameForRemoval(name string) error {
 	return validatePackageName(name, false)
 }
 
-// windowsReservedDeviceNames is Microsoft's documented list of DOS device
-// names, lower-cased for a case-folded lookup. Windows resolves these in every
+// windowsReservedDeviceNames is the classic DOS device-name set #326 asked for,
+// lower-cased for a case-folded lookup. Windows resolves these in every
 // directory, so a path component named after one is not an ordinary name there.
+//
+// It is deliberately not Microsoft's whole list, and the gap is worth naming so
+// nobody reads the map as complete: CONIN$ and CONOUT$ are documented device
+// names too, as are the superscript spellings COM¹-COM³ and LPT¹-LPT³, and none
+// of them is here. Nothing rules them out later; the issue specified the
+// classic set and that is what this is.
 //
 // Honest about what backs this. Windows CI run 32823717266 (windows-latest)
 // created a directory for every one of these that it tried — CON, AUX, PRN,
 // COM1, LPT1, con, con.js and NUL.txt all landed fine. **Only NUL was refused**,
 // with "The system cannot find the path specified." So this list is a
-// portability reservation matching Microsoft's documentation, not a fix for a
+// portability reservation drawn from Microsoft's documentation, not a fix for a
 // reproduced failure; NUL alone is the measured one. The trailing dot-or-space
 // rule below is the half with reproduced corruption behind it.
 //
@@ -115,14 +122,37 @@ var windowsReservedDeviceNames = map[string]bool{
 }
 
 // isWindowsReservedDeviceName reports whether a path component names a DOS
-// device. Windows ignores the extension when it resolves one, so the test is on
-// the part before the first dot: "con.js" and "NUL.txt" are the device, while
-// "foo.con" is not, and neither is "console" or "com10".
+// device under the rule lnpm reserves against. That rule is Microsoft's
+// documented device-name resolution, which applies when a path component is
+// opened: the extension is ignored, and trailing spaces and dots are stripped
+// off the component before it is parsed. So the test here is the part before the
+// first dot, with trailing spaces trimmed off it — "con.js", "NUL.txt" and
+// "con .txt" all name the device, while "foo.con" does not, and neither does
+// "console" or "com10".
+//
+// Only spaces need trimming, not dots: taking the part before the *first* dot
+// already leaves a stem that cannot end in one. Trimming dots as well would be
+// dead work, so the trim set stays narrow rather than mirroring the prose above.
+//
+// Both halves of that are read from the documentation rather than run, and the
+// one measurement in reach contradicts the first half for the operation lnpm
+// cares about. On Windows CI run 32823717266 (windows-latest), os.MkdirAll
+// created "con.js" and "NUL.txt" as ordinary directories; the only name of the
+// nine probed that it refused was bare "NUL". Extension-ignoring device
+// resolution is therefore documentation-derived and not reproduced here, and the
+// maintainer kept the rule as a portability reservation knowing that.
+//
+// The trailing trim is documentation-derived too — "con .txt" was never probed —
+// but it is consistent with what the same run measured from the other side:
+// "foo.", "foo ", "foo.." and "foo. " each resolved to one existing "foo", which
+// is the strip happening in a directory create. Applying it before the device
+// lookup follows from that; it was not itself executed.
 func isWindowsReservedDeviceName(segment string) bool {
 	stem := segment
 	if dot := strings.IndexByte(stem, '.'); dot >= 0 {
 		stem = stem[:dot]
 	}
+	stem = strings.TrimRight(stem, " ")
 	return windowsReservedDeviceNames[strings.ToLower(stem)]
 }
 
@@ -202,7 +232,8 @@ func validatePackageName(name string, strict bool) error {
 		if isWindowsReservedDeviceName(p) {
 			return fmt.Errorf("invalid package name %q: %q is a Windows reserved device name; "+
 				"lnpm reserves CON, PRN, AUX, NUL, COM1-COM9 and LPT1-LPT9 on every platform, "+
-				"ignoring case and any extension, so a package cannot be unusable on Windows", name, p)
+				"ignoring case and any extension, to keep names portable to Windows; "+
+				"pick another name", name, p)
 		}
 
 		// Windows strips a trailing dot or space from a path component, so
