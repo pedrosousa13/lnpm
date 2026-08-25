@@ -205,6 +205,9 @@ func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
 // A pattern that will not parse fails the whole expansion, includes and
 // negations alike: a swallowed negation failure publishes the package the
 // config excluded, which docs/adr/0001 classifies as a bug.
+//
+// Both loops filter on package.json presence and then refuse anything resolving
+// outside root - see requireWithinRoot for why, and for why that order matters.
 func expandGlobs(root string, patterns []string) ([]string, error) {
 	var packages []string
 	var negations []string
@@ -236,6 +239,10 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 				continue
 			}
 
+			if err := requireWithinRoot(root, pkgPath); err != nil {
+				return nil, err
+			}
+
 			if !seen[pkgPath] {
 				seen[pkgPath] = true
 				packages = append(packages, pkgPath)
@@ -255,7 +262,25 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 		}
 
 		for _, match := range matches {
-			excluded[filepath.Join(root, match)] = true
+			pkgPath := filepath.Join(root, match)
+
+			// The same package.json gate the include loop applies, for the
+			// same reason: without it a dangling symlink under a negated
+			// pattern would reach requireWithinRoot, fail to resolve, and
+			// abort a workspace that expands fine today. It cannot change
+			// which packages are returned, because excluded is only ever
+			// consulted for entries of packages, and every one of those
+			// passed this same stat in the loop above.
+			pkgJSON := filepath.Join(pkgPath, "package.json")
+			if _, err := os.Stat(pkgJSON); err != nil {
+				continue
+			}
+
+			if err := requireWithinRoot(root, pkgPath); err != nil {
+				return nil, err
+			}
+
+			excluded[pkgPath] = true
 		}
 	}
 
@@ -267,6 +292,34 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 	}
 
 	return filtered, nil
+}
+
+// requireWithinRoot refuses a globbed match whose real path falls outside the
+// workspace root.
+//
+// os.DirFS refuses ".." and absolute patterns but follows symlinks, so a
+// checkout containing packages/escape -> /somewhere/else otherwise has that
+// directory returned as a workspace member and its manifest read from outside
+// the root (#328). fsutil.WithinRoot resolves both sides fully, so a chain of
+// links cannot slip past the way it would past a single-level check.
+//
+// This runs only after the caller has stat'd the member's package.json, which
+// means the path was there a moment ago and resolvable. A resolution failure on
+// it is therefore anomalous rather than the ordinary "this match is not a
+// package" case, and it refuses instead of skipping: treating "I could not
+// look" as "it is fine" is the fail-open direction docs/adr/0001 exists to
+// correct.
+func requireWithinRoot(root, path string) error {
+	within, resolved, err := fsutil.WithinRoot(root, path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve workspace member %s: %w", path, err)
+	}
+	if !within {
+		return fmt.Errorf("workspace member %s resolves to %s, which is outside the workspace root %s: "+
+			"remove the pattern that matches it, or replace the link with a directory inside the root",
+			path, resolved, root)
+	}
+	return nil
 }
 
 // ListPackages returns all packages in the workspace with their metadata.
