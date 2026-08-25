@@ -8,6 +8,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // RunDoctor executes the doctor command
@@ -23,28 +24,28 @@ func RunDoctor() error {
 	storeUsable := false
 	storePath, err := config.GetStorePath()
 	if err != nil {
-		fmt.Printf("%s ERROR\n", iconFail())
+		fmt.Printf("%s ERROR\n", ui.IconFail())
 		fmt.Printf("  Failed to resolve store path: %v\n", err)
 		issues++
 	} else if info, err := os.Stat(storePath); err != nil {
-		fmt.Printf("%s NOT FOUND\n", iconFail())
+		fmt.Printf("%s NOT FOUND\n", ui.IconFail())
 		fmt.Printf("  Store directory does not exist: %s\n", storePath)
 		fmt.Println("  Fix: Run 'lnpm publish' to create it")
 		issues++
 	} else if !info.IsDir() {
-		fmt.Printf("%s ERROR\n", iconFail())
+		fmt.Printf("%s ERROR\n", ui.IconFail())
 		fmt.Printf("  %s exists but is not a directory\n", storePath)
 		issues++
 	} else {
 		// Check writable
 		testFile := filepath.Join(storePath, ".write-test")
 		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			fmt.Printf("%s NOT WRITABLE\n", iconFail())
+			fmt.Printf("%s NOT WRITABLE\n", ui.IconFail())
 			fmt.Printf("  Cannot write to store directory: %v\n", err)
 			issues++
 		} else {
 			_ = os.Remove(testFile)
-			fmt.Printf("%s OK\n", iconOK())
+			fmt.Printf("%s OK\n", ui.IconOK())
 			storeUsable = true
 		}
 	}
@@ -80,11 +81,11 @@ func RunDoctor() error {
 	fmt.Print("Checking database... ")
 	database, err := db.GetDB()
 	if err != nil {
-		fmt.Printf("%s ERROR\n", iconFail())
+		fmt.Printf("%s ERROR\n", ui.IconFail())
 		fmt.Printf("  Failed to open database: %v\n", err)
 		issues++
 	} else {
-		fmt.Printf("%s OK\n", iconOK())
+		fmt.Printf("%s OK\n", ui.IconOK())
 
 		// Check 3: Orphaned packages (versions no link and no tag reaches)
 		//
@@ -136,19 +137,19 @@ func RunDoctor() error {
 			orphanedCount++
 		}
 		if linksErr != nil {
-			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("%s ERROR\n", ui.IconFail())
 			fmt.Printf("  %v\n", linksErr)
 			issues++
 		} else if tagsErr != nil {
-			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("%s ERROR\n", ui.IconFail())
 			fmt.Printf("  %v\n", tagsErr)
 			issues++
 		} else if orphanedCount > 0 {
-			fmt.Printf("%s %d orphaned package(s)\n", iconWarn(), orphanedCount)
+			fmt.Printf("%s %d orphaned package(s)\n", ui.IconWarn(), orphanedCount)
 			fmt.Println("  Fix: Run 'lnpm gc' to remove unused packages")
 			warnings++
 		} else {
-			fmt.Printf("%s OK\n", iconOK())
+			fmt.Printf("%s OK\n", ui.IconOK())
 		}
 
 		// Check 4: Orphaned links (links to non-existent projects)
@@ -199,15 +200,15 @@ func RunDoctor() error {
 			}
 		}
 		if linkErr != nil {
-			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("%s ERROR\n", ui.IconFail())
 			fmt.Printf("  %v\n", linkErr)
 			issues++
 		} else if orphanedLinks > 0 {
-			fmt.Printf("%s %d orphaned link(s)\n", iconWarn(), orphanedLinks)
+			fmt.Printf("%s %d orphaned link(s)\n", ui.IconWarn(), orphanedLinks)
 			fmt.Println("  Fix: Run 'lnpm gc --fix-links' to clean up")
 			warnings++
 		} else {
-			fmt.Printf("%s OK\n", iconOK())
+			fmt.Printf("%s OK\n", ui.IconOK())
 		}
 		// Behind the same abandonment as the count above it: the sweep stopped
 		// early, so this tally is as partial as that one.
@@ -215,7 +216,7 @@ func RunDoctor() error {
 			// No fix is offered, and that is the point of separating these:
 			// there is nothing to clean up. The project may be on a drive that
 			// is merely unplugged, and gc will decline to judge it too.
-			fmt.Printf("  %s %d link(s) could not be checked: the project directory is missing and the filesystem it was on is not mounted there\n", iconWarn(), unreachableLinks)
+			fmt.Printf("  %s %d link(s) could not be checked: the project directory is missing and the filesystem it was on is not mounted there\n", ui.IconWarn(), unreachableLinks)
 			warnings++
 		}
 
@@ -256,14 +257,14 @@ func RunDoctor() error {
 			}
 		}
 		if len(damaged) > 0 {
-			fmt.Printf("%s %d package(s) with missing or incomplete store entries\n", iconFail(), len(damaged))
+			fmt.Printf("%s %d package(s) with missing or incomplete store entries\n", ui.IconFail(), len(damaged))
 			for _, entry := range damaged {
 				fmt.Printf("  %s\n", entry)
 			}
 			fmt.Println("  Fix: Re-publish the affected packages; delete any directory listed above that is still there first, since lnpm will not overwrite or remove one")
 			issues++
 		} else {
-			fmt.Printf("%s OK\n", iconOK())
+			fmt.Printf("%s OK\n", ui.IconOK())
 		}
 	}
 
@@ -298,7 +299,7 @@ func RunDoctor() error {
 
 		switch {
 		case err != nil:
-			fmt.Printf("%s ERROR\n", iconFail())
+			fmt.Printf("%s ERROR\n", ui.IconFail())
 			fmt.Printf("  Failed to scan the store for incomplete entries: %v\n", err)
 			issues++
 		case legacyStore && legacyBlockedBy > 0:
@@ -308,18 +309,18 @@ func RunDoctor() error {
 			// user runs. That makes this an issue rather than a warning, and it
 			// is the unreadable directory that has to be named — advising "run
 			// any command" here would send the user somewhere that cannot help.
-			fmt.Printf("%s PENDING\n", iconFail())
+			fmt.Printf("%s PENDING\n", ui.IconFail())
 			fmt.Println("  This store predates completeness markers and has not been migrated yet")
 			fmt.Printf("  The migration cannot run: %d store directory(ies) could not be read, and it stays pending until they can\n", legacyBlockedBy)
 			fmt.Println("  Fix: Make them readable, then run 'lnpm gc --dry-run' (or any command that opens the store)")
 			issues++
 		case legacyStore:
-			fmt.Printf("%s PENDING\n", iconWarn())
+			fmt.Printf("%s PENDING\n", ui.IconWarn())
 			fmt.Println("  This store predates completeness markers and has not been migrated yet")
 			fmt.Println("  Fix: Run 'lnpm gc --dry-run' (or any command that opens the store)")
 			warnings++
 		case len(unreported) > 0:
-			fmt.Printf("%s %d incomplete store entry(ies)\n", iconFail(), len(unreported))
+			fmt.Printf("%s %d incomplete store entry(ies)\n", ui.IconFail(), len(unreported))
 			for _, entry := range unreported {
 				fmt.Printf("  %s\n", entry)
 			}
@@ -333,24 +334,24 @@ func RunDoctor() error {
 			// only thing that looks at entries no package row names, so a
 			// directory it could not read is a part of the store nothing has
 			// checked — which is the state this check exists to end.
-			fmt.Printf("%s %d store directory(ies) could not be read\n", iconFail(), unreadable)
+			fmt.Printf("%s %d store directory(ies) could not be read\n", ui.IconFail(), unreadable)
 			fmt.Println("  Fix: Make them readable and run 'lnpm doctor' again; until then their entries are unchecked")
 			issues++
 		default:
-			fmt.Printf("%s OK\n", iconOK())
+			fmt.Printf("%s OK\n", ui.IconOK())
 		}
 	}
 
 	// Summary
 	fmt.Println()
 	if issues == 0 && warnings == 0 {
-		fmt.Printf("%s All checks passed!\n", iconOK())
+		fmt.Printf("%s All checks passed!\n", ui.IconOK())
 	} else {
 		if issues > 0 {
-			fmt.Printf("%s Found %d issue(s)\n", iconFail(), issues)
+			fmt.Printf("%s Found %d issue(s)\n", ui.IconFail(), issues)
 		}
 		if warnings > 0 {
-			fmt.Printf("%s Found %d warning(s)\n", iconWarn(), warnings)
+			fmt.Printf("%s Found %d warning(s)\n", ui.IconWarn(), warnings)
 		}
 	}
 

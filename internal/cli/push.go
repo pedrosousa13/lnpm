@@ -12,6 +12,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // pushTag works out which channel a push publishes to when the user has not
@@ -118,7 +119,7 @@ func warnPushMovesTheDefaultTag(name string, tags map[string]string) {
 	sort.Strings(others)
 
 	fmt.Printf("  %s no tag names the build in your working tree, so this push moves the %s tag onto it\n",
-		iconWarn(), db.DefaultTag)
+		ui.IconWarn(), db.DefaultTag)
 	fmt.Printf("      %s also has the tags %s: re-run with --tag if this build belongs to one of them\n",
 		name, strings.Join(others, ", "))
 }
@@ -303,7 +304,7 @@ func RunPushTagged(skipHooks bool, tag string) error {
 	}
 
 	if len(projects) == 0 {
-		fmt.Printf("%s Updated %s@%s in store\n", iconOK(), pkgJSON.Name, pkgJSON.Version)
+		fmt.Printf("%s Updated %s@%s in store\n", ui.IconOK(), pkgJSON.Name, pkgJSON.Version)
 		fmt.Println("  No linked projects to update")
 		return nil
 	}
@@ -373,13 +374,13 @@ func RunPushTagged(skipHooks bool, tag string) error {
 	for res := range results {
 		switch {
 		case res.err != nil:
-			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
+			fmt.Printf("  %s %s: %v\n", ui.IconFail(), res.path, res.err)
 			failedCount++
 		case res.skipped:
-			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
+			fmt.Printf("  %s %s: skipped (live link to source)\n", ui.IconOK(), res.path)
 			skippedCount++
 		default:
-			fmt.Printf("  %s %s (%d changed, %d unchanged)\n", iconOK(), res.path, res.link.Changed, res.link.Unchanged)
+			fmt.Printf("  %s %s (%d changed, %d unchanged)\n", ui.IconOK(), res.path, res.link.Changed, res.link.Unchanged)
 			successCount++
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // newGCStore points lnpm at a fresh store and database, and returns the store
@@ -1033,7 +1034,7 @@ func TestRemoveOrphanedLinksReportsEveryFailedDelete(t *testing.T) {
 	if strings.Contains(out, "Removed") {
 		t.Errorf("gc claimed it removed links it did not remove, output was:\n%s", out)
 	}
-	if strings.Contains(out, iconOK()) {
+	if strings.Contains(out, ui.IconOK()) {
 		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
 	}
 }
@@ -1232,7 +1233,7 @@ func TestRemovePackagesReportsEveryFailedRowDeleteWithoutASummary(t *testing.T) 
 	if strings.Contains(out, "Removed") {
 		t.Errorf("gc claimed it removed packages it did not remove, output was:\n%s", out)
 	}
-	if strings.Contains(out, iconOK()) {
+	if strings.Contains(out, ui.IconOK()) {
 		t.Errorf("gc reported success for a run where every delete failed, output was:\n%s", out)
 	}
 }
@@ -1267,7 +1268,7 @@ func TestRunGCPrintsAHealthyRunUnchanged(t *testing.T) {
 		"  - orphan-pkg@1.0.0 (2.00 KB)\n" +
 		"Total size: 2.00 KB\n" +
 		"\n" +
-		iconOK() + " Removed 1 package(s), freed 2.00 KB\n"
+		ui.IconOK() + " Removed 1 package(s), freed 2.00 KB\n"
 	if out != want {
 		t.Errorf("gc printed:\n%s\nwant:\n%s", out, want)
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -207,7 +208,7 @@ func RunPull(packageNames []string) error {
 			// deletes it. The files were refreshed above, which is what makes
 			// the stale row dangerous rather than merely untidy.
 			if err := database.InsertLink(repointed); err != nil {
-				fmt.Printf("  %s Failed to record the link for %s: %v\n", iconWarn(), name, err)
+				fmt.Printf("  %s Failed to record the link for %s: %v\n", ui.IconWarn(), name, err)
 				failed = append(failed, fmt.Errorf("%s: failed to record the link: %w", name, err))
 			}
 		}
@@ -225,11 +226,11 @@ func RunPull(packageNames []string) error {
 	// The success line comes first so a partially failed run ends on the warning
 	// block it exits non-zero for.
 	if refreshed == 1 && len(packageNames) == 1 {
-		fmt.Printf("%s Pulled %s@%s\n", iconOK(), names[0], lastVersion)
+		fmt.Printf("%s Pulled %s@%s\n", ui.IconOK(), names[0], lastVersion)
 	} else if refreshed > 0 {
-		fmt.Printf("%s Pulled %d package(s)\n", iconOK(), refreshed)
+		fmt.Printf("%s Pulled %d package(s)\n", ui.IconOK(), refreshed)
 	} else if upToDate > 0 && len(failed) == 0 {
-		fmt.Printf("%s Already up to date\n", iconOK())
+		fmt.Printf("%s Already up to date\n", ui.IconOK())
 	}
 
 	// Live-linked packages are reported apart from the up-to-date ones. Nothing
@@ -238,17 +239,17 @@ func RunPull(packageNames []string) error {
 	// where every package is live-linked said so while the store held a newer
 	// version and the lock still held the old one.
 	if liveLinked > 0 && len(failed) == 0 {
-		fmt.Printf("%s Skipped %d live-linked package(s)\n", iconOK(), liveLinked)
+		fmt.Printf("%s Skipped %d live-linked package(s)\n", ui.IconOK(), liveLinked)
 	}
 
 	if len(failed) > 0 {
-		fmt.Printf("\n%s Some packages failed:\n", iconWarn())
+		fmt.Printf("\n%s Some packages failed:\n", ui.IconWarn())
 		for _, err := range failed {
 			fmt.Printf("  - %v\n", err)
 		}
 	}
 	if saveErr != nil {
-		fmt.Printf("\n%s %v\n", iconWarn(), saveErr)
+		fmt.Printf("\n%s %v\n", ui.IconWarn(), saveErr)
 	}
 
 	var pullErr error

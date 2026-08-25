@@ -14,6 +14,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -76,7 +77,7 @@ func RunRestore() error {
 		// back, but the file is spent, and leaving it would stop every later
 		// restore on it and make every later retreat look like a second one.
 		if err := os.Remove(lockfile.RetreatPath(cwd)); err != nil && !os.IsNotExist(err) {
-			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), snapshotName, err)
+			fmt.Printf("  %s Failed to remove %s: %v\n", ui.IconWarn(), snapshotName, err)
 		}
 		fmt.Printf("Nothing to restore: the last 'lnpm retreat' recorded no packages\n")
 		return nil
@@ -102,9 +103,9 @@ func RunRestore() error {
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  %s Could not update .gitignore: %v\n", iconWarn(), err)
+			fmt.Printf("  %s Could not update .gitignore: %v\n", ui.IconWarn(), err)
 		} else if added {
-			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", iconOK())
+			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", ui.IconOK())
 		}
 	}
 
@@ -124,7 +125,7 @@ func RunRestore() error {
 		// written only once the package.json write it describes has landed. So a
 		// name that is in the snapshot and in the lock file is the user's doing.
 		if lock.Has(name) {
-			fmt.Printf("  %s %s was added again since the retreat; keeping that link\n", iconOK(), name)
+			fmt.Printf("  %s %s was added again since the retreat; keeping that link\n", ui.IconOK(), name)
 			consumeSnapshotEntry(snapshot, cwd, name)
 			continue
 		}
@@ -151,7 +152,7 @@ func RunRestore() error {
 			pkg, err = database.GetPackageByName(name)
 		}
 		if err != nil {
-			fmt.Printf("  %s %s: failed to look up package: %v\n", iconFail(), name, err)
+			fmt.Printf("  %s %s: failed to look up package: %v\n", ui.IconFail(), name, err)
 			failed++
 			continue
 		}
@@ -159,10 +160,10 @@ func RunRestore() error {
 			// Reported per package and not fatal, so one collected build does not
 			// abort the rest of the restore.
 			if entry.Hash == "" {
-				fmt.Printf("  %s %s: not found in store. Did you run 'lnpm publish' in the package directory?\n", iconFail(), name)
+				fmt.Printf("  %s %s: not found in store. Did you run 'lnpm publish' in the package directory?\n", ui.IconFail(), name)
 			} else {
 				fmt.Printf("  %s %s@%s (hash %s) is no longer in the store; re-publish it, then re-run 'lnpm restore'\n",
-					iconFail(), name, entry.Version, shortHash(entry.Hash))
+					ui.IconFail(), name, entry.Version, shortHash(entry.Hash))
 			}
 			failed++
 			continue
@@ -172,7 +173,7 @@ func RunRestore() error {
 		// retreat restored becomes this link's original version.
 		deps, err := readPackageJSONDeps(pkgJSONPath, name, false)
 		if err != nil {
-			fmt.Printf("  %s %s: failed to read package.json: %v\n", iconFail(), name, err)
+			fmt.Printf("  %s %s: failed to read package.json: %v\n", ui.IconFail(), name, err)
 			failed++
 			continue
 		}
@@ -183,7 +184,7 @@ func RunRestore() error {
 
 		linkRes, err := linkPackage(database, linker, s, pkg, false)
 		if err != nil {
-			fmt.Printf("  %s %s: %v\n", iconFail(), name, err)
+			fmt.Printf("  %s %s: %v\n", ui.IconFail(), name, err)
 			failed++
 			continue
 		}
@@ -193,14 +194,14 @@ func RunRestore() error {
 		// the snapshot - kept, because this counts as a failure - still records
 		// the original version, so the re-run has everything it needs.
 		if err := writeLnpmReference(pkgJSONPath, name, false, false); err != nil {
-			fmt.Printf("  %s %s: failed to update package.json: %v\n", iconFail(), name, err)
+			fmt.Printf("  %s %s: failed to update package.json: %v\n", ui.IconFail(), name, err)
 			failed++
 			continue
 		}
 
 		if !dependencyFieldKnown(deps.src, name) {
 			fmt.Printf("  %s %s was not in package.json before the retreat, so its field is unknown; restoring it into %s\n",
-				iconWarn(), name, deps.field)
+				ui.IconWarn(), name, deps.field)
 			fmt.Printf("      If it was added with --pure, delete that entry: --pure keeps a package out of package.json\n")
 		}
 
@@ -231,13 +232,13 @@ func RunRestore() error {
 		consumeSnapshotEntry(snapshot, cwd, name)
 
 		if err := recordRestoredLink(database, cwd, pkg, linkRes.Type); err != nil {
-			fmt.Printf("  %s %s: %v\n", iconFail(), name, err)
+			fmt.Printf("  %s %s: %v\n", ui.IconFail(), name, err)
 			failed++
 			continue
 		}
 		warnIfOffTheDefaultChannel(database, name, pkg)
 
-		fmt.Printf("%s Restored %s@%s\n", iconOK(), name, pkg.Version)
+		fmt.Printf("%s Restored %s@%s\n", ui.IconOK(), name, pkg.Version)
 		restored++
 	}
 
@@ -247,22 +248,22 @@ func RunRestore() error {
 	// earlier retreat to merge into.
 	if failed == 0 {
 		if err := os.Remove(lockfile.RetreatPath(cwd)); err != nil && !os.IsNotExist(err) {
-			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), snapshotName, err)
+			fmt.Printf("  %s Failed to remove %s: %v\n", ui.IconWarn(), snapshotName, err)
 		}
 	}
 
 	fmt.Println()
 	if failed > 0 {
-		fmt.Printf("  %s %s kept, holding only what is left; re-run 'lnpm restore' once the packages above are available\n", iconTip(), snapshotName)
+		fmt.Printf("  %s %s kept, holding only what is left; re-run 'lnpm restore' once the packages above are available\n", ui.IconTip(), snapshotName)
 		// Counted against what was attempted, not against the snapshot: a
 		// package skipped because the user re-added it was never restore's to
 		// fail at, and counting it understates the share of the run that did.
 		return fmt.Errorf("%d of %d package(s) failed to restore", failed, attempted)
 	}
 
-	fmt.Printf("%s Restore complete!\n", iconOK())
+	fmt.Printf("%s Restore complete!\n", ui.IconOK())
 	if restored > 0 {
-		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
+		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", ui.IconTip())
 	}
 	return nil
 }
@@ -284,7 +285,7 @@ func RunRestore() error {
 func consumeSnapshotEntry(snapshot *lockfile.LockFile, cwd, name string) {
 	snapshot.Remove(name)
 	if err := snapshot.SaveRetreat(cwd); err != nil {
-		fmt.Printf("  %s Failed to update %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
+		fmt.Printf("  %s Failed to update %s: %v\n", ui.IconWarn(), lockfile.RetreatFileName, err)
 	}
 }
 
@@ -379,13 +380,13 @@ func warnIfOffTheDefaultChannel(database *db.DB, name string, pkg *db.Package) {
 	// The default tag is not among these: it names other content, or nothing.
 	if naming := tagsNamingList(tags, pkg.ContentHash); len(naming) > 0 {
 		fmt.Printf("  %s %s was restored on the build tagged %s, but the restored link follows %s\n",
-			iconWarn(), name, strings.Join(naming, ", "), db.DefaultTag)
+			ui.IconWarn(), name, strings.Join(naming, ", "), db.DefaultTag)
 		fmt.Printf("      If it was added under a dist-tag, run 'lnpm add %s@<tag>' to follow that channel again\n", name)
 		return
 	}
 
 	fmt.Printf("  %s %s has been published since the retreat, so the build restored is no longer the one %s names\n",
-		iconWarn(), name, db.DefaultTag)
+		ui.IconWarn(), name, db.DefaultTag)
 	fmt.Printf("      Run 'lnpm pull' to move onto the current release\n")
 }
 
