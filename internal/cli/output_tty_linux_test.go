@@ -91,21 +91,6 @@ func TestRunRetreatOnATerminal(t *testing.T) {
 	})
 }
 
-// TestIconsOnATerminal pins the markers themselves, so that a caller printing
-// the right ASCII from a literal rather than from a helper still has something
-// left to fail against.
-func TestIconsOnATerminal(t *testing.T) {
-	noColor(t, false)
-
-	got := captureTTYStdout(t, func() {
-		fmt.Printf("%s %s %s %s\n", iconOK(), iconFail(), iconWarn(), iconTip())
-	})
-
-	if want := "✓ ✗ ⚠ 💡"; !strings.Contains(got, want) {
-		t.Errorf("Icons on a terminal = %q, want them to contain %q", got, want)
-	}
-}
-
 // noColor sets or clears NO_COLOR for the duration of the test. Clearing it has
 // to unset the variable rather than empty it, because the helpers treat any
 // value, empty included, as a request for plain output.

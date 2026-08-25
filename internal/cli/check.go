@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/pack"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/internal/workspace"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -88,14 +89,14 @@ func RunCheck() error {
 	if len(found) > 0 {
 		sort.Strings(found)
 		if inWorkspace {
-			fmt.Printf("%s Found %d lnpm reference(s) in %d package.json file(s):\n", iconFail(), len(found), dirty)
+			fmt.Printf("%s Found %d lnpm reference(s) in %d package.json file(s):\n", ui.IconFail(), len(found), dirty)
 		} else {
-			fmt.Printf("%s Found %d lnpm reference(s) in package.json:\n", iconFail(), len(found))
+			fmt.Printf("%s Found %d lnpm reference(s) in package.json:\n", ui.IconFail(), len(found))
 		}
 		for _, line := range found {
 			fmt.Println(line)
 		}
-		fmt.Printf("\n  %s Run 'lnpm retreat --force' to restore original dependencies before publishing\n", iconTip())
+		fmt.Printf("\n  %s Run 'lnpm retreat --force' to restore original dependencies before publishing\n", ui.IconTip())
 		if inWorkspace {
 			problems = append(problems, fmt.Sprintf("%d lnpm reference(s) found in %d package.json file(s)", len(found), dirty))
 		} else {
@@ -104,15 +105,15 @@ func RunCheck() error {
 	}
 
 	if publishableSnapshot(cwd, filesField(pkgJSON)) {
-		fmt.Printf("%s %s is in the project root and nothing here keeps it out of a tarball\n", iconFail(), lockfile.RetreatFileName)
+		fmt.Printf("%s %s is in the project root and nothing here keeps it out of a tarball\n", ui.IconFail(), lockfile.RetreatFileName)
 		fmt.Printf("  It is lnpm's record of what 'lnpm retreat' unlinked, and it holds an absolute path per package\n")
-		fmt.Printf("\n  %s Add %s to .npmignore or .gitignore, or list only what you ship in package.json \"files\"\n", iconTip(), lockfile.RetreatFileName)
+		fmt.Printf("\n  %s Add %s to .npmignore or .gitignore, or list only what you ship in package.json \"files\"\n", ui.IconTip(), lockfile.RetreatFileName)
 		fmt.Printf("      'lnpm restore' consumes the snapshot, but only after you have published\n")
 		problems = append(problems, lockfile.RetreatFileName+" would be published")
 	}
 
 	if len(problems) == 0 {
-		fmt.Printf("%s Nothing lnpm left behind would be published\n", iconOK())
+		fmt.Printf("%s Nothing lnpm left behind would be published\n", ui.IconOK())
 		return nil
 	}
 	return errors.New(strings.Join(problems, "; "))

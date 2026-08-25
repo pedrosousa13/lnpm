@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -35,7 +36,7 @@ func RunStatus() error {
 	}
 
 	// Print packages section
-	fmt.Println(header("📦", "Published Packages"))
+	fmt.Println(ui.Header("📦", "Published Packages"))
 	if len(packages) == 0 {
 		fmt.Println("  (none)")
 	} else {
@@ -45,7 +46,7 @@ func RunStatus() error {
 		// for three tags - "latest, beta, next" is 18 - because a version that
 		// several channels name is the one a reader most needs spelled out.
 		fmt.Printf("  %-25s %-14s %-10s %-20s %-20s\n", "NAME", "VERSION", "HASH", "TAGS", "PUBLISHED")
-		fmt.Printf("  %s\n", hrule(93))
+		fmt.Printf("  %s\n", ui.HRule(93))
 
 		for _, pkg := range packages {
 			fmt.Printf("  %-25s %-14s %-10s %-20s %-20s\n",
@@ -84,12 +85,12 @@ func RunStatus() error {
 	}
 
 	// Print links section
-	fmt.Println(header("🔗", "Active Links"))
+	fmt.Println(ui.Header("🔗", "Active Links"))
 	if len(projectMap) == 0 {
 		fmt.Println("  (none)")
 	} else {
 		fmt.Printf("  %-40s %-8s %-30s\n", "PROJECT", "PM", "PACKAGES")
-		fmt.Printf("  %s\n", hrule(80))
+		fmt.Printf("  %s\n", ui.HRule(80))
 
 		for _, proj := range projectMap {
 			fmt.Printf("  %-40s %-8s %-30s\n",
@@ -109,7 +110,7 @@ func RunStatus() error {
 
 	lock, err := lockfile.Load(cwd)
 	if err == nil && len(lock.List()) > 0 {
-		fmt.Println(header("📍", "Current Project"))
+		fmt.Println(ui.Header("📍", "Current Project"))
 		fmt.Printf("  %s\n", cwd)
 		fmt.Printf("  Linked packages:\n")
 		for _, name := range lock.List() {
@@ -296,7 +297,7 @@ func RunListVersions(packageName string) error {
 	// one column left unpadded because a project path is longer than any width
 	// worth reserving for it.
 	fmt.Printf("  %-10s %-14s %-20s %-20s %s\n", "HASH", "VERSION", "PUBLISHED", "TAGS", "LINKED IN")
-	fmt.Printf("  %s\n", hrule(77))
+	fmt.Printf("  %s\n", ui.HRule(77))
 
 	for _, version := range versions {
 		consumers, err := database.GetProjectsForPackage(version.ID)

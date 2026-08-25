@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // tagsNaming renders every tag in tags that points at hash, as a trailing
@@ -141,7 +142,7 @@ func RunTag(packageName, tag string, del bool) error {
 		if err := database.DeleteTag(packageName, tag); err != nil {
 			return err
 		}
-		fmt.Printf("%s Removed tag %s from %s\n", iconOK(), tag, packageName)
+		fmt.Printf("%s Removed tag %s from %s\n", ui.IconOK(), tag, packageName)
 		return nil
 	}
 
@@ -157,7 +158,7 @@ func RunTag(packageName, tag string, del bool) error {
 		return err
 	}
 
-	fmt.Printf("%s Tagged %s@%s as %s\n", iconOK(), pkg.Name, pkg.Version, tag)
+	fmt.Printf("%s Tagged %s@%s as %s\n", ui.IconOK(), pkg.Name, pkg.Version, tag)
 	return nil
 }
 

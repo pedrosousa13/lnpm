@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // TestRunRemoveReportsALinkItCouldNotDelete pins remove's half of #392's caller
@@ -42,11 +44,11 @@ func TestRunRemoveReportsALinkItCouldNotDelete(t *testing.T) {
 	// "sh": executable file not found in $PATH`.
 	t.Setenv("PATH", t.TempDir())
 
-	// The assertion below builds its expected marker with iconOK(), which is
+	// The assertion below builds its expected marker with ui.IconOK(), which is
 	// evaluated after captureStdout has put the real os.Stdout back. Inside the
 	// capture stdout is a pipe, so the captured text always holds the ASCII
 	// fallback; outside it, a test binary run straight in a terminal has a TTY
-	// and iconOK() would answer with the glyph instead, failing the test on
+	// and ui.IconOK() would answer with the glyph instead, failing the test on
 	// nothing. NO_COLOR is checked before stdout is, so it pins both sides to
 	// the same answer however the test is run.
 	t.Setenv("NO_COLOR", "1")
@@ -67,7 +69,7 @@ func TestRunRemoveReportsALinkItCouldNotDelete(t *testing.T) {
 	// was looking for. The success line is "  <ok> Removed my-package", and
 	// the warning's is "  <warn> Removed my-package, ...", so the icon is what
 	// tells them apart.
-	if !strings.Contains(out, iconOK()+" Removed my-package") {
+	if !strings.Contains(out, ui.IconOK()+" Removed my-package") {
 		t.Errorf("remove did not report the removal it did perform, output was:\n%s", out)
 	}
 	if err != nil {

@@ -22,7 +22,11 @@ func TestDoctorHealthyStore(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "All checks passed!") {
+	// The "OK" is the marker, not prose: captureStdout replaces stdout with a
+	// pipe, so ui.IconOK renders its ASCII fallback. Asserting the whole line
+	// keeps a change to where the markers come from - #366 moved them out of
+	// internal/cli - from silently altering what doctor prints.
+	if !strings.Contains(out, "OK All checks passed!") {
 		t.Errorf("RunDoctor did not pass on a healthy store, output was:\n%s", out)
 	}
 	// The check labels themselves mention orphans, so the assertion keys on the
@@ -47,13 +51,16 @@ func TestDoctorReportsOrphanedPackage(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "1 orphaned package(s)") {
+	// The leading "!" is ui.IconWarn's ASCII fallback, which captureStdout's
+	// pipe selects; it is asserted here for the reason TestDoctorHealthyStore
+	// gives for "OK".
+	if !strings.Contains(out, "! 1 orphaned package(s)") {
 		t.Errorf("RunDoctor did not report the orphaned package, output was:\n%s", out)
 	}
 	if !strings.Contains(out, "lnpm gc") {
 		t.Errorf("RunDoctor did not suggest gc for the orphan, output was:\n%s", out)
 	}
-	if !strings.Contains(out, "Found 1 warning(s)") {
+	if !strings.Contains(out, "! Found 1 warning(s)") {
 		t.Errorf("RunDoctor did not summarize the orphan as a warning, output was:\n%s", out)
 	}
 	if strings.Contains(out, "All checks passed!") {

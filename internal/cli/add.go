@@ -20,6 +20,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -149,7 +150,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 	}
 
 	if len(successful) == 0 {
-		fmt.Printf("\n%s All packages failed to add:\n", iconWarn())
+		fmt.Printf("\n%s All packages failed to add:\n", ui.IconWarn())
 		for _, err := range errors {
 			fmt.Printf("  - %v\n", err)
 		}
@@ -160,9 +161,9 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  %s Could not update .gitignore: %v\n", iconWarn(), err)
+			fmt.Printf("  %s Could not update .gitignore: %v\n", ui.IconWarn(), err)
 		} else if added {
-			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", iconOK())
+			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", ui.IconOK())
 		}
 	}
 
@@ -193,7 +194,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		for i := range successful {
 			deps, err := readPackageJSONDeps(pkgJSONPath, successful[i].pkg.Name, dev)
 			if err != nil {
-				fmt.Printf("  %s Failed to read package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
+				fmt.Printf("  %s Failed to read package.json for %s: %v\n", ui.IconWarn(), successful[i].pkg.Name, err)
 				_, rolledBackErr := rollBack(lock, linker, &successful[i], fmt.Errorf("failed to read package.json: %w", err))
 				errors = append(errors, rolledBackErr)
 				continue
@@ -242,7 +243,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 				continue
 			}
 			if err := writeLnpmReference(pkgJSONPath, successful[i].pkg.Name, dev, useLink); err != nil {
-				fmt.Printf("  %s Failed to update package.json for %s: %v\n", iconWarn(), successful[i].pkg.Name, err)
+				fmt.Printf("  %s Failed to update package.json for %s: %v\n", ui.IconWarn(), successful[i].pkg.Name, err)
 				removed, rolledBackErr := rollBack(lock, linker, &successful[i], fmt.Errorf("failed to update package.json: %w", err))
 				errors = append(errors, rolledBackErr)
 				lockChanged = lockChanged || removed
@@ -289,19 +290,19 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 		// state - the fail-open shape #329 removed from gc, arriving instead
 		// through the write that feeds it.
 		if err := database.InsertLink(dbLink); err != nil {
-			fmt.Printf("  %s Failed to record link for %s: %v\n", iconWarn(), r.pkg.Name, err)
+			fmt.Printf("  %s Failed to record link for %s: %v\n", ui.IconWarn(), r.pkg.Name, err)
 			errors = append(errors, fmt.Errorf("%s: failed to record the link: %w", r.pkg.Name, err))
 			continue
 		}
 
 		// Reported exactly as the single-package path reports it, so a live link
 		// is spelled out rather than shown as the bare type name "link".
-		fmt.Printf("%s Added %s@%s%s\n", iconOK(), r.pkg.Name, r.pkg.Version, tagSuffix(r.tag))
+		fmt.Printf("%s Added %s@%s%s\n", ui.IconOK(), r.pkg.Name, r.pkg.Version, tagSuffix(r.tag))
 		fmt.Printf("  Link type: %s\n", linkTypeLabel(r.linkType))
 	}
 
 	if len(errors) > 0 {
-		fmt.Printf("\n%s Some packages failed:\n", iconWarn())
+		fmt.Printf("\n%s Some packages failed:\n", ui.IconWarn())
 		for _, err := range errors {
 			fmt.Printf("  - %v\n", err)
 		}
@@ -321,10 +322,10 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 	if runInstall && !pure && added > 0 {
 		fmt.Println("\nRunning npm install...")
 		if err := hooks.RunPostAdd(cwd, true); err != nil {
-			fmt.Printf("  %s npm install failed: %v\n", iconWarn(), err)
+			fmt.Printf("  %s npm install failed: %v\n", ui.IconWarn(), err)
 		}
 	} else if !pure && added > 0 {
-		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
+		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", ui.IconTip())
 	}
 
 	// Exit non-zero if any package failed, so scripts can detect it.
@@ -360,7 +361,7 @@ func rollBack(lock *lockfile.LockFile, linker *link.Linker, r *addResult, reason
 		lock.Remove(r.pkg.Name)
 		lockChanged = true
 		if err := linker.Unlink(r.pkg.Name); err != nil {
-			fmt.Printf("  %s Failed to unlink %s: %v\n", iconWarn(), r.pkg.Name, err)
+			fmt.Printf("  %s Failed to unlink %s: %v\n", ui.IconWarn(), r.pkg.Name, err)
 		}
 	}
 	return lockChanged, fmt.Errorf("%s: %w", r.spec, reason)
@@ -573,9 +574,9 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if added, err := gitignore.EnsureInGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  %s Could not update .gitignore: %v\n", iconWarn(), err)
+			fmt.Printf("  %s Could not update .gitignore: %v\n", ui.IconWarn(), err)
 		} else if added {
-			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", iconOK())
+			fmt.Printf("  %s Added .lnpm/ to .gitignore\n", ui.IconOK())
 		}
 	}
 
@@ -659,7 +660,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return fmt.Errorf("failed to record link: %w", err)
 	}
 
-	fmt.Printf("%s Added %s@%s%s\n", iconOK(), pkg.Name, pkg.Version, tagSuffix(tag))
+	fmt.Printf("%s Added %s@%s%s\n", ui.IconOK(), pkg.Name, pkg.Version, tagSuffix(tag))
 	fmt.Printf("  Link type: %s\n", linkTypeLabel(linkType))
 	fmt.Printf("  Package manager: %s\n", pm)
 	if !pure {
@@ -670,10 +671,10 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 	// By default, don't run (matches yalc behavior)
 	if runInstall && !pure {
 		if err := hooks.RunPostAdd(cwd, true); err != nil {
-			fmt.Printf("  %s npm install failed: %v\n", iconWarn(), err)
+			fmt.Printf("  %s npm install failed: %v\n", ui.IconWarn(), err)
 		}
 	} else if !pure {
-		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", iconTip())
+		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", ui.IconTip())
 	}
 
 	return nil

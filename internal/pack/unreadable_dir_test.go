@@ -103,7 +103,7 @@ func TestPackSkipsAnUnreadableExcludedDirectory(t *testing.T) {
 			if !strings.Contains(out, "coverage") {
 				t.Errorf("Pack() printed %q, want a warning naming coverage", out)
 			}
-			if !strings.Contains(out, "warning:") {
+			if !strings.Contains(out, warnMarker()) {
 				t.Errorf("Pack() printed %q, want the house warning prefix", out)
 			}
 		})
@@ -329,7 +329,7 @@ func TestPackAbortsOnAnUnreadableFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to hash") {
 		t.Errorf("Pack() error = %v, want the second pass to be the one that failed", err)
 	}
-	if strings.Contains(out, "warning:") {
+	if strings.Contains(out, warnMarker()) {
 		t.Errorf("Pack() printed %q, want no skip warning for a file", out)
 	}
 }

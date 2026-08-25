@@ -1,3 +1,10 @@
+// Package pack selects the files a publish ships and hashes them.
+//
+// It writes its warnings to stdout itself, through internal/ui, so they carry
+// the same marker as every other lnpm notice. Printing from a library is not
+// the layering this wants; internal/ui's package doc records the direction —
+// pack returns its notices and the CLI renders them — and why that was not
+// taken here. Until it is, the warnings Pack emits are pack's own.
 package pack
 
 import (
@@ -22,6 +29,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/panjf2000/ants/v2"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -460,10 +468,8 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 // ship. That filter is a separate pass with its own list and predates this
 // warning. Reconciling the two is tracked in #398.
 //
-// It is a plain fmt.Printf with a spelled-out "warning:" prefix for the reason
-// warnMainEntryNotPacked gives below: internal/cli's icon helpers are unexported
-// and internal/cli imports this package, so borrowing them would be an import
-// cycle.
+// It prints through ui.IconWarn(), the marker every lnpm warning carries, for
+// the reason warnMainEntryNotPacked gives below.
 //
 // The message quotes the entry as the manifest spells it, not the normalized
 // form, because that is the string the reader will search package.json for.
@@ -473,8 +479,8 @@ func warnHardReservedFilesEntry(filesField []string) {
 			continue
 		}
 
-		fmt.Printf("warning: package.json \"files\" names %q, which lnpm never "+
-			"publishes; it will not be in the package\n", entry)
+		fmt.Printf("%s package.json \"files\" names %q, which lnpm never "+
+			"publishes; it will not be in the package\n", ui.IconWarn(), entry)
 	}
 }
 
@@ -509,8 +515,8 @@ func warnHardReservedIgnoreNegation(packageDir string) {
 			continue
 		}
 
-		fmt.Printf("warning: the package's ignore file negates %q, which lnpm "+
-			"never publishes; it will not be in the package\n", pattern)
+		fmt.Printf("%s the package's ignore file negates %q, which lnpm "+
+			"never publishes; it will not be in the package\n", ui.IconWarn(), pattern)
 	}
 }
 
@@ -641,14 +647,12 @@ func requireManifestPacked(files []*FileInfo) error {
 // warning's demonstration, and dropped the flag that had hidden them, so the
 // warning is silent over that fixture now.
 //
-// Note this package has no warning idiom to match. iconWarn and its siblings
-// live in internal/cli/output.go and are unexported, and internal/cli imports
-// this package, so borrowing them would be an import cycle. The only user-facing
-// writes pack makes today are collectFiles' progress counter, which is a
-// carriage-return line it erases afterwards rather than a notice. So this is a
-// plain fmt.Printf with a spelled-out "warning:" prefix rather than an invented
-// second icon set. If pack grows more notices than this one, the icon helpers
-// are what should move to a package both can import, not be duplicated here.
+// It prints through ui.IconWarn() rather than an invented second icon set, so
+// it reads as one warning idiom with internal/cli's. The icon helpers were
+// unexported in internal/cli/output.go, and internal/cli imports this package,
+// so calling them from here would have been an import cycle; #366 moved them to
+// internal/ui, which imports nothing inside the module, and both packages call
+// them there now. Every other warning pack prints goes through the same helper.
 //
 // The message names the manifest's spelling, not the normalized form, because
 // that is the string the reader will search package.json for.
@@ -669,8 +673,8 @@ func warnMainEntryNotPacked(declared, mainEntry string, files []*FileInfo) {
 		}
 	}
 
-	fmt.Printf("warning: package.json \"main\" is %q, but no such file is in the "+
-		"package; the published package will not load\n", declared)
+	fmt.Printf("%s package.json \"main\" is %q, but no such file is in the "+
+		"package; the published package will not load\n", ui.IconWarn(), declared)
 }
 
 // readPackageJSON reads and parses package.json
@@ -906,7 +910,7 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 			if rel, relErr := filepath.Rel(packageDir, path); relErr == nil && info != nil && info.IsDir() {
 				relPath := filepath.ToSlash(rel)
 				if relPath != "." && unreadableDirIsExcluded(relPath, ignores, filesField, mainEntry) {
-					fmt.Printf("warning: could not read %q, which this package excludes; skipping it (%v)\n", relPath, err)
+					fmt.Printf("%s could not read %q, which this package excludes; skipping it (%v)\n", ui.IconWarn(), relPath, err)
 					return nil
 				}
 			}

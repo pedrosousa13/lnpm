@@ -12,6 +12,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -50,7 +51,7 @@ func RunRetreat(force bool, runInstall bool) error {
 		// moment the developer is reading. A preview still changes nothing and
 		// still returns nil; it just says what is actually coming.
 		if err := requireRetreatableNodeModules(cwd, lock.List()); err != nil {
-			fmt.Printf("%s 'lnpm retreat --force' will refuse and remove nothing: %v\n", iconWarn(), err)
+			fmt.Printf("%s 'lnpm retreat --force' will refuse and remove nothing: %v\n", ui.IconWarn(), err)
 			return nil
 		}
 
@@ -74,7 +75,7 @@ func RunRetreat(force bool, runInstall bool) error {
 				// the action agree on which keys are refused. A dot-named
 				// package from before #325 is retreated, not refused.
 				if err := pack.ValidatePackageNameForRemoval(name); err != nil {
-					fmt.Printf("    %s %s: will be skipped, not a valid package name: %v\n", iconWarn(), name, err)
+					fmt.Printf("    %s %s: will be skipped, not a valid package name: %v\n", ui.IconWarn(), name, err)
 					continue
 				}
 
@@ -214,7 +215,7 @@ func RunRetreat(force bool, runInstall bool) error {
 		// node_modules symlink and a package.json file:.lnpm/{name} reference
 		// pointing at nothing.
 		if err := pack.ValidatePackageNameForRemoval(name); err != nil {
-			fmt.Printf("  %s Refused %s: not a valid package name: %v\n", iconWarn(), name, err)
+			fmt.Printf("  %s Refused %s: not a valid package name: %v\n", ui.IconWarn(), name, err)
 			refused = append(refused, name)
 			continue
 		}
@@ -236,15 +237,15 @@ func RunRetreat(force bool, runInstall bool) error {
 
 		if originalVersion != "" {
 			if err := restorePackageJSON(cwd, name, originalVersion); err != nil {
-				fmt.Printf("    %s Failed to restore package.json: %v\n", iconWarn(), err)
+				fmt.Printf("    %s Failed to restore package.json: %v\n", ui.IconWarn(), err)
 			} else {
-				fmt.Printf("    %s Restored %s to %s\n", iconOK(), name, originalVersion)
+				fmt.Printf("    %s Restored %s to %s\n", ui.IconOK(), name, originalVersion)
 			}
 		} else {
 			if err := removeFromPackageJSON(cwd, name); err != nil {
-				fmt.Printf("    %s Failed to update package.json: %v\n", iconWarn(), err)
+				fmt.Printf("    %s Failed to update package.json: %v\n", ui.IconWarn(), err)
 			} else {
-				fmt.Printf("    %s Removed %s from package.json\n", iconOK(), name)
+				fmt.Printf("    %s Removed %s from package.json\n", ui.IconOK(), name)
 			}
 		}
 
@@ -279,7 +280,7 @@ func RunRetreat(force bool, runInstall bool) error {
 		if database != nil && proj != nil {
 			if l, ok := held[name]; ok {
 				if err := database.DeleteLink(l.PackageID, proj.ID); err != nil {
-					fmt.Printf("    %s Removed %s, but its link record is still in the store: %v\n", iconWarn(), name, err)
+					fmt.Printf("    %s Removed %s, but its link record is still in the store: %v\n", ui.IconWarn(), name, err)
 				}
 			}
 		}
@@ -288,18 +289,18 @@ func RunRetreat(force bool, runInstall bool) error {
 	// Remove .lnpm directory
 	lnpmDir := filepath.Join(cwd, ".lnpm")
 	if err := os.RemoveAll(lnpmDir); err != nil {
-		fmt.Printf("  %s Failed to remove .lnpm/: %v\n", iconWarn(), err)
+		fmt.Printf("  %s Failed to remove .lnpm/: %v\n", ui.IconWarn(), err)
 	} else {
-		fmt.Printf("  %s Removed .lnpm/\n", iconOK())
+		fmt.Printf("  %s Removed .lnpm/\n", ui.IconOK())
 	}
 
 	// Clean up .gitignore if enabled
 	cfg := config.Get()
 	if cfg.ShouldManageGitignore() {
 		if err := gitignore.RemoveFromGitignore(cwd, ".lnpm/"); err != nil {
-			fmt.Printf("  %s Could not clean .gitignore: %v\n", iconWarn(), err)
+			fmt.Printf("  %s Could not clean .gitignore: %v\n", ui.IconWarn(), err)
 		} else {
-			fmt.Printf("  %s Cleaned .gitignore\n", iconOK())
+			fmt.Printf("  %s Cleaned .gitignore\n", ui.IconOK())
 		}
 	}
 
@@ -316,7 +317,7 @@ func RunRetreat(force bool, runInstall bool) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("%s Install failed: %v\n", iconWarn(), err)
+			fmt.Printf("%s Install failed: %v\n", ui.IconWarn(), err)
 		}
 	}
 
@@ -325,14 +326,14 @@ func RunRetreat(force bool, runInstall bool) error {
 	// so is the whole point of counting: package.json still holds a file:.lnpm
 	// reference for every refused entry.
 	if len(refused) == 0 {
-		fmt.Printf("%s Retreat complete!\n", iconOK())
+		fmt.Printf("%s Retreat complete!\n", ui.IconOK())
 	} else {
-		fmt.Printf("%s Retreat incomplete: refused %d of %d lnpm.lock entr(ies)\n", iconWarn(), len(refused), len(linkedPkgs))
+		fmt.Printf("%s Retreat incomplete: refused %d of %d lnpm.lock entr(ies)\n", ui.IconWarn(), len(refused), len(linkedPkgs))
 		reportRefused(cwd, refused)
 	}
 
 	if !runInstall {
-		fmt.Printf("\n%s Run 'npm install' to restore original packages\n", iconTip())
+		fmt.Printf("\n%s Run 'npm install' to restore original packages\n", ui.IconTip())
 	}
 
 	// Non-zero exit, as remove does for the packages it could not remove: a
@@ -455,12 +456,12 @@ func reportRefused(cwd string, refused []string) {
 		record = "lnpm.lock"
 	}
 
-	fmt.Printf("%s lnpm never wrote those entries, so there was nothing of its own to clean up for them\n", iconWarn())
-	fmt.Printf("%s Left in package.json, to remove by hand:\n", iconWarn())
+	fmt.Printf("%s lnpm never wrote those entries, so there was nothing of its own to clean up for them\n", ui.IconWarn())
+	fmt.Printf("%s Left in package.json, to remove by hand:\n", ui.IconWarn())
 	for _, name := range refused {
 		fmt.Printf("    %q\n", name)
 	}
-	fmt.Printf("%s The entries themselves are in %s; inspect it for tampering or corruption\n", iconWarn(), record)
+	fmt.Printf("%s The entries themselves are in %s; inspect it for tampering or corruption\n", ui.IconWarn(), record)
 }
 
 // stashLockForRestore moves lnpm.lock aside rather than deleting it. The move
@@ -483,8 +484,8 @@ func stashLockForRestore(cwd string, lock *lockfile.LockFile) {
 		// No lock file means there is nothing to save and nothing to say. Any
 		// other stat failure is worth a word, since the file may still be there.
 		if !os.IsNotExist(err) {
-			fmt.Printf("  %s Could not check lnpm.lock: %v\n", iconWarn(), err)
-			fmt.Printf("  %s The links are already gone; if lnpm.lock is still there, re-run 'lnpm retreat' to save it for 'lnpm restore'\n", iconWarn())
+			fmt.Printf("  %s Could not check lnpm.lock: %v\n", ui.IconWarn(), err)
+			fmt.Printf("  %s The links are already gone; if lnpm.lock is still there, re-run 'lnpm retreat' to save it for 'lnpm restore'\n", ui.IconWarn())
 		}
 		return
 	}
@@ -494,18 +495,18 @@ func stashLockForRestore(cwd string, lock *lockfile.LockFile) {
 		// Merging into a snapshot that cannot be read is not possible, and
 		// overwriting it would destroy a record only the user can now recover.
 		// Leave both files alone and say what to do about it.
-		fmt.Printf("  %s Could not read %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
-		fmt.Printf("  %s Kept lnpm.lock: fix or remove %s, then re-run 'lnpm retreat'\n", iconWarn(), lockfile.RetreatFileName)
+		fmt.Printf("  %s Could not read %s: %v\n", ui.IconWarn(), lockfile.RetreatFileName, err)
+		fmt.Printf("  %s Kept lnpm.lock: fix or remove %s, then re-run 'lnpm retreat'\n", ui.IconWarn(), lockfile.RetreatFileName)
 		return
 	}
 
 	if prior == nil {
 		if err := os.Rename(lockfile.Path(cwd), lockfile.RetreatPath(cwd)); err != nil {
-			fmt.Printf("  %s Failed to save lnpm.lock as %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
-			fmt.Printf("  %s lnpm.lock is still in place; 'lnpm restore' has nothing to work from\n", iconWarn())
+			fmt.Printf("  %s Failed to save lnpm.lock as %s: %v\n", ui.IconWarn(), lockfile.RetreatFileName, err)
+			fmt.Printf("  %s lnpm.lock is still in place; 'lnpm restore' has nothing to work from\n", ui.IconWarn())
 			return
 		}
-		fmt.Printf("  %s Removed lnpm.lock (saved as %s for 'lnpm restore')\n", iconOK(), lockfile.RetreatFileName)
+		fmt.Printf("  %s Removed lnpm.lock (saved as %s for 'lnpm restore')\n", ui.IconOK(), lockfile.RetreatFileName)
 		return
 	}
 
@@ -530,17 +531,17 @@ func stashLockForRestore(cwd string, lock *lockfile.LockFile) {
 		prior.Add(name, entry)
 	}
 	if err := prior.SaveRetreat(cwd); err != nil {
-		fmt.Printf("  %s Failed to save lnpm.lock into %s: %v\n", iconWarn(), lockfile.RetreatFileName, err)
+		fmt.Printf("  %s Failed to save lnpm.lock into %s: %v\n", ui.IconWarn(), lockfile.RetreatFileName, err)
 		// The snapshot is written through a temp file and a rename, so the
 		// earlier retreat's record is intact and restore can still put those
 		// packages back. Only this retreat's own entries are missing from it,
 		// and they are still in lnpm.lock, which is still in place.
-		fmt.Printf("  %s lnpm.lock is still in place and %s still holds the earlier retreat; re-run 'lnpm retreat' to merge them\n", iconWarn(), lockfile.RetreatFileName)
+		fmt.Printf("  %s lnpm.lock is still in place and %s still holds the earlier retreat; re-run 'lnpm retreat' to merge them\n", ui.IconWarn(), lockfile.RetreatFileName)
 		return
 	}
 	if err := os.Remove(lockfile.Path(cwd)); err != nil {
-		fmt.Printf("  %s Failed to remove lnpm.lock: %v\n", iconWarn(), err)
+		fmt.Printf("  %s Failed to remove lnpm.lock: %v\n", ui.IconWarn(), err)
 		return
 	}
-	fmt.Printf("  %s Removed lnpm.lock (merged into %s for 'lnpm restore')\n", iconOK(), lockfile.RetreatFileName)
+	fmt.Printf("  %s Removed lnpm.lock (merged into %s for 'lnpm restore')\n", ui.IconOK(), lockfile.RetreatFileName)
 }

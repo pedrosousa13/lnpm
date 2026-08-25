@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/cli"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // publishAllFixture copies a workspace fixture into the test's temp dir, chdirs
@@ -31,8 +32,9 @@ import (
 // all five rows pass with validation on (2026-08-25).
 //
 // The warning check is #365's other half. pack.Pack prints
-// `warning: package.json "main" is ...` when the packed set does not hold the
-// entry point (#319), and it is what found these two fixtures. It catches a
+// `! package.json "main" is ...` when the packed set does not hold the entry
+// point (#319) — the "!" is ui.IconWarn()'s ASCII fallback, which the NO_COLOR
+// pinned below selects — and it is what found these two fixtures. It catches a
 // different route from the validation above. Both routes measured on
 // 2026-08-25, and the messages below are quoted whole:
 //
@@ -46,6 +48,14 @@ import (
 //     the one that fires — the warning appears once and names "dist/index.js".
 //     (Nothing force-includes it: ADR-0004's override applies under a "files"
 //     whitelist, and neither library has one.)
+//
+// #366 replaced pack's "warning: " prefix with the shared marker, which left the
+// check below matching a string pack no longer prints — it could not fail. The
+// second bullet was re-run against the new spelling to settle that: the line
+// reads `! package.json "main" is "dist/index.js", but no such file is in the
+// package; the published package will not load`, appears once, and the check
+// goes red on it. The first bullet was not re-run; the marker is not on that
+// route, which never reaches a warning at all.
 func publishAllFixture(t *testing.T, env *TestEnvironment, fixture string) {
 	t.Helper()
 
@@ -54,6 +64,15 @@ func publishAllFixture(t *testing.T, env *TestEnvironment, fixture string) {
 		t.Fatalf("Failed to change to fixture directory %s: %v", dir, err)
 	}
 
+	// The check below builds its marker with ui.IconWarn(), which is evaluated
+	// after captureStdout has put the real os.Stdout back. Inside the capture
+	// stdout is a pipe, so the captured text always holds the ASCII fallback;
+	// outside it, a test binary run straight in a terminal has a TTY and
+	// ui.IconWarn() would answer with the glyph instead, so the check would pass
+	// on nothing. NO_COLOR is checked before stdout is, so it pins both sides to
+	// the same answer however the test is run.
+	t.Setenv("NO_COLOR", "1")
+
 	var err error
 	out := captureStdout(t, func() {
 		err = cli.RunPublish(false, true, false, false)
@@ -61,7 +80,12 @@ func publishAllFixture(t *testing.T, env *TestEnvironment, fixture string) {
 	if err != nil {
 		t.Fatalf("Failed to publish all packages: %v\npublish output:\n%s", err, out)
 	}
-	if strings.Contains(out, `warning: package.json "main"`) {
+	// The marker is derived from ui.IconWarn() rather than written out, and is
+	// matched together with enough of the message to name this warning rather
+	// than any of pack's other three. The previous spelling hardcoded a
+	// "warning: " prefix; #366 replaced that prefix with the shared marker, and
+	// this check went dead without a single test going red.
+	if warned := ui.IconWarn() + ` package.json "main"`; strings.Contains(out, warned) {
 		t.Errorf("publish --all over the %s fixture warned about a missing entry point:\n%s", fixture, out)
 	}
 }

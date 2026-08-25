@@ -11,6 +11,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/db"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
 // RunGC executes the garbage collection command
@@ -184,7 +185,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 				// stale device makes gc decline rather than delete.
 				if !dryRun && device != 0 && device != proj.Device {
 					if err := database.SetProjectDevice(proj.ID, device); err != nil {
-						fmt.Printf("  %s Failed to record which filesystem %s is on: %v\n", iconWarn(), proj.Path, err)
+						fmt.Printf("  %s Failed to record which filesystem %s is on: %v\n", ui.IconWarn(), proj.Path, err)
 					}
 				}
 			}
@@ -246,7 +247,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	// not be judged. Gating this on a flag would hide the reason a destructive
 	// command declined to act.
 	if len(skippedLinks) > 0 {
-		fmt.Printf("%s Skipped %d link(s): the project directory is missing and the filesystem it was on is not mounted there\n", iconWarn(), len(skippedLinks))
+		fmt.Printf("%s Skipped %d link(s): the project directory is missing and the filesystem it was on is not mounted there\n", ui.IconWarn(), len(skippedLinks))
 		for _, s := range skippedLinks {
 			fmt.Printf("  - %s (consumes %s)\n", s.projectPath, s.packageLabel)
 		}
@@ -348,7 +349,7 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 	}
 
 	if len(packagesToRemove) == 0 && len(linksToRemove) == 0 && tempDirsFound == 0 {
-		fmt.Printf("%s Nothing to clean up\n", iconOK())
+		fmt.Printf("%s Nothing to clean up\n", ui.IconOK())
 	}
 
 	return nil
@@ -425,7 +426,7 @@ func removeOrphanedLinks(database *db.DB, links []linkToRemove) {
 	removed := 0
 	for _, l := range links {
 		if err := database.DeleteLink(l.packageID, l.projectID); err != nil {
-			fmt.Printf("  %s Failed to remove the link to %s: %v\n", iconWarn(), l.label(), err)
+			fmt.Printf("  %s Failed to remove the link to %s: %v\n", ui.IconWarn(), l.label(), err)
 			continue
 		}
 		removed++
@@ -433,7 +434,7 @@ func removeOrphanedLinks(database *db.DB, links []linkToRemove) {
 	if removed == 0 {
 		return
 	}
-	fmt.Printf("%s Removed %d orphaned link(s)\n", iconOK(), removed)
+	fmt.Printf("%s Removed %d orphaned link(s)\n", ui.IconOK(), removed)
 }
 
 // removePackages deletes each package's store entry and then its database row,
@@ -482,7 +483,7 @@ func removePackages(database *db.DB, storeRoot string, packagesToRemove []*db.Pa
 				if err := store.RemoveEntry(pkg.StorePath); err != nil {
 					// Keep the database row: it is the only record of
 					// the entry left to delete, and gc can be re-run.
-					fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), pkg.Name, err)
+					fmt.Printf("  %s Failed to remove %s: %v\n", ui.IconWarn(), pkg.Name, err)
 					continue
 				}
 			} else {
@@ -491,7 +492,7 @@ func removePackages(database *db.DB, storeRoot string, packagesToRemove []*db.Pa
 		}
 		// Remove from database
 		if err := database.DeletePackage(pkg.ID); err != nil {
-			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), pkg.Name, err)
+			fmt.Printf("  %s Failed to remove %s: %v\n", ui.IconWarn(), pkg.Name, err)
 			continue
 		}
 		removed++
@@ -500,7 +501,7 @@ func removePackages(database *db.DB, storeRoot string, packagesToRemove []*db.Pa
 	if removed == 0 {
 		return
 	}
-	fmt.Printf("%s Removed %d package(s), freed %s\n", iconOK(), removed, formatSize(freed))
+	fmt.Printf("%s Removed %d package(s), freed %s\n", ui.IconOK(), removed, formatSize(freed))
 }
 
 // tempDirToReap is one temp directory the sweep found, flattened from the two
@@ -584,7 +585,7 @@ func reapTempDirs(database *db.DB, s *store.Store, projectPaths []string, dryRun
 	}
 
 	if unreadable > 0 {
-		fmt.Printf("%s Could not scan %d director(ies) for temp directories; check them and re-run gc\n", iconWarn(), unreadable)
+		fmt.Printf("%s Could not scan %d director(ies) for temp directories; check them and re-run gc\n", ui.IconWarn(), unreadable)
 	}
 
 	if len(found) == 0 {
@@ -615,7 +616,7 @@ func reapTempDirs(database *db.DB, s *store.Store, projectPaths []string, dryRun
 		// RemoveAll does not follow links, so a leftover from LinkSource loses
 		// the link and not the source directory it points at.
 		if err := os.RemoveAll(t.path); err != nil {
-			fmt.Printf("  %s Failed to remove %s: %v\n", iconWarn(), t.path, err)
+			fmt.Printf("  %s Failed to remove %s: %v\n", ui.IconWarn(), t.path, err)
 			continue
 		}
 		removed++
@@ -641,7 +642,7 @@ func reapTempDirs(database *db.DB, s *store.Store, projectPaths []string, dryRun
 	if removed == 0 {
 		return total, nil
 	}
-	fmt.Printf("%s Reclaimed %d temp director(ies), freed %s\n", iconOK(), removed, formatSize(freed))
+	fmt.Printf("%s Reclaimed %d temp director(ies), freed %s\n", ui.IconOK(), removed, formatSize(freed))
 	return total, nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/store"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/internal/validation"
 	"github.com/pedrosousa13/lnpm/internal/workspace"
 )
@@ -128,7 +129,7 @@ func publishAll(cwd string, opts PublishOptions) error {
 			for pkg := range pkgChan {
 				// Synchronize output for clean formatting
 				outputMu.Lock()
-				sep := hrule(3)
+				sep := ui.HRule(3)
 				fmt.Printf("%s %s@%s %s\n", sep, pkg.Name, pkg.Version, sep)
 				outputMu.Unlock()
 
@@ -136,7 +137,7 @@ func publishAll(cwd string, opts PublishOptions) error {
 
 				outputMu.Lock()
 				if err != nil {
-					fmt.Printf("%s Failed: %v\n\n", iconFail(), err)
+					fmt.Printf("%s Failed: %v\n\n", ui.IconFail(), err)
 				} else {
 					fmt.Println()
 				}
@@ -277,7 +278,7 @@ func publishSingle(pkgPath string, opts PublishOptions) error {
 
 	if existing != nil && !opts.Push && tagged != nil && tagged.ContentHash == contentHash {
 		fmt.Printf("%s Package %s@%s already published with same content (hash: %s)\n",
-			iconWarn(), pkgJSON.Name, pkgJSON.Version, shortHash(contentHash))
+			ui.IconWarn(), pkgJSON.Name, pkgJSON.Version, shortHash(contentHash))
 		fmt.Println("Use --push to update linked projects anyway")
 		return nil
 	}
@@ -392,7 +393,7 @@ func finishPublish(pkgPath string, pkgJSON *pack.PackageJSON, files []*pack.File
 		return fmt.Errorf("failed to record package: %w", err)
 	}
 
-	fmt.Printf("%s Published %s@%s%s\n", iconOK(), pkgJSON.Name, pkgJSON.Version, tagSuffix(tag))
+	fmt.Printf("%s Published %s@%s%s\n", ui.IconOK(), pkgJSON.Name, pkgJSON.Version, tagSuffix(tag))
 	fmt.Printf("  Hash: %s\n", shortHash(contentHash))
 	fmt.Printf("  Files: %d\n", len(files))
 	fmt.Printf("  Size: %s\n", formatSize(totalSize))
@@ -475,13 +476,13 @@ func pushToLinkedProjects(database *db.DB, pkg *db.Package, s *store.Store) erro
 	for res := range results {
 		switch {
 		case res.err != nil:
-			fmt.Printf("  %s %s: %v\n", iconFail(), res.path, res.err)
+			fmt.Printf("  %s %s: %v\n", ui.IconFail(), res.path, res.err)
 			failedCount++
 		case res.skipped:
-			fmt.Printf("  %s %s: skipped (live link to source)\n", iconOK(), res.path)
+			fmt.Printf("  %s %s: skipped (live link to source)\n", ui.IconOK(), res.path)
 			skippedCount++
 		default:
-			fmt.Printf("  %s %s (%d changed, %d unchanged)\n", iconOK(), res.path, res.link.Changed, res.link.Unchanged)
+			fmt.Printf("  %s %s (%d changed, %d unchanged)\n", ui.IconOK(), res.path, res.link.Changed, res.link.Unchanged)
 			successCount++
 		}
 	}

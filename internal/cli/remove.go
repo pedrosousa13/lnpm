@@ -11,6 +11,7 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pkgjson"
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
 
@@ -76,7 +77,7 @@ func RunRemove(packageName string, all bool, yes bool) error {
 
 		// Unlink the package
 		if err := linker.Unlink(name); err != nil {
-			fmt.Printf("  %s Failed to unlink: %v\n", iconFail(), err)
+			fmt.Printf("  %s Failed to unlink: %v\n", ui.IconFail(), err)
 			failed++
 			continue
 		}
@@ -87,14 +88,14 @@ func RunRemove(packageName string, all bool, yes bool) error {
 		// file:.lnpm/<pkg> reference with nothing left to drive a retry.
 		if lockEntry.OriginalVersion != "" {
 			if err := restorePackageJSON(cwd, name, lockEntry.OriginalVersion); err != nil {
-				fmt.Printf("  %s Failed to restore package.json: %v\n", iconFail(), err)
+				fmt.Printf("  %s Failed to restore package.json: %v\n", ui.IconFail(), err)
 				failed++
 				continue
 			}
 		} else {
 			// Remove the dependency entirely
 			if err := removeFromPackageJSON(cwd, name); err != nil {
-				fmt.Printf("  %s Failed to update package.json: %v\n", iconFail(), err)
+				fmt.Printf("  %s Failed to update package.json: %v\n", ui.IconFail(), err)
 				failed++
 				continue
 			}
@@ -125,12 +126,12 @@ func RunRemove(packageName string, all bool, yes bool) error {
 		if proj != nil {
 			if l, ok := held[name]; ok {
 				if err := database.DeleteLink(l.PackageID, proj.ID); err != nil {
-					fmt.Printf("  %s Removed %s, but its link record is still in the store: %v\n", iconWarn(), name, err)
+					fmt.Printf("  %s Removed %s, but its link record is still in the store: %v\n", ui.IconWarn(), name, err)
 				}
 			}
 		}
 
-		fmt.Printf("  %s Removed %s\n", iconOK(), name)
+		fmt.Printf("  %s Removed %s\n", ui.IconOK(), name)
 	}
 
 	// Save updated lock file
@@ -154,7 +155,7 @@ func RunRemove(packageName string, all bool, yes bool) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("%s Install failed: %v\n", iconWarn(), err)
+		fmt.Printf("%s Install failed: %v\n", ui.IconWarn(), err)
 	}
 
 	if failed > 0 {
