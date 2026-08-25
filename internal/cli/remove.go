@@ -107,9 +107,26 @@ func RunRemove(packageName string, all bool, yes bool) error {
 		// lookup by name would find: the name index mirrors the default tag, so
 		// for a project on a tagged version that lookup names a different record
 		// and the delete would silently match nothing.
+		//
+		// A refused delete is reported and does not count against the package
+		// (#392). The error became reachable when the delete stopped writing over
+		// a link index entry it could not read, and everything the user asked for
+		// has already happened by the time it arrives: the package is unlinked,
+		// its package.json entry is restored or removed, and the lock entry is
+		// gone. Counting it in failed would exit non-zero saying the package
+		// failed to remove, which is untrue and which no re-run can clear - the
+		// lock file no longer holds the name, so remove refuses it outright on
+		// the next run. What is left is a store row
+		// recording a consumer that is not one, which lnpm doctor names and the
+		// error already points at. Saying nothing is the option ADR-0001 rules
+		// out: the entry the error names is the one GetProjectsForPackage reads,
+		// so the next publish --push or push of that package refuses instead of
+		// answering, and nothing would have told the user where that came from.
 		if proj != nil {
 			if l, ok := held[name]; ok {
-				_ = database.DeleteLink(l.PackageID, proj.ID)
+				if err := database.DeleteLink(l.PackageID, proj.ID); err != nil {
+					fmt.Printf("  %s Removed %s, but its link record is still in the store: %v\n", iconWarn(), name, err)
+				}
 			}
 		}
 

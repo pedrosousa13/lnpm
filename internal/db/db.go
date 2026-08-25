@@ -604,7 +604,9 @@ func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 			if err := links.Delete(itob(id)); err != nil {
 				return err
 			}
-			removeIDFromIndex(byProject, itob(l.ProjectID), id)
+			if err := removeIDFromIndex(byProject, itob(l.ProjectID), id, "project"); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -999,7 +1001,9 @@ func (db *DB) DeletePackage(id int64) error {
 			if err := json.Unmarshal(ld, &l); err != nil {
 				return fmt.Errorf("link %d, which package %d is linked by, will not parse: %w; run lnpm doctor to see what else the store disagrees about", linkID, id, err)
 			}
-			removeIDFromIndex(byProject, itob(l.ProjectID), linkID)
+			if err := removeIDFromIndex(byProject, itob(l.ProjectID), linkID, "project"); err != nil {
+				return err
+			}
 			_ = links.Delete(itob(linkID))
 		}
 		_ = byPackage.Delete(pkgKey)
@@ -1049,25 +1053,78 @@ func packageNameTx(tx *bolt.Tx, id int64) string {
 
 // deleteLinkRowTx removes one link row and scrubs it from both indexes, so no
 // index entry outlives the row it named.
+//
+// An index entry that will not parse abandons the delete rather than being
+// scrubbed around, and the caller has to carry that outward: the row delete has
+// already run by then, so a refusal only holds if the transaction is rolled
+// back. Its one caller, InsertLink, returns this from its Update closure, which
+// is what does the rolling back.
 func deleteLinkRowTx(tx *bolt.Tx, linkID, packageID, projectID int64) error {
 	if err := tx.Bucket(bucketLinks).Delete(itob(linkID)); err != nil {
 		return err
 	}
-	removeIDFromIndex(tx.Bucket(bucketLinksByPackage), itob(packageID), linkID)
-	removeIDFromIndex(tx.Bucket(bucketLinksByProject), itob(projectID), linkID)
-	return nil
+	if err := removeIDFromIndex(tx.Bucket(bucketLinksByPackage), itob(packageID), linkID, "package"); err != nil {
+		return err
+	}
+	return removeIDFromIndex(tx.Bucket(bucketLinksByProject), itob(projectID), linkID, "project")
 }
 
 // removeIDFromIndex removes id from the []int64 stored at key in bucket b,
 // deleting the key entirely when the slice becomes empty.
-func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
-	data := b.Get(key)
-	if data == nil {
-		return
-	}
-	var ids []int64
-	if json.Unmarshal(data, &ids) != nil {
-		return
+//
+// A key that is not there is nothing to scrub and not an error, and it needs no
+// guard of its own: indexIDs answers a missing key with no IDs and no error, the
+// filter keeps none of them, and putIndexIDs then deletes a key that is not
+// there - which bbolt's Bucket.Delete reports as nil, read from v1.5.0's source
+// rather than run. A pre-#392 store is how the missing key is reached: the
+// DeleteLink this change replaced answered an entry it could not read by
+// deleting the whole key, while leaving in place every link row that key named.
+// Those rows stay reachable - DeleteLink finds a linkID by scanning the rows
+// themselves, and remove and retreat reach a link through the other index - so a
+// later delete of one of them calls this with the key already gone. Same "stores
+// that shipped" reasoning as the pre-#355 dangling IDs below.
+//
+// It reports an entry it could not read instead of returning silently, which is
+// #392. The silent return was safe on its own - it wrote nothing, so nothing was
+// lost - but void gave a caller no way to tell a scrub from a refusal, and every
+// caller deletes the row whose ID this is asked to remove in the same
+// transaction. Carrying on past a refusal therefore leaves that row's ID named
+// by an index nothing can find it from.
+//
+// Four callers make six calls, and the two indexes they scrub are not treated
+// alike downstream. deleteLinkRowTx and DeleteLink scrub both, one call each;
+// moveLinksTx and DeletePackage scrub links_by_project alone. So two of the six
+// are on links_by_package, where a dangling ID is the shape GetLinksForPackage
+// refuses to read outright - one left there costs every read of that package's
+// links. The other four are on links_by_project, where GetLinksForProject
+// deliberately tolerates a dangling ID and says at length why: pre-#355
+// DeletePackage left real ones in stores that shipped, and refusing them would
+// lock a user out of the repair commands. No read of that index is strict about
+// one, which that same comment sets out, so the argument for refusing here is
+// not a downstream refusal at all - it is the plain fail-closed one. Do not
+// write over an entry that cannot be read, because writing over it is what loses
+// the IDs it names. Nothing reports that damage afterwards either: doctor never
+// reads links_by_project, its link checks going through GetLinksForPackage and
+// GetProjectByID, so the only reader that ever meets the entry is
+// linksOfProject, which is pull, remove and retreat refusing outright.
+//
+// Either way the refusal rolls the whole delete back rather than half-doing it:
+// all six call sites return this onward to a bolt Update closure, and rolling
+// back is what that closure's error does.
+//
+// Sharing one implementation is the other half of #392. DeleteLink carried its
+// own inlined copy of this scrub, one per index, and that copy discarded the
+// unmarshal rather than returning on it: no IDs decoded, the filter loop then
+// produced an empty slice, and the copy's own else-branch answered an empty
+// slice by deleting the key outright - so one unreadable entry cost every link
+// ID it named. Two copies of one scrub is how both of its indexes came to have
+// that bug, so the copies are gone.
+//
+// owner names what key counts as, for indexIDs' error message.
+func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64, owner string) error {
+	ids, err := indexIDs(b, key, owner)
+	if err != nil {
+		return err
 	}
 	newIDs := make([]int64, 0, len(ids))
 	for _, existing := range ids {
@@ -1075,12 +1132,7 @@ func removeIDFromIndex(b *bolt.Bucket, key []byte, id int64) {
 			newIDs = append(newIDs, existing)
 		}
 	}
-	if len(newIDs) > 0 {
-		newData, _ := json.Marshal(newIDs)
-		_ = b.Put(key, newData)
-	} else {
-		_ = b.Delete(key)
-	}
+	return putIndexIDs(b, key, newIDs)
 }
 
 // GetProjectByID returns a project by its ID, or nil if not found. An ID no
@@ -1707,7 +1759,38 @@ func (db *DB) GetLinksForProject(projectID int64) ([]*Link, error) {
 	return result, nil
 }
 
-// DeleteLink removes a link
+// DeleteLink removes the link a project holds on a package, and refuses the
+// whole delete rather than write over an index entry it could not read.
+//
+// The refusal is #392, and the damage it stops is the scrub's own. Both indexes
+// were scrubbed here by an inlined copy of removeIDFromIndex that discarded its
+// unmarshal, so an entry that would not parse decoded to no IDs; the filter then
+// produced an empty slice, which the scrub reads as "no link is left on this
+// key" and answers by deleting the key. One unreadable entry therefore cost
+// every link ID it named, and the copies made that true of both indexes at once.
+// Sharing one scrub is the rest of the fix - the duplication is how the two came
+// to fail the same way.
+//
+// Refusing rather than scrubbing around the damage is the line #355 drew for
+// DeletePackage. Both options leave the entry alone; what separates them is what
+// happens to the rest of the delete. The row delete has already run by the time
+// either scrub is reached, so carrying on would commit a row that is gone while
+// the entry goes on naming it - a dangling ID lnpm would have manufactured out
+// of damage it could have reported instead. On links_by_package that is the
+// shape GetLinksForPackage refuses to read outright; on links_by_project no read
+// is strict about one at all, for the reasons GetLinksForProject's comment
+// gives, so the one made here would go unreported. Returning the error out of
+// this Update closure makes bolt roll the row delete back with everything else,
+// so the store is exactly as it was and lnpm doctor has something to name.
+//
+// A key that is not there is still not damage, and an entry that legitimately
+// empties is still deleted: "unreadable" and "empty" being one answer was the
+// defect, so they are two now.
+//
+// The links.ForEach this starts with is a separate defect and deliberately
+// untouched: it discards ForEach's error and skips a link row that will not
+// parse, so damage to the row leaves linkID zero and this method reports success
+// having deleted nothing.
 func (db *DB) DeleteLink(packageID, projectID int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -1737,44 +1820,12 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 		_ = links.Delete(itob(linkID))
 
 		// Update package index
-		pkgKey := itob(packageID)
-		if data := byPackage.Get(pkgKey); data != nil {
-			var ids []int64
-			_ = json.Unmarshal(data, &ids)
-			newIDs := make([]int64, 0, len(ids))
-			for _, id := range ids {
-				if id != linkID {
-					newIDs = append(newIDs, id)
-				}
-			}
-			if len(newIDs) > 0 {
-				newData, _ := json.Marshal(newIDs)
-				_ = byPackage.Put(pkgKey, newData)
-			} else {
-				_ = byPackage.Delete(pkgKey)
-			}
+		if err := removeIDFromIndex(byPackage, itob(packageID), linkID, "package"); err != nil {
+			return err
 		}
 
 		// Update project index
-		projKey := itob(projectID)
-		if data := byProject.Get(projKey); data != nil {
-			var ids []int64
-			_ = json.Unmarshal(data, &ids)
-			newIDs := make([]int64, 0, len(ids))
-			for _, id := range ids {
-				if id != linkID {
-					newIDs = append(newIDs, id)
-				}
-			}
-			if len(newIDs) > 0 {
-				newData, _ := json.Marshal(newIDs)
-				_ = byProject.Put(projKey, newData)
-			} else {
-				_ = byProject.Delete(projKey)
-			}
-		}
-
-		return nil
+		return removeIDFromIndex(byProject, itob(projectID), linkID, "project")
 	})
 }
 

@@ -250,9 +250,35 @@ func RunRetreat(force bool, runInstall bool) error {
 		// lookup by name would find: the name index mirrors the default tag, so
 		// for a project on a tagged version that lookup names a different record
 		// and the delete would silently match nothing.
+		//
+		// A refused delete is reported and does not join refused (#392). The
+		// error became reachable when the delete stopped writing over a link
+		// index entry it could not read, and it is the last thing this entry
+		// does: the node_modules symlink and the package.json reference have
+		// both already been dealt with above, and .lnpm/ goes below whatever
+		// happens here. Whether those two actually succeeded is not this
+		// error's to answer - the package.json edit reports its own failure and
+		// the symlink removal discards its own - and aborting here would repair
+		// neither while leaving .lnpm/ in place. refused is not the place for it
+		// either: that list means lnpm never wrote the entry and so never
+		// touched the project for it, which is what reportRefused tells the user
+		// before listing them under "Left in package.json, to remove by hand".
+		// This entry was retreated. What survives is a store row recording a
+		// consumer that is not one, and this print is the only thing that names
+		// that row: doctor's orphaned-link check counts a link as a problem
+		// only when its project record is missing or its directory is gone or
+		// unreachable, and a retreat leaves the record and the directory both
+		// intact, so the row is counted as healthy. Doctor does meet the damage
+		// underneath it. The entry refused here can only be in
+		// links_by_package - linksOfProject read links_by_project up front and
+		// would have refused the whole retreat had that been the damaged one -
+		// and every doctor check that walks a package's links reads that index
+		// and abandons itself naming what it could not read.
 		if database != nil && proj != nil {
 			if l, ok := held[name]; ok {
-				_ = database.DeleteLink(l.PackageID, proj.ID)
+				if err := database.DeleteLink(l.PackageID, proj.ID); err != nil {
+					fmt.Printf("    %s Removed %s, but its link record is still in the store: %v\n", iconWarn(), name, err)
+				}
 			}
 		}
 	}
