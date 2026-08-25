@@ -341,8 +341,15 @@ Run it from the library instead:
 $ cd libs/feature-auth
 $ lnpm push
 Pushing @my-org/feature-auth@1.0.0...
+  Packed:
+    dist/index.js
+    package.json
+    project.json
+    src/auth.service.ts
+    src/index.ts
+    tsconfig.lib.json
 Updating 1 linked projects...
-  ✓ /home/you/projects/my-app
+  ✓ /home/you/projects/my-app (1 changed, 5 unchanged)
 
 Pushed to 1/1 projects
 ```
