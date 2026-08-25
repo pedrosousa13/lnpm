@@ -300,11 +300,15 @@ read for the `ok`/`FAIL <package>` result line rather than for the absence of ou
 
 - **Disable the walk's `isHardReserved` check outright.** This one is far wider than #398 —
   it removes the whole tier, not the three names — so read it for its split rather than its
-  size: `TestPackWarnsWhenFilesNamesHardReserved` goes **eight red of thirteen**, and the five
+  size: `TestPackWarnsWhenFilesNamesHardReserved` goes **nine red of fourteen**, and the five
   that stay green are `.git` and the four git-metadata rows, all held up by `filterGitFiles`.
   It is also the one direction here that reaches a second package: `internal/pack` and `tests`
   both print `FAIL`, ten failing tests between them, `TestPublishExcludesTheRetreatSnapshot`
-  and `TestPublishKeepsMixedCaseSecretsOutOfTheStore` among them.
+  and `TestPublishKeepsMixedCaseSecretsOutOfTheStore` among them. The split was eight of
+  thirteen until #402 added the `./node_modules/dep` row to that table, which lands in the red
+  group; two of the other four bullets here also cite this test's row counts — **Remove the
+  fix**, at four, and **B-prime, the classic spelling**, at six — and both were re-run for #402
+  and neither moved.
 
 - **B-prime, the classic spelling** — hoist a direct `files` name above `isHardReserved`, as
   `isHardReserved(relPath) && !(useWhitelist && isIncludedDirectly(relPath, filesField))`.
