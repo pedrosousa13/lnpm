@@ -474,14 +474,21 @@ func TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm(t *testing.T) {
 // or more path segments on both sides of the package.
 //
 // Every row was checked against npm 11.16.0 with `npm pack --dry-run --json` on
-// one fixture package, holding index.js, lib/top.js, lib/sub/a.js,
-// lib/sub/a.txt, lib/a/b/c.js, lib/keep.js, dist/index.js, dist/cli/index.js,
-// src/weirda.txt, weirda.txt, weirdb.txt, weirda/x.txt, a.txt, b.txt, !.txt,
-// {tmpl.txt, a file literally named weird{a,b}.txt and a directory literally
-// named weird{a,b}. Every entry below was run against that one tree, so the
-// answers are comparable to each other and not stitched from several fixtures.
-// Rows marked "Divergence" are the ones where lnpm's answer differs from that
-// run; every other row selects what npm selects.
+// one fixture package, holding index.js, top.js, top.md, lib/top.js,
+// lib/sub/a.js, lib/sub/a.txt, lib/a/b/c.js, lib/keep.js, dist/index.js,
+// dist/cli/index.js, dist/cli/deep/z.js, src/weirda.txt, weirda.txt, weirdb.txt,
+// weirda/x.txt, a.txt, b.txt, !.txt, {tmpl.txt, a file literally named
+// weird{a,b}.txt and a directory literally named weird{a,b}. Every entry below
+// was run against that one tree, so the answers are comparable to each other and
+// not stitched from several fixtures. Rows marked "Divergence" are the ones
+// where lnpm's answer differs from that run; every other row selects what npm
+// selects.
+//
+// #406 added top.js, top.md and dist/cli/deep/z.js to that tree and re-ran every
+// entry rather than adding rows from a second fixture, which is what the
+// paragraph above is asking for. The three exist to separate a subtree from one
+// level below the root and to give the root a file of its own; no existing row's
+// answer moved.
 //
 // The character-class and unbalanced-brace rows are what ADR-0003 cites for the
 // two syntax consequences it records on this side. npm ships !.txt and b.txt for
@@ -495,16 +502,25 @@ func TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm(t *testing.T) {
 // asserted rather than reduced to a boolean because a direct match overrides
 // defaultExcludes and containment does not.
 //
-// Six rows diverge, in four groups, and each group is deliberate:
+// The subtree-expansion rows are #406 and are no longer divergences. npm ships
+// dist/cli/index.js and dist/cli/deep/z.js for "files": ["dist/*"], and ships
+// the whole tree for ["*"]; both were divergences here until #406, because
+// neither glob engine crosses a separator on a single "*" —
+// doublestar.Match("dist/*", "dist/cli/index.js") is false, same as
+// filepath.Match's was. matchFilesField now reaches those paths through the
+// ancestor-directory walk in its default branch instead of through the engine,
+// and still classifies them containment, so nothing about #321's override moved.
 //
-//   - The two rows where a single "*" stops at a separator. npm ships
-//     dist/cli/index.js for "files": ["dist/*"], and ships the whole tree for
-//     ["*"], because it expands a *directory* a pattern matches into its entire
-//     subtree. Neither glob engine does that — doublestar.Match("dist/*",
-//     "dist/cli/index.js") is false, same as filepath.Match's — so the gap is
-//     npm's tree expansion and not the "**" fix. #350 measured it and left it
-//     standing; matchFilesField expands a directory only for a literal name, via
-//     the HasPrefix branch.
+// The four rows that hold the boundary are worth reading together, since the
+// rule is narrower than "an entry that matches a directory expands it":
+// "only a bare last segment expands" and its nested twin pin ["d*"] and
+// ["dist/c*"] selecting nothing, which is what npm does though d* matches the
+// directory dist and dist/c* matches dist/cli; "a globbed prefix expands too"
+// pins that the restriction is on the last segment alone, since ["di*/*"] ships
+// the dist subtree there; and "the expansion does not reach a root file" pins
+// ["*/*"] leaving top.js out, which npm also leaves out.
+//
+// Four rows diverge, in three groups, and each group is deliberate:
 //
 //   - "brace alternation reaches the literal spelling too": npm ships weirda.txt
 //     and weirdb.txt and *not* the file named weird{a,b}.txt. lnpm ships all
@@ -528,12 +544,12 @@ func TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm(t *testing.T) {
 //     entry with minimatch, which has extglob; doublestar does not, and
 //     filepath.Match did not either, so this is inherited rather than introduced
 //     by #350. npm ships a.txt and b.txt for "files": ["+(a|b).txt"] and for
-//     ["@(a|b).txt"]; lnpm selects nothing for either. Fails closed, like the
-//     "dist/*" group. ("!(a).txt" is not a fourth spelling to test here: npm
-//     ships nothing for it, reading the leading "!" as a negated entry rather
-//     than as extglob, so it would not distinguish the two engines.)
+//     ["@(a|b).txt"]; lnpm selects nothing for either. Fails closed.
+//     ("!(a).txt" is not a fourth spelling to test here: npm ships nothing for
+//     it, reading the leading "!" as a negated entry rather than as extglob, so
+//     it would not distinguish the two engines.)
 //
-// "trailing slash on a glob names nothing" is not one of the six — npm ships
+// "trailing slash on a glob names nothing" is not one of the four — npm ships
 // nothing for ["dist/**/"] or ["dist/*/"] either. It is called out here only
 // because the empty last segment is the trap #350 had to guard; see
 // TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm.
@@ -552,13 +568,17 @@ func TestMatchFilesFieldGlobsWithDoublestar(t *testing.T) {
 		{"bare double star reaches the root", "index.js", "**", filesMatchContains},
 		{"bare double star reaches a nested path", "dist/cli/index.js", "**", filesMatchContains},
 		{"bare single star stays at the root", "index.js", "*", filesMatchContains},
-		// Divergence: npm ships this path for this entry.
-		{"bare single star does not cross a separator", "dist/index.js", "*", filesMatchNone},
+		{"bare single star expands a matched directory", "dist/index.js", "*", filesMatchContains},
 
 		{"subtree glob reaches any depth", "dist/cli/index.js", "dist/**", filesMatchContains},
 		{"single star reaches one level", "dist/index.js", "dist/*", filesMatchContains},
-		// Divergence: npm ships this path for this entry.
-		{"single star does not expand a matched directory", "dist/cli/index.js", "dist/*", filesMatchNone},
+		{"single star expands a matched directory", "dist/cli/index.js", "dist/*", filesMatchContains},
+		{"the expansion reaches any depth", "dist/cli/deep/z.js", "dist/*", filesMatchContains},
+		{"only a bare last segment expands", "dist/index.js", "d*", filesMatchNone},
+		{"only a bare last segment expands, nested", "dist/cli/index.js", "dist/c*", filesMatchNone},
+		{"a globbed prefix expands too", "dist/cli/index.js", "di*/*", filesMatchContains},
+		{"expansion reaches through two globbed segments", "lib/sub/a.js", "*/*", filesMatchContains},
+		{"the expansion does not reach a root file", "top.js", "*/*", filesMatchNone},
 
 		{"trailing slash on a glob names nothing", "dist", "dist/**/", filesMatchNone},
 		{"trailing slash on a glob reaches nothing under it", "dist/cli/index.js", "dist/**/", filesMatchNone},
@@ -5156,6 +5176,213 @@ func TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes(t *testing.T) {
 	assertPackedSet(t, tmpDir, []string{"dist/a.js", "index.js", "package.json"},
 		"a bare \"**\" sweeps the whole tree in and still names nothing, so it "+
 			"cannot override defaultExcludes")
+}
+
+// TestPackGlobExpandsAMatchedDirectory is #406's first two acceptance criteria
+// at the Pack level: an entry whose last segment is a bare wildcard expands the
+// directories it matches into their whole subtrees, as npm does.
+//
+// Before #406 the expansion happened only for an entry naming a directory
+// literally, through matchFilesField's HasPrefix branch, so ["dist/*"] selected
+// dist/index.js and nothing under dist/cli, and ["*"] selected the package root
+// and no subdirectory at all.
+//
+// The last two rows are the boundary rather than extra coverage, and they are
+// what stops the fix from being "any entry matching a directory expands it":
+// ["d*"] selects nothing though d* matches the directory dist, and ["dist/c*"]
+// selects nothing though dist/c* matches dist/cli. A wider rule would ship two
+// subtrees npm does not.
+//
+// Every want below is npm's own answer. The five entries were run against a
+// fixture package holding exactly this tree — index.js, dist/a.js,
+// dist/cli/index.js, dist/cli/deep/z.js and lib/keep.js — with npm 11.16.0 and
+// `npm pack --dry-run --json` on 2026-08-25, and each packed set came back
+// byte-identical to the row beside it, package.json included. That is parity
+// rather than an approximation of it, which is worth stating because these same
+// entries were divergences here until #406.
+//
+// No default-excluded path is in any of these trees on purpose. Widening the
+// reach and refusing to widen the consent are separate claims, and
+// TestPackGlobSweepDoesNotConsentToDefaultExcludes is the second one.
+func TestPackGlobExpandsAMatchedDirectory(t *testing.T) {
+	tree := map[string]string{
+		"index.js":           "module.exports = {}",
+		"dist/a.js":          "module.exports = {}",
+		"dist/cli/index.js":  "module.exports = {}",
+		"dist/cli/deep/z.js": "module.exports = {}",
+		"lib/keep.js":        "module.exports = {}",
+	}
+
+	tests := []struct {
+		name  string
+		files string
+		want  []string
+	}{
+		{
+			name:  "a bare wildcard segment expands to the subtree",
+			files: `["dist/*"]`,
+			want:  []string{"dist/a.js", "dist/cli/deep/z.js", "dist/cli/index.js", "package.json"},
+		},
+		{
+			name:  "a bare wildcard at the root expands the whole tree",
+			files: `["*"]`,
+			want: []string{
+				"dist/a.js", "dist/cli/deep/z.js", "dist/cli/index.js",
+				"index.js", "lib/keep.js", "package.json",
+			},
+		},
+		{
+			name:  "a globbed prefix expands too",
+			files: `["di*/*"]`,
+			want:  []string{"dist/a.js", "dist/cli/deep/z.js", "dist/cli/index.js", "package.json"},
+		},
+		{
+			name:  "a constrained last segment does not expand",
+			files: `["d*"]`,
+			want:  []string{"package.json"},
+		},
+		{
+			name:  "a constrained last segment does not expand, nested",
+			files: `["dist/c*"]`,
+			want:  []string{"package.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			files := make(map[string]string, len(tree)+1)
+			for rel, content := range tree {
+				files[rel] = content
+			}
+			files["package.json"] = `{
+				"name": "glob-expansion",
+				"version": "1.0.0",
+				"files": ` + tt.files + `
+			}`
+			writeMainEntryTree(t, tmpDir, files)
+
+			assertPackedSet(t, tmpDir, tt.want,
+				"an entry ending in a bare wildcard expands a matched directory "+
+					"into its subtree, and one that constrains its last segment does not")
+		})
+	}
+}
+
+// TestPackGlobSweepDoesNotConsentToDefaultExcludes is #406's third acceptance
+// criterion, and the one the whole change is balanced on. A directory swept in
+// by a glob is containment, never naming, so widening what ["*"] reaches must
+// not widen what it consents to publish.
+//
+// It is the same claim TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes
+// makes for "**" and not a duplicate of it. That test's entry already reached
+// every path in its tree before #406 — doublestar's "**" spans separators — so
+// it says nothing about the paths #406 newly reaches. Five of the eight
+// default-excluded paths below are exactly those — every one under dist. Before
+// #406, ["*"] selected no path under dist at all, so dist/.env stayed out for
+// want of any match rather than because the match was containment.
+//
+// This is the only test in the suite that fails when #406's new branch is
+// classified filesMatchDirect instead of filesMatchContains, which is the
+// change that turns the sweep into consent. Measured on 2026-08-25 by making
+// it, with go vet ./... clean first and internal/pack's result line read for a
+// duration: this test packs [dist/.env dist/a.js dist/app.log dist/cli/.env
+// dist/cli/b.js dist/cli/deep.log dist/pkg-1.0.tgz index.js package.json], and
+// the two tests #406's issue named as the guards for that criterion both stay
+// green. TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes stays green
+// because "**" matches every path in its tree directly, so the new branch never
+// runs there, and every tree in
+// TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch puts its
+// default-excluded file where the entry already reaches it, for the same
+// reason. The five rows of TestMatchFilesFieldGlobsWithDoublestar that assert
+// filesMatchContains go red too, but they assert the classification rather than
+// a packed set, so they are the statement of the rule and not the proof that a
+// secret stays out.
+//
+// The root .env, app.log and pkg-1.0.0.tgz stay out under that change as well,
+// and they are here as the control rather than as the guarantee: "*" matches a
+// root path outright, so they are answered by the bare-wildcard rule that
+// predates #406 and never reach the new branch.
+//
+// The three shapes are the overridable list's rather than three spellings of
+// one: .env is matched literally, a log and a tarball by their extensions. Each
+// appears at the root and again under a swept directory, and .env and the log
+// twice under one, so a rule that stopped expanding at the first level would
+// still be caught.
+//
+// npm ships every path in this tree for "files": ["*"] — it has no default
+// exclusion for any of them. Run on a fixture package holding exactly these
+// eleven paths with npm 11.16.0 on 2026-08-25: it packs the .env, the log and
+// the tarball at every depth. So the whole of what this test asserts is lnpm's
+// own rule, and the divergence is #321's, as README's list records.
+func TestPackGlobSweepDoesNotConsentToDefaultExcludes(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "glob-sweep-consent",
+			"version": "1.0.0",
+			"files": ["*"]
+		}`,
+		"index.js":      "module.exports = {}",
+		"dist/a.js":     "module.exports = {}",
+		"dist/cli/b.js": "module.exports = {}",
+
+		".env":          "SECRET=hunter2",
+		"app.log":       "started",
+		"pkg-1.0.0.tgz": "tarball",
+
+		"dist/.env":         "SECRET=hunter2",
+		"dist/app.log":      "started",
+		"dist/pkg-1.0.tgz":  "tarball",
+		"dist/cli/.env":     "SECRET=hunter2",
+		"dist/cli/deep.log": "started",
+	})
+
+	assertPackedSet(t, tmpDir,
+		[]string{"dist/a.js", "dist/cli/b.js", "index.js", "package.json"},
+		"a bare wildcard sweeps a directory in and still names nothing, so it "+
+			"cannot override defaultExcludes at any depth")
+}
+
+// TestPackGlobSweepCannotReachHardReserved is #406's fourth acceptance
+// criterion. A wildcard entry now expands every directory its last segment
+// matches, and node_modules and .git must not be among them.
+//
+// Read this one for what it does and does not guarantee, because every path in
+// it is held up by a barrier ahead of the classification #406 changed, and none
+// would move if that classification were wrong. The walk answers isHardReserved
+// per path and returns filepath.SkipDir for a matching directory, so neither
+// tree is descended into and matchFilesField is never asked about anything
+// inside them. That makes this a criterion check rather than a revert target —
+// docs/agents/verification-discipline.md records the same shape for
+// TestPackMainCannotDefeatHardReserved's node_modules row.
+//
+// The two trees are not equally weak, and the split was measured rather than
+// read off the code. Disabling the walk's isHardReserved check outright on
+// 2026-08-25, with go vet ./... clean first, packs
+// [index.js node_modules/.package-lock.json node_modules/dep/index.js
+// package.json]: node_modules arrives, and .git/config and .git/objects/ab/cdef
+// still do not, because filterGitFiles strips them from the finished set as a
+// second answer. So the node_modules rows do carry the walk's check, and the
+// .git rows carry nothing at all on their own.
+func TestPackGlobSweepCannotReachHardReserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json": `{
+			"name": "glob-sweep-hard-reserved",
+			"version": "1.0.0",
+			"files": ["*"]
+		}`,
+		"index.js":                        "module.exports = {}",
+		"node_modules/dep/index.js":       "module.exports = {}",
+		".git/config":                     "[core]\n",
+		".git/objects/ab/cdef":            "object",
+		"node_modules/.package-lock.json": "{}",
+	})
+
+	assertPackedSet(t, tmpDir, []string{"index.js", "package.json"},
+		"a bare wildcard sweeps every directory it matches, and the "+
+			"hard-reserved trees are not among them")
 }
 
 // TestPackWarnsWhenIgnoreNegationNamesHardReserved covers the second override

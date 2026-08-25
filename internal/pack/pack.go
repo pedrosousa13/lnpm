@@ -2032,7 +2032,8 @@ const (
 	// filesMatchContains: the entry swept the path in rather than naming it —
 	// by naming an ancestor ("dist" reaching dist/a.js), by naming a subtree
 	// ("dist/**"), by ending in a bare wildcard segment ("dist/*", "*", "**"),
-	// or by naming nothing at all (the degenerate "").
+	// by matching an ancestor with such a segment ("*" reaching dist/a.js,
+	// #406), or by naming nothing at all (the degenerate "").
 	filesMatchContains
 	// filesMatchDirect: the entry named this path. Either literally
 	// ("dist/.env"), or as a glob whose last segment constrains the name
@@ -2060,9 +2061,16 @@ const (
 // question is whether the entry said anything about the name, not how deep it
 // reaches.
 //
+// Since #406 the two spellings do not differ in reach either, and that came from
+// the *other* side of the question: npm expands whatever such an entry matches
+// into a subtree, so "dist/*" selects dist/cli/index.js as "dist/**" does. The
+// classification did not move to meet it — the default branch's ancestor arm is
+// containment and only containment — so the paragraph above still holds, and
+// the two questions stayed separate answers to one predicate.
+//
 // The branches below and their order are unchanged from the single-verdict
-// isIncluded this was split out of; only the returns are, and the trailing-"/"
-// branch #350 added.
+// isIncluded this was split out of; the returns are, the trailing-"/" branch is
+// #350's, and the default branch's ancestor arm is #406's.
 //
 // The trailing "/**" branch is kept, and it is no longer redundant in the way it
 // looks. For an entry carrying no metacharacter ahead of the "/**" the glob
@@ -2149,6 +2157,46 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 			// nothing would have become an entry naming a path. #350.
 
 		default:
+			// A bare wildcard in the last segment does two things at once, and
+			// they are separate questions. It decides the classification —
+			// containment rather than naming, the paragraph below — and it
+			// decides the reach, this line and the ancestor branch under the
+			// glob test. #406.
+			//
+			// The reach half is npm's. Read from npm-packlist's processPackage
+			// in npm 11.16.0: an entry ending in "/*" has a second "*" appended
+			// before anything globs, so "dist/*" is globbed as "dist/**", and an
+			// entry the walker cannot lstat becomes an inverted rule in a
+			// synthetic ignore *file*, where a bare "*" carries gitignore's
+			// match-at-any-depth meaning rather than a glob's. Either way the
+			// entry sweeps a whole subtree.
+			//
+			// Run on the fixture TestMatchFilesFieldGlobsWithDoublestar's header
+			// describes, one entry at a time with npm pack --dry-run --json:
+			//
+			//	["dist/*"]  ships dist/cli/deep/z.js, so the reach is a subtree
+			//	            and not one level
+			//	["*"]       ships the whole tree
+			//	["*/*"]     ships lib/sub/a.js and not top.js
+			//	["di*/*"]   ships the dist subtree, so the prefix may glob
+			//
+			// It is only the *last* segment that does this, which is why the
+			// reach is not "any entry that matches a directory expands it". Two
+			// entries settle that, run against the same fixture: ["d*"] and
+			// ["dist/c*"] each ship nothing but the always-included set, though
+			// d* matches the directory dist and dist/c* matches dist/cli. So an
+			// ancestor-directory rule written without this guard would ship two
+			// subtrees npm does not.
+			//
+			// The ancestor walk is how the subtree is reached rather than
+			// rewriting the entry to prefix + "/**" and matching that. The two
+			// differ on ["*/*"]: doublestar.Match("*/**", "index.js") is true —
+			// run and confirmed — where npm ships no root file for that entry,
+			// since "**" here may stand for zero segments. Asking whether the
+			// entry matches a *directory above* relPath cannot reach a root file
+			// at all, because a root file has no ancestor but the package root.
+			sweepsSubtree := isBareWildcard(lastSegment(pattern))
+
 			if matched, _ := doublestar.Match(pattern, relPath); matched {
 				// A glob names a path only if its last segment says something
 				// about the name. A trailing bare wildcard does not: "*" and
@@ -2180,11 +2228,41 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 				// Anything that constrains the segment still names: "*.example",
 				// ".env.*" and "dist/*.env" all pick out files by name rather
 				// than sweeping a directory.
-				if isBareWildcard(lastSegment(pattern)) {
+				if sweepsSubtree {
 					match = filesMatchContains
 				} else {
 					match = filesMatchDirect
 				}
+			} else if sweepsSubtree && matchesAncestorDir(pattern, relPath) {
+				// The entry matched a directory relPath sits under, so it swept
+				// the path in. Containment, never naming — and that is the
+				// whole safety property of #406 rather than a detail of it.
+				// Every path here arrived through a bare wildcard, so the entry
+				// said nothing about any name, and #321's override must not
+				// fire: "files": ["*"] sweeps dist/.env in and still does not
+				// publish it.
+				//
+				// Writing filesMatchDirect here is what publishes it, and one
+				// test in the suite catches that:
+				// TestPackGlobSweepDoesNotConsentToDefaultExcludes, which #406
+				// added for this line alone. Measured on 2026-08-25 by making
+				// exactly that change, with go vet ./... clean first and
+				// internal/pack's result line read for a duration — it packs
+				// [dist/.env dist/a.js dist/app.log dist/cli/.env dist/cli/b.js
+				// dist/cli/deep.log dist/pkg-1.0.tgz index.js package.json].
+				//
+				// The two tests #406's issue named as the guards here both stay
+				// green under it, and that is worth knowing rather than
+				// assuming: TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes
+				// runs "**", which doublestar matches against every path
+				// directly, and every tree in
+				// TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch
+				// puts its default-excluded file where the entry already
+				// reaches it. Neither ever runs this branch. A third case stays
+				// green for a reason of its own: the *root* .env is refused by
+				// the bare-wildcard rule in the branch above, not by this line,
+				// since "*" matches a root path outright.
+				match = filesMatchContains
 			}
 		}
 
@@ -2402,6 +2480,33 @@ func lastSegment(pattern string) string {
 // different routes.
 func isBareWildcard(segment string) bool {
 	return segment == "*" || segment == "**"
+}
+
+// matchesAncestorDir reports whether pattern matches some directory strictly
+// above relPath, both slash-separated and relative to the package root.
+//
+// This is how an entry ending in a bare wildcard reaches a whole subtree, and
+// its one caller guards it on exactly that — see matchFilesField's default
+// branch for the npm runs behind both halves. A hit there is containment and
+// nothing else, so this predicate can never widen #321's override.
+//
+// It walks up rather than down because matchFilesField is asked per file:
+// collectFiles skips directories before asking, so the directory dist/cli is
+// never a relPath and "dist/*" would otherwise select nothing under it.
+//
+// It terminates because slashpath.Dir walks strictly up and returns "." for a
+// single-segment path. The package root is not a candidate — it is not a path
+// any entry can name, and stopping there is what keeps ["*/*"] off a root file.
+// A doublestar syntax error is a non-match here, as it is at the caller's own
+// Match: an entry the engine will not parse selects nothing rather than
+// everything.
+func matchesAncestorDir(pattern, relPath string) bool {
+	for dir := slashpath.Dir(relPath); dir != "." && dir != "/" && dir != ""; dir = slashpath.Dir(dir) {
+		if matched, _ := doublestar.Match(pattern, dir); matched {
+			return true
+		}
+	}
+	return false
 }
 
 // isDefaultInclude reports whether relPath is in the always-included set: the

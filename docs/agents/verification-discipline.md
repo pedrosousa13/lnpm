@@ -377,6 +377,52 @@ records three times.** It happened a fourth time in the same change:
 `TestPackMainCannotDefeatHardReserved`'s header went on naming `.npmrc` as the one load-bearing
 row and `node_modules` as the one weak one after #398 added a third weak row beneath it.
 
+### The glob subtree expansion, added by #406
+
+#406 let a `files` entry whose last segment is a bare wildcard expand a directory it
+matches into the whole subtree, through an ancestor-directory walk in `matchFilesField`'s
+default branch. Measured on 2026-08-25 on Linux, each direction preceded by `go vet ./...`
+— clean, exit 0 — and each read for the `ok`/`FAIL <package>` result line rather than for
+silence. Every package outside `internal/pack` prints `ok` under both.
+
+- **Remove the fix**, by disabling the `matchesAncestorDir` branch. **Eight red subtests
+  over two tests, plus one subtest-free test — nine failures, three tests.** Five rows of
+  `TestMatchFilesFieldGlobsWithDoublestar`, three of `TestPackGlobExpandsAMatchedDirectory`,
+  and `TestPackGlobSweepDoesNotConsentToDefaultExcludes`, which **has no subtests** and so
+  prints only the unindented `--- FAIL:` shape. The `filesMatchNone` rows stay green and
+  could not do otherwise: the branch only ever widens, so a row asserting that an entry
+  selects nothing cannot move under its removal. That covers
+  `only_a_bare_last_segment_expands` and its nested twin,
+  `the_expansion_does_not_reach_a_root_file`, and the two `d*`/`dist/c*` rows of
+  `TestPackGlobExpandsAMatchedDirectory`.
+
+- **Classify the swept path `filesMatchDirect` instead of `filesMatchContains`.** This is
+  the direction that publishes secrets, and its result is the reason this subsection
+  exists. **One packed-set test catches it**: `TestPackGlobSweepDoesNotConsentToDefaultExcludes`
+  packs `[dist/.env dist/a.js dist/app.log dist/cli/.env dist/cli/b.js dist/cli/deep.log
+  dist/pkg-1.0.tgz index.js package.json]`. #406's issue named
+  `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes` and
+  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` as the guards for this
+  criterion, and **both stay green** — the first runs `"**"`, which doublestar matches
+  against every path in its tree directly, and every tree in the second puts its
+  default-excluded file where the entry already reaches it, so neither ever runs the new
+  branch. The same five `TestMatchFilesFieldGlobsWithDoublestar` rows go red, but they
+  assert a classification rather than a packed set, so they state the rule and do not prove
+  a secret stays out. A criterion whose named guards were taken on trust would have been
+  reported covered by two tests that never execute the line.
+
+  The root `.env` stays out under this direction too, and that is a control rather than a
+  hole: `"*"` matches a root path outright, so the pre-#406 bare-wildcard rule answers it
+  and the new branch is never reached.
+
+- **Disable the walk's `isHardReserved` check outright**, for
+  `TestPackGlobSweepCannotReachHardReserved`. It packs
+  `[index.js node_modules/.package-lock.json node_modules/dep/index.js package.json]`: the
+  `node_modules` paths arrive and the `.git` ones still do not, `filterGitFiles` having
+  stripped them. So that test's `node_modules` rows carry the walk's check and its `.git`
+  rows carry nothing of their own — the split the `#398` subsection above records, reached
+  again from a `files` entry rather than from `main`.
+
 ## A read made strict changes its callers
 
 Making a function return a real error where it used to swallow one is only half a fix. Every
