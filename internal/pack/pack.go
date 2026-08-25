@@ -259,13 +259,18 @@ var hardReservedExcludes = []string{
 	// The bare-name spelling is what makes the two agree, and it was measured
 	// rather than read off the pattern syntax. isGitRelatedPath matches a
 	// basename at any depth; a separator-free unanchored pattern reaches
-	// matchesIgnorePattern's basename branch and does the same, so "/.gitignore"
-	// or ".gitignore/**" would not agree and these do. The measurement lives in
-	// TestGitMetadataTierAgreesWithTheGitSafetyFilter, whose table runs the two
-	// predicates against each other over the three names at the root, one of
-	// them three levels down, and five near-misses. None of the three is a
-	// directory, so none takes the "/**" second spelling the entries above
-	// carry.
+	// matchesIgnorePattern's basename branch and does the same. The two obvious
+	// alternatives were run rather than argued about, on 2026-08-25, against
+	// docs/.gitignore: "/.gitignore" is anchored so the basename branch is
+	// skipped, and ".gitignore/**" takes the trailing-"/**" branch, which wants
+	// an exact match or a ".gitignore/" prefix. Both answer false there where
+	// isGitRelatedPath answers true, so both would leave the tier and the filter
+	// disagreeing at depth; the bare name answers true. The standing measurement
+	// lives in TestGitMetadataTierAgreesWithTheGitSafetyFilter, whose table runs
+	// the two predicates against each other over the three names at the root and
+	// one level down, .gitignore three levels down as well, and five
+	// near-misses. None of the three is a directory, so none takes the "/**"
+	// second spelling the entries above carry.
 	//
 	// How much this list now carries was measured too, on 2026-08-25, by
 	// commenting out Pack's filterGitFiles call and running internal/pack and
