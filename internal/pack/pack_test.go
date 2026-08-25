@@ -4255,6 +4255,160 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 	}, "issue #321 fixture J must ship every path the manifest names")
 }
 
+// TestNamesHardReservedDotSlashAgreesWithUnprefixedForm is #402's core claim,
+// and it is the unit-level counterpart of
+// TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm: a leading "./" is no part
+// of the name npm reads out of a "files" entry, so the two spellings of an entry
+// must reach the same verdict about whether it names a hard-reserved path.
+//
+// Each row runs its entry and "./"+entry, and pins the shared answer as well as
+// the agreement. Pinning both matters here more than usual, because before #402
+// every root row already agreed — and agreed for the wrong reason. Measured on
+// 2026-08-25 by reverting namesHardReserved to its old trims,
+// strings.TrimSuffix(strings.TrimPrefix(entry, "/"), "/"), with go vet ./...
+// clean first: no root row moved, but four of this test's rows went red —
+// subtree glob, trailing slash on a glob, and both nested-directory rows —
+// because the old trims left "./node_modules" unchanged and it only reached
+// isHardReserved by coincidence, through applyIgnorePatterns matching an
+// unanchored separator-free pattern against filepath.Base, which is
+// "node_modules" for that entry. A test asserting only that the two spellings
+// agree would have stayed green throughout, on every root row, while
+// "./node_modules/dep" was dropped in silence. The same revert turns two more
+// rows red in TestNamesHardReservedResolvesOneDotSlashInNpmsOrder below and one
+// in TestPackWarnsWhenFilesNamesHardReserved — seven rows over three tests in
+// all — and every package outside internal/pack still prints `ok`.
+//
+// So the load-bearing rows are the nested ones, where Base is "dep" rather than
+// the pattern and the coincidence runs out. The false rows are load-bearing in
+// the other direction: "./dist" and "./sub/dist" fail if a normalization is wide
+// enough to make any "./"-prefixed entry look hard-reserved, and ".env" is the
+// row that fails if this predicate is ever wired to defaultExcludes, the list
+// #321 exists to keep overridable.
+//
+// The degenerate rows carry the second half of the function. An entry that
+// normalizes to "" means "ship everything" rather than naming a path, and "./"
+// joins "", "/" and "//" in that set since #402 — where before it normalized to
+// "." instead. Both spellings still answer false, so nothing observable moved,
+// but "." itself is deliberately not in the set: normalizeFilesEntry leaves a
+// bare "." alone, npm ships only the always-included set for ["."], and
+// isHardReserved(".") is false. Run and confirmed for each.
+func TestNamesHardReservedDotSlashAgreesWithUnprefixedForm(t *testing.T) {
+	tests := []struct {
+		name string
+		// entry is the unprefixed spelling. Each row runs it and "./"+entry.
+		entry string
+		want  bool
+	}{
+		{"root directory", "node_modules", true},
+		{"root git directory", ".git", true},
+		{"root git metadata file", ".gitignore", true},
+		{"root lockfile", "package-lock.json", true},
+		{"root auth file", ".npmrc", true},
+		{"anchored root directory", "/node_modules", true},
+		{"trailing slash directory", "node_modules/", true},
+		{"subtree glob", "node_modules/**", true},
+		{"trailing slash on a glob", "node_modules/**/", true},
+		{"nested under a hard-reserved directory", "node_modules/dep", true},
+		{"nested two levels down", "node_modules/dep/index.js", true},
+		{"nested lockfile", "sub/package-lock.json", true},
+		{"nested git metadata file", "docs/.gitignore", true},
+		{"ordinary root directory", "dist", false},
+		{"ordinary nested path", "sub/dist", false},
+		{"ordinary subtree glob", "dist/**", false},
+		{"overridable by defaultExcludes", ".env", false},
+		{"empty", "", false},
+		{"bare slash", "/", false},
+		{"bare dot", ".", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plain := namesHardReserved(tt.entry)
+			if plain != tt.want {
+				t.Fatalf("namesHardReserved(%q) = %v, want %v", tt.entry, plain, tt.want)
+			}
+
+			dotted := namesHardReserved("./" + tt.entry)
+			if dotted != plain {
+				t.Errorf("namesHardReserved(%q) = %v, but the unprefixed %q = %v; "+
+					"npm reads a leading \"./\" as no part of the name, so an entry "+
+					"lnpm never publishes must warn in both spellings rather than "+
+					"being dropped in silence in one of them",
+					"./"+tt.entry, dotted, tt.entry, plain)
+			}
+		})
+	}
+}
+
+// TestNamesHardReservedResolvesOneDotSlashInNpmsOrder pins spellings mostly
+// beyond what the table above can express — each row there runs one entry and
+// that same entry with "./" prepended. Five of these eight are not that:
+// "././node_modules", "/./node_modules", "././node_modules/dep",
+// "/./node_modules/dep" and ".//node_modules/dep" each mix a "./" in behind
+// another prefix, a shape no table entry supplies. The other three —
+// "./node_modules", ".//node_modules" and "./node_modules/dep" — are exactly
+// the table's dotted run for its "node_modules", "/node_modules" and
+// "node_modules/dep" rows; they are kept here too, cheaply, to anchor the
+// slash-mixed rows around them.
+//
+// It is what makes #402's decision to share normalizeFilesEntry, rather than add
+// a "./" trim to namesHardReserved's own line, load-bearing rather than a matter
+// of taste. The obvious minimal edit is to wrap the
+// existing expression — TrimPrefix(TrimSuffix(TrimPrefix(entry, "/"), "/"),
+// "./") — which resolves the "./" *after* the "/" trims. That edit was written
+// and the whole suite run on 2026-08-25, before this test existed: every package
+// printed `ok` with a duration and nothing went red at all. Nothing in the
+// repository pinned the ordering on this side, so both wrong spellings were free.
+//
+// With this test the same edit turns two rows red, one in each direction —
+// "/./node_modules/dep" answers true against a wanted false, and
+// ".//node_modules/dep" false against a wanted true. The other wrong fix the
+// ordering invites, trimming a *run* of "./" rather than one, turns
+// "././node_modules/dep" red alone. Both runs were preceded by `go vet ./...`
+// and read for the `FAIL <package>` line with a duration; every package outside
+// internal/pack printed `ok` under each.
+//
+// The wanted answers are npm's, quoted from the four measurements
+// normalizeFilesEntry's own comment carries: ["./dist"] and [".//dist"] ship
+// dist, while ["././dist"] and ["/./dist"] ship nothing. An entry npm selects
+// nothing for names nothing to warn about, so it must answer false.
+//
+// Only the nested rows discriminate, and that is measured rather than assumed.
+// "././node_modules" and "/./node_modules" both normalize to "./node_modules"
+// and then answer true anyway, through the same filepath.Base coincidence that
+// used to carry "./node_modules" — Base("./node_modules") is "node_modules".
+// They answered true before #402 as well, by the identical route, so nothing
+// moved there; they are kept as the rows that say the coincidence is still
+// reachable rather than as evidence for the ordering. Base("./node_modules/dep")
+// is "dep", so at depth the coincidence runs out and the ordering is all that
+// answers.
+func TestNamesHardReservedResolvesOneDotSlashInNpmsOrder(t *testing.T) {
+	tests := []struct {
+		entry string
+		want  bool
+	}{
+		{"./node_modules", true},
+		{"././node_modules", true},
+		{"/./node_modules", true},
+		{".//node_modules", true},
+		{"./node_modules/dep", true},
+		{"././node_modules/dep", false},
+		{"/./node_modules/dep", false},
+		{".//node_modules/dep", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.entry, func(t *testing.T) {
+			if got := namesHardReserved(tt.entry); got != tt.want {
+				t.Errorf("namesHardReserved(%q) = %v, want %v; one leading \"./\" "+
+					"comes off and it comes off before the \"/\" trims, which is "+
+					"what npm does and what normalizeFilesEntry carries the "+
+					"measurements for", tt.entry, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestPackWarnsWhenFilesNamesHardReserved is #321's other acceptance criterion:
 // node_modules and .git stay unpackable when named explicitly in "files", and
 // naming one says so out loud instead of dropping it in silence. Silence is the
@@ -4266,18 +4420,18 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 // entry naming a path inside one never reaches a walked path for any per-file
 // check to notice.
 //
-// The thirteen rows are not equal evidence on their packed-set half. Disabling the
+// The fourteen rows are not equal evidence on their packed-set half. Disabling the
 // isHardReserved branch in collectFiles' walk outright and running this test is
-// what established which is which — not reading the code. Re-measured for #398,
-// which took the table from nine rows to thirteen: eight red, five green.
+// what established which is which — not reading the code. Re-measured for #402,
+// which took the table from thirteen rows to fourteen: nine red, five green.
 //
-//   - Eight rows fail, and each fails by packing the path it named. .npmrc
-//     reported `packed: [.npmrc index.js package.json]`; node_modules and
-//     "./node_modules" both reported `packed: [index.js
+//   - Nine rows fail, and each fails by packing the path it named. .npmrc
+//     reported `packed: [.npmrc index.js package.json]`; node_modules,
+//     "./node_modules" and "./node_modules/dep" all reported `packed: [index.js
 //     node_modules/dep/index.js package.json]`; each of the four lockfile rows
 //     reported its own lockfile back, `packed: [index.js package-lock.json
 //     package.json]` for the npm one; and "./sub/package-lock.json" reported
-//     `packed: [index.js package.json sub/package-lock.json]`. All eight are
+//     `packed: [index.js package.json sub/package-lock.json]`. All nine are
 //     real evidence that the check is what refuses the entry.
 //
 //   - Five rows stayed green, all for the same reason: .git and the four git
@@ -4326,7 +4480,17 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 // that caught namesHardReserved's comment claiming such an entry is refused in
 // silence, when the basename fold makes it warn.
 //
-// The warning half is load-bearing on all thirteen rows, since nothing else in the
+// Its nested twin "./node_modules/dep" is #402's row and arrived in the first
+// group outright: under this experiment on 2026-08-25 its packed-set half is red,
+// on `packed: [index.js node_modules/dep/index.js package.json]`, and that is
+// the only assertion that fires. The warning half stays green there, as every
+// row's does, because the warning is derived from the manifest rather than from
+// the walk — and the warning half is the one #402 was about. Before it,
+// namesHardReserved trimmed no leading "./", Base("./node_modules/dep") is
+// "dep" rather than a list entry, and the walk pruned node_modules regardless,
+// so the entry was refused and nothing was said.
+//
+// The warning half is load-bearing on all fourteen rows, since nothing else in the
 // codebase produces that message.
 func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 	tests := []struct {
@@ -4377,30 +4541,43 @@ func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 			entry: "bun.lockb",
 			files: map[string]string{"bun.lockb": "bun-lockfile-format-v0"},
 		},
-		// The spelling #402 records as silent for a directory entry. It warns
-		// here, and the difference is the entry's basename: applyIgnorePatterns
-		// matches "package-lock.json" against filepath.Base of the entry, which
-		// is the pattern itself, where Base("./node_modules/dep") is "dep".
-		// namesHardReserved's comment carries the measurement.
+		// This spelling warned before #402 as well, and by a different route
+		// from the one below it: applyIgnorePatterns matches
+		// "package-lock.json" against filepath.Base of the entry, which for a
+		// lockfile is the pattern itself. It is kept as the row that still
+		// needs the basename branch — namesHardReserved's comment carries the
+		// measurement showing this spelling and "sub/package-lock.json" are the
+		// only two of six that go false without it.
 		{
 			name:  "dot slash prefixed nested lockfile",
 			entry: "./sub/package-lock.json",
 			files: map[string]string{"sub/package-lock.json": `{"lockfileVersion": 3}`},
 		},
+		// #402's row. Base("./node_modules/dep") is "dep", so the basename
+		// branch answers nothing here and this entry was dropped in silence
+		// until namesHardReserved began resolving a leading "./" through
+		// normalizeFilesEntry. The unprefixed "node_modules/dep" warned
+		// throughout, which is what made the gap a property of the spelling
+		// rather than of the name.
+		{
+			name:  "dot slash prefixed nested directory",
+			entry: "./node_modules/dep",
+			files: map[string]string{"node_modules/dep/index.js": "dep"},
+		},
 		// The three git metadata files #398 moved here. They are in the
 		// header's green group, beside "dot git" and for the same reason, so
 		// read them as evidence for the warning and not for the walk's check.
 		//
-		// Four spellings across the three names, because #402's gap is a
-		// property of the spelling rather than of the name: namesHardReserved
-		// trims a leading "/" and a trailing "/" but not a leading "./", so
-		// "./node_modules/dep" answers false where "node_modules/dep" answers
-		// true. These three names do not fall into that gap and it is measured
-		// rather than assumed — all four rows warn, for the reason the four
-		// lockfiles do: filepath.Base("./docs/.gitignore") is ".gitignore",
-		// which is the pattern itself, where Base("./node_modules/dep") is
-		// "dep". The "./"-prefixed nested row is the exact spelling #402
-		// records as silent for a directory entry.
+		// Four spellings across the three names, because the gap #402 closed was
+		// a property of the spelling rather than of the name: namesHardReserved
+		// trimmed a leading "/" and a trailing "/" but not a leading "./", so
+		// "./node_modules/dep" answered false where "node_modules/dep" answered
+		// true. These three names never fell into that gap and it was measured
+		// rather than assumed — all four rows warned before #402 too, for the
+		// reason the four lockfiles do: filepath.Base("./docs/.gitignore") is
+		// ".gitignore", which is the pattern itself, where
+		// Base("./node_modules/dep") is "dep". They are kept as the rows that
+		// hold whether or not the "./" trim is there.
 		{
 			name:  "gitignore",
 			entry: ".gitignore",

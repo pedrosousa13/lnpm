@@ -581,44 +581,73 @@ func warnHardReservedIgnoreNegation(packageDir string) {
 // entry or the body of an "!" negation — plainly names a hard-reserved path.
 //
 // It is deliberately literal, matching npm's own reading of a "files" entry: a
-// leading "/" anchors rather than rooting, and a trailing "/" marks a directory,
-// so "node_modules", "/node_modules" and "node_modules/" all answer true. It
+// leading "/" anchors rather than rooting, a leading "./" is no part of the
+// name, and a trailing "/" marks a directory, so "node_modules",
+// "/node_modules", "./node_modules" and "node_modules/" all answer true. It
 // does not try to decide whether an arbitrary glob would have selected a
 // hard-reserved path — "*" against the built-in list is a question with no
 // useful answer, and #321 asks only for entries that name such a path plainly.
 //
-// An entry that is empty once normalized ("", "/", "//") means "ship
+// An entry that is empty once normalized ("", "/", "//", "./") means "ship
 // everything" to isIncluded rather than naming any path, so it names nothing to
-// report.
+// report. A bare "." is not one of those — normalizeFilesEntry leaves it alone,
+// as its own comment records, and isHardReserved(".") is false. Run and
+// confirmed for all five.
 //
-// A "./"-prefixed entry naming a hard-reserved path at the root answers true,
-// and the route is worth knowing because it is not this function's
-// normalization. "./node_modules" survives the trims unchanged, and
-// isHardReserved reaches applyIgnorePatterns, which matches an unanchored
-// separator-free pattern against filepath.Base — and Base of "./node_modules"
-// is "node_modules". So "files": ["./node_modules"] does warn. Run and
-// confirmed; TestPackWarnsWhenFilesNamesHardReserved carries the row, which was
-// added because nothing here exercised one and the comment claimed the
-// opposite.
+// The normalization is normalizeFilesEntry, the call matchFilesField and
+// filesFieldMayReach already share, rather than a third spelling of those trims.
+// #402 made it shared, and measured the change rather than assuming it, because
+// the two spellings were not equivalent: this function used to trim a trailing
+// "/" unconditionally where normalizeFilesEntry trims one only from an entry
+// with no "*", npm reading no directory marker into a trailing slash on a glob.
 //
-// It answers by that coincidence rather than by design, and #346 is what makes
-// the distinction matter. matchFilesField now resolves a leading "./", so
-// "files": ["./node_modules"] selects what "node_modules" would and is refused
-// by the walk's isHardReserved check like any other entry — that row is real
-// evidence for the check as of #346, where before it stayed green for want of
-// anything selected at all. The two halves agree today by two different routes.
+// That difference cannot move this predicate, which was run rather than argued.
+// Measured on 2026-08-25 over 3,780 entries — nine prefixes ("", "/", "./",
+// ".//", "././", "/./", "//", "..", "../") crossed with twelve suffixes and
+// thirty-five cores. The cores are the twenty distinct names on the list above
+// (deduped past their "/**" spellings), the five spellings that normalize to
+// "" or hit the "." trap ("", "/", "//", "./", "."), and ten non-reserved,
+// deliberately glob-shaped spellings ("a", "a/", "a/**", "a/**/", "*", "*/",
+// "**", "**/", "b/**", "dist/**/") chosen to stress the one place a glob and a
+// plain name disagree. Sharing the helper and keeping the old trims with a
+// "./" trim added in front of them disagreed on zero across all 3,780. The
+// glob spellings are where the difference shows and where it stops:
+// "node_modules/**/" answers true either way, since the old trims cut it to
+// "node_modules/**" and normalizeFilesEntry leaves the trailing slash on. Both
+// strings were then run against a one-pattern list holding "node_modules" and
+// again against one holding "node_modules/**", and all four combinations
+// answered true.
 //
-// Aligning the normalization here is out of scope rather than unnecessary, and
-// the difference is measured, not inferred. For a root entry the spellings
-// already agree: "./node_modules" and "node_modules" both true, "./.git" and
-// ".git" both true, "./dist" and "dist" both false. For a *nested* entry they do
-// not. namesHardReserved("node_modules/dep") is true, because applyIgnorePatterns
-// prefix-matches; namesHardReserved("./node_modules/dep") is false, because that
-// prefix test sees a leading "./" and the basename test sees "dep". So
-// "files": ["./node_modules/dep"] is dropped in silence where the unprefixed
-// spelling says so out loud — and silence is the failure mode #321 is about.
-// Only the warning is affected; the walk prunes node_modules either way. #402
-// carries that gap, and it belongs there rather than in a drive-by trim here.
+// What #402 moved is the "./"-prefixed nested spelling and nothing else. Of
+// those 3,780 entries, 240 changed answer against the pre-#402 code, which had
+// no "./" handling at all; all 240 went false to true, all 240 carry a leading
+// "./", and all 240 normalize to a path containing a "/", so not one of them is
+// an entry naming a path at the root — "./node_modules/dep", "./node_modules/**"
+// and "./.git/dep" are the shapes. That last property is the constraint the fix
+// had to respect and it was measured, not reasoned: "node_modules",
+// "/node_modules", "./node_modules" and "node_modules/" all stayed true, "a"
+// and "./a" both stayed false, and so did every other control.
+//
+// The defect behind those 240 is worth recording, because a reader will
+// otherwise reconstruct it wrongly from the fact that "./node_modules" always
+// answered true. It did, but not by the old trims: the entry survived them
+// unchanged and isHardReserved reached applyIgnorePatterns, which matches an
+// unanchored separator-free pattern against filepath.Base — and
+// Base("./node_modules") is "node_modules". Base("./node_modules/dep") is
+// "dep", so the same coincidence gave nothing at depth, and
+// "files": ["./node_modules/dep"] was dropped in silence where "node_modules/dep"
+// said so out loud. Silence is the failure mode #321 is about. Only the warning
+// was ever affected; the walk prunes node_modules either way.
+//
+// The other half of the pair has resolved a leading "./" since #346, and reads
+// it through this same helper today, so "files": ["./node_modules"] selects what
+// "node_modules" would and the walk's isHardReserved check refuses it like any
+// other entry. Sharing the helper is what makes the two halves agree by one rule
+// rather than by two routes that happened to meet.
+// TestNamesHardReservedDotSlashAgreesWithUnprefixedForm is the standing
+// measurement, TestNamesHardReservedResolvesOneDotSlashInNpmsOrder pins the
+// slash-mixed spellings that make the sharing load-bearing, and
+// TestPackWarnsWhenFilesNamesHardReserved carries the end-to-end rows.
 //
 // #399's four lockfiles are covered on every spelling, and by two branches
 // rather than one. Measured on 2026-08-25 by calling this function on six
@@ -626,17 +655,16 @@ func warnHardReservedIgnoreNegation(packageDir string) {
 // "./name", "sub/name" and "./sub/name" — first as the code stands and again
 // with matchesIgnorePattern's basename branch disabled. All twenty-four are
 // true today. Without the basename branch the four lockfiles answer alike: the
-// first three spellings stay true, so the trims above plus the exact-match
-// branch carry those by design, and the last three go false, so they ride the
-// basename branch — the route the paragraph above calls a coincidence. It
-// reaches further for these than it does for a directory entry, because a
-// lockfile's basename is the pattern itself where
-// filepath.Base("./node_modules/dep") is "dep": the nested "./" spelling #402
-// records as silent is answered here rather than dropped.
+// first four spellings stay true, so normalizeFilesEntry plus the exact-match
+// branch carry those by design, and the last two go false, so those ride the
+// basename branch. It reaches further for these than it does for a directory
+// entry, because a lockfile's basename is the pattern itself where
+// filepath.Base("node_modules/dep") is "dep" — that branch is what covers a
+// nested lockfile at all, with a "./" or without one.
 // TestPackWarnsWhenFilesNamesHardReserved carries a row for it, on
 // "./sub/package-lock.json".
 func namesHardReserved(entry string) bool {
-	normalized := strings.TrimSuffix(strings.TrimPrefix(entry, "/"), "/")
+	normalized := normalizeFilesEntry(entry)
 	return normalized != "" && isHardReserved(normalized)
 }
 
@@ -2172,6 +2200,13 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 // two stayed in step. lowerPatterns above is the same call — derive, do not
 // duplicate — and this repo has already had a corrected sentence's twin go stale
 // nine lines away.
+//
+// namesHardReserved is the third caller, since #402. It is not a matcher, so it
+// does not need the byte-for-byte agreement the first two do; it shares this for
+// the plainer reason that a maintainer's entry should mean one thing whether
+// lnpm is selecting on it or warning about it. Its own comment carries the
+// measurement that let it drop its own trims, which were not equivalent to
+// these.
 //
 // One leading "./" comes off, and it comes off before the "/" trim. Both halves
 // of that were measured against npm 11.16.0 rather than reasoned:
