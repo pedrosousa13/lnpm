@@ -177,16 +177,36 @@ func runRetreatOnTTY(t *testing.T) string {
 	})
 }
 
-// captureTTYStdout runs fn with os.Stdout pointed at the slave side of a
+// captureTTYStdout captures fn with stdout on a terminal and stdin left alone,
+// which is all the tests above need.
+func captureTTYStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	return captureTTY(t, "", fn)
+}
+
+// captureTTY runs fn with os.Stdout pointed at the slave side of a
 // pseudo-terminal and returns what it printed. A pipe would not do: the icon
 // helpers ask whether stdout is a character device, so only a terminal
-// exercises their decorated branch.
+// exercises their decorated branch, and confirm requires the same of stdout
+// before it renders a prompt at all.
+//
+// A non-empty answers puts os.Stdin on that same slave and queues those lines
+// on the master, so a prompt can be answered. One read of the slave returns one
+// line, because the terminal is in its default canonical mode, so consecutive
+// prompts each get the next answer rather than one prompt swallowing them all.
+//
+// TestRunGCPromptsReadOneAnswerEach pins both halves of that, and has to,
+// because neither way of failing to deliver an answer announces itself: a
+// starved terminal blocks the read, and a stdin that was never wired here
+// reaches EOF instead, which confirm reports as a refusal. Its doc comment
+// records the measurement for each.
 //
 // The reader runs while fn does, so fn can print more than the terminal buffer
 // holds. It stops on a sentinel written after fn returns rather than on the
 // slave being closed: closing the last slave makes the master report EIO, and
 // anything still queued would be lost with it.
-func captureTTYStdout(t *testing.T, fn func()) string {
+func captureTTY(t *testing.T, answers string, fn func()) string {
 	t.Helper()
 
 	const sentinel = "@@lnpm-tty-capture-end@@"
@@ -224,10 +244,16 @@ func captureTTYStdout(t *testing.T, fn func()) string {
 		done <- string(buf)
 	}()
 
-	orig := os.Stdout
+	origOut, origIn := os.Stdout, os.Stdin
+	if answers != "" {
+		if _, err := master.WriteString(answers); err != nil {
+			t.Fatalf("Failed to queue the answers: %v", err)
+		}
+		os.Stdin = slave
+	}
 	os.Stdout = slave
 	func() {
-		defer func() { os.Stdout = orig }()
+		defer func() { os.Stdout, os.Stdin = origOut, origIn }()
 		fn()
 	}()
 
