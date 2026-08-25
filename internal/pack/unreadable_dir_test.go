@@ -230,58 +230,240 @@ func TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked(t *testing.T
 	}
 }
 
+// denyDirTraversal gives dir its read bit but not its execute bit for the rest
+// of the test, and restores it afterwards. readdir then succeeds and lstat of
+// the names it returned does not, which is the walk's second error shape: a
+// child path with a nil FileInfo.
+//
+// It skips rather than fails when the fixture does not take, because unlike a
+// mode of 0000 this one asks the platform to separate two bits it may not
+// separate. requireDroppableDirPermissions has already ruled out the two runs
+// where nothing can be denied at all.
+func denyDirTraversal(t *testing.T, dir, child string) {
+	t.Helper()
+
+	if err := os.Chmod(dir, 0444); err != nil {
+		t.Fatalf("deny traversal on %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0755) })
+
+	if _, err := os.Lstat(filepath.Join(dir, child)); err == nil {
+		t.Skip("this platform lstats a directory entry without the directory's execute bit, so the fixture cannot be built")
+	}
+}
+
 // TestPackAbortsWhenAChildCannotBeStatted pins the walk's other error shape,
 // which the skip must not swallow. filepath.Walk passes the callback whatever
 // its lstat of a child returned, and os.Lstat returns a nil FileInfo with its
 // error — read from $(go env GOROOT)/src/path/filepath/path.go on Go 1.26.7, and
-// confirmed by the nil dereference that deleting the guard produces here. The
-// fixture is a directory with its read bit but not its execute bit, where readdir
-// succeeds and lstat of the names it returned does not.
+// confirmed by the nil dereference that deleting the guard produces here.
 //
 // Two things are asserted at once. Nothing dereferences that nil, and a
-// per-child error still aborts: it may be a file, and dropping a file the
-// package asked for is the *narrowing* side — not the direction docs/adr/0001
-// calls a bug, which is the widening one. Aborting here is #348's triage making
-// the judgement call that ADR hands over, for the same downstream reason given
-// on TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked above.
+// per-child error on a path the package would have packed still aborts, naming
+// it: dropping a file the package asked for is the *narrowing* side — not the
+// direction docs/adr/0001 calls a bug, which is the widening one. Aborting here
+// is #348's triage making the judgement call that ADR hands over, for the same
+// downstream reason given on
+// TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked above.
 //
-// It is also this fix's known asymmetry, stated rather than hidden. With no
-// "files" field the same fixture never reaches the child, because the walk
-// prunes coverage on the callback for coverage itself, where no error arrived —
-// run on this fixture with the "files" field removed, which packs
-// [dist/index.js package.json] with no error and no warning. So a mode of 0444
-// aborts under a "files" field and packs cleanly without one, where mode 0000
-// behaves alike in both. #348 was filed for the unreadable directory and this
-// narrows to it deliberately.
+// The fixture used to put the 0444 mode on an excluded directory, which pinned
+// #348's known asymmetry: the same tree aborted under a "files" field and packed
+// cleanly without one. #409 closed that, so TestPackSkipsAnUnenterableExcludedDirectory
+// now owns that tree and this one moved to the directory the package packs. That
+// is the half of the abort criterion that survives #409, and it is the half a
+// skip on *any* nil-info child would break: with the predicate's verdict
+// discarded, both rows below go green-to-red the wrong way round and the publish
+// ships without dist/index.js.
+//
+// Both modes are rows for the same reason the skip test has both: without a
+// "files" field the walk descends into dist because the ignore chain says
+// nothing about it, and with one it descends because the entry names it. The
+// routes differ; the verdict must not.
 func TestPackAbortsWhenAChildCannotBeStatted(t *testing.T) {
 	requireDroppableDirPermissions(t)
 
-	root := t.TempDir()
-	writeMainEntryTree(t, root, map[string]string{
-		"package.json":         `{"name": "pkg", "version": "1.0.0", "files": ["dist"]}`,
-		"dist/index.js":        "module.exports = {}",
-		".gitignore":           "coverage/\n",
-		"coverage/report.html": "<html></html>",
-	})
-
-	coverage := filepath.Join(root, "coverage")
-	if err := os.Chmod(coverage, 0444); err != nil {
-		t.Fatalf("deny traversal on %s: %v", coverage, err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(coverage, 0755) })
-	if _, err := os.Lstat(filepath.Join(coverage, "report.html")); err == nil {
-		t.Skip("this platform lstats a directory entry without the directory's execute bit, so the fixture cannot be built")
+	tests := []struct {
+		name     string
+		manifest string
+	}{
+		{
+			name:     "no files field",
+			manifest: `{"name": "pkg", "version": "1.0.0"}`,
+		},
+		{
+			name:     "files field",
+			manifest: `{"name": "pkg", "version": "1.0.0", "files": ["dist"]}`,
+		},
 	}
 
-	var err error
-	_ = capturePackStdout(t, func() {
-		_, _, err = Pack(root)
-	})
-	if err == nil {
-		t.Fatalf("Pack() = nil error, want an abort naming report.html")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeMainEntryTree(t, root, map[string]string{
+				"package.json":  tt.manifest,
+				"dist/index.js": "module.exports = {}",
+			})
+			denyDirTraversal(t, filepath.Join(root, "dist"), "index.js")
+
+			var err error
+			_ = capturePackStdout(t, func() {
+				_, _, err = Pack(root)
+			})
+			if err == nil {
+				t.Fatalf("Pack() = nil error, want an abort naming dist/index.js")
+			}
+			if !strings.Contains(err.Error(), filepath.Join("dist", "index.js")) {
+				t.Errorf("Pack() error = %v, want it to name dist/index.js", err)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "report.html") {
-		t.Errorf("Pack() error = %v, want it to name report.html", err)
+}
+
+// TestPackSkipsAnUnenterableExcludedDirectory is #409: a directory with its read
+// bit but not its execute bit, which the package's own rules already exclude.
+// readdir succeeds, so no error arrives for the directory itself and #348's skip
+// never engages for it; the lstat of every name readdir returned fails instead,
+// one level down.
+//
+// The acceptance criterion is that both walk modes pack the same set, which is
+// the property #348 established for mode 0000 and #409 restores for 0444. Before
+// #409 the "files field" row aborted, because the whitelist mode descends into
+// excluded directories (#318, #321) while the other mode's prune stops at
+// coverage.
+//
+// wantWarning is per row rather than asserted for both, and the split is the
+// point rather than an accident: the two modes agree on the outcome by different
+// routes. Without a "files" field the prune refuses coverage before any lstat of
+// its contents is attempted, so no error reaches the callback and there is
+// nothing to warn about; with one, the child's failed lstat is what the skip
+// answers, so the warning names coverage/report.html and not coverage.
+func TestPackSkipsAnUnenterableExcludedDirectory(t *testing.T) {
+	requireDroppableDirPermissions(t)
+
+	tests := []struct {
+		name        string
+		manifest    string
+		wantWarning string
+	}{
+		{
+			name:     "no files field",
+			manifest: `{"name": "pkg", "version": "1.0.0"}`,
+		},
+		{
+			name:        "files field",
+			manifest:    `{"name": "pkg", "version": "1.0.0", "files": ["dist"]}`,
+			wantWarning: "coverage/report.html",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeMainEntryTree(t, root, map[string]string{
+				"package.json":         tt.manifest,
+				"dist/index.js":        "module.exports = {}",
+				".gitignore":           "coverage/\n",
+				"coverage/report.html": "<html></html>",
+			})
+			denyDirTraversal(t, filepath.Join(root, "coverage"), "report.html")
+
+			var files []*FileInfo
+			out := capturePackStdout(t, func() {
+				var err error
+				_, files, err = Pack(root)
+				if err != nil {
+					t.Errorf("Pack() error: %v, want the unenterable excluded directory skipped", err)
+				}
+			})
+			if t.Failed() {
+				return
+			}
+
+			got := relPathsOf(files)
+			want := []string{"dist/index.js", "package.json"}
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Errorf("packed set = %v, want %v", got, want)
+			}
+
+			if tt.wantWarning == "" {
+				if strings.Contains(out, warnMarker()) {
+					t.Errorf("Pack() printed %q, want no warning — the prune stops at coverage before any child is lstatted", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tt.wantWarning) {
+				t.Errorf("Pack() printed %q, want a warning naming %s", out, tt.wantWarning)
+			}
+			if !strings.Contains(out, warnMarker()) {
+				t.Errorf("Pack() printed %q, want the house warning prefix", out)
+			}
+		})
+	}
+}
+
+// TestCollectFilesAbortsWhenARootChildCannotBeStatted pins the guard that keeps
+// #409's skip off the two selecting arms anchored to the package root.
+//
+// unreadableDirIsExcluded does not ask them, and for a directory it is right not
+// to: the manifest arm tests relPath == "package.json" exactly and
+// isDefaultInclude refuses any path carrying a "/", so neither can select
+// anything *inside* a directory. A root-level path is where they can, and there
+// the predicate is simply wrong — measured on 2026-08-25, it answers true for
+// both "package.json" and "README.md" under "files": ["dist"], and both of those
+// pack. So the walk callback asks it only for a relPath carrying a "/".
+//
+// Both rows need the package root itself at 0444, which Pack cannot reach:
+// readPackageJSON opens root/package.json and fails on the missing execute bit
+// long before collectFiles runs. collectFiles is driven directly for the same
+// reason TestCollectFilesAbortsWhenThePackageRootCannotBeRead drives it.
+//
+// The "files" entry names nothing on disk on purpose. An entry such as "dist"
+// would abort on the "dist" child instead and the row would pass without ever
+// reaching the arm it is about.
+//
+// Delete the "/" guard and this is the failure: collectFiles returns no files
+// and no error, so a publish of nothing is reported as a success. That is the
+// silently-narrowed package docs/adr/0001 ranks as the milder outcome and #348's
+// triage still refuses.
+func TestCollectFilesAbortsWhenARootChildCannotBeStatted(t *testing.T) {
+	requireDroppableDirPermissions(t)
+
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name:  "the manifest",
+			files: map[string]string{"package.json": `{"name": "pkg", "version": "1.0.0"}`},
+			want:  "package.json",
+		},
+		{
+			// README.md sorts before package.json, and filepath.Walk walks in
+			// lexical order, so this row's abort is the default include's.
+			name: "a default include",
+			files: map[string]string{
+				"package.json": `{"name": "pkg", "version": "1.0.0"}`,
+				"README.md":    "# pkg\n",
+			},
+			want: "README.md",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeMainEntryTree(t, root, tt.files)
+			denyDirTraversal(t, root, "package.json")
+
+			files, err := collectFiles(root, []string{"nothing-on-disk"}, "")
+			if err == nil {
+				t.Fatalf("collectFiles() = %v, nil error, want an abort naming %s", files, tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("collectFiles() error = %v, want it to name %s", err, tt.want)
+			}
+		})
 	}
 }
 

@@ -941,9 +941,10 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 			//
 			// So the nil test below is load-bearing rather than defensive:
 			// without it the second shape panics, run and confirmed by deleting
-			// it. Both nil shapes abort, which is what keeps a file-level read
-			// error out of this fix — a nil info cannot be told directory from
-			// file, so the path it names may be one the package asked for.
+			// it. #409 then split the two nil shapes rather than aborting on
+			// both: the walk root's own failure still aborts, and a child whose
+			// lstat failed is put to the same predicate the directory shape
+			// uses. What makes that sound for a path of unknown kind is below.
 			//
 			// The IsDir test beside it is the opposite case and is here on
 			// purpose, in the sense mainEntryPath's comment above uses: it
@@ -954,30 +955,83 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 			// in the tests. It is what keeps the guard true if a later Go
 			// release grows a fourth shape.
 			//
-			// Known gap, disclosed here because this is where it would be
-			// closed. A directory with its read bit but not its execute bit
-			// (mode 0444) produces no error for itself — readdir succeeds — and
-			// then fails the lstat of every child, so it aborts under a "files"
-			// field, where the walk descends into excluded directories, and
-			// packs cleanly without one, where the prune below stops it first.
-			// Mode 0000 behaves alike in both. It is *not* unclosable: the
-			// child's path is known even when its info is nil, and
-			// unreadableDirIsExcluded answers "excluded" for a path inside an
-			// excluded subtree in both modes — run and confirmed for
-			// coverage/report.html under a .gitignore naming coverage/, with no
-			// "files" field and with ["dist"] — so closing it would swallow
-			// nothing on a packable path. It is left open because #348 is
-			// scoped to the
-			// unreadable directory, and because a nil info cannot be told
-			// directory from file, so the predicate would be answering about a
-			// path of unknown kind — a different question from the one this code
-			// answers. TestPackAbortsWhenAChildCannotBeStatted pins the current
-			// behaviour so a change to it is deliberate.
+			// The nil shape, decided by #409. A nil info names a path whose
+			// *kind* is unknown — the second shape above is precisely the one
+			// os.Lstat could not answer — so the question asked of it cannot be
+			// "is this an excluded directory". It is asked as "is every path at
+			// or under this one excluded", which is what
+			// unreadableDirIsExcluded answers and which degenerates correctly
+			// for a file, a file's subtree being itself. The decision is
+			// therefore: the kind is not guessed and not needed, and the
+			// predicate is restricted to the paths where it does not matter.
 			//
-			// Returning nil is enough to continue. This directory's own walk
-			// returns the callback's verdict unchanged, and the parent's loop
-			// moves to the next sibling on a nil; filepath.SkipDir would work
-			// too and says no more.
+			// That restriction is the strings.Contains(relPath, "/") test below,
+			// and it is load-bearing rather than tidy. The whitelist switch has
+			// four selecting arms and two are anchored to the package root — the
+			// manifest arm tests relPath == manifestFileName exactly, and
+			// isDefaultInclude returns false for any path carrying a "/" — while
+			// in the other mode the prune below exempts the manifest by the same
+			// exact test. unreadableDirIsExcluded asks neither, correctly, since
+			// neither can select anything *inside* a directory. For a root-level
+			// path they can, and there the predicate is wrong: measured on
+			// 2026-08-25 against a package with "files": ["dist"],
+			// unreadableDirIsExcluded is true for both "package.json" and
+			// "README.md", and both of those pack. A root child's lstat failing
+			// is not confined to an unenterable package root — a concurrent
+			// unlink between readdir and lstat gives ENOENT, and a failing disk
+			// gives EIO, just as well — but aborting is the right answer
+			// regardless of the cause.
+			// TestCollectFilesAbortsWhenARootChildCannotBeStatted pins it.
+			//
+			// This is what closes #409. A directory with its read bit but not
+			// its execute bit (mode 0444) produces no error for itself — readdir
+			// succeeds — and then fails the lstat of every child. So before #409
+			// it aborted under a "files" field, where the walk descends into
+			// excluded directories, and packed cleanly without one, where the
+			// prune below stops it first; mode 0000 behaved alike in both, and
+			// now so does 0444. The two modes still reach that agreement by
+			// different routes and only the whitelist one prints a warning,
+			// which TestPackSkipsAnUnenterableExcludedDirectory asserts per row.
+			//
+			// A file-level read error is still untouched by any of this. The
+			// walk lstats an ordinary file successfully, so no error reaches
+			// this branch at all; it is selected, and HashFile fails in the
+			// second pass. TestPackAbortsOnAnUnreadableFile pins that.
+			//
+			// Returning nil is enough to continue, on both shapes, and it means
+			// the same as filepath.SkipDir on each — but for two different
+			// reasons, so the equivalence is stated rather than assumed. For a
+			// directory whose read failed, this directory's own walk returns the
+			// callback's verdict unchanged and the parent's loop moves to the
+			// next sibling on a nil. For a child whose lstat failed, the loop is
+			//
+			//	fileInfo, err := lstat(filename)
+			//	if err != nil {
+			//		if err := walkFn(filename, fileInfo, err); err != nil && err != SkipDir {
+			//			return err
+			//		}
+			//	} else {
+			//		err = walk(filename, fileInfo, walkFn)
+			//		...
+			//	}
+			//
+			// so on the error side nil and filepath.SkipDir are exactly the two
+			// values that do not stop the walk, and every other value aborts it.
+			// SkipDir's other meaning — the one that would silently drop the
+			// siblings after it — lives in the else branch, where
+			// `if !fileInfo.IsDir() || err != SkipDir { return err }` returns
+			// that SkipDir out of the enclosing directory's own walk() call,
+			// truncating whatever siblings after the file it had not yet
+			// visited. One level up, the enclosing directory's own fileInfo
+			// is itself a directory, so the same check is false there and the
+			// parent's loop continues with its own remaining entries — the
+			// whole walk aborts only when the file is a direct child of the
+			// walk root, and even then Walk swallows the returned SkipDir and
+			// reports nil. That branch is unreachable from here. nil is
+			// returned because it says exactly what is meant. Note also that
+			// the walk recurses only in that else branch, so it never
+			// descends into a child it could not lstat: the subtree is
+			// skipped either way.
 			//
 			// The relPath != "." guard is not decoration. The package root's own
 			// read failure has to abort — Walk hands it to the callback the same
@@ -986,15 +1040,33 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 			// ordinary entry such as "dist" does not match. It would call the
 			// package root excluded and the walk would then return no error and
 			// no files.
-			// TestCollectFilesAbortsWhenThePackageRootCannotBeRead pins it.
+			// TestCollectFilesAbortsWhenThePackageRootCannotBeRead pins it. It
+			// guards the directory shape only; the nil shape's "/" test is
+			// stricter and refuses "." already.
 			//
 			// Every error is treated alike rather than only a permission error.
 			// An excluded directory contributes nothing to the package whatever
 			// stopped it being read, so narrowing to os.ErrPermission would only
 			// abort on the rarer causes for no gain.
-			if rel, relErr := filepath.Rel(packageDir, path); relErr == nil && info != nil && info.IsDir() {
+			if rel, relErr := filepath.Rel(packageDir, path); relErr == nil {
 				relPath := filepath.ToSlash(rel)
-				if relPath != "." && unreadableDirIsExcluded(relPath, ignores, filesField, mainEntry) {
+
+				// Which paths the predicate may be asked about, per error
+				// shape. Neither guard is decoration; both are argued above.
+				answerable := false
+				if info != nil && info.IsDir() {
+					answerable = relPath != "."
+				} else if info == nil {
+					answerable = strings.Contains(relPath, "/")
+				}
+
+				// This fires once per child, not once per directory: mode 0000
+				// fails the directory's own readdir, so one line names it, but
+				// mode 0444 fails the lstat of every name readdir returned, so a
+				// node_modules full of entries prints one line per entry. That is
+				// verbose rather than wrong — every line still names a real path
+				// this predicate excluded — so no deduplication is added here.
+				if answerable && unreadableDirIsExcluded(relPath, ignores, filesField, mainEntry) {
 					fmt.Printf("%s could not read %q, which this package excludes; skipping it (%v)\n", ui.IconWarn(), relPath, err)
 					return nil
 				}
@@ -1298,11 +1370,19 @@ func collectFiles(packageDir string, filesField []string, mainEntry string) ([]*
 	return filesToHash, nil
 }
 
-// unreadableDirIsExcluded reports whether a directory the walk could not read
-// can be skipped: whether the package's own rules already put every path at or
-// under it outside the pack. relPath is slash-separated, relative to the package
-// root, and never "." — the package root itself is nothing's exclusion and its
-// failure to read is a real abort.
+// unreadableDirIsExcluded reports whether a path the walk could not read can be
+// skipped: whether the package's own rules already put every path at or under it
+// outside the pack. relPath is slash-separated, relative to the package root,
+// and never "." — the package root itself is nothing's exclusion and its failure
+// to read is a real abort.
+//
+// The name says "Dir" because that is the shape #348 wrote it for, and the
+// question it asks is about a subtree. #409 gave it a second caller, a child
+// whose lstat failed, whose kind is unknown because os.Lstat is exactly what
+// could not answer. The subtree question survives that: a file's subtree is the
+// file. What does not survive is the root-anchored half of the switch below, so
+// that caller passes only a relPath carrying a "/" — collectFiles' walk callback
+// argues why in full.
 //
 // It asks a different question per mode because the modes exclude by different
 // rules, and asking one rule in both would be wrong twice over.

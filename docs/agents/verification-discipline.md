@@ -262,9 +262,17 @@ each read for the package result line rather than for silence:
 
 - **Delete the whole skip block.** Three rows over two tests —
   `TestPackSkipsAnUnreadableExcludedDirectory` (both rows, `no_files_field` and `files_field`)
-  and `TestPackSkipsAnUnreadableHardReservedDirectory`.
+  and `TestPackSkipsAnUnreadableHardReservedDirectory`. **Re-measured on 2026-08-25 after #409
+  extended this branch to the nil-info shape: four rows over three tests**, the fourth being
+  `TestPackSkipsAnUnenterableExcludedDirectory/files_field`. That test's `no_files_field` row
+  stays green and could not do otherwise — no error reaches this branch on it at all, the prune
+  having refused `coverage` before any child was lstatted. **The fifth time a list here went
+  short would have been this one**, so it is re-run rather than carried forward.
 - **Skip every unreadable directory**, by discarding the predicate's verdict. All six rows of
-  `TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked`.
+  `TestPackAbortsOnAnUnreadableDirectoryThePackageWouldHavePacked`. **Re-measured on 2026-08-25:
+  eight rows over two tests**, the extra two being both rows of
+  `TestPackAbortsWhenAChildCannotBeStatted`, which #409 pulled into this radius by putting the
+  nil-info shape through the same predicate.
 
 Two narrower ones matter more than either, because each isolates a term whose obvious reading is
 wrong:
@@ -287,7 +295,8 @@ The callback's guards each move exactly one test, and one of them does not fail 
 crash: deleting `info != nil` panics inside `TestPackAbortsWhenAChildCannotBeStatted`, because
 `filepath.Walk` passes a nil `FileInfo` on both of its lstat-failure shapes. Deleting
 `relPath != "."` turns `TestCollectFilesAbortsWhenThePackageRootCannotBeRead` red and nothing
-else.
+else. Both re-run on 2026-08-25 after #409 and both unchanged, the panic now landing in that
+test's `no_files_field` subtest rather than at its top level.
 
 The third guard is the interesting one, because **its revert is green and that is the answer, not
 a gap**. Deleting `info.IsDir()` moves nothing: every error site `filepath.Walk` has passes
@@ -303,9 +312,10 @@ pinned by `TestPackAbortsOnAnUnreadableFile`, and the revert that moves it is sw
 lstats the file successfully and selects it, and `HashFile` is what fails — so a reviewer looking
 for that criterion in the walk will not find it.
 
-Two things about reading these runs. Four of the six tests named above have **no subtests**, so
+Two things about reading these runs. Three of the seven tests named above have **no subtests**, so
 they print only a top-level `--- FAIL:` line — the same shape that went uncounted twice in the
-section above. And **B-prime does not apply to this fix at all**: the walk's error branch can
+section above. It was four until #409 gave `TestPackAbortsWhenAChildCannotBeStatted` two rows.
+And **B-prime does not apply to this fix at all**: the walk's error branch can
 only skip or abort, never select, so there is no placement of it that ships a path. Do not write
 a hoist-above-`isHardReserved` experiment here and read its green as coverage.
 
@@ -316,6 +326,76 @@ experiment.
 
 This was found because a subagent reported that a revert check did not catch what it had been
 told it would, instead of reshaping the test to fit the claim. That is the behaviour to copy.
+
+### The unenterable directory, closed by #409
+
+#409 extended the same error branch to `filepath.Walk`'s second error shape — a child whose
+`lstat` failed, which arrives with a **nil `FileInfo`**. Mode `0444` is the tree that produces
+it: `readdir` succeeds, so no error arrives for the directory and #348's skip never engages, and
+the `lstat` of every name it returned fails one level down. Before #409 that aborted under a
+`files` field and packed cleanly without one; now it packs cleanly in both.
+
+The decision on the nil is the thing to read before touching this, and it is written in
+`collectFiles`' walk callback and in `unreadableDirIsExcluded`'s header. The kind is neither
+guessed nor needed: `unreadableDirIsExcluded` answers "is every path at or under this one
+excluded", which degenerates correctly for a file. What does **not** degenerate is the
+root-anchored half of the whitelist switch, so the nil shape is asked only for a `relPath`
+carrying a `/`. Count the switch's arms rather than trusting this paragraph: as of #409 there
+are four selecting ones, and two of them — the `isManifest` arm and `isDefaultInclude` — can
+select only at the package root.
+
+Every direction below was measured on 2026-08-25 on Linux, Go 1.26.7, each preceded by
+`go vet ./...` exiting 0 and each read for the `ok`/`FAIL <package>` result line with a duration
+rather than for silence. Every package outside `internal/pack` prints `ok` under all of them.
+
+- **Remove the fix**, by refusing the nil shape as #348 did. **One row**:
+  `TestPackSkipsAnUnenterableExcludedDirectory/files_field`, which fails with
+  `Pack() error: lstat .../coverage/report.html: permission denied`. That error text *is* the
+  defect. The `no_files_field` row stays green and could not do otherwise — it is the mode whose
+  prune stops at `coverage`, so it never reached the branch being removed, and the two rows
+  disagreeing is exactly what #409 was filed for.
+
+- **The dangerous wrong fix: skip on any nil-info child rather than only an excluded one**,
+  as `answerable && (info == nil || unreadableDirIsExcluded(...))`. **Both rows of
+  `TestPackAbortsWhenAChildCannotBeStatted`**, each on `Pack() = nil error`. Read what the
+  green suite would otherwise have shipped, measured with a throwaway probe on that same build:
+  a package with `"files": ["dist"]` and `dist` at `0444` packs `[package.json]` — `dist/index.js`
+  is **silently omitted**, and the warning printed for it reads `could not read "dist/index.js",
+  which this package excludes`, about a path the `files` entry names outright. That is the
+  narrowed tarball that installs and then fails to load.
+
+- **Delete the `/` guard**, so a root-level child is skippable too. **Both rows of
+  `TestCollectFilesAbortsWhenARootChildCannotBeStatted`**, each on
+  `collectFiles() = [], nil error` — a publish of *nothing* reported as a success, with the
+  warning naming `package.json` and `README.md` as paths "this package excludes". Note that
+  neither row is reachable through `Pack`: `readPackageJSON` fails on an unenterable root long
+  before `collectFiles` runs, so both drive `collectFiles` directly, as
+  `TestCollectFilesAbortsWhenThePackageRootCannotBeRead` does. Note also that the `files` entry
+  in that test names nothing on disk **on purpose** — an entry such as `"dist"` aborts on the
+  `dist` child first and the row passes without ever reaching the arm it is about.
+
+- **B-prime.** The #348 exemption above still holds, and #409 is inside its scope rather than
+  beside it: the branch's only two return values remain `nil` and `err`, neither of which
+  appends to `filesToHash`, so no placement of it can ship a path. This is the first of the two
+  answers a green B-prime can carry — "no placement can ship anything", not "this fixture cannot
+  express the shape that would" — and it is established structurally, so no experiment was run.
+  Contrast #406's, two subsections down, which was the second answer and needed a probe to tell
+  them apart.
+
+`nil` versus `filepath.SkipDir` on this shape is a question worth settling from the source
+rather than from the doc comment, and it has a different answer than on the success side. In
+`$(go env GOROOT)/src/path/filepath/path.go` on Go 1.26.7, `walk`'s loop reads
+`if err := walkFn(filename, fileInfo, err); err != nil && err != SkipDir { return err }`, so on
+the lstat-failure side `nil` and `SkipDir` are the **two** values that do not stop the walk and
+every other value aborts it — they are indistinguishable. The meaning that would silently drop
+siblings lives in the `else` branch, where `if !fileInfo.IsDir() || err != SkipDir { return err }`
+returns that `SkipDir` out of the enclosing directory's own `walk()` call, truncating whatever
+siblings after the file it had not yet visited. One level up, the enclosing directory's own
+`fileInfo` is itself a directory, so the same check is false there and the parent's loop
+continues with its own remaining entries — the whole walk aborts only when the file is a direct
+child of the walk root, and even then `Walk` swallows the returned `SkipDir` and reports `nil`.
+That branch is unreachable from an lstat failure. The walk also recurses only in that `else`, so
+it never descends into a child it could not lstat.
 
 ### The git metadata tier, moved by #398
 
