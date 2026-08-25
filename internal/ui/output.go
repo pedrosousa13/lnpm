@@ -12,11 +12,11 @@
 // The better long-term layering is the other one: internal/pack returns its
 // notices and lets the CLI render them. A library that writes to stdout decides
 // for its callers where the text goes and whether it appears at all, which is
-// not a library's decision to make. That was not done here because Pack's
-// signature is (*PackageJSON, []*FileInfo, error) and carrying notices out
-// would change it and every one of its callers - a larger change than the
-// mismatched warning prefix warranted. If pack's output grows past notices, or
-// a caller needs to suppress or redirect it, that is the direction to take.
+// not a library's decision to make. That was not done here because carrying
+// notices out would mean changing Pack's signature and every one of its callers
+// - a larger change than the mismatched warning prefix warranted. If pack's
+// output grows past notices, or a caller needs to suppress or redirect it, that
+// is the direction to take.
 package ui
 
 import (
@@ -60,12 +60,18 @@ func icon(glyph, plain string) string {
 	return plain
 }
 
-// Status markers used across commands. They render as glyphs on a TTY and as
-// plain ASCII otherwise.
-func IconOK() string   { return icon("✓", "OK") }
+// IconOK is the marker for a step that succeeded.
+func IconOK() string { return icon("✓", "OK") }
+
+// IconFail is the marker for a step that failed.
 func IconFail() string { return icon("✗", "x") }
+
+// IconWarn is the marker for a warning — something the reader needs to know
+// that did not stop the command.
 func IconWarn() string { return icon("⚠", "!") }
-func IconTip() string  { return icon("💡", "tip:") }
+
+// IconTip is the marker for a suggested next step.
+func IconTip() string { return icon("💡", "tip:") }
 
 // Header renders a decorative section header. When not decorating, the emoji
 // prefix is dropped so the label is plain ASCII.

@@ -32,7 +32,7 @@ func TestIconsOnATerminal(t *testing.T) {
 	t.Run("shows the glyphs", func(t *testing.T) {
 		noColor(t, false)
 
-		got := captureTTYStdout(t, printIcons)
+		got := capturePTYStdout(t, printIcons)
 
 		if want := "✓ ✗ ⚠ 💡"; !strings.Contains(got, want) {
 			t.Errorf("Icons on a terminal = %q, want them to contain %q", got, want)
@@ -42,7 +42,7 @@ func TestIconsOnATerminal(t *testing.T) {
 	t.Run("NO_COLOR replaces them with ASCII", func(t *testing.T) {
 		noColor(t, true)
 
-		got := captureTTYStdout(t, printIcons)
+		got := capturePTYStdout(t, printIcons)
 
 		if want := "OK x ! tip:"; !strings.Contains(got, want) {
 			t.Errorf("Icons under NO_COLOR = %q, want them to contain %q", got, want)
@@ -68,7 +68,7 @@ func noColor(t *testing.T, on bool) {
 	}
 }
 
-// captureTTYStdout runs fn with os.Stdout pointed at the slave side of a
+// capturePTYStdout runs fn with os.Stdout pointed at the slave side of a
 // pseudo-terminal and returns what it printed. A pipe would not do: decorate
 // asks whether stdout is a character device, so only a terminal exercises its
 // decorated branch.
@@ -78,10 +78,16 @@ func noColor(t *testing.T, on bool) {
 // slave being closed: closing the last slave makes the master report EIO, and
 // anything still queued would be lost with it.
 //
-// internal/cli has a longer relative of this, captureTTY, which also wires
-// stdin so a prompt can be answered. Nothing here prompts, so this one leaves
-// stdin alone.
-func captureTTYStdout(t *testing.T, fn func()) string {
+// The pty plumbing below is a near-verbatim copy of internal/cli's captureTTY
+// (internal/cli/output_tty_linux_test.go), minus the stdin wiring that lets a
+// prompt be answered — nothing here prompts. The duplication was accepted
+// rather than hoisted: a shared version would have to keep serving internal/cli's
+// prompt tests (gc_prompt_linux_test.go) from somewhere both packages can
+// import, such as internal/testenv, and that is wider than #366, which only
+// moved the icon helpers. The name differs from internal/cli's captureTTYStdout
+// (output_tty_linux_test.go:167, a one-line wrapper over captureTTY) so a grep
+// for either name lands on one function rather than two unlike ones.
+func capturePTYStdout(t *testing.T, fn func()) string {
 	t.Helper()
 
 	const sentinel = "@@lnpm-tty-capture-end@@"

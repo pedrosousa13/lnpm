@@ -3536,11 +3536,29 @@ func TestPackMissingMainDoesNotAbort(t *testing.T) {
 }
 
 // capturePackStdout runs fn with os.Stdout redirected and returns what was
-// written. Pack's warning goes to stdout because internal/pack has no warning
-// idiom of its own to match — iconWarn and its siblings are unexported in
-// internal/cli, which imports this package, so borrowing them would be a cycle.
+// written. There is something to capture at all because Pack prints its
+// warnings rather than returning them, for the reason this package's doc gives.
+//
+// It also pins NO_COLOR, which is what lets warnMarker below be built from
+// ui.IconWarn() outside the capture. Inside it stdout is a pipe, so the text
+// collected here always holds the ASCII fallback; outside it a test binary run
+// straight in a terminal — `go test -c`, then the binary — has a real TTY, so
+// warnMarker() would answer "⚠ " while the captured text held "! ", and the
+// assertions would be comparing the two: the positive ones failing on nothing
+// and the negative ones passing on nothing. Run, not inferred: without this
+// line, the compiled binary under a pty turns all three rows of
+// TestPackWarnsWhenMainIsNotPacked red, each reporting "printed no warning"
+// beside a "got stdout" holding the warning.
+//
+// decorate() reads NO_COLOR before it looks at stdout, so setting it pins both
+// sides to the same answer however the binary is run. It stays set for the rest
+// of the test rather than only for fn, which is what the assertions after this
+// returns rely on. t.Setenv panics under t.Parallel(), so no test in this
+// package may call it; none does.
 func capturePackStdout(t *testing.T, fn func()) string {
 	t.Helper()
+
+	t.Setenv("NO_COLOR", "1")
 
 	orig := os.Stdout
 	r, w, err := os.Pipe()
@@ -3577,18 +3595,15 @@ func capturePackStdout(t *testing.T, fn func()) string {
 // not only on the one their fixture was built for.
 //
 // The trailing space is not decoration. ui.IconWarn()'s undecorated form is the
-// single character "!", which occurs in ordinary prose and inside the ignore
-// patterns these fixtures negate ("!node_modules"), so a bare match would be a
-// false positive waiting for a fixture to supply one; none of those spellings is
-// followed by a space. The only other thing pack writes to stdout is
-// collectFiles' progress counter, which contains no "!" at all.
+// single character "!", which nothing stops a fixture's own text or a message
+// body from containing, so a bare match would be a false positive waiting for a
+// fixture to supply one. Every one of the four warnings puts a space after the
+// marker, and matching that is what tells the marker apart from a stray "!".
 //
 // It is ui.IconWarn() rather than a hardcoded "!" so the assertions follow the
-// fallback if it changes. Calling it here is safe because capturePackStdout has
-// already restored os.Stdout: under `go test` the test binary's stdout is a
-// pipe, not a character device, whether or not the shell running it has a
-// terminal - measured, with `script` supplying a pty, and the binary still saw
-// mode "prw-------". So decorate() is false at both the print and this call.
+// fallback if it changes. It is evaluated outside the capture, where stdout is
+// whatever the binary was run with, but capturePackStdout pins NO_COLOR, so
+// this call and the print inside give the same answer either way.
 func warnMarker() string { return ui.IconWarn() + " " }
 
 // TestPackWarnsWhenMainIsNotPacked covers the half of #319 the force-include

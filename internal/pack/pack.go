@@ -652,9 +652,7 @@ func requireManifestPacked(files []*FileInfo) error {
 // unexported in internal/cli/output.go, and internal/cli imports this package,
 // so calling them from here would have been an import cycle; #366 moved them to
 // internal/ui, which imports nothing inside the module, and both packages call
-// them there now. The only other user-facing write pack makes today is
-// collectFiles' progress counter, which is a carriage-return line it erases
-// afterwards rather than a notice.
+// them there now. Every other warning pack prints goes through the same helper.
 //
 // The message names the manifest's spelling, not the normalized form, because
 // that is the string the reader will search package.json for.
