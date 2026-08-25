@@ -1,4 +1,4 @@
-.PHONY: build test clean install install-local lint fmt deps
+.PHONY: build test clean install install-local lint fmt deps test-changelog-section
 
 # Build variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -50,6 +50,11 @@ bench-mem:
 # Compare lnpm vs competitors (yalc, relative-deps)
 bench-compare:
 	./scripts/benchmark-compare.sh
+
+# Test the changelog section extractor the release workflow uses (see
+# docs/releasing.md). Not a Go test, so `go test ./...` does not cover it.
+test-changelog-section:
+	./scripts/test-changelog-section.sh
 
 # Run linter
 lint:
@@ -107,6 +112,7 @@ help:
 	@echo "  bench         - Run Go benchmarks"
 	@echo "  bench-mem     - Run benchmarks with memory stats"
 	@echo "  bench-compare - Compare lnpm vs yalc/relative-deps"
+	@echo "  test-changelog-section - Test the release notes extractor"
 	@echo "  lint          - Run linter"
 	@echo "  fmt           - Format code"
 	@echo "  install       - Install to GOPATH/bin"

@@ -25,6 +25,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Not a Go test, so nothing below covers it. The release workflow reads
+      # the release body out of CHANGELOG.md with this script, and a break in
+      # it would otherwise surface only at the next release.
+      - name: Run changelog extractor tests
+        run: make test-changelog-section
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
