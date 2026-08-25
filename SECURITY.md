@@ -50,6 +50,11 @@ chose it. Against that, lnpm:
   run, so `follow_symlinked_node_modules: true` in the config file turns it off.
   Leaving it on is what stops a committed link from aiming lnpm's directory
   creation and its deletes outside the project.
+- Refuses a workspace member whose real path falls outside the workspace root.
+  Glob expansion follows symlinks, so a checkout committing
+  `packages/escape -> /somewhere/else` would otherwise have that directory
+  listed as a member and its manifest read from outside the root. Both sides are
+  resolved in full, so a chain of links cannot slip past a single-level check.
 
 Note that `filepath.Join()` is not itself a defence: it cleans the path it
 builds, so `..` segments in a name survive into the result. The validation

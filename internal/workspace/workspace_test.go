@@ -116,6 +116,180 @@ func TestExpandGlobsSkipsDirectoriesWithoutPackageJSON(t *testing.T) {
 	assertPackages(t, packages, []string{pkgA})
 }
 
+// symlinkDirAt points linkPath at target, and skips the test when the platform
+// will not have it.
+//
+// Windows creates a symlink only with the symlink privilege or developer mode
+// turned on, so a refusal there means the guard was never exercised, and saying
+// so beats reporting a pass the run did not earn. Every case that calls this
+// helper calls it before it asserts anything, so a skip is never a silent pass
+// there; the cases that never symlink - the malformed-pattern ones among them -
+// do not reach it and run everywhere. It is a local copy of internal/cli's
+// helper of the same name rather than a shared one,
+// because a test helper is not exported across packages here.
+func symlinkDirAt(t *testing.T, target, linkPath string) {
+	t.Helper()
+
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Skipf("cannot create a directory link at %s: %v", linkPath, err)
+	}
+}
+
+// assertRefusedEscape checks that err refuses member by name, says where it
+// landed, and stays recognisable as ErrWorkspaceMemberRefused. The last is what
+// lets Detect propagate the refusal from anywhere along its walk, so a message
+// that merely reads correctly is not enough.
+func assertRefusedEscape(t *testing.T, err error, member, outside string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("Expected %s to be refused as an escape from the workspace root", member)
+	}
+	if !errors.Is(err, ErrWorkspaceMemberRefused) {
+		t.Errorf("Expected the refusal to wrap ErrWorkspaceMemberRefused, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), member) {
+		t.Errorf("Expected the error to name the member %s, got: %v", member, err)
+	}
+	resolved, evalErr := filepath.EvalSymlinks(outside)
+	if evalErr != nil {
+		t.Fatalf("Failed to resolve %s: %v", outside, evalErr)
+	}
+	if !strings.Contains(err.Error(), resolved) {
+		t.Errorf("Expected the error to name the resolved path %s, got: %v", resolved, err)
+	}
+}
+
+// The escape target sits in a sibling directory whose name extends the root's,
+// so this row also catches a containment test written as a prefix comparison
+// with no trailing separator: "ws-evil" starts with "ws".
+func TestExpandGlobsRefusesAMemberSymlinkedOutsideTheRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	writePackage(t, root, "packages/package-a")
+	outside := writePackage(t, base, "ws-evil/stolen")
+
+	link := filepath.Join(root, "packages", "escape")
+	symlinkDirAt(t, outside, link)
+
+	packages, err := expandGlobs(root, []string{"packages/*"})
+	assertRefusedEscape(t, err, link, outside)
+	if len(packages) != 0 {
+		t.Errorf("Expected no packages alongside the refusal, got %v", packages)
+	}
+}
+
+// A chain defeats a single-level os.Readlink: the first hop lands back inside
+// the root and reads as containment.
+func TestExpandGlobsRefusesAMemberReachedByASymlinkChainOutsideTheRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	writePackage(t, root, "packages/package-a")
+	outside := writePackage(t, base, "outside/stolen")
+
+	hop := filepath.Join(root, "hop")
+	symlinkDirAt(t, outside, hop)
+	link := filepath.Join(root, "packages", "escape")
+	symlinkDirAt(t, hop, link)
+
+	packages, err := expandGlobs(root, []string{"packages/*"})
+	assertRefusedEscape(t, err, link, outside)
+	if len(packages) != 0 {
+		t.Errorf("Expected no packages alongside the refusal, got %v", packages)
+	}
+}
+
+// A symlinked member that stays inside the root is kept, not refused.
+//
+// It proves that for one spelling only. The link target here is built from the
+// same root string the check is handed, so the resolved member and the resolved
+// root agree character for character - see fsutil.WithinRoot's comment on what a
+// target spelled in a different case would do on a case-insensitive filesystem.
+// This row does not exercise that, and cannot on Linux.
+func TestExpandGlobsKeepsAMemberSymlinkedElsewhereInsideTheRoot(t *testing.T) {
+	root := t.TempDir()
+	target := writePackage(t, root, "vendored/package-b")
+
+	link := filepath.Join(root, "packages", "package-b")
+	if err := os.MkdirAll(filepath.Join(root, "packages"), 0755); err != nil {
+		t.Fatalf("Failed to create packages dir: %v", err)
+	}
+	symlinkDirAt(t, target, link)
+	pkgA := writePackage(t, root, "packages/package-a")
+
+	packages, err := expandGlobs(root, []string{"packages/*"})
+	if err != nil {
+		t.Fatalf("Failed to expand globs: %v", err)
+	}
+
+	assertPackages(t, packages, []string{pkgA, link})
+}
+
+// The workspace root reaches expandGlobs as whatever spelling the caller walked
+// up to, and that spelling can run through a symlink of its own - on macOS /var
+// is a link to /private/var, so a workspace under a temp directory is reached
+// that way on every run there. Resolving only the member against an unresolved
+// root turns every member of such a workspace into an escape.
+func TestExpandGlobsResolvesMembersOfASymlinkedWorkspaceRoot(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writePackage(t, real, "packages/package-a")
+
+	root := filepath.Join(base, "ws")
+	symlinkDirAt(t, real, root)
+
+	packages, err := expandGlobs(root, []string{"packages/*"})
+	if err != nil {
+		t.Fatalf("Failed to expand globs under a symlinked root: %v", err)
+	}
+
+	assertPackages(t, packages, []string{filepath.Join(root, "packages", "package-a")})
+}
+
+// The negation loop globs the same filesystem and needs the same refusal. The
+// escaping directory is matched only by the negation pattern here, so the
+// include loop's check cannot be what catches it.
+func TestExpandGlobsRefusesANegationMatchSymlinkedOutsideTheRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "ws")
+	writePackage(t, root, "packages/package-a")
+	outside := writePackage(t, base, "outside/stolen")
+
+	if err := os.MkdirAll(filepath.Join(root, "vendor"), 0755); err != nil {
+		t.Fatalf("Failed to create vendor dir: %v", err)
+	}
+	link := filepath.Join(root, "vendor", "escape")
+	symlinkDirAt(t, outside, link)
+
+	packages, err := expandGlobs(root, []string{"packages/*", "!vendor/*"})
+	assertRefusedEscape(t, err, link, outside)
+	if len(packages) != 0 {
+		t.Errorf("Expected no packages alongside the refusal, got %v", packages)
+	}
+}
+
+// A dangling link is skipped today because the package.json stat fails, and the
+// containment check must not move ahead of that stat and turn it into an abort.
+// Both loops are covered: the include pattern reaches one dangling link and the
+// negation pattern reaches another.
+func TestExpandGlobsStillSkipsADanglingSymlink(t *testing.T) {
+	root := t.TempDir()
+	pkgA := writePackage(t, root, "packages/package-a")
+	if err := os.MkdirAll(filepath.Join(root, "vendor"), 0755); err != nil {
+		t.Fatalf("Failed to create vendor dir: %v", err)
+	}
+
+	symlinkDirAt(t, filepath.Join(root, "nowhere"), filepath.Join(root, "packages", "dangling"))
+	symlinkDirAt(t, filepath.Join(root, "nowhere"), filepath.Join(root, "vendor", "dangling"))
+
+	packages, err := expandGlobs(root, []string{"packages/*", "!vendor/*"})
+	if err != nil {
+		t.Fatalf("Failed to expand globs past a dangling symlink: %v", err)
+	}
+
+	assertPackages(t, packages, []string{pkgA})
+}
+
 func TestExpandGlobsMalformedNegationFailsAndKeepsNegatedPackageOut(t *testing.T) {
 	root := t.TempDir()
 	writePackage(t, root, "packages/public-api")
@@ -373,6 +547,43 @@ func TestDetectMalformedPatternInAncestorReturnsError(t *testing.T) {
 	}
 	if ws != nil {
 		t.Errorf("Expected no workspace alongside the error, got %+v", ws)
+	}
+}
+
+// The refusal has to reach the user from wherever the command was run, and
+// `lnpm publish` from inside a member directory is the ordinary monorepo
+// invocation. Detect finds the root config on a later iteration of the walk
+// there, so the starting-directory rule above would swallow the refusal and
+// report "no workspace found" - hiding both the member and where it pointed,
+// exactly as walking past a malformed pattern would hide the pattern.
+//
+// These rows are also the only place a globbing entry point is reached through
+// Detect with a symlink on disk: parsePackageJSONWorkspace and parsePnpmWorkspace
+// get one each. Every other containment case calls expandGlobs directly.
+func TestDetectRefusesAMemberSymlinkedOutsideTheRootFromASubdirectory(t *testing.T) {
+	for _, tc := range []struct{ name, file, contents string }{
+		{"package.json", "package.json", `{"name":"root","workspaces":["packages/*"]}`},
+		{"pnpm-workspace.yaml", "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "ws")
+			member := writePackage(t, root, "packages/package-a")
+			outside := writePackage(t, base, "outside/stolen")
+
+			link := filepath.Join(root, "packages", "escape")
+			symlinkDirAt(t, outside, link)
+
+			if err := os.WriteFile(filepath.Join(root, tc.file), []byte(tc.contents), 0644); err != nil {
+				t.Fatalf("Failed to write %s: %v", tc.file, err)
+			}
+
+			ws, err := Detect(member)
+			assertRefusedEscape(t, err, link, outside)
+			if ws != nil {
+				t.Errorf("Expected no workspace alongside the refusal, got %+v", ws)
+			}
+		})
 	}
 }
 

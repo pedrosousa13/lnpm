@@ -28,6 +28,20 @@ type Package struct {
 	Path    string
 }
 
+// ErrWorkspaceMemberRefused marks the refusal of a globbed workspace member, so
+// Detect can recognise that refusal anywhere along its walk.
+//
+// Both of requireWithinRoot's refusals raise it - the member whose real path
+// falls outside the workspace root, and the member that will not resolve at all
+// - because both say the same thing about the config in hand: it names a member
+// this command will not accept, so there is nothing to gain by walking past it.
+// One sentinel rather than two keeps Detect's guard a single errors.Is, beside
+// the one it already runs for doublestar.ErrBadPattern.
+//
+// requireWithinRoot carries the whole message; this sentinel is only the phrase
+// each message opens with.
+var ErrWorkspaceMemberRefused = errors.New("refused workspace member")
+
 // Detect detects if the current directory is part of a monorepo workspace
 func Detect(startPath string) (*Workspace, error) {
 	// Walk up looking for workspace root
@@ -46,6 +60,17 @@ func Detect(startPath string) (*Workspace, error) {
 		// also catch a bad-pattern error raised by path.Match anywhere under
 		// detectWorkspaceAt. Nothing under there calls path.Match today.
 		if errors.Is(err, doublestar.ErrBadPattern) {
+			return nil, err
+		}
+		// A refused workspace member aborts for the same reason and is
+		// unconditional for the same reason. It is found where the workspace
+		// config is, and `lnpm publish` run inside a member directory reaches
+		// that config on a later iteration - so narrowing this to the starting
+		// directory would swallow the refusal on the ordinary monorepo
+		// invocation and answer "no workspace found", naming neither the
+		// member nor what was wrong with it. Both of requireWithinRoot's
+		// refusals wrap the sentinel, so both reach here.
+		if errors.Is(err, ErrWorkspaceMemberRefused) {
 			return nil, err
 		}
 		// A config that will not read or will not parse aborts only in the
@@ -205,6 +230,9 @@ func parsePackageJSONWorkspace(root, path string) (*Workspace, error) {
 // A pattern that will not parse fails the whole expansion, includes and
 // negations alike: a swallowed negation failure publishes the package the
 // config excluded, which docs/adr/0001 classifies as a bug.
+//
+// Both loops filter on package.json presence and then refuse anything resolving
+// outside root - see requireWithinRoot for why, and for why that order matters.
 func expandGlobs(root string, patterns []string) ([]string, error) {
 	var packages []string
 	var negations []string
@@ -236,6 +264,10 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 				continue
 			}
 
+			if err := requireWithinRoot(root, pkgPath); err != nil {
+				return nil, err
+			}
+
 			if !seen[pkgPath] {
 				seen[pkgPath] = true
 				packages = append(packages, pkgPath)
@@ -255,7 +287,38 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 		}
 
 		for _, match := range matches {
-			excluded[filepath.Join(root, match)] = true
+			pkgPath := filepath.Join(root, match)
+
+			// The same package.json gate the include loop applies, for the
+			// same reason: without it a dangling symlink under a negated
+			// pattern would reach requireWithinRoot, fail to resolve, and
+			// abort a workspace that expands fine today. Against a
+			// filesystem that holds still it cannot change which packages
+			// are returned, because excluded is only ever consulted for
+			// entries of packages, and every one of those passed this same
+			// stat in the loop above. It is not atomic, though: a member
+			// whose package.json is deleted between the two loops stays in
+			// packages and no longer reaches excluded, so a negated package
+			// is returned - the fail-open direction docs/adr/0001 names.
+			// SECURITY.md's "Known limits" records the same non-atomicity
+			// for the write-path guards.
+			pkgJSON := filepath.Join(pkgPath, "package.json")
+			if _, err := os.Stat(pkgJSON); err != nil {
+				continue
+			}
+
+			// A negated match that escapes the root fails the whole
+			// workspace, not just that pattern. That is stricter than #328's
+			// scenario, which was a member read from outside the root: a
+			// negated member is only ever subtracted, never read. It is
+			// refused anyway because an exclusion set that depends on a path
+			// outside the root is the same hostile shape, and because a
+			// silent answer here decides what does get published.
+			if err := requireWithinRoot(root, pkgPath); err != nil {
+				return nil, err
+			}
+
+			excluded[pkgPath] = true
 		}
 	}
 
@@ -267,6 +330,56 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 	}
 
 	return filtered, nil
+}
+
+// requireWithinRoot refuses a globbed match whose real path falls outside the
+// workspace root.
+//
+// os.DirFS refuses ".." and absolute patterns but follows symlinks, so a
+// checkout containing packages/escape -> /somewhere/else otherwise has that
+// directory returned as a workspace member and its manifest read from outside
+// the root (#328). fsutil.WithinRoot resolves both sides fully, so a chain of
+// links cannot slip past the way it would past a single-level check.
+//
+// This runs only after the caller has stat'd the member's package.json, which
+// means the path was there a moment ago and resolvable. A resolution failure on
+// it is therefore anomalous rather than the ordinary "this match is not a
+// package" case, and it refuses instead of skipping. Both refusals here wrap
+// ErrWorkspaceMemberRefused, which is what makes that true of the composed
+// behaviour rather than only of this function: Detect swallows an error it does
+// not recognise on every iteration of its walk but the first, so an unwrapped
+// refusal would go back to skipping the moment the command was run from inside
+// a member directory.
+//
+// Which way that cuts depends on which loop called. From the negation loop the
+// ADR decides it: skipping would drop an exclusion and publish the package the
+// maintainer excluded, the fail-open direction docs/adr/0001 exists to correct.
+// From the include loop it decides nothing, because refusing and skipping both
+// publish less and neither is fail-open - and the ADR files this exact case, a
+// member whose package.json was there moments earlier, under judgement call
+// rather than rule. The judgement made here is that such a member is a broken
+// workspace rather than a directory that merely is not a package, so it is worth
+// stopping the command over; one rule for both loops also keeps them from
+// drifting the way the ADR's "Considered options" warns two separately-decided
+// rules do.
+//
+// The failure can still come from the root rather than the member - a workspace
+// root deleted underneath the walk resolves no better than a member does - so
+// this does not attribute it. fsutil.WithinRoot names the side that failed, and
+// a message here blaming the member for a broken root would send the reader to
+// the wrong path.
+func requireWithinRoot(root, path string) error {
+	within, resolved, err := fsutil.WithinRoot(root, path)
+	if err != nil {
+		return fmt.Errorf("%w %s: failed to check it against the workspace root: %w",
+			ErrWorkspaceMemberRefused, path, err)
+	}
+	if !within {
+		return fmt.Errorf("%w %s: it resolves to %s, which is outside the workspace root %s: "+
+			"remove the pattern that matches it, or replace the link with a directory inside the root",
+			ErrWorkspaceMemberRefused, path, resolved, root)
+	}
+	return nil
 }
 
 // ListPackages returns all packages in the workspace with their metadata.
