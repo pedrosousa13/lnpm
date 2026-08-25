@@ -122,21 +122,31 @@ var changelogExtensions = []string{"", ".md", ".markdown", ".txt", ".rst"}
 // hold back a root history.db — an OWASP A01 failure that fails open, since it
 // ships a file the author never selected.
 //
-// isDefaultInclude lower-cases both the pattern and the path, so one spelling
-// per entry answers for every casing. That is why the generated entries are
-// spelled once while README, LICENSE and LICENCE above are each spelled twice —
-// package.json is spelled once already, so the doubling is not even uniform. It
-// is redundant either way, it predates this list's matcher growing a ToLower,
-// and #363 removes it. Adding cased duplicates here would only give #363 more to
-// delete.
+// Every name is spelled once. isDefaultInclude lower-cases both the pattern and
+// the path before matching, so one spelling answers for every casing of a name
+// and a second one can never match anything the first does not. Until #363 the
+// first block carried "readme*", "license*" and "licence*" beside their
+// uppercase partners — dead weight that predated the matcher growing its
+// ToLower, and not even uniform, since package.json was already spelled once.
+// Do not add a cased duplicate back. That is not left to this comment:
+// TestDefaultIncludesHoldNoCasedDuplicates fails the build on two entries that
+// are equal once lowered, and TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot
+// asserts the fold over every entry, so a new entry is covered the moment it is
+// added.
+//
+// LICENCE* and LICENSE* are not such a pair and both stay. They are the British
+// and American spellings of the word, differing by a letter rather than by a
+// case, so no fold relates them — filepath.Match("licence*", "license") is
+// false, run and confirmed — and deleting either drops a real name rather than a
+// duplicate. That is the headline way to get this list's deduplication wrong,
+// which is why it is stated here and not left to be re-derived. The
+// no-cased-duplicates test passing is the same claim from the useful side: the
+// two do not collide under the fold.
 var defaultIncludes = append([]string{
 	"package.json",
 	"README*",
-	"readme*",
 	"LICENSE*",
-	"license*",
 	"LICENCE*",
-	"licence*",
 }, changelogIncludes()...)
 
 // changelogIncludes expands changelogNames against changelogExtensions. The
@@ -2182,6 +2192,18 @@ func isBareWildcard(segment string) bool {
 // wrote as ["dist"] still shipped internal-docs/README.private,
 // notes/changes.txt and vendor/foo/LICENSE — each basename matched an entry
 // somewhere below the root. #320.
+//
+// Entries are matched case-folded: both the pattern and relPath go through
+// strings.ToLower before filepath.Match, unconditionally and on every platform,
+// so a single spelling of a name in defaultIncludes answers for every casing of
+// it and a second, differently cased spelling of the same name would be dead
+// weight. #363 deleted the three that had accumulated. Two tests assert the
+// fold, one per side: TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot over
+// every entry in the list, on this function, and
+// TestPackDefaultIncludesShipPastAFilesWhitelistInEveryCasing end to end
+// against real files, over every entry but package.json — the fixture writes
+// that one as the manifest, whose name readPackageJSON fixes, so it is the one
+// entry no end-to-end row can re-case.
 //
 // The separator check is deliberately made before filepath.Match rather than
 // left to it. Some defaultIncludes entries are globs ("README*"), and

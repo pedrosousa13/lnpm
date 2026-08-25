@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -719,9 +720,14 @@ func TestIsDefaultInclude(t *testing.T) {
 		{"changelog.rst", true},
 		{"history.markdown", true},
 		// Case-folding is unchanged: the matcher lower-cases both sides, so a
-		// single spelling per entry answers for every casing of it. That is why
-		// the entries #360 added are written once where the older README/LICENSE
-		// entries are doubled; #363 removes the doubling.
+		// single spelling per entry answers for every casing of it. Every entry
+		// is written once since #363 deleted "readme*", "license*" and
+		// "licence*". Those three never decided a row here even while they were
+		// in the list: the loop lowers each pattern in order, so "README*" is
+		// already "readme*" by the time the readme.txt row is compared, and the
+		// twin on the next line could never return true where it had not.
+		// TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot asserts the fold
+		// over the whole list rather than these few rows.
 		{"ChangeLog.MD", true},
 		{"hIsToRy", true},
 
@@ -790,6 +796,132 @@ func TestIsDefaultInclude(t *testing.T) {
 				t.Errorf("isDefaultInclude(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// caseSpellings are the four ways the tests below spell a root filename. Every
+// one of them names the same file as the others on a case-insensitive
+// filesystem, so no two may ever be written into one directory — see
+// docs/agents/verification-discipline.md, "Some evidence only CI can produce".
+// TestPackDefaultIncludesShipPastAFilesWhitelistInEveryCasing gives each casing
+// its own package root for exactly that reason.
+var caseSpellings = []struct {
+	name  string
+	apply func(string) string
+}{
+	{"as written", func(s string) string { return s }},
+	{"lower-cased", strings.ToLower},
+	{"upper-cased", strings.ToUpper},
+	{"alternating", alternatingCase},
+}
+
+// alternatingCase upper-cases every other character, which is a spelling no
+// defaultIncludes entry is written in and therefore one a fold has to earn.
+func alternatingCase(s string) string {
+	out := []rune(strings.ToLower(s))
+	for i := range out {
+		if i%2 == 0 {
+			out[i] = unicode.ToUpper(out[i])
+		}
+	}
+	return string(out)
+}
+
+// filenameFor turns a defaultIncludes entry into a root filename that entry
+// matches, by substituting the one metacharacter any entry carries: "*" in the
+// prefix globs README*, LICENSE* and LICENCE*. Every other entry is a literal
+// and is returned unchanged.
+//
+// An entry carrying "[", "?" or "{" would come back as a name that is not a
+// match for itself, and every row for that entry would go red rather than the
+// fold being quietly mis-tested. That matters here because isDefaultInclude
+// lowers the pattern at match time, and strings.ToLower rewrites "[A-Z]" into
+// "[a-z]" rather than re-casing it — the same invariant
+// TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite states for the
+// exclusion lists.
+//
+// Run and confirmed with a dummy "READ[A-Z]E*" entry added to defaultIncludes:
+// all four of its rows failed, on names like "READ[A-Z]E.md", because the class
+// matches one letter and not a literal "[". Note what did *not* fire, since it
+// is the reason this note lives here rather than in the fixture test's
+// completeness loop: that loop reported the entry as covered, because
+// filepath.Match("read[a-z]e*", "readme.md") is true — the fixture's README.md
+// satisfies the class by accident.
+func filenameFor(pattern string) string {
+	return strings.ReplaceAll(pattern, "*", ".md")
+}
+
+// TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot pins the property that made
+// #363's deletion safe, and that stops the deletion being undone "just in case".
+//
+// isDefaultInclude lowers the pattern and the path before filepath.Match, so one
+// spelling per entry answers for every casing of it, and a lowercase twin beside
+// an uppercase entry can never match anything its partner does not. The list
+// carried three such twins — "readme*", "license*" and "licence*" — until #363
+// deleted them.
+//
+// The rows are derived from defaultIncludes rather than written out beside it,
+// because the property is "every entry folds" and a hand-written table cannot
+// say "every" — it can only list the entries someone thought of. Deriving them
+// makes the coverage total by construction, so a name added to the list later
+// is asserted the moment it is added.
+//
+// Do not read that as the choice the exclusion side makes; it is the opposite
+// one, and the reason is a real difference in where the fold lives.
+// TestDefaultExcludesMatchCaseInsensitively is a table of twenty-four
+// hand-written paths and its doc says adding a completeness check to it "would
+// be a mistake". That holds there because the fold is precomputed over the
+// production list — lowerHardReservedExcludes and lowerDefaultExcludes are
+// lowerPatterns applied to the two lists — so a new entry is folded whether or
+// not any test mentions it, and the one way it can fail to be is pinned from its
+// own side by
+// TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite. defaultIncludes
+// has no such precomputed twin: isDefaultInclude lowers each pattern at match
+// time, inside the loop. There is nothing derived on the production side here,
+// which is why the derivation is on the test side instead.
+//
+// The completeness check this file does need is the one in
+// TestPackDefaultIncludesShipPastAFilesWhitelistInEveryCasing, whose fixture is
+// hand-authored on purpose and can therefore go short.
+func TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot(t *testing.T) {
+	for _, pattern := range defaultIncludes {
+		name := filenameFor(pattern)
+		for _, spelling := range caseSpellings {
+			t.Run(pattern+" "+spelling.name, func(t *testing.T) {
+				path := spelling.apply(name)
+				if !isDefaultInclude(path) {
+					t.Errorf("isDefaultInclude(%q) = false, want true: entry %q must "+
+						"answer for every casing of the name, or the list needs a "+
+						"second spelling of it again", path, pattern)
+				}
+			})
+		}
+	}
+}
+
+// TestDefaultIncludesHoldNoCasedDuplicates is the mechanical half of the rule
+// pack.go states in prose above defaultIncludes: every name is spelled once.
+// A restored lowercase twin changes no behaviour whatsoever, which is the whole
+// point of #363 and is also why nothing else can catch one coming back: measured
+// before this test existed, putting "readme*", "license*" and "licence*" back
+// left the entire package green. The rule was documentation only until here.
+//
+// It also states the LICENCE*/LICENSE* distinction from the useful side. The
+// pair reads like a duplicate and is not one, and the way to say so is that they
+// do not collide here: this test passing is the assertion that the fold does not
+// relate them, which is what makes deleting either of them a deletion of a real
+// name rather than a deduplication.
+func TestDefaultIncludesHoldNoCasedDuplicates(t *testing.T) {
+	seen := make(map[string]string, len(defaultIncludes))
+	for _, pattern := range defaultIncludes {
+		lowered := strings.ToLower(pattern)
+		if first, ok := seen[lowered]; ok {
+			t.Errorf("defaultIncludes holds %q and %q, which are the same pattern once "+
+				"isDefaultInclude lowers both sides: the second can never match a path "+
+				"the first does not, so one of them is dead weight (#363)", first, pattern)
+			continue
+		}
+		seen[lowered] = pattern
 	}
 }
 
@@ -2595,6 +2727,139 @@ func TestPackDefaultIncludesAnchoredToRoot(t *testing.T) {
 			"package root only and by documentation name, so a \"files\" whitelist "+
 			"of [\"dist\"] ships nothing below the root that it did not name, and no "+
 			"root file whose name merely starts with a changelog word\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// TestPackDefaultIncludesShipPastAFilesWhitelistInEveryCasing asserts the exact
+// set of force-included files against a fixture, one root file per
+// defaultIncludes entry, under a "files": ["dist"] whitelist that names none of
+// them. It is #363's evidence that deleting the lowercase twins changed nothing:
+// the lower-cased row writes readme.md, license, licence and the lower-cased
+// changelog names — the exact names the deleted "readme*", "license*" and
+// "licence*" were there for — and every one of them still ships, matched by an
+// uppercase entry through the fold. Measured with "readme*" put back, repo-wide:
+// this test stays green and unchanged at four rows,
+// TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot grows from 76 rows to 80 and
+// passes all of them, and the only thing anywhere that goes red is
+// TestDefaultIncludesHoldNoCasedDuplicates. That is the split doing its job — a
+// restored twin is invisible to behaviour, which is why the redundancy needs a
+// structural guard rather than a behavioural one.
+//
+// Each casing gets its own package root. On macOS and Windows "README.md" and
+// "readme.md" are the same file, so a fixture holding both would be unsatisfiable
+// there regardless of whether the product is correct —
+// docs/agents/verification-discipline.md records that breaking CI once. t.TempDir
+// per subtest is what keeps the four rows apart.
+//
+// The fixture list is hand-authored rather than generated from defaultIncludes,
+// which is the opposite choice from TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot
+// and is deliberate. A fixture derived from the list it is pinning would absorb a
+// membership change instead of reporting it: delete LICENCE* and a generated
+// fixture simply stops writing a LICENCE. The cost of hand-authoring is that the
+// list can go short, so the completeness loop below fails the build when an entry
+// has no file here — the same guard TestDefaultExcludesStillExclude gives the
+// exclusion lists.
+//
+// Proven by adding a dummy "NOTICE*" entry to defaultIncludes and running the
+// package: this test alone went red, and it printed only the unindented
+// "--- FAIL:" shape, because the completeness loop runs outside the subtests and
+// the four packed-set rows stayed green — nothing writes a NOTICE, so no packed
+// set moved. TestDefaultIncludesMatchCaseInsensitivelyAtTheRoot stayed green too,
+// which is the split working as intended: it derives its rows from the list, so a
+// new entry needs no edit there and does need one here.
+//
+// The packed-set rows have their own red direction, and it is the fold rather
+// than the membership. Deleting the path-side strings.ToLower from
+// isDefaultInclude — so a lowered pattern is matched against an unlowered path —
+// turns three of the four rows red: "as written", "upper-cased" and
+// "alternating" each pack [dist/index.js package.json] and nothing else, having
+// lost every always-included file from the tarball. The row that survives is
+// "lower-cased", and necessarily so: the patterns are still lowered, so a path
+// already spelled in lowercase still matches. That makes it the one row saying
+// nothing about the fold, and it is the reason the other three exist — a fixture
+// written only in the lower-cased spelling would have passed that bug.
+func TestPackDefaultIncludesShipPastAFilesWhitelistInEveryCasing(t *testing.T) {
+	// One file per defaultIncludes entry other than package.json, which the
+	// fixture writes as the manifest instead — readPackageJSON opens that exact
+	// name, so it cannot be re-cased, and its uppercase spelling could not sit
+	// beside it in one directory anyway.
+	alwaysIncluded := []string{
+		"README.md",
+		"LICENSE",
+		"LICENCE",
+		"CHANGELOG",
+		"CHANGELOG.md",
+		"CHANGELOG.markdown",
+		"CHANGELOG.txt",
+		"CHANGELOG.rst",
+		"CHANGES",
+		"CHANGES.md",
+		"CHANGES.markdown",
+		"CHANGES.txt",
+		"CHANGES.rst",
+		"HISTORY",
+		"HISTORY.md",
+		"HISTORY.markdown",
+		"HISTORY.txt",
+		"HISTORY.rst",
+	}
+
+	// Root files the whitelist does not name and the always-included set does
+	// not cover, so the assertion is an exact set rather than a lower bound.
+	// "history.db" is #360's name: an arbitrary extension on an accepted stem.
+	notIncluded := []string{"index.js", "history.db"}
+
+	// Completeness: every entry needs a file above, or a name added to the
+	// always-included set later ships with nothing packing it here. The match is
+	// spelled the way isDefaultInclude spells it, both sides lowered, because
+	// the question is which entry covers which fixture name rather than whether
+	// some entry does — isDefaultInclude answers the latter and would report an
+	// uncovered entry as covered.
+	for _, pattern := range defaultIncludes {
+		covered := false
+		for _, name := range append([]string{manifestFileName}, alwaysIncluded...) {
+			if ok, _ := filepath.Match(strings.ToLower(pattern), strings.ToLower(name)); ok {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			t.Errorf("defaultIncludes entry %q has no file in this fixture: every entry "+
+				"needs one, or the always-included set can grow a name no pack test "+
+				"exercises", pattern)
+		}
+	}
+
+	for _, spelling := range caseSpellings {
+		t.Run(spelling.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			files := map[string]string{
+				"package.json": `{
+					"name": "cased-default-includes",
+					"version": "1.0.0",
+					"files": ["dist"]
+				}`,
+				"dist/index.js": "module.exports = {}",
+			}
+			want := []string{"dist/index.js", "package.json"}
+			for _, name := range alwaysIncluded {
+				cased := spelling.apply(name)
+				files[cased] = "docs"
+				want = append(want, cased)
+			}
+			for _, name := range notIncluded {
+				files[spelling.apply(name)] = "not documentation"
+			}
+			writeMainEntryTree(t, tmpDir, files)
+			sort.Strings(want)
+
+			assertPackedSet(t, tmpDir, want,
+				"every defaultIncludes entry ships past a \"files\" whitelist that "+
+					"names none of them, in any casing: isDefaultInclude lowers the "+
+					"pattern and the path, so one spelling per entry answers for all "+
+					"of them and #363's deleted twins added nothing")
+		})
 	}
 }
 
