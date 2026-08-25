@@ -598,7 +598,7 @@ func warnHardReservedIgnoreNegation(packageDir string) {
 // filesFieldMayReach already share, rather than a third spelling of those trims.
 // #402 made it shared, and measured the change rather than assuming it, because
 // the two spellings were not equivalent: this function used to trim a trailing
-// "/" unconditionally where normalizeFilesEntry trims one only from an entry
+// "/" unconditionally where normalizeFilesEntry trims it only from an entry
 // with no "*", npm reading no directory marker into a trailing slash on a glob.
 //
 // That difference cannot move this predicate, which was run rather than argued.
@@ -1977,10 +1977,10 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // each other. "dist/**/" is equivalent to none of them, and neither is
 // "./dist/**/".
 //
-// An entry that is empty once normalized — "", "/", "//" or "./" — includes
-// everything, which is what npm does with it: all four ship the same files as a
-// package with no "files" field. isExcluded declines to filter a path out on any
-// of the four as well, so neither function drops one on the strength of a
+// An entry that is empty once normalized — "", "./" or any run of "/" —
+// includes everything, which is what npm does with it: all of them ship the same
+// files as a package with no "files" field. isExcluded declines to filter a path
+// out on any of them as well, so neither function drops one on the strength of a
 // degenerate entry — but it reaches that answer by two routes, and only one of
 // them is a degenerate skip. "", "/" and "//" are skipped there without being
 // consulted: the first two hit the empty-pattern guard, and "//" hits the
@@ -1988,9 +1988,13 @@ func matchesIgnorePattern(relPath, baseName, pattern string, anchored, negated b
 // because isExcluded resolves no leading "./" — it reads the entry as the
 // directory pattern "." and simply matches nothing.
 //
-// A slash *run* in front of a real path is a separate question and still open:
-// "//dist" normalizes to "/dist" here and selects nothing, where npm 11.16.0
-// ships dist. #403.
+// Longer runs join the set only on this side, and only since #403: "///"
+// normalized to "/" before it and selected nothing here, where npm 11.16.0 ships
+// everything. It takes the third route rather than either of those two —
+// isExcluded resolves no run any more than it resolves a leading "./" — but the
+// property that matters survives, and was run rather than argued: measured on
+// 2026-08-25, isExcluded("dist/cli/index.js", ["///"]) is false, so no path is
+// filtered out on the strength of it.
 //
 // A bare "." is not one of them, however much it looks like one. npm 11.16.0
 // ships only the always-included set for "files": ["."] — run and confirmed on
@@ -2120,21 +2124,21 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 			// holding only the always-included set, run on a fixture package
 			// with npm 11.16.0.
 			//
-			// Almost everything that reaches here is a glob, because the trim
-			// above takes one trailing slash off an entry with no "*" — "dist/"
-			// arrived as "dist" and was answered by the branches above. A slash
-			// *run* is the exception: "dist//" keeps a slash and lands here. It
-			// selects nothing, exactly as it did before this branch existed,
-			// while npm 11.16.0 ships dist for it — run and confirmed.
+			// Only a glob reaches here now, because the trim above takes the
+			// whole trailing slash run off an entry with no "*" — "dist/" and
+			// "dist//" both arrive as "dist" and are answered by the branches
+			// above. Until #403 the trim took one slash, so "dist//" kept one,
+			// landed here and selected nothing where npm 11.16.0 ships dist.
+			// That was the trailing half of #403, broadened onto it during #350
+			// with the measurement; nothing in #350 introduced it, since before
+			// it the same entry reached filepath.Match("dist/", …) and missed
+			// just as widely.
 			//
-			// That divergence belongs to #403, which covers a slash run at
-			// either end of an entry: it was filed for the leading "//dist" and
-			// was broadened to this trailing case during #350, measurement
-			// included. Nothing here introduced it — before #350 the same entry
-			// reached filepath.Match("dist/", …) and missed just as widely. A
-			// fix there has to keep this branch's rule intact, since dropping a
-			// trailing slash from a *glob* would turn ["dist/**/"] into
-			// ["dist/**"] and ship a subtree npm ships nothing for.
+			// #403's fix had to leave this branch's rule intact, and did: the
+			// trim is still guarded on "*", so ["dist/**/"] and ["dist/**//"]
+			// both still land here and name nothing. npm ships nothing for
+			// either — run and confirmed — where dropping a trailing slash from
+			// a *glob* would turn them into ["dist/**"] and ship a subtree.
 			//
 			// Leaving it to the glob branch would not merely select the wrong
 			// paths. doublestar.Match("dist/**/", "dist") is true where
@@ -2155,8 +2159,10 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 				// list from a package that had said nothing about any of them.
 				//
 				// It also keeps the spellings of "ship everything" classifying
-				// alike. "", "/", "//" and "./" reach the degenerate branch
-				// above and are containment there; "*" and "**" arrive here and
+				// alike. "", "./" and any run of "/" reach the degenerate
+				// branch above — since #403 the run is trimmed whole, so "///"
+				// arrives there like "/" and "//" always did — and are
+				// containment there; "*" and "**" arrive here and
 				// have to agree, or the same manifest would mean two different
 				// things depending on which spelling was chosen. How far each
 				// reaches is a separate question, and since #350 they reach
@@ -2208,30 +2214,143 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 // measurement that let it drop its own trims, which were not equivalent to
 // these.
 //
-// One leading "./" comes off, and it comes off before the "/" trim. Both halves
+// One leading "./" comes off, and it comes off before the "/" trims. Both halves
 // of that were measured against npm 11.16.0 rather than reasoned:
 //
 //	["./dist"]    ships dist, exactly as ["dist"] does — #346
 //	["././dist"]  ships nothing, so npm resolves one "./" and not a run
 //	["/./dist"]   ships nothing, so a "./" behind the anchor is not one
-//	[".//dist"]   ships dist, since the "/" trim still runs afterwards
+//	[".//dist"]   ships dist, since the "/" trims still run afterwards
 //
 // Trimming "/" first flips both of the slash-mixed rows, measured: "/./dist"
 // becomes "./dist" and then "dist", selecting dist from an entry npm selects
 // nothing for, while ".//dist" keeps its inner "/" and selects nothing where npm
-// ships dist.
+// ships dist. Both flips were re-run for #403 against the greedy trims below and
+// both still flip: swapping the two now turns seven rows red over three tests,
+// TestIsIncludedPatternForms' ".//dist", "/./dist", ".///dist" and "//./dist",
+// TestNamesHardReservedResolvesOneDotSlashInNpmsOrder' "/./node_modules/dep" and
+// ".//node_modules/dep", and one row of
+// TestNamesHardReservedDotSlashAgreesWithUnprefixedForm. Measured 2026-08-25
+// with go vet ./... clean first; the run spellings made the guard wider rather
+// than weaker.
 //
-// A trailing "/" comes off only an entry with no "*". npm does not read a
+// "Swapping the two" has two spellings now that there are two "/" trims, and
+// they do not give the same answer, so say which one the seven belongs to: it
+// is the "./" trim moved to sit *between* the leading and the trailing slash
+// trim. Moving it below both instead turns ten rows red over five tests — the
+// seven above, plus TestIsIncludedDegeneratePattern's "dot slash" and "agrees
+// with isExcluded ./" and TestPackDegenerateFilesEntryShipsEverything's
+// "files ./". Those three are the degenerate entries and they move for a reason
+// the seven never reach: "./" gets past the leading trim untouched, loses its
+// slash to the *trailing* one, and arrives at the "./" trim as ".", which this
+// function leaves alone by design — so the entry stops meaning "ship
+// everything". Both spellings measured 2026-08-25, go vet ./... clean first.
+//
+// The "/" trims are greedy where the "./" trim is not, and that asymmetry is
+// npm's rather than this repo's. #403 measured the run against npm 11.16.0 on a
+// fixture package instead of assuming it followed the "./" rule, because it does
+// not:
+//
+//	["//dist"] ["///dist"] ["////dist"]  all ship dist, as ["/dist"] does
+//	["dist//"] ["dist///"]               both ship dist, as ["dist/"] does
+//	["//dist//"]                         ships dist, so the two ends compose
+//	[".///dist"]                         ships dist, the "./" trim first again
+//	["//./dist"]                         ships nothing, so trimming the leading
+//	                                     run does not expose a second "./"
+//	["///"]                              ships everything, joining [""], ["/"]
+//	                                     and ["//"] — #227
+//
+// Before #403 a run survived partially and matched nothing: ["//dist"] became
+// "/dist" and selected nothing where npm ships dist, and ["///"] became "/" and
+// selected nothing where npm ships everything. #227 had settled the degenerate
+// spellings only as far as its two-slash one.
+//
+// A trailing "/" run comes off only an entry with no "*". npm does not read a
 // trailing slash on a glob as a directory marker, so "dist/**/" matches nothing
 // and must not be normalized into "dist/**", which matches everything under
-// dist. isIncluded's doc comment carries that measurement, and matchFilesField's
-// trailing-"/" branch is what answers the glob spellings this leaves alone.
+// dist. ["dist/**//"] ships nothing either, run and confirmed, so guarding on
+// "*" answers the run as well as the single slash. isIncluded's doc comment
+// carries that measurement, and matchFilesField's trailing-"/" branch is what
+// answers the glob spellings this leaves alone.
+//
+// The trailing half has a revert direction of its own, and nothing recorded one
+// until it was asked for: the leading trim and the trim order were both covered
+// above and swapping this strings.TrimRight back to strings.TrimSuffix was not,
+// though #403's second comment is what broadened scope onto the trailing end.
+// Measured on 2026-08-25 with go vet ./... clean first and internal/pack's
+// result line read for a duration rather than [build failed] — five rows red
+// over two tests:
+//
+//	TestIsIncludedPatternForms/dist//
+//	TestIsIncludedPatternForms/dist///
+//	TestIsIncludedPatternForms///dist//
+//	TestPackFilesEntryTrailingSlashRunOnAFileOverridesDefaultExcludes/.env_with_a_slash_run
+//	TestPackFilesEntryTrailingSlashRunOnAFileOverridesDefaultExcludes/index.js_with_a_slash_run
+//
+// Rows expected to stay green and confirmed green, since a revert that moves a
+// row proves nothing until the rest is checked. TestIsIncludedPatternForms'
+// "dist/**//" stays green because the trim is guarded on "*" either way, and its
+// leading-run rows — "//dist", "///dist", "////dist", ".///dist", "//./dist" and
+// "//lib" — stay green because TrimLeft is untouched; only "//dist//", which
+// carries a run at both ends, is in the red list. TestIsIncludedDegeneratePattern's
+// "///" stays green for the same reason, the leading trim having emptied it
+// before this one is reached. Every namesHardReserved row stays green,
+// "node_modules//" included: TrimSuffix leaves "node_modules/", which
+// isHardReserved answers true for already. And every package outside
+// internal/pack prints `ok`.
+//
+// The trailing trim is an approximation of npm and not parity, which #403
+// measured and deliberately did not change. Its cost reaches #321's secret
+// override, so state it rather than leave it to be derived.
+//
+// npm reads a trailing slash as a directory marker in the strict sense: it
+// refuses a *file* outright. Run on a fixture package with npm 11.16.0 on
+// 2026-08-25:
+//
+//	[".env"]      ships .env
+//	[".env/"]     ships nothing but the always-included set
+//	[".env//"]    ships nothing but the always-included set
+//	["index.js/"] ships nothing but the always-included set
+//
+// This trims the run off instead and lets the bare name match whatever it names.
+// A bare name is a *direct* match, and a direct match is exactly what #321 lets
+// override defaultExcludes — collectFiles' two softExcluded.covers guards each
+// stand down for it. So a trailing slash run on a *file* entry now overrides
+// that list where it previously did not: [".env//"] publishes a secret lnpm
+// withholds by default, having selected nothing at all before #403, since the
+// old TrimSuffix left ".env/" for matchFilesField's trailing-"/" branch to
+// answer filesMatchNone.
+//
+// [".env/"] is what keeps that honest, and it is why the behaviour stayed. It
+// already overrode defaultExcludes before #403 — one slash came off then too —
+// so the override through a slashed spelling is not new, and what #403 changed
+// is that the two spellings now agree rather than one being a silent hole.
+// Agreeing is #403's first acceptance criterion. Agreeing in npm's direction
+// instead means refusing a file with a trailing slash outright, which is a
+// behaviour change to argue on its own and not something a trim should decide.
+// TestPackFilesEntryTrailingSlashRunOnAFileOverridesDefaultExcludes pins all
+// five spellings so a later change has to flip them on purpose.
+//
+// So the divergence is narrower than "lnpm trims a trailing slash and npm does
+// not", and it is worth naming which spelling falls where rather than leaving it
+// at the one example. All eight below were run against npm 11.16.0 on
+// 2026-08-25:
+//
+//   - On a *file*, lnpm ships more than npm, in both slash spellings, and this
+//     is the whole of the divergence. ["index.js/"], ["index.js//"], [".env/"]
+//     and [".env//"] each select the file here and each select nothing there.
+//   - On a *directory*, the two agree, and since #403 for the run as well:
+//     ["dist/"] and ["dist//"] both ship dist on both sides.
+//   - On a *glob*, the two agree and did before #403, because the trim is
+//     guarded on "*": ["dist/**/"] and ["dist/**//"] name nothing on either
+//     side.
 //
 // Note what this deliberately does not touch. A bare "." is left alone and
 // therefore still selects nothing, which looks like a bug and is not: ["."]
 // ships only the always-included set under npm 11.16.0, while ["./"], [""],
-// ["/"] and ["//"] all ship everything. Run and confirmed on a fixture package
-// for each spelling.
+// ["/"], ["//"] and ["///"] all ship everything. Run and confirmed on a fixture
+// package for each spelling. ["././"] is the neighbouring trap and is not
+// degenerate: npm ships nothing for it, and the trims leave "." here.
 //
 // Only the "files" side resolves this. isExcluded deliberately does not — see
 // isIncluded's doc comment for why the two differ.
@@ -2248,9 +2367,9 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 // through filepath.ToSlash.
 func normalizeFilesEntry(pattern string) string {
 	pattern = strings.TrimPrefix(pattern, "./")
-	pattern = strings.TrimPrefix(pattern, "/")
+	pattern = strings.TrimLeft(pattern, "/")
 	if !strings.Contains(pattern, "*") {
-		pattern = strings.TrimSuffix(pattern, "/")
+		pattern = strings.TrimRight(pattern, "/")
 	}
 	return pattern
 }

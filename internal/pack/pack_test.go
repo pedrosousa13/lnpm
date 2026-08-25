@@ -255,13 +255,29 @@ func TestIsIncluded(t *testing.T) {
 // glob is not a directory marker.
 //
 // The ".//dist", "/./dist" and "././dist" rows are what pin #346's trim to one
-// "./" and to running before the "/" trim, and their expectations are as
+// "./" and to running before the "/" trims, and their expectations are as
 // surprising as they look: npm ships dist for ".//dist" and nothing for either
-// "/./dist" or "././dist". Swap the two trims and ".//dist" and "/./dist" both
+// "/./dist" or "././dist". Swap the trims and ".//dist" and "/./dist" both
 // flip — measured, not predicted.
 //
+// The multi-slash rows are #403's, and they are not the "./" rule repeated. npm
+// resolves exactly one "./" and a whole *run* of "/", so "///dist" and
+// "////dist" ship dist where "././dist" ships nothing — measured before the fix
+// was written rather than inferred from the "./" trim, which would have argued
+// for trimming one more slash and stopping. Before #403 a run survived
+// partially: "//dist" normalized to "/dist" and matched nothing at all.
+//
+// "//./dist" is the row that keeps the greedy trim from being read as a rewrite
+// into the "./" spelling. Trimming the leading run leaves "./dist", and if the
+// "./" trim ran again on that the entry would ship dist; npm ships nothing, so
+// the trim order stays one pass of "./" and then the run.
+//
+// "dist/**//" is "dist/**/" with the same question asked of a run: npm ships
+// nothing for either, so the "*" guard has to hold for the run spelling too.
+//
 // Each expectation here was verified against "npm pack --dry-run" on a fixture
-// package, the "./" rows included — none is inferred from a neighbouring row.
+// package, the "./" and multi-slash rows included — none is inferred from a
+// neighbouring row.
 func TestIsIncludedPatternForms(t *testing.T) {
 	const relPath = "dist/cli/index.js"
 
@@ -278,14 +294,24 @@ func TestIsIncludedPatternForms(t *testing.T) {
 		{".//dist", true},
 		{"/./dist", false},
 		{"././dist", false},
+		{"//dist", true},
+		{"///dist", true},
+		{"////dist", true},
+		{"dist//", true},
+		{"dist///", true},
+		{"//dist//", true},
+		{".///dist", true},
+		{"//./dist", false},
 		{"dist/**", true},
 		{"/dist/**", true},
 		{"./dist/**", true},
 		{"dist/**/", false},
 		{"./dist/**/", false},
+		{"dist/**//", false},
 		{"lib", false},
 		{"/lib", false},
 		{"./lib", false},
+		{"//lib", false},
 	}
 
 	for _, tt := range tests {
@@ -299,17 +325,27 @@ func TestIsIncludedPatternForms(t *testing.T) {
 }
 
 // TestIsIncludedDegeneratePattern pins the "files" entries that are empty once
-// normalized: "/" and "//" lose everything to the leading- and trailing-slash
-// normalization, "./" loses everything to #346's "./" trim, and "" starts empty.
-// npm 11.16.0 ships the same file set for all four as it does for a package with
-// no "files" field at all, so an empty normalized pattern includes everything.
+// normalized: any run of "/" loses everything to the leading- and
+// trailing-slash normalization, "./" loses everything to #346's "./" trim, and
+// "" starts empty. npm 11.16.0 ships the same file set for all of them as it
+// does for a package with no "files" field at all, so an empty normalized
+// pattern includes everything.
+//
+// "///" is #403's row and was a real defect rather than a spelling nobody had
+// written down. #227 settled "", "/" and "//", and the one-slash trims it left
+// behind answered exactly those: "///" lost one slash at each end and
+// normalized to "/", which is not empty, so lnpm selected nothing for it where
+// npm ships everything.
 //
 // The "." row is the trap and is why it sits here rather than being left
-// unwritten. It looks like a fifth degenerate spelling and is not: npm 11.16.0
+// unwritten. It looks like another degenerate spelling and is not: npm 11.16.0
 // ships only the always-included set for "files": ["."] — README.md and
 // package.json on the fixture it was run against — so "." selects nothing and
-// lnpm matches that. Every expectation in this test was run against
-// "npm pack --dry-run" rather than reasoned from the others.
+// lnpm matches that. "././" is the same trap reached through #403's greedy
+// trims, which cannot help it: the "./" trim still resolves one, leaving "./",
+// and the trailing run trim leaves ".". npm ships nothing for it. Every
+// expectation in this test was run against "npm pack --dry-run" rather than
+// reasoned from the others.
 //
 // isExcluded already skips a degenerate pattern (it neither excludes nor
 // un-excludes anything), and the two functions must agree: neither may filter a
@@ -325,9 +361,11 @@ func TestIsIncludedDegeneratePattern(t *testing.T) {
 	}{
 		{"slash", "/", true},
 		{"double slash", "//", true},
+		{"triple slash", "///", true},
 		{"empty", "", true},
 		{"dot slash", "./", true},
 		{"dot", ".", false},
+		{"dot slash dot slash", "././", false},
 		{"dist", "dist", true},
 		{"lib", "lib", false},
 	}
@@ -4263,20 +4301,43 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 //
 // Each row runs its entry and "./"+entry, and pins the shared answer as well as
 // the agreement. Pinning both matters here more than usual, because before #402
-// every root row already agreed — and agreed for the wrong reason. Measured on
-// 2026-08-25 by reverting namesHardReserved to its old trims,
+// every root row already agreed — and agreed for the wrong reason. Re-measured
+// on 2026-08-25 for #403 by reverting namesHardReserved to its old trims,
 // strings.TrimSuffix(strings.TrimPrefix(entry, "/"), "/"), with go vet ./...
-// clean first: no root row moved, but four of this test's rows went red —
-// subtree glob, trailing slash on a glob, and both nested-directory rows —
-// because the old trims left "./node_modules" unchanged and it only reached
-// isHardReserved by coincidence, through applyIgnorePatterns matching an
-// unanchored separator-free pattern against filepath.Base, which is
-// "node_modules" for that entry. A test asserting only that the two spellings
-// agree would have stayed green throughout, on every root row, while
-// "./node_modules/dep" was dropped in silence. The same revert turns two more
-// rows red in TestNamesHardReservedResolvesOneDotSlashInNpmsOrder below and one
-// in TestPackWarnsWhenFilesNamesHardReserved — seven rows over three tests in
-// all — and every package outside internal/pack still prints `ok`.
+// clean first and the package result line read for a duration rather than
+// [build failed]: no root row moved, but five of this test's rows went red —
+// subtree glob, trailing slash on a glob, both nested-directory rows and #403's
+// "slash run before a nested path" — because the old trims left "./node_modules"
+// unchanged and it only reached isHardReserved by coincidence, through
+// applyIgnorePatterns matching an unanchored separator-free pattern against
+// filepath.Base, which is "node_modules" for that entry. A test asserting only
+// that the two spellings agree would have stayed green throughout, on every root
+// row, while "./node_modules/dep" was dropped in silence. The same revert turns
+// two more rows red in TestNamesHardReservedResolvesOneDotSlashInNpmsOrder below
+// and two in TestPackWarnsWhenFilesNamesHardReserved — nine rows over three
+// tests in all — and every package outside internal/pack still prints `ok`.
+//
+// This test's five was four before #403, and TestPackWarnsWhenFilesNamesHardReserved's
+// two was one, so the total read seven. Neither number moved because the
+// predicate changed — both moved because #403 added rows to the tables the count
+// was taken against. That is the failure this repo has recorded several times
+// over: a number here is a measurement with a date on it, and a change that adds
+// a row invalidates every count taken against that table, including the ones the
+// same change is not otherwise touching.
+//
+// The slash-run rows are #403's, and they land on the same split. "//node_modules"
+// answered true before #403 too, and by that same Base coincidence rather than
+// by the trims — measured on 2026-08-25 by disabling matchesIgnorePattern's
+// basename branch, which turns isHardReserved("/node_modules") false while
+// "node_modules" stays true. So it is a weak row here in exactly the way the
+// root rows were weak before #402;
+// "//node_modules/dep" is the one that moved, and it is the row that fails if
+// the leading trim goes back to taking one slash. Measured on 2026-08-25 by
+// restoring strings.TrimPrefix(pattern, "/") in normalizeFilesEntry, with
+// go vet ./... clean first: of the three true slash-run rows, only that one went
+// red. Note what that run cannot show — the plain assertion is a t.Fatalf, so a
+// row failing on it never reaches its dotted spelling, and the agreement half of
+// this row is unmeasured by that direction.
 //
 // So the load-bearing rows are the nested ones, where Base is "dep" rather than
 // the pattern and the coincidence runs out. The false rows are load-bearing in
@@ -4310,10 +4371,14 @@ func TestNamesHardReservedDotSlashAgreesWithUnprefixedForm(t *testing.T) {
 		{"trailing slash on a glob", "node_modules/**/", true},
 		{"nested under a hard-reserved directory", "node_modules/dep", true},
 		{"nested two levels down", "node_modules/dep/index.js", true},
+		{"slash run before a root directory", "//node_modules", true},
+		{"slash run before a nested path", "//node_modules/dep", true},
+		{"trailing slash run", "node_modules//", true},
 		{"nested lockfile", "sub/package-lock.json", true},
 		{"nested git metadata file", "docs/.gitignore", true},
 		{"ordinary root directory", "dist", false},
 		{"ordinary nested path", "sub/dist", false},
+		{"ordinary path behind a slash run", "//sub/dist", false},
 		{"ordinary subtree glob", "dist/**", false},
 		{"overridable by defaultExcludes", ".env", false},
 		{"empty", "", false},
@@ -4420,19 +4485,23 @@ func TestNamesHardReservedResolvesOneDotSlashInNpmsOrder(t *testing.T) {
 // entry naming a path inside one never reaches a walked path for any per-file
 // check to notice.
 //
-// The fourteen rows are not equal evidence on their packed-set half. Disabling the
+// The fifteen rows are not equal evidence on their packed-set half. Disabling the
 // isHardReserved branch in collectFiles' walk outright and running this test is
-// what established which is which — not reading the code. Re-measured for #402,
-// which took the table from thirteen rows to fourteen: nine red, five green.
+// what established which is which — not reading the code. Re-measured for #403,
+// which took the table from fourteen rows to fifteen: ten red, five green. It
+// was thirteen rows before #402, and every one of these three counts is a
+// measurement with a date on it rather than a fact — re-run the experiment
+// before trusting it.
 //
-//   - Nine rows fail, and each fails by packing the path it named. .npmrc
+//   - Ten rows fail, and each fails by packing the path it named. .npmrc
 //     reported `packed: [.npmrc index.js package.json]`; node_modules,
-//     "./node_modules" and "./node_modules/dep" all reported `packed: [index.js
-//     node_modules/dep/index.js package.json]`; each of the four lockfile rows
-//     reported its own lockfile back, `packed: [index.js package-lock.json
-//     package.json]` for the npm one; and "./sub/package-lock.json" reported
-//     `packed: [index.js package.json sub/package-lock.json]`. All nine are
-//     real evidence that the check is what refuses the entry.
+//     "./node_modules", "./node_modules/dep" and "//node_modules/dep" all
+//     reported `packed: [index.js node_modules/dep/index.js package.json]`; each
+//     of the four lockfile rows reported its own lockfile back, `packed:
+//     [index.js package-lock.json package.json]` for the npm one; and
+//     "./sub/package-lock.json" reported `packed: [index.js package.json
+//     sub/package-lock.json]`. All ten are real evidence that the check is what
+//     refuses the entry.
 //
 //   - Five rows stayed green, all for the same reason: .git and the four git
 //     metadata rows #398 added. filterGitFiles runs over the finished set in
@@ -4490,7 +4559,7 @@ func TestNamesHardReservedResolvesOneDotSlashInNpmsOrder(t *testing.T) {
 // "dep" rather than a list entry, and the walk pruned node_modules regardless,
 // so the entry was refused and nothing was said.
 //
-// The warning half is load-bearing on all fourteen rows, since nothing else in the
+// The warning half is load-bearing on all fifteen rows, since nothing else in the
 // codebase produces that message.
 func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 	tests := []struct {
@@ -4562,6 +4631,23 @@ func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 		{
 			name:  "dot slash prefixed nested directory",
 			entry: "./node_modules/dep",
+			files: map[string]string{"node_modules/dep/index.js": "dep"},
+		},
+		// #403's row, and it is the nested spelling for the same reason the
+		// "./" one above is. namesHardReserved became the third caller of
+		// normalizeFilesEntry when #402 landed, so widening the leading-"/"
+		// trim from one slash to the whole run moves this predicate too. What
+		// it moves is narrower than it looks and was measured rather than
+		// predicted: "//node_modules" already warned before #403, through the
+		// same filepath.Base coincidence recorded above — Base("/node_modules")
+		// is "node_modules" — so no root spelling moved. Base("/node_modules/dep")
+		// is "dep", the coincidence runs out, and this entry was refused in
+		// silence until the run came off. Warning here is the answer #321 asks
+		// for: the walk prunes node_modules on either spelling, so the only
+		// question is whether lnpm says so.
+		{
+			name:  "slash run before a nested directory",
+			entry: "//node_modules/dep",
 			files: map[string]string{"node_modules/dep/index.js": "dep"},
 		},
 		// The three git metadata files #398 moved here. They are in the
@@ -4933,6 +5019,105 @@ func TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch(t *testing.T) {
 			assertPackedSet(t, tmpDir, tt.want,
 				"a \"files\" entry overrides defaultExcludes for a path it names "+
 					"and never for a path it only contains")
+		})
+	}
+}
+
+// TestPackFilesEntryTrailingSlashRunOnAFileOverridesDefaultExcludes records what
+// #403's greedy trailing trim costs on a *file* entry, the case where the file
+// is one defaultExcludes withholds included. It asserts what lnpm does today; it
+// is the record, not an endorsement.
+//
+// normalizeFilesEntry takes the whole trailing slash run off an entry with no
+// "*", so a *file* entry written with one arrives as the bare name — and a bare
+// name is a direct match, which is exactly the thing #321 lets override
+// defaultExcludes. So [".env//"] now publishes a secret lnpm withholds by
+// default, where before #403 it published nothing at all.
+//
+// npm does none of this. Run on a fixture package with npm 11.16.0 on
+// 2026-08-25, one entry at a time, reading the packed set out of
+// "npm pack --dry-run --json":
+//
+//	files: [".env"]       -> ships .env
+//	files: [".env/"]      -> ships nothing but the always-included set
+//	files: [".env//"]     -> ships nothing but the always-included set
+//	files: ["index.js/"]  -> ships nothing but the always-included set
+//	files: ["index.js//"] -> ships nothing but the always-included set
+//
+// npm reads a trailing slash as a strict directory marker and refuses a file
+// outright, so every slashed spelling selects nothing there. lnpm trims and
+// selects, so all five rows below ship the file the entry names.
+//
+// Which half of that is #403's is worth being exact about, because the whole
+// divergence is easy to hang on this change and only two rows belong to it.
+// [".env/"] shipped .env before #403 too — one trailing slash came off then as
+// well — so overriding defaultExcludes through a slashed spelling is not new.
+// What #403 moved is the run: the old TrimSuffix took one slash of the two,
+// leaving ".env/", which reached matchFilesField's trailing-"/" branch and
+// answered filesMatchNone. Measured on 2026-08-25 by swapping the trailing
+// strings.TrimRight in normalizeFilesEntry back to strings.TrimSuffix, with
+// go vet ./... clean first and internal/pack's result line read for a duration:
+// this test goes two rows red, ".env with a slash run" and "index.js with a
+// slash run", each reporting `packed: [package.json]` — the file it named gone
+// entirely. The other three stay green — the bare name and both single-slash
+// spellings — and that is the half that matters, since it is what shows a
+// slashed spelling was already reaching the override before #403. So #403 makes
+// the two spellings agree, which is its first acceptance criterion, and the
+// direction they agree in is the one that ships the secret.
+//
+// The single-slash rows are here so that a later change flipping any of this has
+// to flip them deliberately rather than by side effect. Reading a trailing slash
+// as npm does — refusing a file — would turn all five red, and that is a
+// behaviour change to argue for on its own, not a consequence of a trim.
+func TestPackFilesEntryTrailingSlashRunOnAFileOverridesDefaultExcludes(t *testing.T) {
+	tests := []struct {
+		name  string
+		files string
+		want  []string
+	}{
+		{
+			name:  "default-excluded file named exactly",
+			files: `[".env"]`,
+			want:  []string{".env", "package.json"},
+		},
+		{
+			name:  "default-excluded file with a trailing slash",
+			files: `[".env/"]`,
+			want:  []string{".env", "package.json"},
+		},
+		{
+			name:  ".env with a slash run",
+			files: `[".env//"]`,
+			want:  []string{".env", "package.json"},
+		},
+		{
+			name:  "ordinary file with a trailing slash",
+			files: `["index.js/"]`,
+			want:  []string{"index.js", "package.json"},
+		},
+		{
+			name:  "index.js with a slash run",
+			files: `["index.js//"]`,
+			want:  []string{"index.js", "package.json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeMainEntryTree(t, tmpDir, map[string]string{
+				"package.json": `{
+					"name": "trailing-slash-run",
+					"version": "1.0.0",
+					"files": ` + tt.files + `
+				}`,
+				"index.js": "module.exports = {}",
+				".env":     "SECRET=hunter2",
+			})
+
+			assertPackedSet(t, tmpDir, tt.want,
+				"a trailing slash run on a file entry is trimmed away, so the "+
+					"entry names the file directly and overrides defaultExcludes")
 		})
 	}
 }
