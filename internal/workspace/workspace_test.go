@@ -121,9 +121,11 @@ func TestExpandGlobsSkipsDirectoriesWithoutPackageJSON(t *testing.T) {
 //
 // Windows creates a symlink only with the symlink privilege or developer mode
 // turned on, so a refusal there means the guard was never exercised, and saying
-// so beats reporting a pass the run did not earn. Every case below reaches this
-// helper before it asserts anything, so a skip is never a silent pass. It is a
-// local copy of internal/cli's helper of the same name rather than a shared one,
+// so beats reporting a pass the run did not earn. Every case that calls this
+// helper calls it before it asserts anything, so a skip is never a silent pass
+// there; the cases that never symlink - the malformed-pattern ones among them -
+// do not reach it and run everywhere. It is a local copy of internal/cli's
+// helper of the same name rather than a shared one,
 // because a test helper is not exported across packages here.
 func symlinkDirAt(t *testing.T, target, linkPath string) {
 	t.Helper()

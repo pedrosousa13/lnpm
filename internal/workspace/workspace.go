@@ -267,15 +267,28 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 			// The same package.json gate the include loop applies, for the
 			// same reason: without it a dangling symlink under a negated
 			// pattern would reach requireWithinRoot, fail to resolve, and
-			// abort a workspace that expands fine today. It cannot change
-			// which packages are returned, because excluded is only ever
-			// consulted for entries of packages, and every one of those
-			// passed this same stat in the loop above.
+			// abort a workspace that expands fine today. Against a
+			// filesystem that holds still it cannot change which packages
+			// are returned, because excluded is only ever consulted for
+			// entries of packages, and every one of those passed this same
+			// stat in the loop above. It is not atomic, though: a member
+			// whose package.json is deleted between the two loops stays in
+			// packages and no longer reaches excluded, so a negated package
+			// is returned - the fail-open direction docs/adr/0001 names.
+			// SECURITY.md's "Known limits" records the same non-atomicity
+			// for the write-path guards.
 			pkgJSON := filepath.Join(pkgPath, "package.json")
 			if _, err := os.Stat(pkgJSON); err != nil {
 				continue
 			}
 
+			// A negated match that escapes the root fails the whole
+			// workspace, not just that pattern. That is stricter than #328's
+			// scenario, which was a member read from outside the root: a
+			// negated member is only ever subtracted, never read. It is
+			// refused anyway because an exclusion set that depends on a path
+			// outside the root is the same hostile shape, and because a
+			// silent answer here decides what does get published.
 			if err := requireWithinRoot(root, pkgPath); err != nil {
 				return nil, err
 			}
@@ -309,10 +322,16 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 // package" case, and it refuses instead of skipping: treating "I could not
 // look" as "it is fine" is the fail-open direction docs/adr/0001 exists to
 // correct.
+//
+// The failure can still come from the root rather than the member - a workspace
+// root deleted underneath the walk resolves no better than a member does - so
+// this does not attribute it. fsutil.WithinRoot names the side that failed, and
+// a message here blaming the member for a broken root would send the reader to
+// the wrong path.
 func requireWithinRoot(root, path string) error {
 	within, resolved, err := fsutil.WithinRoot(root, path)
 	if err != nil {
-		return fmt.Errorf("failed to resolve workspace member %s: %w", path, err)
+		return fmt.Errorf("failed to check workspace member %s against the workspace root: %w", path, err)
 	}
 	if !within {
 		return fmt.Errorf("workspace member %s resolves to %s, which is outside the workspace root %s: "+

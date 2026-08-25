@@ -11,8 +11,11 @@ import (
 //
 // Windows creates a symlink only with the symlink privilege or developer mode
 // turned on, so a refusal there means the guard was never exercised, and saying
-// so beats reporting a pass the run did not earn. Every case below reaches this
-// helper before it asserts anything, so a skip is never a silent pass.
+// so beats reporting a pass the run did not earn. Every case that calls this
+// helper calls it before it asserts anything, so a skip is never a silent pass
+// there. The four cases that never symlink at all - the root itself, a nested
+// directory, the prefix-sharing sibling, and the missing path - do not reach it
+// and run everywhere.
 func symlinkAt(t *testing.T, target, linkPath string) {
 	t.Helper()
 
@@ -152,6 +155,39 @@ func TestWithinRootResolvesTheRootToo(t *testing.T) {
 	}
 }
 
+// The two arguments do not have to be spelled alike: one can be relative and the
+// other absolute. That only works if each is made absolute before its symlinks
+// are followed, because filepath.Abs joins a relative path to whatever os.Getwd
+// reports - and os.Getwd returns $PWD when it names the current directory, which
+// a shell (and t.Chdir) sets to the spelling it was handed rather than to the
+// real one. Resolve first and absolutise after, and the relative side stops at
+// that unresolved spelling while the absolute side is fully resolved, so the two
+// are compared across different trees and every member reads as an escape.
+//
+// The symlinked working directory here stands in for macOS, where /var is a link
+// to /private/var and a shell run under /var/folders/... reports exactly that.
+func TestWithinRootAcceptsARelativeRootUnderASymlinkedWorkingDirectory(t *testing.T) {
+	base := t.TempDir()
+	real := mkdirAt(t, filepath.Join(base, "real"))
+	linkedRoot := filepath.Join(base, "root")
+	symlinkAt(t, real, linkedRoot)
+
+	member := mkdirAt(t, filepath.Join(real, "packages", "a"))
+
+	// t.Chdir sets PWD to this spelling, so os.Getwd - and through it
+	// filepath.Abs - reports the link rather than its target.
+	t.Chdir(linkedRoot)
+
+	within, resolved, err := WithinRoot(".", member)
+	if err != nil {
+		t.Fatalf("WithinRoot(., %s) failed: %v", member, err)
+	}
+	if !within {
+		t.Errorf("Expected %s to be within the relative root . under the symlinked cwd %s, got resolved %s",
+			member, linkedRoot, resolved)
+	}
+}
+
 func TestWithinRootFailsOnAPathThatDoesNotResolve(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "gone")
@@ -166,13 +202,13 @@ func TestWithinRootFailsOnAPathThatDoesNotResolve(t *testing.T) {
 func mustEvalSymlinks(t *testing.T, path string) string {
 	t.Helper()
 
-	resolved, err := filepath.EvalSymlinks(path)
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		t.Fatalf("Failed to resolve %s: %v", path, err)
+		t.Fatalf("Failed to absolutise %s: %v", path, err)
 	}
-	abs, err := filepath.Abs(resolved)
+	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		t.Fatalf("Failed to absolutise %s: %v", resolved, err)
+		t.Fatalf("Failed to resolve %s: %v", abs, err)
 	}
-	return abs
+	return resolved
 }
