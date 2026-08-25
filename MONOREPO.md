@@ -574,8 +574,11 @@ That exits 0 and nothing warns you. The `Packed:` list is the tell — it is the
 $ cd packages/ui
 $ lnpm push
 Pushing @my/ui@1.0.0...
+  Packed:
+    package.json
+    src/index.js
 Updating 1 linked projects...
-  ✓ /home/you/external-app
+  ✓ /home/you/external-app (1 changed, 1 unchanged)
 
 Pushed to 1/1 projects
 ```

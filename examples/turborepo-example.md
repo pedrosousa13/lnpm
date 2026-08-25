@@ -243,8 +243,12 @@ Run it from the package instead:
 $ cd packages/ui
 $ lnpm push
 Pushing @my/ui@1.0.0...
+  Packed:
+    dist/index.js
+    package.json
+    src/index.ts
 Updating 1 linked projects...
-  ✓ /home/you/projects/my-app
+  ✓ /home/you/projects/my-app (1 changed, 2 unchanged)
 
 Pushed to 1/1 projects
 ```
