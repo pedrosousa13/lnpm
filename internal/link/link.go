@@ -521,11 +521,13 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 
 // Unlink removes a linked package from the project
 //
-// The name is validated through the removal entry point, which waives only the
-// leading-dot reservation #325 added. A project linked before that rule can hold
-// a dot-named package, and refusing to unlink it would leave it with no
-// supported way out. Every traversal check still applies: packageName is joined
-// into .lnpm/{name} for a RemoveAll below.
+// The name is validated through the removal entry point, which waives the three
+// reservations that are not path checks: #325's leading dot, and #326's Windows
+// device names and trailing dot or space. A project linked before one of those
+// rules can hold a package it now refuses — ".hidden-pkg", or "con" or "foo."
+// linked on Linux, where both are ordinary directory names — and refusing to
+// unlink it would leave it with no supported way out. Every traversal check
+// still applies: packageName is joined into .lnpm/{name} for a RemoveAll below.
 func (l *Linker) Unlink(packageName string) error {
 	if err := pack.ValidatePackageNameForRemoval(packageName); err != nil {
 		return err
@@ -575,8 +577,9 @@ func (l *Linker) Unlink(packageName string) error {
 //
 // The package-name validators guard the segments the package name contributes -
 // ValidatePackageName on the link paths, ValidatePackageNameForRemoval on
-// Unlink, which differ only in #325's leading-dot reservation and share every
-// path check. But nothing guarded their ancestors, and a repository can commit
+// Unlink, which differ only in the three reservations the removal form waives
+// (#325's leading dot, #326's Windows device names and trailing dot or space)
+// and share every path check. But nothing guarded their ancestors, and a repository can commit
 // .lnpm itself as a symlink at any directory it likes. .gitignore does not save anyone from that:
 // a tracked symlink is checked out regardless. Every path the linker builds
 // under it then lands wherever it points, so a link writes outside the project
