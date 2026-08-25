@@ -631,10 +631,15 @@ func requireManifestPacked(files []*FileInfo) error {
 // to ask.
 //
 // It found two on its first run. tests/fixtures/turborepo's "ui" and "utils"
-// packages each declare main "dist/index.js" and ship only src/index.js — there
-// is no dist directory in the fixture at all — and tests/workspace_test.go
-// publishes them through RunPublish with skipValidation set, so nothing had ever
-// reported it. The fixtures are left as they are; the warning is the point.
+// packages each declared main "dist/index.js" and shipped only src/index.js —
+// there was no dist directory in the fixture at all — and
+// TestPublishAllWorkspaces in tests/integration_test.go published them through
+// RunPublish with skipValidation set, so nothing had ever reported it. (This
+// sentence named tests/workspace_test.go until #365 checked it: that file's
+// turborepo test only calls workspace.Detect and publishes nothing.) #365 built
+// the two dist/index.js files rather than keeping a broken fixture as the
+// warning's demonstration, and dropped the flag that had hidden them, so the
+// warning is silent over that fixture now.
 //
 // Note this package has no warning idiom to match. iconWarn and its siblings
 // live in internal/cli/output.go and are unexported, and internal/cli imports
