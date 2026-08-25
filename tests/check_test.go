@@ -142,6 +142,53 @@ func TestCheckDetectsAPublishableRetreatSnapshot(t *testing.T) {
 	}
 }
 
+// TestCheckDetectsASnapshotTheFilesFieldNamesPastAnIgnoreFile is the case check
+// used to stay quiet about (#347). npm documents that a file included with the
+// "files" field cannot be excluded through .npmignore or .gitignore, so a
+// manifest naming the snapshot publishes it however loudly the ignore file
+// objects - but pack.ExcludedByProjectRules ran the ignore check anyway and
+// reported the path excluded, and publishableSnapshot negates that answer, so
+// the one setup where npm certainly ships the snapshot produced no warning at
+// all.
+//
+// The .npmignore is what makes this a regression test rather than a slower
+// spelling of TestCheckDetectsAPublishableRetreatSnapshot, and that was measured
+// rather than assumed: with the fix reverted and the .npmignore write deleted,
+// this test still passes, because the "files" entry leaves the fall-through with
+// no pattern to match. Both changes together are what make it fail.
+func TestCheckDetectsASnapshotTheFilesFieldNamesPastAnIgnoreFile(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("snapshot-whitelist-pkg")
+	projectDir := env.newProject("snapshot-whitelist-project")
+	env.addPkg(projectDir, "snapshot-whitelist-pkg", false, false)
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+	env.AssertFileExists(lockfile.RetreatPath(projectDir), true)
+
+	env.writePackageJSON(projectDir, map[string]interface{}{
+		"name":    "snapshot-whitelist-project",
+		"version": "1.0.0",
+		"files":   []interface{}{"index.js", lockfile.RetreatFileName},
+	})
+	env.writeFile(filepath.Join(projectDir, ".npmignore"), lockfile.RetreatFileName+"\n")
+	env.chdir(projectDir)
+
+	var err error
+	out := captureStdout(t, func() { err = cli.RunCheck() })
+	if err == nil {
+		t.Fatal("Expected check to fail when \"files\" names the snapshot past an .npmignore, got nil")
+	}
+	if !strings.Contains(out, lockfile.RetreatFileName) {
+		t.Errorf("Expected the report to name the snapshot, got:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), lockfile.RetreatFileName) {
+		t.Errorf("Expected the error to name the snapshot, got: %v", err)
+	}
+}
+
 // TestCheckPassesWhenTheSnapshotCannotBePublished is the other half, and the one
 // that keeps the guard from being a permanent false alarm. The documented flow
 // retreats, checks, publishes and then restores, so the snapshot is on disk at

@@ -2354,9 +2354,40 @@ func ReadPackageJSON(dir string) (*PackageJSON, error) {
 //
 // #321 split one list into those two and did not change this: it consulted
 // neither half before and consults neither now.
+//
+// Its precedence is npm's, and matches collectFiles': a file the "files" field
+// includes cannot be excluded through .npmignore or .gitignore, so the
+// isIncluded arm below answers on its own and the ignore file is not read for
+// that path at all. #318 put that rule into collectFiles' `case
+// isIncluded(relPath, filesField):` arm and left this function inverted, asking
+// the ignore file anyway, so the two disagreed and this one reported a
+// "files"-named path excluded. The two functions do answer different questions
+// by design - what npm ships against what lnpm ships - but this is not one of
+// the differences; it was a bug, and a fail-open one, since check.go negates the
+// answer and so said nothing about a file npm would publish (#347).
+//
+// The always-included set does not get the same treatment. README* and the rest
+// are exempt from the "files" whitelist only, never from an ignore pattern - the
+// same rule collectFiles' isDefaultInclude arm states - so a default include
+// that "files" did not name falls through to the ignore check exactly as it did
+// before. TestExcludedByProjectRulesFilesFieldBeatsIgnoreFile pins both halves.
+//
+// That fall-through does not depend on the shape below, and it would be easy to
+// read it as if it did. One line - `if len(filesField) > 0 && isIncluded(...) {
+// return false }` above the original single condition - preserves the
+// always-included behaviour identically. Three branches are here because they
+// mirror collectFiles' switch, which gives each of these decisions an arm of its
+// own, and because that one-line alternative would leave a `!isIncluded` term in
+// the condition below it that can no longer be false. A term that cannot fail is
+// worse to read than the brace it saves.
 func ExcludedByProjectRules(dir string, filesField []string, relPath string) bool {
-	if len(filesField) > 0 && !isIncluded(relPath, filesField) && !isDefaultInclude(relPath) {
-		return true
+	if len(filesField) > 0 {
+		if isIncluded(relPath, filesField) {
+			return false
+		}
+		if !isDefaultInclude(relPath) {
+			return true
+		}
 	}
 	return isExcluded(relPath, loadIgnorePatterns(dir))
 }
