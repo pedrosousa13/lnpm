@@ -567,7 +567,7 @@ func TestMatchFilesFieldGlobsWithDoublestar(t *testing.T) {
 
 		{"bare double star reaches the root", "index.js", "**", filesMatchContains},
 		{"bare double star reaches a nested path", "dist/cli/index.js", "**", filesMatchContains},
-		{"bare single star stays at the root", "index.js", "*", filesMatchContains},
+		{"bare single star reaches the root", "index.js", "*", filesMatchContains},
 		{"bare single star expands a matched directory", "dist/index.js", "*", filesMatchContains},
 
 		{"subtree glob reaches any depth", "dist/cli/index.js", "dist/**", filesMatchContains},
@@ -5193,13 +5193,23 @@ func TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes(t *testing.T) {
 // selects nothing though dist/c* matches dist/cli. A wider rule would ship two
 // subtrees npm does not.
 //
-// Every want below is npm's own answer. The five entries were run against a
+// Every want below is npm's own answer. The six entries were run against a
 // fixture package holding exactly this tree — index.js, dist/a.js,
 // dist/cli/index.js, dist/cli/deep/z.js and lib/keep.js — with npm 11.16.0 and
 // `npm pack --dry-run --json` on 2026-08-25, and each packed set came back
 // byte-identical to the row beside it, package.json included. That is parity
 // rather than an approximation of it, which is worth stating because these same
 // entries were divergences here until #406.
+//
+// The ["*/*"] row is the one README's parity list needs from here rather than
+// extra coverage of the same rule. README claims measured Pack-level parity for
+// all six entries, and until this row that entry was pinned only by two
+// classification rows in TestMatchFilesFieldGlobsWithDoublestar — a matcher
+// verdict, not a packed set. It is also the entry that separates the ancestor
+// walk from the rewrite it was chosen over: npm ships lib/keep.js and the whole
+// dist subtree for it and leaves the root index.js out, which is what the row
+// asserts, where rewriting the entry to "*/**" and matching that would ship the
+// root file, doublestar.Match("*/**", "index.js") being true.
 //
 // No default-excluded path is in any of these trees on purpose. Widening the
 // reach and refusing to widen the consent are separate claims, and
@@ -5235,6 +5245,14 @@ func TestPackGlobExpandsAMatchedDirectory(t *testing.T) {
 			name:  "a globbed prefix expands too",
 			files: `["di*/*"]`,
 			want:  []string{"dist/a.js", "dist/cli/deep/z.js", "dist/cli/index.js", "package.json"},
+		},
+		{
+			name:  "a fully globbed entry expands every directory and reaches no root file",
+			files: `["*/*"]`,
+			want: []string{
+				"dist/a.js", "dist/cli/deep/z.js", "dist/cli/index.js",
+				"lib/keep.js", "package.json",
+			},
 		},
 		{
 			name:  "a constrained last segment does not expand",
@@ -5346,25 +5364,52 @@ func TestPackGlobSweepDoesNotConsentToDefaultExcludes(t *testing.T) {
 
 // TestPackGlobSweepCannotReachHardReserved is #406's fourth acceptance
 // criterion. A wildcard entry now expands every directory its last segment
-// matches, and node_modules and .git must not be among them.
+// matches, and neither the hard-reserved trees nor a hard-reserved file inside
+// a directory it does expand may come with it.
 //
-// Read this one for what it does and does not guarantee, because every path in
-// it is held up by a barrier ahead of the classification #406 changed, and none
-// would move if that classification were wrong. The walk answers isHardReserved
-// per path and returns filepath.SkipDir for a matching directory, so neither
-// tree is descended into and matchFilesField is never asked about anything
-// inside them. That makes this a criterion check rather than a revert target —
+// The tree has two kinds of hard-reserved path in it and they are guarded from
+// different distances, which is the whole reason to read this test rather than
+// count its rows.
+//
+// The two hard-reserved *trees* are held up by a barrier ahead of the
+// classification #406 changed, and neither would move if that classification
+// were wrong. The walk answers isHardReserved per path and returns
+// filepath.SkipDir for a matching directory, so neither tree is descended into
+// and matchFilesField is never asked about anything inside them —
 // docs/agents/verification-discipline.md records the same shape for
 // TestPackMainCannotDefeatHardReserved's node_modules row.
 //
-// The two trees are not equally weak, and the split was measured rather than
+// Nor are the two trees equally weak, and the split was measured rather than
 // read off the code. Disabling the walk's isHardReserved check outright on
 // 2026-08-25, with go vet ./... clean first, packs
-// [index.js node_modules/.package-lock.json node_modules/dep/index.js
-// package.json]: node_modules arrives, and .git/config and .git/objects/ab/cdef
+// [dist/.npmrc dist/a.js dist/package-lock.json index.js
+// node_modules/.package-lock.json node_modules/dep/index.js package.json]:
+// node_modules arrives, and .git/config, .git/objects/ab/cdef and dist/.gitignore
 // still do not, because filterGitFiles strips them from the finished set as a
 // second answer. So the node_modules rows do carry the walk's check, and the
-// .git rows carry nothing at all on their own.
+// .git and .gitignore rows carry nothing at all on their own.
+//
+// The three paths under dist are the other kind, and they are here because
+// B-prime found them missing. dist is an ordinary directory that ["*"] does
+// expand, so #406's ancestor branch really does reach the files inside it, and
+// the walk's check is the only thing refusing them — no second pass covers an
+// .npmrc or a lockfile the way filterGitFiles covers the git names.
+//
+// The direction is the B-prime docs/agents/verification-discipline.md requires
+// for anything touching pack selection: hoist #406's branch above
+// isHardReserved, spelled `isHardReserved(relPath) && !(useWhitelist &&
+// sweptIn)` with sweptIn asking whether any entry with a bare last segment
+// matches an ancestor of relPath. Measured on 2026-08-25, go vet ./... clean
+// first and every package read for its result line: with the three dist rows it
+// turns **this test alone** red, subtest-free and package-wide the only failure,
+// packing [dist/.npmrc dist/a.js dist/package-lock.json index.js package.json].
+// Without them the whole suite stayed green — "files": ["*"] shipped the auth
+// token and a nested lockfile and nothing said so.
+//
+// So this is not a blind direction the way #398's is for the git names, and the
+// two are in one tree here to keep the difference visible. dist/.gitignore is
+// the one of the three the hoist cannot ship: it does not appear in that packed
+// set, filterGitFiles having removed it before any assertion sees it.
 func TestPackGlobSweepCannotReachHardReserved(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeMainEntryTree(t, tmpDir, map[string]string{
@@ -5373,16 +5418,25 @@ func TestPackGlobSweepCannotReachHardReserved(t *testing.T) {
 			"version": "1.0.0",
 			"files": ["*"]
 		}`,
-		"index.js":                        "module.exports = {}",
+		"index.js":  "module.exports = {}",
+		"dist/a.js": "module.exports = {}",
+
+		// Hard-reserved files inside a directory the entry does expand.
+		"dist/.npmrc":            "//registry.example.com/:_authToken=SECRET",
+		"dist/package-lock.json": "{}",
+		"dist/.gitignore":        "*.tmp\n",
+
+		// Hard-reserved trees, which the walk never descends into at all.
 		"node_modules/dep/index.js":       "module.exports = {}",
+		"node_modules/.package-lock.json": "{}",
 		".git/config":                     "[core]\n",
 		".git/objects/ab/cdef":            "object",
-		"node_modules/.package-lock.json": "{}",
 	})
 
-	assertPackedSet(t, tmpDir, []string{"index.js", "package.json"},
-		"a bare wildcard sweeps every directory it matches, and the "+
-			"hard-reserved trees are not among them")
+	assertPackedSet(t, tmpDir, []string{"dist/a.js", "index.js", "package.json"},
+		"a bare wildcard sweeps every directory it matches, and neither the "+
+			"hard-reserved trees nor a hard-reserved file inside a directory "+
+			"it does sweep is among them")
 }
 
 // TestPackWarnsWhenIgnoreNegationNamesHardReserved covers the second override

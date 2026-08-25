@@ -2171,13 +2171,18 @@ func matchFilesField(relPath string, patterns []string) filesMatch {
 			// match-at-any-depth meaning rather than a glob's. Either way the
 			// entry sweeps a whole subtree.
 			//
-			// Run on the fixture TestMatchFilesFieldGlobsWithDoublestar's header
-			// describes, one entry at a time with npm pack --dry-run --json:
+			// Run one entry at a time with npm pack --dry-run --json, all four
+			// against the fixture TestMatchFilesFieldGlobsWithDoublestar's
+			// header describes — that tree and not the five-file one README and
+			// ADR-0003 cite, since a measurement here is not stitched together
+			// from two fixtures. Re-run on 2026-08-25:
 			//
 			//	["dist/*"]  ships dist/cli/deep/z.js, so the reach is a subtree
 			//	            and not one level
 			//	["*"]       ships the whole tree
-			//	["*/*"]     ships lib/sub/a.js and not top.js
+			//	["*/*"]     ships lib/sub/a.js and lib/keep.js and neither
+			//	            top.js nor index.js, so it expands every
+			//	            first-level directory and reaches no root file
 			//	["di*/*"]   ships the dist subtree, so the prefix may glob
 			//
 			// It is only the *last* segment that does this, which is why the
@@ -2464,20 +2469,39 @@ func lastSegment(pattern string) string {
 
 // isBareWildcard reports whether a path segment is nothing but a wildcard.
 //
-// Both spellings are here because both say the same thing about the name:
-// nothing. They no longer reach the same distance — since #350 isIncluded globs
-// with doublestar, where "*" stops at a separator and "**" spans any number of
-// them — but reach is not what this decides. Classifying them alike is what
-// keeps "files": ["*"] and ["**"] agreeing with the degenerate spellings of
-// "ship everything", none of which publishes a default-excluded path.
+// Since #406 this decides two things about a "files" entry's last segment, and
+// they are worth naming apart because only one of them is a safety property:
 //
-// Before #350 the two were identical here as well: filepath.Match read "**" as
-// an ordinary two-star segment, so both matched exactly one segment. The
-// classification did not have to change when that did.
+//   - Classification. Both spellings say the same thing about the name, which
+//     is nothing, so an entry ending in either is containment and never
+//     consent. Classifying them alike is what keeps "files": ["*"] and ["**"]
+//     agreeing with the degenerate spellings of "ship everything", none of
+//     which publishes a default-excluded path.
+//   - Reach. matchFilesField's default branch gates its ancestor-directory walk
+//     on this predicate, so an entry ending in a bare wildcard expands every
+//     directory it matches into that directory's whole subtree and one that
+//     constrains its last segment does not. That is why ["d*"] and ["dist/c*"]
+//     select nothing but the always-included set, which is what npm does with
+//     them.
+//
+// So this comment used to say "reach is not what this decides", and #406 made
+// that false in the same change that wrote the line above. The two spellings
+// reach the same distance again, by two different routes: "**" gets there
+// through the glob engine, which spans separators, and "*" gets there through
+// the ancestor walk, which is the only way it can, since doublestar stops a
+// single "*" at a separator. Run and confirmed on 2026-08-25 — matchFilesField
+// returns the same verdict for ["*"] and ["**"] on index.js, dist/a.js,
+// dist/cli/deep/z.js, a/b/c/d/e/f.txt, .env and dist/.env alike.
+//
+// It is only between #350 and #406 that the two differed: doublestar swept the
+// whole tree for "**" and only the package root for "*". Before #350 they
+// agreed for a third reason — filepath.Match read "**" as an ordinary two-star
+// segment, so both matched exactly one segment. The classification is the half
+// that has never had to change through any of it.
 //
 // Note that "dist/**" never reaches this: the trailing-"/**" branch above claims
-// it first, and calls it containment too, so the two spellings agree by two
-// different routes.
+// it first, and calls it containment too, so those two spellings agree by yet
+// another route.
 func isBareWildcard(segment string) bool {
 	return segment == "*" || segment == "**"
 }
@@ -2531,7 +2555,9 @@ func isBareWildcard(segment string) bool {
 //	after    41.72 ms   42.61 ms   42.53 ms
 //	delta    +2.84      +2.53      +1.96
 //
-// About +2.5 ms on a 40 ms pack, so roughly +5% to +7% across those three runs.
+// About +2.5 ms on a 40 ms pack. Each delta against its own before reading is
+// +7.3%, +6.3% and +4.8%, so the spread across those three runs is +4.8% to
+// +7.3% and the band has to contain both ends rather than sit between them.
 // Per path that is about 600 ns and per Match about 100 ns. In the first two
 // runs the before and after readings did not overlap at all; in the third they
 // did, the machine having been busier — 39.0-44.7 before against 41.6-50.1

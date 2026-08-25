@@ -132,6 +132,15 @@ They are different refactors and they catch different bugs. **Use B-prime for an
 pack selection**: under it, `main: ".npmrc"` ships the auth token, and a change that only ran B
 would have looked fully covered.
 
+And run it even where a wider direction has already been run in its place. #406 substituted
+disable-the-whole-tier, which the #398 subsection below treats as a different and wider
+question; the B-prime that was skipped turned out to ship `dist/.npmrc` against a green suite.
+Two subsections below record B-prime coming back empty, and neither generalises far. #348's is
+an exemption from writing it at all — that branch can only skip or abort, never select, so no
+placement of it ships a path. #398's is narrower still: B-prime runs there, and is blind to
+three specific names a later pass erases. **A branch that changes what a publish selects is
+covered by neither.**
+
 Since #321 there are two built-in lists and they are enforced in different places, so B-prime
 has several spellings and you may need more than one. `hardReservedExcludes` is checked first in
 the walk, so hoisting a force-include above `isHardReserved` is the classic B-prime.
@@ -147,12 +156,20 @@ own line, so there are two guard sites, not one:
   `TestPackMainNamedByFilesFieldIsPacked`. Every row of
   `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` stays green.
 - Delete the `isIncluded` arm's call and `"files": ["dist"]` ships `dist/.env`, `dist/app.log`
-  and `dist/pkg.tgz`. Measured: **ten red subtests, and eleven failing tests**, because one of
-  them has no subtests at all. The ten are nine rows of eighteen in
-  `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` plus
+  and `dist/pkg.tgz`. Re-measured on 2026-08-25 with `go vet ./...` clean first and
+  `internal/pack` printing `FAIL ... 0.377s` rather than `[build failed]`: **ten red subtests,
+  and twelve failing tests**, because two of them have no subtests at all. The ten are nine rows
+  of eighteen in `TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch` plus
   `TestPackNegationDoesNotOverrideInWhitelistMode/negation_alone_does_not_re-include`; the
-  eleventh is `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes`, which #350 added.
-  Every `main` test stays green.
+  eleventh and twelfth are `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes`, which
+  #350 added, and `TestPackGlobSweepDoesNotConsentToDefaultExcludes`, which #406 added — that
+  one packs all eight of its default-excluded paths,
+  `[.env app.log dist/.env dist/a.js dist/app.log dist/cli/.env dist/cli/b.js dist/cli/deep.log
+  dist/pkg-1.0.tgz index.js package.json pkg-1.0.0.tgz]`. It was eleven until #406, which added
+  a test to this radius and did not enter it here — **the fourth time this list went short**, and
+  the second running that a reviewer caught rather than the author. The subtest count did not move
+  when the total became twelve, which is exactly what made it invisible to a filter reading only
+  the indented shape. Every `main` test stays green.
   `TestPackNegationDoesNotOverrideInWhitelistMode`'s other row, `naming_the_path_in_files_does`,
   stays green and could not do otherwise: its `want` already holds `dist/.env`, so a guard whose
   deletion only ever adds paths leaves the expected set untouched. #403's
@@ -191,18 +208,33 @@ TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm/bare_double_star_reaching_a_
 TestMatchFilesFieldDotSlashAgreesWithUnprefixedForm/bare_wildcard_segment
 TestMatchFilesFieldGlobsWithDoublestar/bare_double_star_reaches_a_nested_path
 TestMatchFilesFieldGlobsWithDoublestar/bare_double_star_reaches_the_root
-TestMatchFilesFieldGlobsWithDoublestar/bare_single_star_stays_at_the_root
+TestMatchFilesFieldGlobsWithDoublestar/bare_single_star_reaches_the_root
 TestMatchFilesFieldGlobsWithDoublestar/single_star_reaches_one_level
 TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch/bare_wildcard_at_the_root_is_containment
 TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch/bare_wildcard_segment_is_containment
 TestPackFilesEntryOverridesDefaultExcludesOnlyByDirectMatch/double_bare_wildcard_at_the_root_is_containment
 ```
 
-Those nine are subtests. **A tenth test fails and has no subtests**, so it prints no
-`--- FAIL: Test.../sub` line at all: `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes`
-packs `[.env dist/.env dist/a.js index.js package.json]` against a `want` of
-`[dist/a.js index.js package.json]`. It is the failure that matters most here — the revert makes
-`"files": ["**"]` ship both `.env` files — and it is exactly the one a subtest filter drops.
+Those nine are subtests. **Two further tests fail and neither has any subtests**, so neither
+prints a `--- FAIL: Test.../sub` line at all — eleven failures over five tests. Re-measured on
+2026-08-25 with `go vet ./...` clean first, `internal/pack` reading
+`FAIL github.com/pedrosousa13/lnpm/internal/pack 0.721s` rather than `[build failed]`, and every
+other package printing `ok`:
+
+- `TestPackDoubleStarSweepsWithoutConsentingToDefaultExcludes` packs
+  `[.env dist/.env dist/a.js index.js package.json]` against a `want` of
+  `[dist/a.js index.js package.json]`. The revert makes `"files": ["**"]` ship both `.env` files.
+- `TestPackGlobSweepDoesNotConsentToDefaultExcludes`, which #406 added, packs
+  `[.env app.log dist/a.js dist/cli/b.js index.js package.json pkg-1.0.0.tgz]` against a `want`
+  of `[dist/a.js dist/cli/b.js index.js package.json]`. Read *which* paths moved: only the three
+  at the root. `"*"` matches a root path outright, so the revert reclassifies those directly;
+  the five under `dist` arrive through #406's ancestor branch, which this revert does not touch,
+  and stay containment.
+
+Both are the failures that matter most here, and both are exactly the shape a subtest filter
+drops. #406 joined this experiment's blast radius by adding the second of them, and the count
+went from ten failures to eleven — the subtest total did not move at all, which is why reading
+only the indented shape would have shown no change.
 
 That is the mirror image of the bullet above. There, output filtered to *top-level* names hid a
 subtest count. Here, output filtered to *subtest* lines hid a whole test. During #350's review
@@ -212,7 +244,10 @@ terms.
 
 The figure was three until #350, which moved the `files` matcher onto doublestar and added rows
 pinning the same classification. It went stale inside the very sentence #350 edited: **a number
-in this file is a measurement with a date on it, not a fact.**
+in this file is a measurement with a date on it, not a fact.** It went stale a second time under
+#406, which added the second subtest-free test above and renamed
+`bare_single_star_stays_at_the_root` to `bare_single_star_reaches_the_root`, since after #406 it
+does not stay anywhere. A row name in the block above is a measurement too.
 
 A single-line revert that moves one row is still a real revert — but only if you
 checked that the rows you expected to stay green actually did.
@@ -308,10 +343,17 @@ read for the `ok`/`FAIL <package>` result line rather than for the absence of ou
   size: `TestPackWarnsWhenFilesNamesHardReserved` goes **ten red of fifteen**, and the five
   that stay green are `.git` and the four git-metadata rows, all held up by `filterGitFiles`.
   It is also the one direction here that reaches a second package: `internal/pack` and `tests`
-  both print `FAIL`, ten failing tests between them, `TestPublishExcludesTheRetreatSnapshot`
+  both print `FAIL`, **eleven** failing tests between them, `TestPublishExcludesTheRetreatSnapshot`
   and `TestPublishKeepsMixedCaseSecretsOutOfTheStore` among them. The split was eight of
   thirteen until #402 added the `./node_modules/dep` row to that table, and nine of fourteen
   until #403 added `//node_modules/dep`; both land in the red group, for the same reason.
+  The count moved from ten to eleven under #406, whose
+  `TestPackGlobSweepCannotReachHardReserved` is the new one: re-measured on 2026-08-25 it packs
+  `[dist/.npmrc dist/a.js dist/package-lock.json index.js node_modules/.package-lock.json
+  node_modules/dep/index.js package.json]`, so `node_modules` and the two hard-reserved files
+  under a swept `dist` all arrive, and `.git/config`, `.git/objects/ab/cdef` and `dist/.gitignore`
+  still do not — `filterGitFiles` again. The ten-of-fifteen split above did not move when that
+  test joined, which is the point of reading a direction for its split rather than its size.
   Two of the other four bullets here also cite this test's row counts — **Remove the fix**, at
   four, and **B-prime, the classic spelling**, at six — and both were re-run for #402 and again
   for #403, and neither has moved. **That is three revisions of one number in two days**; treat
@@ -381,20 +423,31 @@ row and `node_modules` as the one weak one after #398 added a third weak row ben
 
 #406 let a `files` entry whose last segment is a bare wildcard expand a directory it
 matches into the whole subtree, through an ancestor-directory walk in `matchFilesField`'s
-default branch. Measured on 2026-08-25 on Linux, each direction preceded by `go vet ./...`
-— clean, exit 0 — and each read for the `ok`/`FAIL <package>` result line rather than for
-silence. Every package outside `internal/pack` prints `ok` under both.
+default branch. Every direction below was measured on 2026-08-25 on Linux, preceded by
+`go vet ./...` — clean, exit 0 — and read for the `ok`/`FAIL <package>` result line rather than
+for silence, with both `--- FAIL:` shapes counted separately. Every package outside
+`internal/pack` prints `ok` under all of them except the disable-the-whole-tier one, which
+reaches `tests` as well and says so.
 
-- **Remove the fix**, by disabling the `matchesAncestorDir` branch. **Eight red subtests
-  over two tests, plus one subtest-free test — nine failures, three tests.** Five rows of
-  `TestMatchFilesFieldGlobsWithDoublestar`, three of `TestPackGlobExpandsAMatchedDirectory`,
-  and `TestPackGlobSweepDoesNotConsentToDefaultExcludes`, which **has no subtests** and so
-  prints only the unindented `--- FAIL:` shape. The `filesMatchNone` rows stay green and
-  could not do otherwise: the branch only ever widens, so a row asserting that an entry
-  selects nothing cannot move under its removal. That covers
+- **Remove the fix**, by disabling the `matchesAncestorDir` branch. **Nine red subtests
+  over two tests, plus two subtest-free tests — eleven failures, four tests.** Five rows of
+  `TestMatchFilesFieldGlobsWithDoublestar`, four of `TestPackGlobExpandsAMatchedDirectory`,
+  and then `TestPackGlobSweepDoesNotConsentToDefaultExcludes` and
+  `TestPackGlobSweepCannotReachHardReserved`, both of which **have no subtests** and so print
+  only the unindented `--- FAIL:` shape. Each of the two packs `[index.js package.json]`
+  against a `want` that also holds `dist/a.js` — the ordinary file each keeps beside its
+  refused paths, reachable only through the branch being removed. The `filesMatchNone` rows
+  stay green and could not do otherwise: the branch only ever widens, so a row asserting that
+  an entry selects nothing cannot move under its removal. That covers
   `only_a_bare_last_segment_expands` and its nested twin,
   `the_expansion_does_not_reach_a_root_file`, and the two `d*`/`dist/c*` rows of
   `TestPackGlobExpandsAMatchedDirectory`.
+
+  It was eight subtests, one subtest-free test and nine failures when #406 first landed. Both
+  halves moved in the same follow-up: a `["*/*"]` row was added to
+  `TestPackGlobExpandsAMatchedDirectory`, and `dist/a.js` and three hard-reserved paths under
+  it were added to `TestPackGlobSweepCannotReachHardReserved`, which pulled a test that had
+  been green here into the radius.
 
 - **Classify the swept path `filesMatchDirect` instead of `filesMatchContains`.** This is
   the direction that publishes secrets, and its result is the reason this subsection
@@ -415,13 +468,52 @@ silence. Every package outside `internal/pack` prints `ok` under both.
   hole: `"*"` matches a root path outright, so the pre-#406 bare-wildcard rule answers it
   and the new branch is never reached.
 
+  Re-run after the two tests below grew rows, and nothing about it moved: the same five
+  matcher subtests, the same one packed-set test, the same packed set. Both
+  `TestPackGlobExpandsAMatchedDirectory` and `TestPackGlobSweepCannotReachHardReserved` stay
+  green here — the first has no default-excluded path in its tree by design, and nothing on
+  the hard-reserved list is on `defaultExcludes`, so no classification verdict can reach it.
+
 - **Disable the walk's `isHardReserved` check outright**, for
   `TestPackGlobSweepCannotReachHardReserved`. It packs
-  `[index.js node_modules/.package-lock.json node_modules/dep/index.js package.json]`: the
-  `node_modules` paths arrive and the `.git` ones still do not, `filterGitFiles` having
-  stripped them. So that test's `node_modules` rows carry the walk's check and its `.git`
-  rows carry nothing of their own — the split the `#398` subsection above records, reached
-  again from a `files` entry rather than from `main`.
+  `[dist/.npmrc dist/a.js dist/package-lock.json index.js node_modules/.package-lock.json
+  node_modules/dep/index.js package.json]`: the `node_modules` paths arrive, so do the two
+  hard-reserved files under a `dist` the entry does sweep, and `.git/config`,
+  `.git/objects/ab/cdef` and `dist/.gitignore` still do not, `filterGitFiles` having stripped
+  them. So that test's `node_modules` and `dist` rows carry the walk's check and its git rows
+  carry nothing of their own — the split the `#398` subsection above records, reached again
+  from a `files` entry rather than from `main`. This is the direction whose count in that
+  subsection moved from ten failing tests to eleven when #406 added this test.
+
+- **B-prime, hoisting #406's own branch above `isHardReserved`.** `verification-discipline`
+  requires B-prime for anything touching pack selection, and #406 changes what a publish
+  selects, so it applies — the #348 exemption does not carry over, being about a branch that
+  can only skip or abort. The spelling is the classic one adapted to what #406 added:
+  `isHardReserved(relPath) && !(useWhitelist && sweptIn)`, where `sweptIn` asks whether any
+  normalized entry with a bare last segment matches an ancestor directory of `relPath`.
+
+  **It is not blind, and it found a hole.** Run on 2026-08-25 against #406 as first written,
+  `go vet ./...` clean and every package printing `ok` with a duration: **the entire suite
+  stayed green.** A throwaway probe on the same build settled that the green was a gap and not
+  a structural impossibility — a package with `"files": ["*"]` holding `dist/.npmrc`,
+  `dist/package-lock.json` and `dist/.gitignore` packed
+  `[dist/.npmrc dist/a.js dist/package-lock.json index.js package.json]`, so the hoist ships
+  an auth token and a nested lockfile. The reason nothing caught it is that
+  `TestPackGlobSweepCannotReachHardReserved`'s tree held only hard-reserved *directories*,
+  which the walk `SkipDir`s before any path inside them is ever offered to
+  `matchFilesField` — so no path in it could ever reach the hoisted branch. A hard-reserved
+  *file* under an ordinary directory the entry does sweep is the only shape that can.
+
+  Those three paths are rows in that test now. Re-run with them, the same hoist turns exactly
+  one test red — `TestPackGlobSweepCannotReachHardReserved`, subtest-free, the only failure in
+  any package — packing the probe's set. `dist/.gitignore` is absent from it: that one name
+  *is* blind to B-prime, for the reason the #398 subsection gives, and it sits beside the
+  other two so the two behaviours are legible in one tree.
+
+  The lesson is the one the #398 subsection reaches from the other side. **A green B-prime is
+  worth two answers apart: "no placement can ship anything" and "this fixture cannot express
+  the shape that would".** #398's is the first; #406's was the second, and only a probe told
+  them apart. Do not record a green B-prime without saying which.
 
 ## A read made strict changes its callers
 
