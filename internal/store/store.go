@@ -460,11 +460,25 @@ func stripLifecycleScripts(destPath string) error {
 	}
 	output = append(output, '\n')
 
-	// The rewrite replaces the store's own package.json, and both paths that put
-	// it there already gave it the source file's mode - copyFile below, and
-	// fsutil.Reflink's chmod for the clone path - so that mode is what the temp
-	// file has to carry over the rename. A hard-coded mode here would leave the
-	// manifest wider than its siblings in the same package.
+	// The rewrite replaces the store's own package.json, and every path that puts
+	// it there has already given it the source file's mode, so that mode is what
+	// the temp file has to carry over the rename. A hard-coded mode here would
+	// leave the manifest wider than its siblings in the same package.
+	//
+	// "Every path" is three, and they arrive at it differently - worth naming,
+	// because a reader checking one of them will not find the same mechanism in
+	// the others. copyFile above chmods the destination explicitly.
+	// fsutil.Reflink chmods on Linux (reflink_linux.go) but not on darwin, where
+	// unix.Clonefile carries the mode across as part of the metadata it clones.
+	// reflink_other.go has no clone path at all - Reflink always fails there and
+	// the caller falls back to copyFile.
+	//
+	// Perm() masks off setuid, setgid and sticky, which copyFile does preserve.
+	// That is deliberate rather than an oversight: pack folds only Mode.Perm()
+	// into the content hash (internal/pack/pack.go), so the permission bits are
+	// the ones this file is recorded under. It does mean the "matches its
+	// siblings" claim above is exact for the permission bits and not for the
+	// other three.
 	info, err := os.Stat(pkgJSONPath)
 	if err != nil {
 		return fmt.Errorf("failed to stat package.json: %w", err)

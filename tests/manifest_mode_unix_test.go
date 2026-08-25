@@ -47,6 +47,14 @@ func assertMode(t *testing.T, path string, want os.FileMode, where string) {
 // exactly what this test wants to see. Pinning 0022 - the umask this repo's
 // tests are run under - keeps a wrong answer visible. syscall.Umask is
 // process-global; no test in this package calls t.Parallel().
+//
+// What this test does not pin: the fix has two halves, reading the mode back
+// instead of hard-coding 0644 and chmodding past the umask, and a 0600 fixture
+// under umask 0022 only reaches the first. 0600 has no bits 0022 strips, so
+// dropping the explicit chmod leaves this green. The half it misses is pinned by
+// TestStripLifecycleScripts_PreservesManifestMode's "a mode the umask would
+// strip" row (0640 under 0077) in internal/store. This test's own job is the
+// reach - that the mode survives all three stages - not the mechanism.
 func TestPublishPreservesManifestModeThroughStoreAndConsumer(t *testing.T) {
 	setUmask(t, 0022)
 

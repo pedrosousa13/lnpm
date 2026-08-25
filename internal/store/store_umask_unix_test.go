@@ -130,6 +130,25 @@ func TestStore_PreservesModeUnderRestrictiveUmask(t *testing.T) {
 // hard-coded 0644 write lands at 0600 - exactly the first row's want - so an
 // ambient 0077 would make that row pass without the fix. syscall.Umask is
 // process-global, so these rows must not call t.Parallel().
+//
+// The rows are not equally strong, and the difference is worth stating rather
+// than leaving a reader to assume three rows mean three guarantees. The fix has
+// two halves - read the mode back instead of hard-coding 0644, and chmod past
+// the umask - and only one row pins both:
+//
+//   - "a mode the umask would strip" (0640 under 0077) is the load-bearing row.
+//     0640 &^ 0077 is 0600, so it goes red both when the mode is hard-coded and
+//     when the explicit chmod is dropped.
+//   - "a manifest kept private" (0600 under 0022) pins the hard-coded-0644 half
+//     only. 0600 has no bits either umask strips, so dropping the chmod leaves
+//     it green.
+//   - "an ordinary manifest is unchanged" (0644 under 0022) discriminates
+//     nothing - it is green against the unfixed code too. It is a regression
+//     guard against an over-broad fix, not evidence for this one.
+//
+// TestPublishPreservesManifestModeThroughStoreAndConsumer in tests/ is a 0600
+// fixture as well, so it shares the second row's blind spot: it pins the mode
+// reaching the consumer, not the chmod.
 func TestStripLifecycleScripts_PreservesManifestMode(t *testing.T) {
 	cases := []struct {
 		name  string
