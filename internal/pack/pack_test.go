@@ -3537,7 +3537,8 @@ func TestPackMissingMainDoesNotAbort(t *testing.T) {
 
 // capturePackStdout runs fn with os.Stdout redirected and returns what was
 // written. There is something to capture at all because Pack prints its
-// warnings rather than returning them, for the reason this package's doc gives.
+// warnings rather than returning them; internal/ui's package doc records why
+// that layering was kept.
 //
 // It also pins NO_COLOR, which is what lets warnMarker below be built from
 // ui.IconWarn() outside the capture. Inside it stdout is a pipe, so the text

@@ -66,8 +66,7 @@ func IconOK() string { return icon("✓", "OK") }
 // IconFail is the marker for a step that failed.
 func IconFail() string { return icon("✗", "x") }
 
-// IconWarn is the marker for a warning — something the reader needs to know
-// that did not stop the command.
+// IconWarn is the marker for a problem the reader needs to know about.
 func IconWarn() string { return icon("⚠", "!") }
 
 // IconTip is the marker for a suggested next step.
