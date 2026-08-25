@@ -11,7 +11,6 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/gitignore"
 	"github.com/pedrosousa13/lnpm/internal/link"
 	"github.com/pedrosousa13/lnpm/internal/pack"
-	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/pkg/lockfile"
 )
@@ -308,17 +307,7 @@ func RunRetreat(force bool, runInstall bool) error {
 
 	// Run package manager install if requested
 	if runInstall {
-		pm := config.DetectPackageManager(cwd)
-		installCmd := config.GetInstallCommand(pm)
-		fmt.Printf("Running %s...\n", installCmd)
-
-		cmd := shellcmd.Command(installCmd)
-		cmd.Dir = cwd
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("%s Install failed: %v\n", ui.IconWarn(), err)
-		}
+		runProjectInstallFn(cwd)
 	}
 
 	fmt.Println()
