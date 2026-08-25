@@ -59,7 +59,7 @@ func TestDetectRefusesAMemberThatWillNotResolveFromASubdirectory(t *testing.T) {
 		t.Fatalf("Failed to make %s untraversable: %v", blocked, err)
 	}
 	// t.TempDir's cleanup cannot remove a 0000 directory's contents.
-	t.Cleanup(func() { os.Chmod(blocked, 0755) })
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0755) })
 
 	link := filepath.Join(root, "packages", "unresolvable")
 	symlinkDirAt(t, fmt.Sprintf("/proc/self/fd/%d", dir.Fd()), link)
