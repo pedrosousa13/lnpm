@@ -3278,18 +3278,36 @@ func TestPackEmptyMainChangesNothing(t *testing.T) {
 // and confirmed at this commit by moving the mainEntry arm above the
 // isHardReserved check.
 //
-// The .npmrc row is the load-bearing one. The node_modules row is held up by a
-// second, independent barrier and stays green under that same hoist: the
-// isHardReserved check returns filepath.SkipDir for the node_modules directory,
-// so the walk never reaches the nested file for any per-file check to see. It is
-// kept as a row because that pruning is worth pinning too, but it is not what
-// catches a hoisted force-include — do not read it as covering the .npmrc case.
+// The four rows are not equal evidence, and which is which was measured under
+// that hoist rather than read off the code — `go vet ./...` clean first, the
+// package's `ok`/`FAIL` line read rather than the absence of output. Two red,
+// two green, on 2026-08-25:
+//
+//   - .npmrc and package-lock.json go red, each by packing the path it named:
+//     `got: [.npmrc dist/a.js package.json]` and `got: [dist/a.js
+//     package-lock.json package.json]`. These two carry the test. Nothing else
+//     in the codebase takes either back out of a finished set.
+//
+//   - node_modules stays green, held up by a second and independent barrier:
+//     the isHardReserved check returns filepath.SkipDir for the node_modules
+//     directory, which a hoist exempting the main entry does not reach, so the
+//     walk never gets to the nested file for any per-file check to see.
+//
+//   - .gitmodules stays green on a different second barrier — filterGitFiles
+//     drops it from the finished set by basename whatever the walk decided.
+//     #398 added it; its own row comment below has the detail.
+//
+// Both green rows are worth keeping, since the pruning and the filter are each
+// worth pinning, and neither is evidence about the force-include's placement.
+// Keep this list in step with the table. It went short once already: #398 added
+// the .gitmodules row and recorded its weakness at the table only, leaving this
+// paragraph naming .npmrc as the single load-bearing row and node_modules as
+// the single weak one. docs/agents/verification-discipline.md's git-metadata
+// subsection records that.
 //
 // The .env row this test used to carry moved to
 // TestPackMainCannotDefeatDefaultExcludes, which asserts the same outcome
-// against the list .env now lives in. That leaves one root row here where there
-// were two; see docs/agents/verification-discipline.md on why a row held up by
-// pruning is not a substitute for it.
+// against the list .env now lives in.
 func TestPackMainCannotDefeatHardReserved(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3587,6 +3605,25 @@ func capturePackStdout(t *testing.T, fn func()) string {
 	}
 	os.Stdout = w
 
+	// The restore is deferred rather than written after fn(), because fn() has
+	// two ways out and only one of them is a return. Several call sites drive
+	// Pack through packedRelPaths, which t.Fatalf's on a Pack error, and
+	// assertPackedSet reaches that same line — and t.Fatalf is
+	// runtime.Goexit, which runs deferred calls and skips straight ones. A
+	// restore written after fn() is a straight one, so on that path os.Stdout
+	// would keep pointing at this pipe after the test that aborted is over:
+	// every later print Pack makes outside a capture disappears into a pipe
+	// nothing is reading, and every later capture reads the dead pipe as its
+	// "orig" and restores to it. What testing itself prints is unaffected —
+	// it holds the file it captured before any of this ran, not the os.Stdout
+	// variable — so the loss is exactly the product output, and silent.
+	//
+	// The pipe is left open on that path, with its drain goroutine still
+	// blocked in io.Copy. Two descriptors leaked by a test that is aborting
+	// anyway is the cheaper of the two, and closing here would mean deciding
+	// what to do with a close error while a Goexit is already unwinding.
+	defer func() { os.Stdout = orig }()
+
 	// Drained on a goroutine so a warning longer than the pipe buffer cannot
 	// deadlock the writer.
 	done := make(chan string, 1)
@@ -3598,7 +3635,6 @@ func capturePackStdout(t *testing.T, fn func()) string {
 
 	fn()
 
-	os.Stdout = orig
 	if err := w.Close(); err != nil {
 		t.Fatalf("closing the pipe: %v", err)
 	}
@@ -4276,6 +4312,12 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 //     warning and through the list-level rows in
 //     TestGitMetadataTierAgreesWithTheGitSafetyFilter and
 //     TestIsExcludedHardReservedCannotBeNegated.
+//
+//     That exception is recorded in
+//     docs/agents/verification-discipline.md's "The git metadata tier, moved
+//     by #398" as well, because that file is where a reader is sent to write a
+//     revert experiment and it tells them to use B-prime for anything touching
+//     pack selection. Keep the two in step.
 //
 // The "./node_modules" row moved into the first group with #346. Before it,
 // matchFilesField resolved no leading "./", so the entry selected nothing

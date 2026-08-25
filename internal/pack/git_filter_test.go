@@ -55,15 +55,14 @@ func TestIsGitRelatedPath(t *testing.T) {
 // The depth rows below are what measure that rather than leaving it to be read
 // off the pattern syntax.
 //
-// The .git directory half of isGitRelatedPath is deliberately not asked here,
-// and widening this table to cover it would be wrong rather than thorough: the
-// two genuinely disagree there. Measured on 2026-08-25,
-// isHardReserved("src/.git/config") is false while isGitRelatedPath is true,
-// because ".git" is separator-free and Base("src/.git/config") is "config". No
-// warning is owed for it either — collectFiles prunes a nested .git at the
-// directory level, where isHardReserved("src/.git") is true — so it is the
-// filter doing defence in depth, not a tier disagreement. #398 left that half
-// alone.
+// The agreement is not universal, and the disagreements are pinned rather than
+// enumerated in prose, because an enumeration in prose is what went short here
+// once already. The first draft named the .git directory half as the only
+// exception. There are three disagreeing paths from two causes, and the one it
+// missed is the second cause entirely: ".gitignore/foo", where the tier is the
+// stricter of the two. Nothing caught it because no path in the table below
+// sits under a ".gitignore/" directory. All three are rows in disagreements
+// below now, each carrying the pair it was measured to produce.
 func TestGitMetadataTierAgreesWithTheGitSafetyFilter(t *testing.T) {
 	paths := []string{
 		// The three names, at the root and at depth.
@@ -75,8 +74,16 @@ func TestGitMetadataTierAgreesWithTheGitSafetyFilter(t *testing.T) {
 		".gitmodules",
 		"docs/.gitmodules",
 
-		// Near misses. Neither side may claim these, and a pattern spelling
-		// that turned an entry into a prefix would fail here first.
+		// Near misses. Neither side may claim these. What they catch is a
+		// spelling whose glob widens across a sibling name, and it was run
+		// rather than reasoned: spelling hardReservedExcludes' ".gitignore"
+		// entry as ".gitignore*" turns the ".gitignore.bak" row red, reporting
+		// isHardReserved true against isGitRelatedPath false. What they do not
+		// catch is matchesIgnorePattern's directory-prefix branch, which the
+		// bare name takes already and which no path in this group reaches.
+		// That is the ".gitignore/foo" entry in disagreements below, and the
+		// same ".gitignore*" run turns it red too — on both predicates
+		// answering false, which is what a widened spelling would really cost.
 		"gitignore",
 		"docs/gitignore",
 		".gitignore.bak",
@@ -96,6 +103,70 @@ func TestGitMetadataTierAgreesWithTheGitSafetyFilter(t *testing.T) {
 				t.Errorf("isDefaultExcluded(%q) = true: a git metadata file "+
 					"belongs to the hard-reserved tier only, and an entry on "+
 					"both tiers makes the overridable half unoverridable", path)
+			}
+		})
+	}
+
+	// The paths where the two predicates genuinely differ. Every pair below was
+	// run on 2026-08-25 and read off the output, not derived from the pattern
+	// syntax. Three different branches produce them, which is why reading one
+	// of the three off the code and stopping is how the ".gitignore/foo" row
+	// came to be missing: it is the only one that reaches
+	// matchesIgnorePattern's `!negated && strings.HasPrefix(relPath,
+	// pattern+"/")`. The "src/.git" row reaches the basename branch instead,
+	// on the separator-free ".git" entry, and "src/.git/config" reaches
+	// neither.
+	//
+	// None of the three is a hole. A disagreement only costs something when
+	// both sides say false, so that is what the loop asserts alongside the
+	// pair: at least one of the two still refuses each path.
+	disagreements := []struct {
+		path       string
+		hard       bool
+		gitRelated bool
+		why        string
+	}{
+		{
+			path: "src/.git/config", hard: false, gitRelated: true,
+			why: `".git" is separator-free, so the tier compares it against ` +
+				`filepath.Base, which is "config"; the filter's "/.git/" scan ` +
+				`is what catches it. Nothing is owed a warning either, since ` +
+				`collectFiles prunes the directory one level up — see the ` +
+				`"src/.git" row`,
+		},
+		{
+			path: ".gitignore/foo", hard: true, gitRelated: false,
+			why: `a directory named .gitignore: the tier takes ` +
+				`matchesIgnorePattern's directory-prefix branch and covers ` +
+				`everything under it, while the filter compares ` +
+				`filepath.Base, which is "foo". The hard-reserved side is the ` +
+				`strict one here, so the path is refused either way`,
+		},
+		{
+			path: "src/.git", hard: true, gitRelated: false,
+			why: `the directory itself rather than a path inside it. ` +
+				`isGitRelatedPath has no branch for a bare nested ".git" — ` +
+				`its scan wants "/.git/" — and does not need one, because ` +
+				`this is the path collectFiles prunes on and the walk never ` +
+				`hands a directory to the filter`,
+		},
+	}
+
+	for _, tt := range disagreements {
+		t.Run("disagreement "+tt.path, func(t *testing.T) {
+			hard, gitRelated := isHardReserved(tt.path), isGitRelatedPath(tt.path)
+			if hard != tt.hard {
+				t.Errorf("isHardReserved(%q) = %v, want %v: %s", tt.path, hard, tt.hard, tt.why)
+			}
+			if gitRelated != tt.gitRelated {
+				t.Errorf("isGitRelatedPath(%q) = %v, want %v: %s", tt.path, gitRelated, tt.gitRelated, tt.why)
+			}
+			if !hard && !gitRelated {
+				t.Errorf("neither isHardReserved(%q) nor isGitRelatedPath(%q) is true: "+
+					"a disagreement costs nothing while one of the two still refuses "+
+					"the path outright, and both answering false means this row no "+
+					"longer records a disagreement between two guards but the absence "+
+					"of either", tt.path, tt.path)
 			}
 		})
 	}

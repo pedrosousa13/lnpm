@@ -203,7 +203,8 @@ func changelogIncludes() []string {
 // *.orig, which npm ignores by default but will include for a "files" glob —
 // stricter again on the three git metadata files, which are on neither npm list
 // at all and whose block below carries the reason (#398), and matches npm
-// exactly on the rest of the short list. That last claim was
+// exactly on the rest of the short list. The parity clause — matching npm on
+// the rest of the short list, not the git one before it — was
 // false until #399: the four lockfiles were on neither of lnpm's lists, so
 // `lnpm publish` shipped a lockfile `npm publish` has not shipped for many
 // major versions. Closing the gap was out of #321's scope, which decided only
@@ -239,6 +240,12 @@ var hardReservedExcludes = []string{
 	// Recorded here and in README's npm-divergence list rather than left to be
 	// rediscovered as an accident.
 	//
+	// The same run answers the no-"files" case, and the three do not behave
+	// alike there: npm packs .gitattributes and .gitmodules and drops the
+	// .gitignore it read as ignore rules. So "on neither npm list" is a claim
+	// about the two documented lists and not a claim that npm publishes all
+	// three by default. lnpm holds back all three either way.
+	//
 	// The reason is that lnpm already refused to publish them, and #398 is
 	// about saying so rather than about a new refusal. filterGitFiles runs over
 	// the finished set in Pack and drops these three by basename at any depth,
@@ -273,9 +280,11 @@ var hardReservedExcludes = []string{
 	// second spelling the entries above carry.
 	//
 	// How much this list now carries was measured too, on 2026-08-25, by
-	// commenting out Pack's filterGitFiles call and running internal/pack and
-	// tests: both packages stay green. So the selection path refuses these on
-	// its own and the filter is genuinely a second answer.
+	// commenting out Pack's filterGitFiles call: `go vet ./...` clean first,
+	// then internal/pack and tests each printing `ok` with a duration rather
+	// than a build failure. So the selection path refuses these on its own and
+	// the filter is genuinely a second answer. filterGitFiles' own doc comment
+	// carries the full statement of what that run established.
 	".gitignore",
 	".gitattributes",
 	".gitmodules",
@@ -2458,9 +2467,17 @@ func ExcludedByProjectRules(dir string, filesField []string, relPath string) boo
 // .gitignore, .gitattributes and .gitmodules out, and a "files" entry naming one
 // was refused in silence. hardReservedExcludes now carries all three, so the
 // selection path refuses them itself and warns, and this pass is a second
-// answer to a question already settled rather than the first. Measured on
-// 2026-08-25 by commenting this call out of Pack: internal/pack and tests both
-// stay green, so nothing in the suite now depends on it for those three names.
+// answer to a question already settled rather than the first.
+//
+// Measured on 2026-08-25 by commenting this call out of Pack. What was
+// established, rather than what the absence of output suggested: `go vet ./...`
+// exited 0 first, so the package and its test files still type-check with the
+// call gone; then `go test -count=1` printed `ok` with a duration for
+// internal/pack and for tests, not `FAIL <package> [build failed]`, so the two
+// test binaries were built and run. Nothing in the suite depends on this pass
+// for those three names. Do not repeat the experiment without the vet step —
+// docs/agents/verification-discipline.md records what a revert that never built
+// looks like when it is read as a green result.
 //
 // Being a second answer is the point rather than a redundancy to tidy away. The
 // .git directory half below still answers for spellings the built-in patterns

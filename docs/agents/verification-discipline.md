@@ -277,6 +277,95 @@ experiment.
 This was found because a subagent reported that a revert check did not catch what it had been
 told it would, instead of reshaping the test to fit the claim. That is the behaviour to copy.
 
+### The git metadata tier, moved by #398
+
+#398 moved `.gitignore` and `.gitattributes` out of `defaultExcludes` and into
+`hardReservedExcludes`, and added `.gitmodules`, which had been on neither list. What a
+maintainer can pack barely moved: `filterGitFiles` already dropped all three from the finished
+set, by basename, at every depth.
+What moved is what lnpm *says* — a `files` entry naming one now warns instead of being refused
+in silence. Measured on 2026-08-25 on Linux, each direction preceded by `go vet ./...` and each
+read for the `ok`/`FAIL <package>` result line rather than for the absence of output.
+
+- **Remove the fix**, by putting the three names back where #398 found them. **Twenty-one red
+  subtests over five tests**, all inside `internal/pack`; every other package still prints `ok`.
+  The five are `TestGitMetadataTierAgreesWithTheGitSafetyFilter` (eight rows),
+  `TestIsExcludedHardReservedCannotBeNegated` (three),
+  `TestPackWarnsWhenFilesNamesHardReserved` (four),
+  `TestPackWarnsWhenIgnoreNegationNamesHardReserved` (three) and
+  `TestPackFilesEntryNamingAnIgnoreFile` (three). Read the last one's failures rather than
+  counting them: all three fail on the *warn* assertion and none on the packed set, because the
+  file was refused either way and only the silence moved. That is the defect stated as a
+  measurement.
+
+- **Disable the walk's `isHardReserved` check outright.** This one is far wider than #398 —
+  it removes the whole tier, not the three names — so read it for its split rather than its
+  size: `TestPackWarnsWhenFilesNamesHardReserved` goes **eight red of thirteen**, and the five
+  that stay green are `.git` and the four git-metadata rows, all held up by `filterGitFiles`.
+  It is also the one direction here that reaches a second package: `internal/pack` and `tests`
+  both print `FAIL`, ten failing tests between them, `TestPublishExcludesTheRetreatSnapshot`
+  and `TestPublishKeepsMixedCaseSecretsOutOfTheStore` among them.
+
+- **B-prime, the classic spelling** — hoist a direct `files` name above `isHardReserved`, as
+  `isHardReserved(relPath) && !(useWhitelist && isIncludedDirectly(relPath, filesField))`.
+  **Fifteen rows over three tests**: `TestPackHardReservedWinsInWhitelistMode`, which **has no
+  subtests** and so prints only the unindented `--- FAIL:` shape; eight rows of
+  `TestPackNeverPublishesLockfiles`, being the direct-`files`-entry route for each of the four
+  lockfiles at the root and nested; and six of `TestPackWarnsWhenFilesNamesHardReserved`.
+  `"files": [".npmrc"]` is what ships the auth token under this hoist.
+
+- **B-prime for `main`** — exempt the entry point instead, as
+  `isHardReserved(relPath) && !(useWhitelist && mainEntry != "" && relPath == mainEntry)`. **Two
+  of `TestPackMainCannotDefeatHardReserved`'s four rows**: `npmrc` packs
+  `[.npmrc dist/a.js package.json]` and `lockfile` packs
+  `[dist/a.js package-lock.json package.json]`. The other two stay green on second barriers —
+  `node_modules` on the walk's `filepath.SkipDir`, `.gitmodules` on `filterGitFiles`.
+
+- **Comment `filterGitFiles` out of `Pack` entirely.** Everything stays green, and that is the
+  answer rather than a gap: `go vet ./...` exits 0, and `internal/pack` and `tests` each print
+  `ok` with a duration, not `[build failed]`. The selection path refuses all three on its own
+  now, so the filter is a second answer rather than the only one.
+
+**B-prime is blind to these three names, and a green packed-set row is not coverage for them.**
+Under both B-prime spellings above, not one git row moves anywhere — not in
+`TestPackWarnsWhenFilesNamesHardReserved`, not in `TestPackFilesEntryNamingAnIgnoreFile`, not in
+`TestPackMainCannotDefeatHardReserved`. The reason is mechanical: `filterGitFiles` runs over the
+finished set in `Pack` and removes whatever the hoist selected, so *no* placement of the
+hard-reserved check can be caught by what these three names pack. Do not write a
+hoist-above-`isHardReserved` experiment for a git-metadata row and read its green as coverage.
+The tier assignment for these names is answerable only through the warning half and through the
+list-level tests, `TestGitMetadataTierAgreesWithTheGitSafetyFilter` and
+`TestIsExcludedHardReservedCannotBeNegated`, neither of which the filter can reach.
+
+That is the same shape as the note ending the #348 subsection above, reached from the opposite
+side. There the fix could never select, so B-prime had nothing to hoist. Here the fix does
+select, and a later pass erases the difference before any assertion sees it.
+
+Rows expected green and confirmed green, since a revert that moves a row proves nothing until
+you check what did not move. Under remove-the-fix and under both B-prime spellings, every
+package outside `internal/pack` prints `ok`, so #398's own blast radius stops at `pack`; the
+disable-the-whole-tier direction is the exception, and its bullet says so.
+And the packed-set half of `TestPackFilesEntryNamingAnIgnoreFile` stays green on all four of its
+rows under the remove-the-fix direction, `.npmignore` included — that is the row that must not
+move at all, since it stays in `defaultExcludes`, no safety pass covers it, and
+`"files": [".npmignore"]` publishes it.
+
+One more, about enumerating exceptions in prose. `isHardReserved` and `isGitRelatedPath` are
+required to agree, and they do not agree everywhere; the first draft of
+`TestGitMetadataTierAgreesWithTheGitSafetyFilter`'s header named one exception; there are three
+disagreeing paths, from two causes. Measured on 2026-08-25: `isHardReserved("src/.git/config")` is false against a true,
+`isHardReserved(".gitignore/foo")` is **true** against a false, and `isHardReserved("src/.git")`
+is true against a false. The middle one was missed because no row in the table sat under a
+`.gitignore/` directory, so neither the test nor the comment ever reached
+`matchesIgnorePattern`'s directory-prefix branch — and the header's own claim that a widened
+pattern spelling "would fail here first" was the claim that should have caught it. All three are
+rows now, each carrying the pair it was measured to produce, and the loop also asserts that one
+of the two predicates still refuses the path, which is what makes a disagreement harmless rather
+than a hole. **An exception that lives only in prose is the short-list failure the section above
+records three times.** It happened a fourth time in the same change:
+`TestPackMainCannotDefeatHardReserved`'s header went on naming `.npmrc` as the one load-bearing
+row and `node_modules` as the one weak one after #398 added a third weak row beneath it.
+
 ## A read made strict changes its callers
 
 Making a function return a real error where it used to swallow one is only half a fix. Every
