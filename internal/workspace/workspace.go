@@ -28,11 +28,19 @@ type Package struct {
 	Path    string
 }
 
-// ErrMemberOutsideRoot marks the refusal of a workspace member whose real path
-// falls outside the workspace root, so Detect can recognise that refusal
-// anywhere along its walk. requireWithinRoot raises it and carries the whole
-// message; this sentinel is only the phrase the message is built around.
-var ErrMemberOutsideRoot = errors.New("outside the workspace root")
+// ErrWorkspaceMemberRefused marks the refusal of a globbed workspace member, so
+// Detect can recognise that refusal anywhere along its walk.
+//
+// Both of requireWithinRoot's refusals raise it - the member whose real path
+// falls outside the workspace root, and the member that will not resolve at all
+// - because both say the same thing about the config in hand: it names a member
+// this command will not accept, so there is nothing to gain by walking past it.
+// One sentinel rather than two keeps Detect's guard a single errors.Is, beside
+// the one it already runs for doublestar.ErrBadPattern.
+//
+// requireWithinRoot carries the whole message; this sentinel is only the phrase
+// each message opens with.
+var ErrWorkspaceMemberRefused = errors.New("refused workspace member")
 
 // Detect detects if the current directory is part of a monorepo workspace
 func Detect(startPath string) (*Workspace, error) {
@@ -54,14 +62,15 @@ func Detect(startPath string) (*Workspace, error) {
 		if errors.Is(err, doublestar.ErrBadPattern) {
 			return nil, err
 		}
-		// A member that resolves outside the root is refused for the same
-		// reason and is unconditional for the same reason. It is found where
-		// the workspace config is, and `lnpm publish` run inside a member
-		// directory reaches that config on a later iteration - so narrowing
-		// this to the starting directory would swallow the refusal on the
-		// ordinary monorepo invocation and answer "no workspace found",
-		// naming neither the member nor the path it resolved to.
-		if errors.Is(err, ErrMemberOutsideRoot) {
+		// A refused workspace member aborts for the same reason and is
+		// unconditional for the same reason. It is found where the workspace
+		// config is, and `lnpm publish` run inside a member directory reaches
+		// that config on a later iteration - so narrowing this to the starting
+		// directory would swallow the refusal on the ordinary monorepo
+		// invocation and answer "no workspace found", naming neither the
+		// member nor what was wrong with it. Both of requireWithinRoot's
+		// refusals wrap the sentinel, so both reach here.
+		if errors.Is(err, ErrWorkspaceMemberRefused) {
 			return nil, err
 		}
 		// A config that will not read or will not parse aborts only in the
@@ -335,7 +344,12 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 // This runs only after the caller has stat'd the member's package.json, which
 // means the path was there a moment ago and resolvable. A resolution failure on
 // it is therefore anomalous rather than the ordinary "this match is not a
-// package" case, and it refuses instead of skipping.
+// package" case, and it refuses instead of skipping. Both refusals here wrap
+// ErrWorkspaceMemberRefused, which is what makes that true of the composed
+// behaviour rather than only of this function: Detect swallows an error it does
+// not recognise on every iteration of its walk but the first, so an unwrapped
+// refusal would go back to skipping the moment the command was run from inside
+// a member directory.
 //
 // Which way that cuts depends on which loop called. From the negation loop the
 // ADR decides it: skipping would drop an exclusion and publish the package the
@@ -357,12 +371,13 @@ func expandGlobs(root string, patterns []string) ([]string, error) {
 func requireWithinRoot(root, path string) error {
 	within, resolved, err := fsutil.WithinRoot(root, path)
 	if err != nil {
-		return fmt.Errorf("failed to check workspace member %s against the workspace root: %w", path, err)
+		return fmt.Errorf("%w %s: failed to check it against the workspace root: %w",
+			ErrWorkspaceMemberRefused, path, err)
 	}
 	if !within {
-		return fmt.Errorf("workspace member %s resolves to %s, which is %w %s: "+
+		return fmt.Errorf("%w %s: it resolves to %s, which is outside the workspace root %s: "+
 			"remove the pattern that matches it, or replace the link with a directory inside the root",
-			path, resolved, ErrMemberOutsideRoot, root)
+			ErrWorkspaceMemberRefused, path, resolved, root)
 	}
 	return nil
 }

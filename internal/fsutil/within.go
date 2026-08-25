@@ -21,21 +21,32 @@ import (
 // Resolving does not make the prefix test below case-insensitive, and the
 // filesystem underneath may well be. Only Windows normalises case here:
 // filepath.EvalSymlinks runs toNorm/normBase over every component there, so two
-// spellings of one path come back identical - the property
-// internal/cli.canonicalPath records, and it scopes that to Windows too,
-// alongside the 8.3 short-name case. On Unix evalSymlinks is a bare
-// walkSymlinks with no case handling at all, so on macOS - case-insensitive by
-// default, and one of this repo's CI platforms - strings.HasPrefix still
-// compares case-sensitively.
+// spellings of one path come back identical - a property
+// internal/cli.canonicalPath also records, in a sentence whose case clause
+// trails a Windows 8.3 short-name clause without saying which platforms it
+// covers. On Unix evalSymlinks is a bare walkSymlinks with no case handling at
+// all, so on macOS - case-insensitive by default, and one of this repo's CI
+// platforms - strings.HasPrefix still compares case-sensitively.
 //
-// The comparison is nonetheless correct as workspace.expandGlobs uses it, but
-// that is a fact about the caller rather than a property of this function: the
-// member path is filepath.Join(root, match) where match came out of a directory
-// walk rooted at that same root string, so both sides carry the identical root
-// spelling and no difference in case exists for the prefix test to miss. A
-// future caller handing this function two independently spelled paths on a
-// case-insensitive filesystem would not be protected, and would have to fold
-// case itself.
+// That comparison runs on the resolved paths, not on the ones the caller built,
+// which is where an argument from the caller's spelling goes wrong. walkSymlinks
+// appends each component verbatim from the string it is walking and restarts
+// from an absolute link target, so a member that is itself a symlink - the case
+// this function exists for - comes back carrying its target's spelling and not
+// root's. Take a root .../ws holding packages/alias -> .../WS/vendored/b: the
+// member resolves to .../WS/vendored/b, strings.HasPrefix against .../ws/ fails,
+// and on a case-insensitive filesystem such as macOS - where those two spellings
+// name one directory - a member that really is inside the root is refused. Read
+// from path/filepath/symlink.go rather than run: this repo's CI has a macOS job,
+// but no case-difference case is written for it.
+//
+// The direction is what makes that an overstatement to keep out of a comment
+// rather than a hole to plug: a case difference can only break a prefix test,
+// never satisfy one that should have failed, so this returns false where it
+// should have returned true and never the reverse. No escape can be spelled past
+// the guard. Folding case here would widen what the guard accepts, which #328
+// did not ask for; a caller needing two independently spelled paths compared on
+// a case-insensitive filesystem would have to fold case itself.
 //
 // Both paths must exist: filepath.EvalSymlinks fails on a path that does not,
 // and that failure is returned rather than swallowed, naming the side it came

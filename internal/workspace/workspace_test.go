@@ -136,17 +136,17 @@ func symlinkDirAt(t *testing.T, target, linkPath string) {
 }
 
 // assertRefusedEscape checks that err refuses member by name, says where it
-// landed, and stays recognisable as ErrMemberOutsideRoot. The last is what lets
-// Detect propagate the refusal from anywhere along its walk, so a message that
-// merely reads correctly is not enough.
+// landed, and stays recognisable as ErrWorkspaceMemberRefused. The last is what
+// lets Detect propagate the refusal from anywhere along its walk, so a message
+// that merely reads correctly is not enough.
 func assertRefusedEscape(t *testing.T, err error, member, outside string) {
 	t.Helper()
 
 	if err == nil {
 		t.Fatalf("Expected %s to be refused as an escape from the workspace root", member)
 	}
-	if !errors.Is(err, ErrMemberOutsideRoot) {
-		t.Errorf("Expected the refusal to wrap ErrMemberOutsideRoot, got: %v", err)
+	if !errors.Is(err, ErrWorkspaceMemberRefused) {
+		t.Errorf("Expected the refusal to wrap ErrWorkspaceMemberRefused, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), member) {
 		t.Errorf("Expected the error to name the member %s, got: %v", member, err)
@@ -199,6 +199,13 @@ func TestExpandGlobsRefusesAMemberReachedByASymlinkChainOutsideTheRoot(t *testin
 	}
 }
 
+// A symlinked member that stays inside the root is kept, not refused.
+//
+// It proves that for one spelling only. The link target here is built from the
+// same root string the check is handed, so the resolved member and the resolved
+// root agree character for character - see fsutil.WithinRoot's comment on what a
+// target spelled in a different case would do on a case-insensitive filesystem.
+// This row does not exercise that, and cannot on Linux.
 func TestExpandGlobsKeepsAMemberSymlinkedElsewhereInsideTheRoot(t *testing.T) {
 	root := t.TempDir()
 	target := writePackage(t, root, "vendored/package-b")
