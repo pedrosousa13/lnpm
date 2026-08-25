@@ -268,7 +268,7 @@ func RunRestore() error {
 
 	fmt.Printf("%s Restore complete!\n", ui.IconOK())
 	if restored > 0 {
-		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", ui.IconTip())
+		printPeerDependencyTip(cwd)
 	}
 	return nil
 }

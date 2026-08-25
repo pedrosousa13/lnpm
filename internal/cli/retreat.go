@@ -322,7 +322,17 @@ func RunRetreat(force bool, runInstall bool) error {
 	}
 
 	if !runInstall {
-		fmt.Printf("\n%s Run 'npm install' to restore original packages\n", ui.IconTip())
+		// Deliberately not printPeerDependencyTip: this sentence says a
+		// different thing. The shared tip advises on resolving peer
+		// dependencies; here the install is what puts the original packages
+		// back, which is what the runInstall branch above ran for itself.
+		//
+		// Only the command name is shared, and it is derived by the same two
+		// calls that branch makes rather than spelled out, so the tip and the
+		// install cannot disagree about what retreat would have run. Spelled
+		// out, it said 'npm install' to a pnpm project — #384.
+		installCmd := config.GetInstallCommand(config.DetectPackageManager(cwd))
+		fmt.Printf("\n%s Run '%s' to restore original packages\n", ui.IconTip(), installCmd)
 	}
 
 	// Non-zero exit, as remove does for the packages it could not remove: a

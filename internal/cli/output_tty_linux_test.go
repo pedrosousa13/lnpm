@@ -72,7 +72,11 @@ func TestRunRetreatOnATerminal(t *testing.T) {
 
 		out := runRetreatOnTTY(t)
 
-		for _, want := range []string{"✓ Restored", "✓ Retreat complete!", "💡 Run 'npm install'"} {
+		// The fixture writes lnpm.lock but no package-manager lock file, so
+		// #384's fix resolves the tip's command through DetectPackageManager's
+		// npm default and GetInstallCommand's --legacy-peer-deps. What this row
+		// is here for is the 💡 in front of it, not the command.
+		for _, want := range []string{"✓ Restored", "✓ Retreat complete!", "💡 Run 'npm install --legacy-peer-deps'"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("Terminal output lost %q; output was:\n%s", want, out)
 			}
