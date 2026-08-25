@@ -159,6 +159,57 @@ func TestGetConfigPathDefaultsUnderHome(t *testing.T) {
 	}
 }
 
+// TestDetectPackageManagerReadsLockfiles pins one of the two things lnpm does
+// with a lockfile name: stat it in a project directory to choose which package
+// manager to shell out to. The other is internal/workspace's
+// parsePackageJSONWorkspace, which stats yarn.lock and bun.lockb in a workspace
+// root to set Workspace.Type, a field whose only non-test readers print it in a
+// progress line. internal/pack's comment on the hardReservedExcludes lockfile
+// entries enumerates both; keep the two in step.
+//
+// It is a regression test for #399 rather than a test of anything #399 changed.
+// That issue put package-lock.json, yarn.lock, pnpm-lock.yaml and bun.lockb into
+// internal/pack's hard-reserved exclusion list, so those four names now mean
+// "never publish this" in one package and "the project uses this package
+// manager" in this one. The two questions are unrelated — this function stats a
+// consuming project's own directory and never sees a packed set — and nothing
+// here was touched, which is exactly the claim worth pinning before someone
+// reconciles the two lists on the strength of the shared names.
+//
+// bun.lock is checked beside bun.lockb because DetectPackageManager accepts
+// both spellings and internal/pack's list deliberately carries only bun.lockb,
+// which npm's own list names.
+func TestDetectPackageManagerReadsLockfiles(t *testing.T) {
+	tests := []struct {
+		lockfile string
+		want     PackageManager
+	}{
+		{"package-lock.json", NPM},
+		{"yarn.lock", Yarn},
+		{"pnpm-lock.yaml", PNPM},
+		{"bun.lockb", Bun},
+		{"bun.lock", Bun},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.lockfile, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, tt.lockfile), []byte("{}"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := DetectPackageManager(dir); got != tt.want {
+				t.Errorf("DetectPackageManager(dir with %s) = %v, want %v", tt.lockfile, got, tt.want)
+			}
+		})
+	}
+
+	// A project with no lockfile at all still falls back to npm.
+	if got := DetectPackageManager(t.TempDir()); got != NPM {
+		t.Errorf("DetectPackageManager(dir with no lockfile) = %v, want %v", got, NPM)
+	}
+}
+
 func TestGetPackageStorePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("LNPM_STORE", dir)

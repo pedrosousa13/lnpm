@@ -183,11 +183,14 @@ func changelogIncludes() []string {
 //
 // So lnpm is stricter than npm on five entries — .hg, .svn, CVS, .DS_Store and
 // *.orig, which npm ignores by default but will include for a "files" glob —
-// and looser on four, the lockfiles, which lnpm does not exclude at all. Neither
-// gap is #321's to close: which names belong in the lists was out of scope, and
-// only where the line falls between them was in it. Adding a name here takes a
-// reason of the kind npm's short list takes — that publishing it is never what
-// anyone meant — rather than a reason of the kind defaultExcludes takes.
+// and matches it exactly on the rest of the short list. That second half was
+// false until #399: the four lockfiles were on neither of lnpm's lists, so
+// `lnpm publish` shipped a lockfile `npm publish` has not shipped for many
+// major versions. Closing the gap was out of #321's scope, which decided only
+// where the line between the two lists falls and not which names sit on either
+// side of it. Adding a name here takes a reason of the kind npm's short list
+// takes — that publishing it is never what anyone meant — rather than a reason
+// of the kind defaultExcludes takes.
 //
 // Two near-misses are worth naming so a later reader does not read parity into
 // the overlap. npm's ".*.swp" is narrower than lnpm's "*.swp", and npm's
@@ -218,6 +221,57 @@ var hardReservedExcludes = []string{
 	"node_modules",
 	"node_modules/**",
 	"*.orig",
+
+	// The four lockfiles on npm's short list, quoted in full above: they
+	// "cannot be included even if specified in the files globs". That wording
+	// is this list's own membership test, so they belong here and not in
+	// defaultExcludes — a "files" entry naming one earns the warning
+	// warnHardReservedFilesEntry prints rather than a place in the tarball.
+	//
+	// The reason is not only that a published lockfile is dead weight. It is a
+	// disclosure surface: package-lock.json records a "resolved" URL per
+	// dependency, so a project installing through a private registry publishes
+	// that registry's hostname, and the names and versions of its private
+	// packages, to anyone who unpacks the tarball.
+	//
+	// bun.lockb is here although lnpm never opens one. Nothing lnpm does with
+	// any of these four names goes further than os.Stat, and there are two such
+	// call sites, neither of which looks at a packed set:
+	//
+	//   - internal/config's DetectPackageManager stats all four in a consuming
+	//     project's directory and returns which package manager to shell out
+	//     to. Seven call sites across five files read that answer, counted on
+	//     2026-08-25 and each one read: three turn it into the install command
+	//     they run, three record it in the project's database row, and one
+	//     picks the binary for a "run <script>". The split is here only to say
+	//     that none of the seven is ever handed a packed set — re-count it
+	//     rather than trust the number.
+	//   - internal/workspace's parsePackageJSONWorkspace stats yarn.lock and
+	//     bun.lockb in the workspace root to set Workspace.Type. That field
+	//     picks no package manager: its only non-test readers are the two
+	//     fmt.Printf calls at internal/cli/publish.go:102 and :104, which name
+	//     the workspace in a progress line.
+	//
+	// So this entry breaks neither. npm's list names bun.lockb, and a lockfile
+	// lnpm cannot parse is still a lockfile it should not publish.
+	//
+	// Bun 1.2's text lockfile, bun.lock, is deliberately not here even though
+	// DetectPackageManager stats it beside bun.lockb. Neither npm list quoted
+	// above carries that name, so adding it would be lnpm's own membership
+	// decision rather than the npm parity the rest of this block rests on.
+	// TestPackShipsBunLockKnownGap pins what that costs — a bun.lock ships,
+	// root and nested — as a known gap rather than a property worth keeping, so
+	// the day a follow-up adds the name here, the test and this paragraph go
+	// red together instead of only this paragraph going quietly false.
+	//
+	// All four are bare names with no separator, so applyIgnorePatterns matches
+	// them against filepath.Base and covers a nested one as well as a root one.
+	// None is a directory, so none takes the second "/**" spelling the entries
+	// above carry. TestPackNeverPublishesLockfiles pins both depths.
+	"package-lock.json",
+	"yarn.lock",
+	"pnpm-lock.yaml",
+	"bun.lockb",
 
 	// lnpm's and yalc's own state, each of which records absolute host paths.
 	".lnpm",
@@ -492,6 +546,22 @@ func warnHardReservedIgnoreNegation(packageDir string) {
 // spelling says so out loud — and silence is the failure mode #321 is about.
 // Only the warning is affected; the walk prunes node_modules either way. #402
 // carries that gap, and it belongs there rather than in a drive-by trim here.
+//
+// #399's four lockfiles are covered on every spelling, and by two branches
+// rather than one. Measured on 2026-08-25 by calling this function on six
+// spellings of each of the four names — the bare name, "/name", "name/",
+// "./name", "sub/name" and "./sub/name" — first as the code stands and again
+// with matchesIgnorePattern's basename branch disabled. All twenty-four are
+// true today. Without the basename branch the four lockfiles answer alike: the
+// first three spellings stay true, so the trims above plus the exact-match
+// branch carry those by design, and the last three go false, so they ride the
+// basename branch — the route the paragraph above calls a coincidence. It
+// reaches further for these than it does for a directory entry, because a
+// lockfile's basename is the pattern itself where
+// filepath.Base("./node_modules/dep") is "dep": the nested "./" spelling #402
+// records as silent is answered here rather than dropped.
+// TestPackWarnsWhenFilesNamesHardReserved carries a row for it, on
+// "./sub/package-lock.json".
 func namesHardReserved(entry string) bool {
 	normalized := strings.TrimSuffix(strings.TrimPrefix(entry, "/"), "/")
 	return normalized != "" && isHardReserved(normalized)

@@ -1251,6 +1251,8 @@ func TestIsExcludedHardReservedCannotBeNegated(t *testing.T) {
 		{"negated node_modules dir", "node_modules", []string{"!node_modules"}},
 		{"negated .npmrc", ".npmrc", []string{"!.npmrc"}},
 		{"negated .git file", ".git/config", []string{"!.git/config"}},
+		{"negated lockfile", "package-lock.json", []string{"!package-lock.json"}},
+		{"negated nested lockfile", "sub/yarn.lock", []string{"!sub/yarn.lock"}},
 	}
 
 	for _, tt := range tests {
@@ -1352,6 +1354,203 @@ func TestPackHardReservedWinsInWhitelistMode(t *testing.T) {
 		if packed[name] {
 			t.Errorf("hard-reserved %q was packed: neither a \"files\" entry nor a user negation may re-include it", name)
 		}
+	}
+}
+
+// TestPackNeverPublishesLockfiles is #399 end to end. npm's "cannot be included
+// even if specified in the files globs" list carries package-lock.json,
+// pnpm-lock.yaml, yarn.lock and bun.lockb, and lnpm carried none of the four in
+// either built-in list, so `lnpm publish` shipped a lockfile `npm publish` has
+// not shipped for many major versions.
+//
+// The routes below are every way a maintainer can ask for a path, plus the
+// no-op case where they ask for nothing. "main" is the one route missing here
+// and it is not missing coverage: TestPackMainCannotDefeatHardReserved carries a
+// lockfile row, beside the .npmrc row that pins the same rule.
+//
+// Both depths are exercised on purpose rather than for symmetry. The entries are
+// bare names with no separator in them, so applyIgnorePatterns matches them
+// against filepath.Base at any depth — the same mechanism that makes ".npmrc"
+// cover src/.npmrc — and no "/**" spelling was added beside them. A nested row
+// is what turns that from a reading of the matcher into a measurement. It also
+// pins the other half: sub/a.js ships from the same directory, so the lockfile
+// is dropped without the walk pruning the directory holding it. Both depths are
+// carried on the consenting side too. A "files" entry reaching a nested lockfile
+// through its directory ("sub") and one naming it outright
+// ("sub/package-lock.json") arrive at the same arm of the whitelist switch —
+// isIncluded — but only the second names the path, and naming the path is the
+// whole of what a defaultExcludes entry yields to. So the two rows part company
+// under direction B below, where the naming one goes red and the containing one
+// stays green; on the hard-reserved list neither is consent and both stay out.
+//
+// The fixture writes a lockfile-shaped body rather than an empty file so the
+// assertion is about selection rather than about a zero-length path.
+//
+// Both revert directions were run for #399, and the second is the load-bearing
+// one: it is what says these four names belong on the never-overridable list
+// rather than the overridable one. Each run was preceded by `go vet ./...` and
+// read for the package's own `FAIL github.com/pedrosousa13/lnpm/internal/pack`
+// result line rather than for silence. Every test named below has subtests, so
+// the two `--- FAIL:` shapes agree on the counts.
+//
+//   - A, the four names removed from hardReservedExcludes and added to
+//     neither list. Thirty-three rows over five tests: all twenty-four here,
+//     both lockfile rows of TestIsExcludedHardReservedCannotBeNegated, five
+//     rows of TestPackWarnsWhenFilesNamesHardReserved, and the one lockfile row
+//     each of TestPackMainCannotDefeatHardReserved and
+//     TestPackWarnsWhenIgnoreNegationNamesHardReserved. Nothing outside
+//     internal/pack moves.
+//   - B, the four names moved from hardReservedExcludes to
+//     defaultExcludes. Twenty rows over four tests: the same two, five and
+//     one rows as A, plus twelve of the twenty-four here — the three consenting
+//     routes ("named directly by a files entry", its nested twin, and "negated
+//     in the package's ignore file"), once per lockfile. The other twelve stay
+//     green, and they are exactly the routes that consent to nothing: the two
+//     "no files field" ones and "reached by a files entry naming its
+//     directory", all of which defaultExcludes already refuses.
+//     TestPackMainCannotDefeatHardReserved stays green under B as well, because
+//     its arm refuses defaultExcludes too (docs/adr/0004).
+//
+// So B is the experiment this test's rows discriminate, and it is the only one
+// that answers the tier question. A reviewer who ran only A would see every
+// lockfile row red and learn nothing about which of the two lists is right.
+func TestPackNeverPublishesLockfiles(t *testing.T) {
+	// The lockfile half of npm's short list. bun.lockb is here even though
+	// lnpm never opens one — it only ever stats these names, at the two call
+	// sites hardReservedExcludes' comment enumerates — because a lockfile lnpm
+	// cannot read is still a lockfile it should not publish.
+	lockfiles := []string{"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"}
+
+	// %s is the lockfile's name, so one route serves all four.
+	routes := []struct {
+		name       string
+		files      string
+		ignoreLine string
+		nested     bool
+		want       []string
+	}{
+		{
+			name: "no files field, at the package root",
+			want: []string{"index.js", "package.json", "sub/a.js"},
+		},
+		{
+			name:   "no files field, nested",
+			nested: true,
+			want:   []string{"index.js", "package.json", "sub/a.js"},
+		},
+		{
+			name:  "named directly by a files entry",
+			files: `"index.js", "%s"`,
+			want:  []string{"index.js", "package.json"},
+		},
+		{
+			name:   "named directly by a files entry, nested",
+			files:  `"index.js", "sub/%s"`,
+			nested: true,
+			want:   []string{"index.js", "package.json"},
+		},
+		{
+			name:   "reached by a files entry naming its directory",
+			files:  `"sub"`,
+			nested: true,
+			want:   []string{"package.json", "sub/a.js"},
+		},
+		{
+			name:       "negated in the package's ignore file",
+			ignoreLine: "!%s\n",
+			want:       []string{"index.js", "package.json", "sub/a.js"},
+		},
+	}
+
+	for _, lock := range lockfiles {
+		for _, route := range routes {
+			t.Run(lock+"/"+route.name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+
+				lockPath := lock
+				if route.nested {
+					lockPath = "sub/" + lock
+				}
+
+				manifest := `{"name":"lockfiles","version":"1.0.0"`
+				if route.files != "" {
+					manifest += `,"files":[` + strings.ReplaceAll(route.files, "%s", lock) + `]`
+				}
+				manifest += "}"
+
+				tree := map[string]string{
+					"package.json": manifest,
+					"index.js":     "module.exports = {}",
+					"sub/a.js":     "module.exports = {}",
+					lockPath:       `{"lockfileVersion": 3, "packages": {}}`,
+				}
+				if route.ignoreLine != "" {
+					tree[".npmignore"] = strings.ReplaceAll(route.ignoreLine, "%s", lock)
+				}
+				writeMainEntryTree(t, tmpDir, tree)
+
+				// Three of the routes ask for a hard-reserved path out loud, so
+				// Pack warns. That is asserted where it belongs — in
+				// TestPackWarnsWhenFilesNamesHardReserved and
+				// TestPackWarnsWhenIgnoreNegationNamesHardReserved — and only
+				// captured here to keep it out of the test log.
+				var packed []string
+				capturePackStdout(t, func() {
+					packed = packedRelPaths(t, tmpDir)
+				})
+
+				if strings.Join(packed, "\n") != strings.Join(route.want, "\n") {
+					t.Errorf("packed set mismatch: %q must never be published, "+
+						"and a lockfile records resolved registry URLs and the "+
+						"names and versions of private packages\n got: %v\nwant: %v",
+						lockPath, packed, route.want)
+				}
+			})
+		}
+	}
+}
+
+// TestPackShipsBunLockKnownGap pins a gap rather than a guarantee. Bun 1.2 and
+// later write a text bun.lock beside — or instead of — the binary bun.lockb.
+// Neither of the two npm lists quoted on hardReservedExcludes names bun.lock,
+// so #399 left it off rather than make lnpm's membership rule its own, and no
+// defaultExcludes entry reaches the name either. The result is that an
+// `lnpm publish` ships a bun.lock at the package root and nested, carrying the
+// same resolved registry URLs that put its binary sibling on the list.
+//
+// That behaviour is asserted in two places of prose — the README's two lockfile
+// paragraphs and the comment beside the four hardReservedExcludes entries — and
+// until this test nothing measured it. Adding "bun.lock" to a list would have
+// made both quietly false with nothing going red. This test exists to make that
+// day noisy, not to argue that today's answer is the right one.
+//
+// **Invert it rather than delete it when #399's follow-up lands.** If bun.lock
+// goes onto hardReservedExcludes, the two bun.lock paths leave `want`, this
+// stops being a known gap and becomes a guarantee, and the README paragraphs
+// and the list comment move with it.
+//
+// The bun.lockb paths are the control. They are on the list and differ from
+// bun.lock by one trailing character, so a run asserting only that bun.lock
+// ships would stay green under a change that stopped the list matching at all.
+func TestPackShipsBunLockKnownGap(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMainEntryTree(t, tmpDir, map[string]string{
+		"package.json":  `{"name":"bunlock","version":"1.0.0"}`,
+		"index.js":      "module.exports = {}",
+		"bun.lock":      `{"lockfileVersion": 1, "workspaces": {}}`,
+		"sub/bun.lock":  `{"lockfileVersion": 1, "workspaces": {}}`,
+		"bun.lockb":     "bun-lockfile-format-v0",
+		"sub/bun.lockb": "bun-lockfile-format-v0",
+	})
+
+	want := []string{"bun.lock", "index.js", "package.json", "sub/bun.lock"}
+
+	got := packedRelPaths(t, tmpDir)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("packed set mismatch. If bun.lock has just been added to a "+
+			"built-in list, this test is the one to invert, along with the "+
+			"README's lockfile paragraphs and hardReservedExcludes' comment\n"+
+			" got: %v\nwant: %v", got, want)
 	}
 }
 
@@ -1690,6 +1889,10 @@ func TestDefaultExcludesStillExclude(t *testing.T) {
 		{"node_modules", []string{"node_modules", "node_modules/dep/index.js"}},
 		{"node_modules/**", []string{"node_modules", "node_modules/dep/index.js"}},
 		{".npmrc", []string{".npmrc", "src/.npmrc"}},
+		{"package-lock.json", []string{"package-lock.json", "src/package-lock.json"}},
+		{"yarn.lock", []string{"yarn.lock", "src/yarn.lock"}},
+		{"pnpm-lock.yaml", []string{"pnpm-lock.yaml", "src/pnpm-lock.yaml"}},
+		{"bun.lockb", []string{"bun.lockb", "src/bun.lockb"}},
 		{".npmignore", []string{".npmignore", "src/.npmignore"}},
 		{".yalc", []string{".yalc", ".yalc/pkg/index.js"}},
 		{".yalc/**", []string{".yalc", ".yalc/pkg/index.js"}},
@@ -1753,6 +1956,12 @@ func TestDefaultExcludesAreLiteralNotPrefixes(t *testing.T) {
 		{"node_modules_backup/dep.js", "node_modules"},
 		{"logger.js", "*.log"},
 		{".gitignore.bak", ".gitignore"},
+		// The four lockfile entries are literal names rather than prefixes, the
+		// same guarantee "lnpm.lock" gets above. A package-lock.json.bak is a
+		// maintainer's own backup and a yarn.lock.md is prose about a lockfile;
+		// neither is a lockfile, and npm's list does not reach either.
+		{"package-lock.json.bak", "package-lock.json"},
+		{"yarn.lock.md", "yarn.lock"},
 	}
 
 	for _, tt := range tests {
@@ -1991,9 +2200,10 @@ func TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform(t *testing.T) {
 // Only the built-in set folds case. TestUserIgnorePatternsStayCaseSensitive pins
 // the other side of that line, and #353 settled that the line stays where it is,
 // so what stops the two rules being collapsed into one is this test plus
-// TestPackMixedCaseSecretsNeverShip below. Measured: giving isDefaultExcluded
-// and isHardReserved an unfolded isExcluded turns twelve of the twenty-four rows
-// here red, and that end-to-end test with them, while
+// TestPackMixedCaseSecretsNeverShip below. Measured, and re-measured for #399:
+// giving isDefaultExcluded and isHardReserved an unfolded isExcluded — the
+// unlowered path against the unlowered list at both call sites — turns twelve of
+// the twenty-four rows here red, and that end-to-end test with them, while
 // TestUserIgnorePatternsStayCaseSensitive stays green.
 //
 // #321 split that set in two, and the fold has to survive on both halves —
@@ -2003,6 +2213,15 @@ func TestIsExcludedSingleStarNeverCrossesSeparatorOnAnyPlatform(t *testing.T) {
 // neither, if the combined answer were taken instead. The `hard` column says
 // which list the path belongs to; the completeness check in
 // TestDefaultExcludesStillExclude is what stops an entry existing in neither.
+//
+// That completeness check has no counterpart here on purpose, and adding one
+// would be a mistake: lowerHardReservedExcludes and lowerDefaultExcludes are
+// derived from the two lists by lowerPatterns, so a new entry is folded without
+// a row here, and the one way it can fail to be — a metacharacter that lowering
+// rewrites rather than re-cases — is pinned by
+// TestDefaultExcludesHoldNoMetacharactersLoweringWouldRewrite, which says so
+// from its own side. #399's four lockfiles are the worked example: they went
+// into hardReservedExcludes with no case added to this table.
 func TestDefaultExcludesMatchCaseInsensitively(t *testing.T) {
 	// isDefaultExcluded and isHardReserved have identical signatures, so a row
 	// naming the wrong one still compiles. The `hard` flag is placed beside the
@@ -2622,6 +2841,14 @@ func TestPackMainCannotDefeatHardReserved(t *testing.T) {
 	}{
 		{"npmrc", ".npmrc"},
 		{"nested in node_modules", "node_modules/evil/index.js"},
+		// #399. This row pins that "main" is not a route in, and nothing more:
+		// it goes red when the four lockfiles are taken out of both built-in
+		// lists, and stays green when they are moved to defaultExcludes
+		// instead, because the mainEntry arm refuses that list too
+		// (docs/adr/0004). Both measured; TestPackNeverPublishesLockfiles
+		// carries the full red set of each direction. Which list the four
+		// belong on is pinned by the rows there, not by this one.
+		{"lockfile", "package-lock.json"},
 	}
 
 	for _, tt := range tests {
@@ -3499,20 +3726,26 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 // entry naming a path inside one never reaches a walked path for any per-file
 // check to notice.
 //
-// The four rows are not equal evidence on their packed-set half. Disabling the
-// isHardReserved check in the walk and running this test is what established
-// which is which — not reading the code, and re-run after #346 rather than
-// carried over. Three red, one green:
+// The nine rows are not equal evidence on their packed-set half. Disabling the
+// isHardReserved branch in collectFiles' walk outright and running this test is
+// what established which is which — not reading the code. Re-measured for #399,
+// which took the table from four rows to nine: eight red, one green.
 //
-//   - .npmrc reported `packed: [.npmrc index.js package.json]`, and
-//     node_modules and "./node_modules" both reported `packed: [index.js
-//     node_modules/dep/index.js package.json]`. All three are real evidence
-//     that the check is what refuses the entry.
+//   - Eight rows fail, and each fails by packing the path it named. .npmrc
+//     reported `packed: [.npmrc index.js package.json]`; node_modules and
+//     "./node_modules" both reported `packed: [index.js
+//     node_modules/dep/index.js package.json]`; each of the four lockfile rows
+//     reported its own lockfile back, `packed: [index.js package-lock.json
+//     package.json]` for the npm one; and "./sub/package-lock.json" reported
+//     `packed: [index.js package.json sub/package-lock.json]`. All eight are
+//     real evidence that the check is what refuses the entry.
 //   - .git stayed green. filterGitFiles runs over the finished set in Pack and
 //     drops anything under .git whatever collectFiles decided, so this row
 //     cannot fail for the reason the test is about. It is kept because #321
 //     names .git, and it is the weakest row in the file — do not read it as
-//     covering the hard-reserved check.
+//     covering the hard-reserved check. Nothing in the codebase strips a
+//     lockfile from the finished set a second time, so no lockfile row is weak
+//     in that way; both of their halves answer for the hard-reserved check.
 //
 // The "./node_modules" row moved into the first group with #346. Before it,
 // matchFilesField resolved no leading "./", so the entry selected nothing
@@ -3521,7 +3754,7 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 // that caught namesHardReserved's comment claiming such an entry is refused in
 // silence, when the basename fold makes it warn.
 //
-// The warning half is load-bearing on all four rows, since nothing else in the
+// The warning half is load-bearing on all nine rows, since nothing else in the
 // codebase produces that message.
 func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 	tests := []struct {
@@ -3548,6 +3781,39 @@ func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 			name:  "dot slash prefixed",
 			entry: "./node_modules",
 			files: map[string]string{"node_modules/dep/index.js": "dep"},
+		},
+		// The four lockfiles #399 added to hardReservedExcludes. They are in the
+		// header's red group rather than beside "dot git"; see it for the
+		// measurement.
+		{
+			name:  "npm lockfile",
+			entry: "package-lock.json",
+			files: map[string]string{"package-lock.json": `{"lockfileVersion": 3}`},
+		},
+		{
+			name:  "yarn lockfile",
+			entry: "yarn.lock",
+			files: map[string]string{"yarn.lock": "# yarn lockfile v1"},
+		},
+		{
+			name:  "pnpm lockfile",
+			entry: "pnpm-lock.yaml",
+			files: map[string]string{"pnpm-lock.yaml": "lockfileVersion: '9.0'"},
+		},
+		{
+			name:  "bun lockfile",
+			entry: "bun.lockb",
+			files: map[string]string{"bun.lockb": "bun-lockfile-format-v0"},
+		},
+		// The spelling #402 records as silent for a directory entry. It warns
+		// here, and the difference is the entry's basename: applyIgnorePatterns
+		// matches "package-lock.json" against filepath.Base of the entry, which
+		// is the pattern itself, where Base("./node_modules/dep") is "dep".
+		// namesHardReserved's comment carries the measurement.
+		{
+			name:  "dot slash prefixed nested lockfile",
+			entry: "./sub/package-lock.json",
+			files: map[string]string{"sub/package-lock.json": `{"lockfileVersion": 3}`},
 		},
 	}
 
@@ -3950,6 +4216,7 @@ func TestPackWarnsWhenIgnoreNegationNamesHardReserved(t *testing.T) {
 		{"gitignore", ".gitignore", "!node_modules\n", true},
 		{"dot git", ".npmignore", "!.git\n", true},
 		{"trailing slash", ".npmignore", "!node_modules/\n", true},
+		{"lockfile", ".npmignore", "!package-lock.json\n", true},
 		{"ordinary negation", ".npmignore", "dist/\n!dist/keep.js\n", false},
 		{"overridable default", ".npmignore", "!.env.example\n", false},
 		{"nested ignore file is not read", "src/.npmignore", "!node_modules\n", false},
