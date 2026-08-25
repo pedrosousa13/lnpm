@@ -59,3 +59,68 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # release-please builds the release body from the merged release PR's body,
+  # which it computed from commit subjects when it opened the PR. Upgrade notes
+  # hand-written into CHANGELOG.md on that branch afterwards are never read, so
+  # the published body loses exactly the part no commit subject could carry
+  # (#410). This job puts the version's changelog section back over the body.
+  #
+  # `needs` still names goreleaser, so this stays the last write to the body.
+  # GoReleaser v2 documents `release.mode` as defaulting to keep-existing —
+  # "keep the existing notes" — and .goreleaser.yaml sets no mode, so it should
+  # not touch an existing body either way; the ordering makes that a preference
+  # rather than something the body depends on.
+  #
+  # The `if` must not inherit goreleaser's result, though. GitHub's docs: "If a
+  # job fails or is skipped, all jobs that need it are skipped unless the jobs
+  # use a conditional expression that causes the job to continue", and "A
+  # default status check of success() is applied unless you include one of
+  # these functions" — success, always, cancelled, failure. A bare
+  # `needs.release-please.outputs.release_created` includes none of them, so it
+  # required *both* needs to succeed: one flaky `go test -race` in the
+  # goreleaser job above would leave the release published, tagged and
+  # note-less, with this job skipped rather than failed and the run still
+  # green. `!cancelled()` includes one, so the default no longer applies, and
+  # unlike `always()` it does not run this job on a cancelled workflow. A
+  # failed release-please job still skips it, because release_created is then
+  # empty.
+  #
+  # docs/releasing.md records the measurement behind all of this.
+  sync-release-notes:
+    needs: [release-please, goreleaser]
+    if: ${{ !cancelled() && needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Sync the release body from CHANGELOG.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        # The section goes through a file rather than a pipe on purpose. In
+        # `changelog-section.sh "$TAG" | gh release edit --notes-file -`, a
+        # failing extractor hands gh an empty stdin and gh succeeds, blanking
+        # the body of a release that is already published — the worst outcome
+        # this job could have. Written to a file, both the extractor's exit
+        # status and the file being non-empty are checked before gh runs. The
+        # status is tested here rather than left to the runner's default
+        # `bash -e {0}`, so the guard does not rest on a shell setting this
+        # workflow never states.
+        run: |
+          if [ -z "$TAG" ]; then
+            echo "release_created is set but tag_name is empty" >&2
+            exit 1
+          fi
+          if ! ./scripts/changelog-section.sh "$TAG" > release-notes.md; then
+            echo "could not extract a body for $TAG from CHANGELOG.md" >&2
+            exit 1
+          fi
+          if [ ! -s release-notes.md ]; then
+            echo "extracted an empty body for $TAG, refusing to publish it" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --notes-file release-notes.md

@@ -74,6 +74,7 @@ lnpm push
 - **[Monorepo Guide](MONOREPO.md)** — Turborepo, Nx, PNPM/NPM/Yarn workspaces integration
 - **[Architecture](ARCHITECTURE.md)** — System design and implementation details
 - **[Changelog](CHANGELOG.md)** — Version history and updates
+- **[Releasing](docs/releasing.md)** — How a release is cut, and the two steps that need a person
 - **[Roadmap](ROADMAP.md)** — What lnpm does today, and where planned work is tracked
 
 ## Commands
