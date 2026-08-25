@@ -192,16 +192,19 @@ func changelogIncludes() []string {
 //   - npm's "always ignored by default" list is the long one: *.orig, .*.swp,
 //     .DS_Store, ._*, .git, .hg, .lock-wscript, .npmrc, .svn, .wafpickle-N, CVS,
 //     config.gypi, node_modules, npm-debug.log, package-lock.json,
-//     pnpm-lock.yaml, yarn.lock, bun.lockb. Every entry here except the last
-//     block is on it, the "/**" entries being lnpm's second spelling of a name
-//     already there rather than extra names.
+//     pnpm-lock.yaml, yarn.lock, bun.lockb. Every entry here except the git
+//     metadata block and the last block is on it, the "/**" entries being
+//     lnpm's second spelling of a name already there rather than extra names.
 //   - npm's "cannot be included even if specified in the files globs" list is
 //     the short one, and it is the true analogue of this list: .git, .npmrc,
 //     node_modules, package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lockb.
 //
 // So lnpm is stricter than npm on five entries — .hg, .svn, CVS, .DS_Store and
 // *.orig, which npm ignores by default but will include for a "files" glob —
-// and matches it exactly on the rest of the short list. That second half was
+// stricter again on the three git metadata files, which are on neither npm list
+// at all and whose block below carries the reason (#398), and matches npm
+// exactly on the rest of the short list. The parity clause — matching npm on
+// the rest of the short list, not the git one before it — was
 // false until #399: the four lockfiles were on neither of lnpm's lists, so
 // `lnpm publish` shipped a lockfile `npm publish` has not shipped for many
 // major versions. Closing the gap was out of #321's scope, which decided only
@@ -228,6 +231,64 @@ func changelogIncludes() []string {
 var hardReservedExcludes = []string{
 	".git",
 	".git/**",
+
+	// The three git metadata files. This is a deliberate divergence from npm:
+	// none of the three is on either npm list quoted above, and npm 11.16.0
+	// packs all three for "files": [".gitignore", ".gitattributes",
+	// ".gitmodules"] — run on 2026-08-25 with `npm pack --dry-run --json`,
+	// not inferred from the two lists — where lnpm packs none of them.
+	// Recorded here and in README's npm-divergence list rather than left to be
+	// rediscovered as an accident.
+	//
+	// The same run answers the no-"files" case, and the three do not behave
+	// alike there: npm packs .gitattributes and .gitmodules and drops the
+	// .gitignore it read as ignore rules. So "on neither npm list" is a claim
+	// about the two documented lists and not a claim that npm publishes all
+	// three by default. lnpm holds back all three either way.
+	//
+	// The reason is that lnpm already refused to publish them, and #398 is
+	// about saying so rather than about a new refusal. filterGitFiles runs over
+	// the finished set in Pack and drops these three by basename at any depth,
+	// unconditionally, and it predates the #321 split. #321 nonetheless put
+	// .gitignore and .gitattributes in defaultExcludes, the overridable tier —
+	// an assignment the filter made inert, since a "files" entry selected the
+	// file and the filter took it straight back out. The user asked for a path,
+	// did not get it, and warnHardReservedFilesEntry stayed quiet because the
+	// warning fires for this list only. Silence is the failure mode #321 exists
+	// to remove, so the tier that matches the behaviour is this one.
+	// .gitmodules was in neither list and is named here for the first time.
+	//
+	// A "files" entry naming one now warns, an "!" negation cannot re-include
+	// one, and "main" cannot reach one — the three properties every other entry
+	// on this list has. filterGitFiles stays where it is, as the
+	// defence-in-depth pass it has always been rather than the sole enforcement.
+	//
+	// The bare-name spelling is what makes the two agree, and it was measured
+	// rather than read off the pattern syntax. isGitRelatedPath matches a
+	// basename at any depth; a separator-free unanchored pattern reaches
+	// matchesIgnorePattern's basename branch and does the same. The two obvious
+	// alternatives were run rather than argued about, on 2026-08-25, against
+	// docs/.gitignore: "/.gitignore" is anchored so the basename branch is
+	// skipped, and ".gitignore/**" takes the trailing-"/**" branch, which wants
+	// an exact match or a ".gitignore/" prefix. Both answer false there where
+	// isGitRelatedPath answers true, so both would leave the tier and the filter
+	// disagreeing at depth; the bare name answers true. The standing measurement
+	// lives in TestGitMetadataTierAgreesWithTheGitSafetyFilter, whose table runs
+	// the two predicates against each other over the three names at the root and
+	// one level down, .gitignore three levels down as well, and five
+	// near-misses. None of the three is a directory, so none takes the "/**"
+	// second spelling the entries above carry.
+	//
+	// How much this list now carries was measured too, on 2026-08-25, by
+	// commenting out Pack's filterGitFiles call: `go vet ./...` clean first,
+	// then internal/pack and tests each printing `ok` with a duration rather
+	// than a build failure. So the selection path refuses these on its own and
+	// the filter is genuinely a second answer. filterGitFiles' own doc comment
+	// carries the full statement of what that run established.
+	".gitignore",
+	".gitattributes",
+	".gitmodules",
+
 	".hg",
 	".hg/**",
 	".svn",
@@ -348,7 +409,7 @@ var hardReservedExcludes = []string{
 // addition. "*.swp" and "*.log" are the two close calls and are discussed above,
 // since npm's ".*.swp" and "npm-debug.log" are both narrower.
 //
-// Three consequences are worth saying out loud rather than leaving to be
+// Two consequences are worth saying out loud rather than leaving to be
 // rediscovered:
 //
 //   - ".env" and ".env.*" are overridable, and that is #321's whole point.
@@ -359,22 +420,17 @@ var hardReservedExcludes = []string{
 //     and no longer stricter than npm when the maintainer names that exact path.
 //     Naming a directory containing it does not count; see collectFiles'
 //     isIncluded arm. main ".env" is still refused; see above.
-//   - ".gitignore" and ".gitattributes" are listed here, but naming one in
-//     "files" does not publish it. filterGitFiles runs over the finished set in
-//     Pack and drops both unconditionally, by basename, at every depth. That
-//     filter predates #321 and is not part of this precedence chain.
-//   - ".npmignore" is the odd one out, and the asymmetry is real rather than
-//     apparent: filterGitFiles has no entry for it, so "files": [".npmignore"]
-//     does publish it where the two git files above cannot be published at all.
-//     TestPackFilesEntryNamingAnIgnoreFile pins all three. Publishing an
-//     .npmignore is
-//     harmless — it describes what was left out, not a secret — so #321 left it
-//     overridable rather than hard-reserving it, which would have been a
-//     membership change and out of scope. #398 tracks reconciling filterGitFiles
-//     with these lists; the inconsistency lives there, not in this list.
+//   - ".npmignore" is the only ignore file left on this list, and it really is
+//     overridable: "files": [".npmignore"] publishes it. Publishing an
+//     .npmignore is harmless — it describes what was left out, not a secret.
+//     ".gitignore" and ".gitattributes" were here until #398 and are not
+//     interchangeable with it: filterGitFiles drops those two by basename at
+//     every depth whatever this chain decides, so their place here was inert
+//     and, worse, silent, and #398 moved them to hardReservedExcludes where
+//     naming one warns. ".gitmodules" is there too. Do not read the remaining
+//     entry as "ignore files are overridable" — it is one name, not a class.
+//     TestPackFilesEntryNamingAnIgnoreFile pins all four.
 var defaultExcludes = []string{
-	".gitignore",
-	".gitattributes",
 	".npmignore",
 	"Thumbs.db",
 	"*.log",
@@ -462,11 +518,12 @@ func Pack(packageDir string) (*PackageJSON, []*FileInfo, error) {
 // "files" now publishes it, so there is nothing to report; that is the whole
 // point of the split.
 //
-// Known gap, pre-existing and not #321's: ".gitignore" and ".gitattributes" are
-// in defaultExcludes rather than here, so naming one warns nothing — yet
-// filterGitFiles still strips both from the finished set, so it still does not
-// ship. That filter is a separate pass with its own list and predates this
-// warning. Reconciling the two is tracked in #398.
+// ".gitignore", ".gitattributes" and ".gitmodules" were that gap until #398:
+// filterGitFiles stripped all three from the finished set while the first two
+// sat in defaultExcludes and the third in neither list, so naming one warned
+// nothing and the file did not ship either. All three are in
+// hardReservedExcludes now, so naming one reaches this warning like any other
+// entry on that list. TestPackFilesEntryNamingAnIgnoreFile pins it.
 //
 // It prints through ui.IconWarn(), the marker every lnpm warning carries, for
 // the reason warnMainEntryNotPacked gives below.
@@ -2403,6 +2460,34 @@ func ExcludedByProjectRules(dir string, filesField []string, relPath string) boo
 
 // filterGitFiles removes any files related to .git directories
 // This is a defense-in-depth safety filter applied after all other filtering
+//
+// It runs over the finished set, after every selection decision, so nothing it
+// removes can be reported by the selection path. That made it the wrong place
+// for the *only* copy of a rule: until #398 it was the only thing keeping
+// .gitignore, .gitattributes and .gitmodules out, and a "files" entry naming one
+// was refused in silence. hardReservedExcludes now carries all three, so the
+// selection path refuses them itself and warns, and this pass is a second
+// answer to a question already settled rather than the first.
+//
+// Measured on 2026-08-25 by commenting this call out of Pack. What was
+// established, rather than what the absence of output suggested: `go vet ./...`
+// exited 0 first, so the package and its test files still type-check with the
+// call gone; then `go test -count=1` printed `ok` with a duration for
+// internal/pack and for tests, not `FAIL <package> [build failed]`, so the two
+// test binaries were built and run. Nothing in the suite depends on this pass
+// for those three names. Do not repeat the experiment without the vet step —
+// docs/agents/verification-discipline.md records what a revert that never built
+// looks like when it is read as a green result.
+//
+// Being a second answer is the point rather than a redundancy to tidy away. The
+// .git directory half below still answers for spellings the built-in patterns
+// do not: measured on 2026-08-25, isHardReserved(`src\.git\config`) is false —
+// ".git" is separator-free so it is matched against filepath.Base, which on a
+// backslash-separated string is not ".git" — while isGitRelatedPath is true.
+// The walk never produces such a path, since collectFiles calls filepath.ToSlash
+// first, which is exactly why this pass is worth keeping for a set that reached
+// Pack by some other route. TestFilterGitFiles and
+// TestGitMetadataTierAgreesWithTheGitSafetyFilter pin the two halves.
 func filterGitFiles(files []*FileInfo) []*FileInfo {
 	filtered := make([]*FileInfo, 0, len(files))
 	removedCount := 0
@@ -2443,7 +2528,10 @@ func isGitRelatedPath(relPath string) bool {
 		return true
 	}
 
-	// Check for git-related files
+	// Check for git-related files. These three are in hardReservedExcludes
+	// since #398, spelled as bare names there so that list matches a basename at
+	// any depth exactly as this branch does; see that list's git metadata block.
+	// Adding a name here without adding it there puts the silent-drop bug back.
 	base := filepath.Base(normalized)
 	if base == ".gitignore" || base == ".gitattributes" || base == ".gitmodules" {
 		return true
