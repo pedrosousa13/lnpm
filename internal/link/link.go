@@ -742,14 +742,12 @@ func withNodeModulesOverride(err error) error {
 // the scope directory, and removing a directory a relink is writing into would
 // destroy that relink's work.
 //
-// os.Remove, not os.RemoveAll, is the guard that actually holds that line, and
-// the two were measured apart. Filtering dot-prefixed entries out of the count
-// changes nothing on its own: os.Remove refuses a directory that still holds
-// one, so TestUnlinkKeepsScopeHoldingATempDirectory stays green under that
-// change alone. Pair the filtered count with os.RemoveAll and the same test goes
-// red on both assertions - the temp directory and the scope around it are gone.
-// Keep both: the count says what this function is for, os.Remove is what makes
-// it true.
+// os.Remove is what holds that line: it refuses a directory that still holds
+// anything, whatever this function's own count concluded. The literal count is
+// not a second guard - the two were measured apart to establish that, and
+// TestUnlinkKeepsScopeHoldingATempDirectory carries the measurement. It is kept
+// because it states the rule where a reader looks for it, rather than leaving
+// the rule to be inferred from which removal call was picked.
 //
 // Both discarded errors fail closed, per docs/adr/0001: whether the read or the
 // removal fails, the directory survives and Unlink tidies up less than it could.
@@ -945,13 +943,20 @@ const (
 )
 
 // newTempDir creates a uniquely named directory inside parent and returns its
-// path. The name is dot-prefixed to keep it out of the namespace the packages
-// beside it occupy: ValidatePackageName refuses a leading dot on either segment
-// (#325) and says so by naming this reservation, so no name Link or LinkSource
-// accepts can collide with one of these. That is pinned by
+// path. The dot prefix is what the reservation rests on rather than a
+// consequence of it: lnpm's own entries under .lnpm and in the store are
+// dot-prefixed, these among them, and that is why ValidatePackageName refuses a
+// leading dot on either segment (#325) - its message says so, naming the
+// reservation as the reason. That is pinned by
 // TestValidatePackageNameRejectsDotPrefixedSegments, ".tmp-deadbeef" among its
 // rows. Link's retired path is this path plus retiredSuffix, so it inherits the
-// prefix and stays inside the namespace too.
+// prefix and stays inside the reservation too.
+//
+// What the reservation buys is bounded, in the way isTempEntryName's comment
+// spells out: it narrows what can arrive, and nothing revalidates a .lnpm
+// populated before it. So no package name Link or LinkSource accepts can
+// collide with one of these, but a dot-prefixed directory linked before #325
+// can still be sitting beside them.
 //
 // This exists instead of os.MkdirTemp because MkdirTemp hardcodes mode 0700,
 // whereas the linked package directory has always been created with 0755 less

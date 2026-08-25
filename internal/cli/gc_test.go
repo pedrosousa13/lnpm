@@ -235,10 +235,11 @@ func assertReclaimReported(t *testing.T, out, path, wantNote string) {
 // interrupted swap leaves holding a complete copy of the previous package.
 //
 // It also seeds a package whose name begins with a dot — the shape a project
-// linked before #325 rejected such names can still hold. lnpm reserves the
-// dot-prefixed namespace for its own temp entries, so a sweep written against
-// "is it dot-prefixed" rather than against the temp-name convention would delete
-// a real package here.
+// linked before #325 rejected such names can still hold. The reservation of the
+// dot-prefixed namespace is what a dot-prefix sweep would lean on, and it is not
+// retroactive: #325 narrowed what can arrive, but nothing revalidates a .lnpm
+// populated before it. So a sweep written against "is it dot-prefixed" rather
+// than against the temp-name convention would delete a real package here.
 func TestRunGCReclaimsOrphanedTempDirs(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 	project := seedLinkedProject(t, database, storeRoot)

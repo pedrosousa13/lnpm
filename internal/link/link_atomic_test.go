@@ -178,8 +178,9 @@ func TestLink_NoTempDirsLeftBehind(t *testing.T) {
 // What it catches, measured: filtering dot-prefixed entries out of the count
 // leaves this green, because os.Remove refuses a directory that still holds one.
 // It goes red - on both assertions below - only when that filtered count is
-// paired with os.RemoveAll. See removeDirIfEmpty's comment for why both guards
-// are kept.
+// paired with os.RemoveAll. So what it pins is os.Remove's refusal rather than
+// the count; removeDirIfEmpty's comment says why the literal count is kept
+// anyway.
 func TestUnlinkKeepsScopeHoldingATempDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")
