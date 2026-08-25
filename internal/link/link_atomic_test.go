@@ -170,52 +170,17 @@ func TestLink_NoTempDirsLeftBehind(t *testing.T) {
 	}
 }
 
-// TestListLinked_IgnoresDotPrefixedEntries asserts that in-progress or
-// crash-orphaned temp directories are never reported as linked packages.
-func TestListLinked_IgnoresDotPrefixedEntries(t *testing.T) {
-	tmpDir := t.TempDir()
-	projectPath := filepath.Join(tmpDir, "project")
-
-	lnpmDir := filepath.Join(projectPath, ".lnpm")
-	if err := os.MkdirAll(filepath.Join(lnpmDir, "real-package"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(lnpmDir, ".tmp-leftover"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	linker := New(projectPath)
-	linked, err := linker.ListLinked()
-	if err != nil {
-		t.Fatalf("ListLinked() error: %v", err)
-	}
-	if len(linked) != 1 || linked[0] != "real-package" {
-		t.Errorf("ListLinked() = %v, want [real-package]", linked)
-	}
-}
-
-// TestListLinkedSkipsTempDirsInsideAScope is the scope-level counterpart of
-// TestListLinked_IgnoresDotPrefixedEntries. A temp directory is a sibling of
-// the target it will replace, so for a scoped package it lands inside the scope
-// directory, exactly where the descent added for scoped names would surface it.
-func TestListLinkedSkipsTempDirsInsideAScope(t *testing.T) {
-	tmpDir := t.TempDir()
-	projectPath := filepath.Join(tmpDir, "project")
-
-	linker := New(projectPath)
-	linkPackage(t, linker, filepath.Join(tmpDir, "store"), "@org/my-package")
-
-	if err := os.MkdirAll(filepath.Join(projectPath, ".lnpm", "@org", ".tmp-leftover"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	assertLinked(t, linker, "@org/my-package")
-}
-
-// TestUnlinkKeepsScopeHoldingATempDirectory pins the asymmetry with ListLinked:
-// a dot-prefixed entry is filtered out of the listing, but it still counts when
-// Unlink decides whether a scope directory is empty. Deleting a scope that a
-// live relink is writing into would destroy that relink's work.
+// TestUnlinkKeepsScopeHoldingATempDirectory pins removeDirIfEmpty's literal
+// reading of emptiness: a dot-prefixed entry is not a package, but it still
+// counts when Unlink decides whether a scope directory is empty. Deleting a
+// scope that a live relink is writing into would destroy that relink's work.
+//
+// What it catches, measured: filtering dot-prefixed entries out of the count
+// leaves this green, because os.Remove refuses a directory that still holds one.
+// It goes red - on both assertions below - only when that filtered count is
+// paired with os.RemoveAll. So what it pins is os.Remove's refusal rather than
+// the count; removeDirIfEmpty's comment says why the literal count is kept
+// anyway.
 func TestUnlinkKeepsScopeHoldingATempDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")

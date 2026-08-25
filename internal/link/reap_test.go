@@ -98,12 +98,12 @@ func TestFindTempEntriesFindsScopedTempDirs(t *testing.T) {
 }
 
 // TestFindTempEntriesLeavesRealPackagesAlone is the test that matters most.
-// ListLinked hides every dot-prefixed entry, so it is tempting to treat any
-// dot-prefixed entry as reclaimable — but a .lnpm populated before #325 rejected
-// dot-prefixed names can still hold one, and a scope directory must survive a
-// temp directory inside it being reclaimed. A sweep that matches any
-// dot-prefixed entry passes every other test in this file and destroys a real
-// package here.
+// newTempDir and newTempLink dot-prefix everything they create, so it is
+// tempting to treat any dot-prefixed entry as reclaimable — but a .lnpm
+// populated before #325 rejected dot-prefixed names can still hold a real
+// package under one, and a scope directory must survive a temp directory inside
+// it being reclaimed. A sweep that matches any dot-prefixed entry passes every
+// other test in this file and destroys a real package here.
 func TestFindTempEntriesLeavesRealPackagesAlone(t *testing.T) {
 	project := t.TempDir()
 	lnpm := filepath.Join(project, ".lnpm")

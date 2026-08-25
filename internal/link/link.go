@@ -736,12 +736,18 @@ func withNodeModulesOverride(err error) error {
 
 // removeDirIfEmpty removes dir when it holds no entries at all.
 //
-// Emptiness is literal, deliberately unlike ListLinked's report: a relink
-// creates its temp directory as a sibling of its target, so a live relink of
-// another package in the same scope leaves a dot-prefixed entry in the scope
-// directory. ListLinked filters those out because they are not packages; this
-// check must not, because removing a directory a relink is writing into would
+// Emptiness is literal: a dot-prefixed entry counts like any other, even though
+// it is not a package. A relink creates its temp directory as a sibling of its
+// target, so a live relink of another package in the same scope leaves one in
+// the scope directory, and removing a directory a relink is writing into would
 // destroy that relink's work.
+//
+// os.Remove is what holds that line: it refuses a directory that still holds
+// anything, whatever this function's own count concluded. The literal count is
+// not a second guard - the two were measured apart to establish that, and
+// TestUnlinkKeepsScopeHoldingATempDirectory carries the measurement. It is kept
+// because it states the rule where a reader looks for it, rather than leaving
+// the rule to be inferred from which removal call was picked.
 //
 // Both discarded errors fail closed, per docs/adr/0001: whether the read or the
 // removal fails, the directory survives and Unlink tidies up less than it could.
@@ -927,116 +933,6 @@ func (l *Linker) IsLiveLinked(packageName string) (bool, error) {
 	return err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0, nil
 }
 
-// ListLinked returns all packages linked in the project, or refuses to list
-// anything when it cannot read the project's own .lnpm.
-//
-// This is the query that would put names from outside the project into command
-// output if anything printed it: os.ReadDir follows a .lnpm the checkout
-// replaced with a link and reports whatever the target holds. Measured against
-// the unguarded build, a project whose .lnpm pointed at a directory holding
-// pkg-a and pkg-b listed exactly those two, err = nil.
-//
-// "If anything printed it" is load-bearing. No production code calls this today
-// - the tests in this package are its only callers - so no user has ever seen
-// those names: for this query the disclosure is latent rather than live. #380
-// tracks the missing caller. The guard is here so that whoever adds one
-// inherits a query that cannot leak, rather than having to notice this on the
-// way past.
-//
-// Nothing partial is returned alongside a refusal, for the same forward-looking
-// reason: a caller that printed what it got before checking the error would
-// publish the names anyway, and that mistake is much easier to not make possible
-// than to catch in review.
-func (l *Linker) ListLinked() ([]string, error) {
-	lnpmDir := filepath.Join(l.projectPath, ".lnpm")
-	if err := requireRealDir("project's .lnpm", lnpmDir); err != nil {
-		return nil, err
-	}
-
-	entries, err := os.ReadDir(lnpmDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var packages []string
-	for _, entry := range entries {
-		// Skip dot-prefixed entries: they are in-progress or crash-orphaned
-		// relink temp directories, not linked packages. This also skips a
-		// package whose name starts with a dot. #325 made ValidatePackageName
-		// reject a leading dot on either segment, so nothing linked after it
-		// can land here — but a .lnpm populated before it is not revalidated,
-		// and such an entry stays hidden from this listing.
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
-		// A scope directory holds packages rather than being one, so descend a
-		// level and report each package under it by its full name. The same
-		// dot-prefixed skip applies here: a relink temp directory is a sibling
-		// of its target, which for a scoped package is inside the scope.
-		if strings.HasPrefix(entry.Name(), "@") {
-			scopeDir := filepath.Join(lnpmDir, entry.Name())
-			// The scope directory gets requireRealLnpmDirs' second check, and
-			// it has to be made here rather than after the IsDir test below.
-			// Measured: os.ReadDir reports a linked scope with IsDir() false, so
-			// that test already stops the descent and no name from the target
-			// ever reaches the listing - but it stops it silently, leaving a
-			// hostile checkout reading as a project with one scope fewer. Asked
-			// while the entry is still visible, the same arrangement the write
-			// paths refuse is refused here too.
-			if err := requireRealDir("package scope", scopeDir); err != nil {
-				return nil, err
-			}
-			scopeEntries, err := os.ReadDir(scopeDir)
-			if err != nil {
-				// Unlink removes a scope directory as soon as it empties, so a
-				// concurrent unlink of the last package in this scope can delete
-				// it between the two reads. Treat that as the scope simply being
-				// gone, matching how a missing .lnpm is not an error above.
-				// What "gone" looks like is platform-specific, so ask.
-				if scopeVanished(err) {
-					continue
-				}
-				return nil, err
-			}
-			for _, scoped := range scopeEntries {
-				if scoped.IsDir() && !strings.HasPrefix(scoped.Name(), ".") {
-					// A package name always uses "/", on every platform.
-					packages = append(packages, entry.Name()+"/"+scoped.Name())
-				}
-			}
-			continue
-		}
-
-		// Anything that is not a directory is not a linked package. A live link
-		// reads this way too, so the listing does not report one.
-		//
-		// This test used to sit at the top of the loop, above the scope branch.
-		// Moving it below is what lets the scope guard see a linked @org at all,
-		// and it changes one behaviour beyond that, deliberately: an entry named
-		// @something that is not a directory - a stray regular file, say - used
-		// to be skipped silently and now fails the whole listing, with
-		// requireRealDir's "is not a directory - remove it and re-run".
-		//
-		// That is the answer the write paths already give the same project, and
-		// it was measured rather than assumed: against a .lnpm holding a regular
-		// file named @stray, Link("@stray/pkg") and ListLinked() return
-		// byte-identical messages. Reporting a scope as read when it could not be
-		// read is the half worth avoiding; a non-@ entry that is not a directory
-		// is still skipped, as before, since nothing was ever descended into for
-		// one. TestListLinkedRefusesANonDirectoryScope pins both halves.
-		if !entry.IsDir() {
-			continue
-		}
-
-		packages = append(packages, entry.Name())
-	}
-	return packages, nil
-}
-
 // tempPrefix is what every name newTempDir and newTempLink produce begins with,
 // and retiredSuffix is what Link's swap appends to move the previous package
 // aside. They are constants so the sweep in reap.go matches exactly what these
@@ -1047,8 +943,20 @@ const (
 )
 
 // newTempDir creates a uniquely named directory inside parent and returns its
-// path. The name is dot-prefixed so ListLinked skips it and so the retired-path
-// scheme in Link stays inside the same namespace.
+// path. The dot prefix is what the reservation rests on rather than a
+// consequence of it: lnpm's own entries under .lnpm and in the store are
+// dot-prefixed, these among them, and that is why ValidatePackageName refuses a
+// leading dot on either segment (#325) - its message says so, naming the
+// reservation as the reason. That is pinned by
+// TestValidatePackageNameRejectsDotPrefixedSegments, ".tmp-deadbeef" among its
+// rows. Link's retired path is this path plus retiredSuffix, so it inherits the
+// prefix and stays inside the reservation too.
+//
+// What the reservation buys is bounded, in the way isTempEntryName's comment
+// spells out: it narrows what can arrive, and nothing revalidates a .lnpm
+// populated before it. So no package name Link or LinkSource accepts can
+// collide with one of these, but a dot-prefixed directory linked before #325
+// can still be sitting beside them.
 //
 // This exists instead of os.MkdirTemp because MkdirTemp hardcodes mode 0700,
 // whereas the linked package directory has always been created with 0755 less
@@ -1076,8 +984,8 @@ var createDirSymlinkFn = createDirSymlink
 
 // newTempLink creates a directory link to target under a uniquely named path
 // inside parent and returns that path. It is newTempDir's counterpart for
-// LinkSource: the name is dot-prefixed for the same reasons, so ListLinked
-// skips it and the retired-path scheme stays inside the same namespace.
+// LinkSource: the name is dot-prefixed for the same reasons, and LinkSource
+// derives its retired path from it the same way.
 func newTempLink(parent, target string) (string, error) {
 	for attempt := 0; attempt < 1000; attempt++ {
 		path := filepath.Join(parent, fmt.Sprintf("%s%x", tempPrefix, rand.Uint64()))
