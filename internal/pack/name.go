@@ -24,8 +24,10 @@ const maxPackageNameLen = 214
 //
 // It reserves two more shapes for Windows' sake, on every platform, so a name
 // published from Linux stays portable there (#326): a segment naming a DOS
-// device, and a segment ending in a dot or a space. Only one of the two is a
-// reproduced failure — see windowsReservedDeviceNames and the
+// device, and a segment ending in a dot or a space. The two are not backed
+// alike: the trailing-character rule has reproduced silent directory sharing on
+// Windows CI, while the device rule has a reproduced refusal for NUL alone and
+// reserves the other twenty-one names. See windowsReservedDeviceNames and the
 // trailing-character check in validatePackageName for what each one is and is
 // not backed by.
 //
@@ -103,16 +105,28 @@ func ValidatePackageNameForRemoval(name string) error {
 // classic set and that is what this is.
 //
 // Honest about what backs this. Windows CI run 32823717266 (windows-latest)
-// created a directory for every one of these that it tried — CON, AUX, PRN,
-// COM1, LPT1, con, con.js and NUL.txt all landed fine. **Only NUL was refused**,
-// with "The system cannot find the path specified." So this list is a
-// portability reservation drawn from Microsoft's documentation, not a fix for a
-// reproduced failure; NUL alone is the measured one. The trailing dot-or-space
-// rule below is the half with reproduced corruption behind it.
+// probed nine names with os.MkdirAll: CON, NUL, AUX, PRN, COM1, LPT1, con,
+// con.js and NUL.txt. Seven of those spell an entry in this map — CON and con
+// being one entry, since the lookup folds case — while con.js and NUL.txt are
+// extension-bearing forms that no entry here spells and that
+// isWindowsReservedDeviceName reduces to one. Every probe created an ordinary
+// directory except bare NUL, which was refused with "The system cannot find the
+// path specified."
+//
+// So one entry of the twenty-two, nul, is a measured failure. Five more — con,
+// aux, prn, com1, lpt1 — were probed and created fine, and the remaining sixteen
+// were never probed at all. The list is therefore a portability reservation
+// drawn from Microsoft's documentation rather than a fix for a reproduced
+// failure. The trailing dot-or-space rule below is the half with reproduced
+// corruption behind it.
 //
 // The reservation is not free, and the cost was accepted rather than overlooked:
-// con, aux, prn, nul and com1 are real packages published on registry.npmjs.org
-// (lpt1 is not), and this makes every one of them uninstallable through lnpm.
+// con, aux, prn, nul and com1 are real packages published on registry.npmjs.org.
+// Established by requesting each name from registry.npmjs.org on 2026-08-25 —
+// all five returned HTTP 200, and lpt1 returned 404. What that costs is not an
+// install: lnpm has no registry client and never fetches from npm. It is that a
+// local package whose package.json carries one of those names can no longer be
+// linked, stored, packed or published through lnpm.
 var windowsReservedDeviceNames = map[string]bool{
 	"con": true, "prn": true, "aux": true, "nul": true,
 	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
@@ -122,31 +136,39 @@ var windowsReservedDeviceNames = map[string]bool{
 }
 
 // isWindowsReservedDeviceName reports whether a path component names a DOS
-// device under the rule lnpm reserves against. That rule is Microsoft's
-// documented device-name resolution, which applies when a path component is
-// opened: the extension is ignored, and trailing spaces and dots are stripped
-// off the component before it is parsed. So the test here is the part before the
-// first dot, with trailing spaces trimmed off it — "con.js", "NUL.txt" and
-// "con .txt" all name the device, while "foo.con" does not, and neither does
-// "console" or "com10".
+// device under the rule lnpm reserves against: take the part before the first
+// dot, trim trailing spaces off it, and match that case-folded against the map
+// above. So "con.js", "NUL.txt" and "con .txt" are all refused here, while
+// "foo.con" is not, and neither is "console" or "com10".
 //
-// Only spaces need trimming, not dots: taking the part before the *first* dot
-// already leaves a stem that cannot end in one. Trimming dots as well would be
-// dead work, so the trim set stays narrow rather than mirroring the prose above.
+// Ignoring the extension and trimming the stem are not backed alike, and reading
+// them as one rule is what makes this look better established than it is.
 //
-// Both halves of that are read from the documentation rather than run, and the
-// one measurement in reach contradicts the first half for the operation lnpm
-// cares about. On Windows CI run 32823717266 (windows-latest), os.MkdirAll
-// created "con.js" and "NUL.txt" as ordinary directories; the only name of the
-// nine probed that it refused was bare "NUL". Extension-ignoring device
-// resolution is therefore documentation-derived and not reproduced here, and the
-// maintainer kept the rule as a portability reservation knowing that.
+// Ignoring the extension is documentation-derived. Microsoft documents the
+// device names and documents that they are resolved even when an extension is
+// appended. It is not reproduced here, and the one measurement in reach points
+// the other way for the operation lnpm cares about: on Windows CI run
+// 32823717266 (windows-latest) os.MkdirAll created "con.js" and "NUL.txt" as
+// ordinary directories, and bare "NUL" was the only one of the nine probed names
+// it refused. The maintainer kept the rule as a portability reservation knowing
+// that.
 //
-// The trailing trim is documentation-derived too — "con .txt" was never probed —
-// but it is consistent with what the same run measured from the other side:
-// "foo.", "foo ", "foo.." and "foo. " each resolved to one existing "foo", which
-// is the strip happening in a directory create. Applying it before the device
-// lookup follows from that; it was not itself executed.
+// Trimming trailing spaces off the stem is a judgement rather than a reading.
+// Nothing consulted documents what Windows resolves "con .txt" to, and that run
+// never probed a "con .txt" of any shape, so no source here says the shape is a
+// device. What Microsoft does document is the two hazards either side of it: a
+// device name resolves with an extension appended, and a name should never be
+// ended with a space or a period. Note that neither one reaches this shape on its
+// own — a component-level trailing strip does nothing to "con .txt", whose last
+// three characters are "txt". #326 reserved it anyway, on the grounds that a
+// stem-then-space-then-extension name is close enough to both documented hazards
+// that refusing it is cheaper than being wrong about it on a platform this repo
+// cannot run interactively.
+//
+// One implementation note that is neither: only spaces need trimming, not dots.
+// Taking the part before the *first* dot already leaves a stem that cannot end in
+// one, so trimming dots as well would be dead work. That one is provable from the
+// two lines below rather than from any document.
 func isWindowsReservedDeviceName(segment string) bool {
 	stem := segment
 	if dot := strings.IndexByte(stem, '.'); dot >= 0 {

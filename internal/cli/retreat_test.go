@@ -833,7 +833,9 @@ func retypeStoredField(t *testing.T, stored *db.Project, field, was string) []by
 // that aborted from inside the loop - would still end with the package's files
 // deleted, package.json still carrying file:.lnpm/my-package pointing at
 // nothing, and lnpm.lock moved aside so a re-run reports no links at all. That is
-// the state the leading-dot waiver in the loop calls worse than pointless.
+// the state the loop's removal-entry-point waiver - #325's leading dot plus
+// #326's device-name and trailing dot-or-space rules - calls worse than
+// pointless.
 //
 // The prefix assertion is what makes this pin RunRetreat's own check rather than
 // its neighbour's. Two reads in RunRetreat ask the store about this same path,

@@ -123,9 +123,11 @@ func TestValidatePackageNameAllowsDotsAwayFromSegmentStart(t *testing.T) {
 // Nine of the sixteen rows below are those probed names. The other seven — Con,
 // com1, COM9, lpt9, com1.tar.gz, @org/con and @org/nul.js — were never created
 // on Windows at all, and neither was any *file* named after a device, as opposed
-// to a directory. The rule is a portability reservation matching Microsoft's
-// documented device names, not a reproduced failure — see the comment on
-// windowsReservedDeviceNames for the cost that buys.
+// to a directory. The rule is a portability reservation, not a reproduced
+// failure: lnpm's map is the classic device set #326 specified, drawn from
+// Microsoft's documented device names but deliberately not the whole of that
+// list — see the comment on windowsReservedDeviceNames for what it leaves out
+// and for the cost the reservation buys.
 func TestValidatePackageNameRejectsWindowsReservedDeviceNames(t *testing.T) {
 	rejected := []struct {
 		name string
@@ -165,10 +167,13 @@ func TestValidatePackageNameRejectsWindowsReservedDeviceNames(t *testing.T) {
 
 // TestValidatePackageNameAllowsNamesThatMerelyResembleDeviceNames guards
 // against an over-broad reserved-name check. The rule matches the segment up to
-// its first dot against the exact device list, so a longer name that starts
-// with those letters, a number outside 1-9, or a device name sitting *after* a
-// dot are all still legal. Every row here validates against HEAD before #326 as
-// well: this exists to catch an over-broad fix, not to prove the fix.
+// its first dot, with trailing spaces trimmed off it, against the exact device
+// list — so a longer name that starts with those letters, a number outside 1-9,
+// or a device name sitting *after* a dot are all still legal. The trim narrows
+// nothing here: none of these stems ends in a space, and
+// TestValidatePackageNameDeviceRuleTrimsTheStem owns the rows that do. Every row
+// here validates against HEAD before #326 as well: this exists to catch an
+// over-broad fix, not to prove the fix.
 //
 // The com0 and lpt0 rows rest on the Windows rule, not on lnpm's map: Windows
 // numbers its serial and parallel ports from 1, so there is no COM0 or LPT0
@@ -231,17 +236,30 @@ func TestValidatePackageNameDeviceRuleDoesNotStripTheScopeAtSign(t *testing.T) {
 }
 
 // TestValidatePackageNameDeviceRuleTrimsTheStem pins the trailing-character trim
-// inside isWindowsReservedDeviceName. Win32 strips trailing spaces and dots off
-// a path component as it parses it, so "con .txt" is parsed as "con.txt" and
-// resolves to the CON device exactly like "con.js" does. Without the trim the
-// device lookup sees "con " and misses, and the trailing dot-or-space rule does
-// not cover it either, because the last character of "con .txt" is "t".
+// inside isWindowsReservedDeviceName: the device lookup sees the part before the
+// first dot with trailing spaces trimmed off it, so "con .txt" is refused as a
+// device name. Without the trim the lookup sees "con " and misses, and the
+// trailing dot-or-space rule does not cover it either, because the last
+// character of "con .txt" is "t".
 //
-// This claim is documentation-derived, not probed: Windows CI run 32823717266
-// never created a "con .txt" of any shape. It is consistent with what that run
-// did measure — "foo.", "foo ", "foo.." and "foo. " each resolved to one
-// existing "foo" — but that is the strip observed on a whole component, not on a
-// device stem, so the step from one to the other is read rather than run.
+// What the "con .txt" row is, precisely: a reservation lnpm chose, not a
+// behaviour anyone here established. Nothing consulted documents what Windows
+// resolves "con .txt" to, and Windows CI run 32823717266 never created a
+// "con .txt" of any shape. Note in particular that "Win32 strips trailing spaces
+// and dots off a path component" does not get you there — that component ends in
+// "txt", so a component-level strip leaves it untouched. What #326 had was two
+// documented hazards on either side of the shape: Microsoft documents that a
+// device name resolves with an extension appended, and separately advises never
+// ending a name with a space or a period. Reserving the shape between them was
+// judged cheaper than being wrong about it on a platform this repo cannot run
+// interactively.
+//
+// The "con." and "con " rows differ only in that their first step is measured:
+// the same run watched "foo.", "foo ", "foo.." and "foo. " each resolve to one
+// existing "foo", so a trailing dot or space coming off a whole component is a
+// behaviour, not a reading. What the stem then resolves to is the same unprobed
+// step as above — and both rows are refused by the trailing dot-or-space rule in
+// any case, which is what the next paragraph is about.
 //
 // Every row asserts the *device* rule fired, not merely that something did.
 // "con." and "con " are refused by the trailing dot-or-space rule as well, so a
@@ -251,7 +269,7 @@ func TestValidatePackageNameDeviceRuleTrimsTheStem(t *testing.T) {
 		name string
 		desc string
 	}{
-		{"con .txt", "space before the dot: Win32 parses this as con.txt"},
+		{"con .txt", "space before the dot: reserved by judgement, never probed"},
 		{"con.", "trailing dot after the device name"},
 		{"con ", "trailing space after the device name"},
 		{"nul .log", "not only con"},
