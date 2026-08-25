@@ -205,12 +205,14 @@ func RunRetreat(force bool, runInstall bool) error {
 		// through Link, which validates the name again - strictly, so a
 		// dot-named entry retreated here cannot be restored.
 		//
-		// Removal entry point, which waives only #325's leading-dot
-		// reservation. Every check above that keeps the node_modules delete
-		// inside the project still runs. Refusing a dot-named package here
-		// would be worse than pointless: the RemoveAll of .lnpm below takes its
-		// files anyway, leaving a node_modules symlink and a package.json
-		// file:.lnpm/{name} reference pointing at nothing.
+		// Removal entry point, which waives three reservations - #325's leading
+		// dot, and #326's Windows device names and trailing dot or space. None
+		// of the three is a path check. Every check above that keeps the
+		// node_modules delete inside the project still runs. Refusing a package
+		// on one of those grounds here would be worse than pointless: the
+		// RemoveAll of .lnpm below takes its files anyway, leaving a
+		// node_modules symlink and a package.json file:.lnpm/{name} reference
+		// pointing at nothing.
 		if err := pack.ValidatePackageNameForRemoval(name); err != nil {
 			fmt.Printf("  %s Refused %s: not a valid package name: %v\n", iconWarn(), name, err)
 			refused = append(refused, name)
@@ -366,9 +368,10 @@ func RunRetreat(force bool, runInstall bool) error {
 // decided - so a skipped entry would end with its files deleted, package.json
 // still carrying file:.lnpm/{name} pointing at nothing, lnpm.lock stashed so a
 // re-run reports "No lnpm links found", and reportRefused telling the user lnpm
-// had written nothing for it. That is the state the leading-dot waiver in the
-// loop calls worse than pointless, for this same reason, just above the removal
-// itself. Refusing outright leaves a project the user can still act on: the
+// had written nothing for it. That is the state the loop's removal-entry-point
+// waiver — #325's leading dot plus #326's device-name and trailing dot-or-space
+// rules, three reservations in all — calls worse than pointless, for this same
+// reason, just above the removal itself. Refusing outright leaves a project the user can still act on: the
 // error names the path and the override, and nothing has been touched.
 //
 // Why a preflight and not a check inside the loop. Both refuse, but only this
