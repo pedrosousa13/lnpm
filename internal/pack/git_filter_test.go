@@ -37,6 +37,70 @@ func TestIsGitRelatedPath(t *testing.T) {
 	}
 }
 
+// TestGitMetadataTierAgreesWithTheGitSafetyFilter is #398's first acceptance
+// criterion: .gitignore, .gitattributes and .gitmodules each sit in exactly one
+// documented tier, and the git safety filter agrees with it.
+//
+// Two claims per row. isHardReserved and isGitRelatedPath must return the same
+// verdict — a path the filter strips and the tier does not is a path refused
+// with no warning, which is the defect #398 fixes — and isDefaultExcluded must
+// say false, or the name would be on both tiers and the overridable half would
+// stop being overridable.
+//
+// The agreement is not free, and the spelling is what buys it. isGitRelatedPath
+// compares filepath.Base, so it reaches every depth. A hardReservedExcludes
+// entry goes through applyIgnorePatterns, which compares against the basename
+// only for an unanchored pattern holding no separator — so the bare names are
+// the spelling that matches, and "/.gitignore" or ".gitignore/**" would not.
+// The depth rows below are what measure that rather than leaving it to be read
+// off the pattern syntax.
+//
+// The .git directory half of isGitRelatedPath is deliberately not asked here,
+// and widening this table to cover it would be wrong rather than thorough: the
+// two genuinely disagree there. Measured on 2026-08-25,
+// isHardReserved("src/.git/config") is false while isGitRelatedPath is true,
+// because ".git" is separator-free and Base("src/.git/config") is "config". No
+// warning is owed for it either — collectFiles prunes a nested .git at the
+// directory level, where isHardReserved("src/.git") is true — so it is the
+// filter doing defence in depth, not a tier disagreement. #398 left that half
+// alone.
+func TestGitMetadataTierAgreesWithTheGitSafetyFilter(t *testing.T) {
+	paths := []string{
+		// The three names, at the root and at depth.
+		".gitignore",
+		"docs/.gitignore",
+		"a/b/c/.gitignore",
+		".gitattributes",
+		"docs/.gitattributes",
+		".gitmodules",
+		"docs/.gitmodules",
+
+		// Near misses. Neither side may claim these, and a pattern spelling
+		// that turned an entry into a prefix would fail here first.
+		"gitignore",
+		"docs/gitignore",
+		".gitignore.bak",
+		"docs/.gitmodules.bak",
+		"src/index.js",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			hard := isHardReserved(path)
+			if filtered := isGitRelatedPath(path); hard != filtered {
+				t.Errorf("isHardReserved(%q) = %v but isGitRelatedPath(%q) = %v: "+
+					"the two must agree, or a path the safety filter strips is "+
+					"refused with no warning", path, hard, path, filtered)
+			}
+			if isDefaultExcluded(path) {
+				t.Errorf("isDefaultExcluded(%q) = true: a git metadata file "+
+					"belongs to the hard-reserved tier only, and an entry on "+
+					"both tiers makes the overridable half unoverridable", path)
+			}
+		})
+	}
+}
+
 func TestFilterGitFiles(t *testing.T) {
 	files := []*FileInfo{
 		{RelPath: "package.json"},

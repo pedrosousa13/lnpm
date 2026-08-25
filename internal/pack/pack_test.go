@@ -1386,6 +1386,14 @@ func TestIsExcludedHardReservedCannotBeNegated(t *testing.T) {
 		{"negated .git file", ".git/config", []string{"!.git/config"}},
 		{"negated lockfile", "package-lock.json", []string{"!package-lock.json"}},
 		{"negated nested lockfile", "sub/yarn.lock", []string{"!sub/yarn.lock"}},
+		// The three git metadata files #398 moved onto this list. These rows
+		// are matcher-level, so filterGitFiles is nowhere near them — unlike
+		// the Pack-level git rows, which it holds up on its own. They go red
+		// the moment a name leaves hardReservedExcludes, whichever list it
+		// lands on.
+		{"negated .gitignore", ".gitignore", []string{"!.gitignore"}},
+		{"negated nested .gitattributes", "docs/.gitattributes", []string{"!docs/.gitattributes"}},
+		{"negated .gitmodules", ".gitmodules", []string{"!.gitmodules"}},
 	}
 
 	for _, tt := range tests {
@@ -2011,6 +2019,7 @@ func TestDefaultExcludesStillExclude(t *testing.T) {
 		{".git/**", []string{".git", ".git/objects/ab/cdef"}},
 		{".gitignore", []string{".gitignore", "src/.gitignore"}},
 		{".gitattributes", []string{".gitattributes", "src/.gitattributes"}},
+		{".gitmodules", []string{".gitmodules", "src/.gitmodules"}},
 		{".hg", []string{".hg", ".hg/store"}},
 		{".hg/**", []string{".hg", ".hg/store/data"}},
 		{".svn", []string{".svn", ".svn/entries"}},
@@ -3089,7 +3098,7 @@ func TestExcludedByProjectRulesConsultsNoBuiltInExcludeList(t *testing.T) {
 		{".env.local", "defaultExcludes holds .env.*"},
 		{"debug.log", "defaultExcludes holds *.log"},
 		{"pkg.tgz", "defaultExcludes holds *.tgz"},
-		{".gitattributes", "defaultExcludes holds .gitattributes"},
+		{".gitattributes", "hardReservedExcludes holds .gitattributes since #398; npm publishes it for a \"files\" glob"},
 		{".npmrc", "hardReservedExcludes holds .npmrc; this helper does not consult that list either"},
 	}
 
@@ -3296,6 +3305,16 @@ func TestPackMainCannotDefeatHardReserved(t *testing.T) {
 		// carries the full red set of each direction. Which list the four
 		// belong on is pinned by the rows there, not by this one.
 		{"lockfile", "package-lock.json"},
+		// #398. Read this row the way the header of
+		// TestPackWarnsWhenFilesNamesHardReserved asks its ".git" row to be
+		// read: it is the weak kind. filterGitFiles strips .gitmodules from the
+		// finished set whatever the mainEntry arm decided, so it stays green
+		// with the hard-reserved check disabled outright and is not evidence
+		// for that check. It is kept because #398's criteria name "main" and a
+		// criterion with no row at all is worse. The rows that do carry the
+		// tier are TestIsExcludedHardReservedCannotBeNegated's and the warning
+		// rows, neither of which the filter can reach.
+		{"gitmodules", ".gitmodules"},
 	}
 
 	for _, tt := range tests {
@@ -4211,10 +4230,10 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 // entry naming a path inside one never reaches a walked path for any per-file
 // check to notice.
 //
-// The nine rows are not equal evidence on their packed-set half. Disabling the
+// The thirteen rows are not equal evidence on their packed-set half. Disabling the
 // isHardReserved branch in collectFiles' walk outright and running this test is
-// what established which is which — not reading the code. Re-measured for #399,
-// which took the table from four rows to nine: eight red, one green.
+// what established which is which — not reading the code. Re-measured for #398,
+// which took the table from nine rows to thirteen: eight red, five green.
 //
 //   - Eight rows fail, and each fails by packing the path it named. .npmrc
 //     reported `packed: [.npmrc index.js package.json]`; node_modules and
@@ -4224,13 +4243,39 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 //     package.json]` for the npm one; and "./sub/package-lock.json" reported
 //     `packed: [index.js package.json sub/package-lock.json]`. All eight are
 //     real evidence that the check is what refuses the entry.
-//   - .git stayed green. filterGitFiles runs over the finished set in Pack and
-//     drops anything under .git whatever collectFiles decided, so this row
-//     cannot fail for the reason the test is about. It is kept because #321
-//     names .git, and it is the weakest row in the file — do not read it as
+//
+//   - Five rows stayed green, all for the same reason: .git and the four git
+//     metadata rows #398 added. filterGitFiles runs over the finished set in
+//     Pack and drops anything under .git, plus .gitignore, .gitattributes and
+//     .gitmodules by basename at any depth, whatever collectFiles decided — so
+//     none of these five can fail for the reason the packed-set half is about.
+//     They are the weakest rows in the file on that half; do not read them as
 //     covering the hard-reserved check. Nothing in the codebase strips a
 //     lockfile from the finished set a second time, so no lockfile row is weak
 //     in that way; both of their halves answer for the hard-reserved check.
+//
+//     The warning half of those five rows is a different matter and is exactly
+//     what #398 is about: before it, .gitignore and .gitattributes sat in
+//     defaultExcludes and .gitmodules in neither list, so the file was refused
+//     and nothing was said. That half is not held up by the walk either — the
+//     warning is derived from the manifest, so it stays green under this
+//     experiment too — and the revert that moves it is putting the three names
+//     back where they were, which turns the four git rows red on the warning
+//     assertion alone.
+//
+//     B-prime says the same thing from the other side and is worth running for
+//     the shape of its answer rather than for a count. Hoisting a direct
+//     "files" name above the walk's isHardReserved check —
+//     `isHardReserved(relPath) && !(useWhitelist && isIncludedDirectly(relPath,
+//     filesField))` — ships the .npmrc auth token and every lockfile named
+//     outright, fifteen rows over three tests, measured 2026-08-25. Not one of
+//     the git rows moves, here or in TestPackFilesEntryNamingAnIgnoreFile:
+//     filterGitFiles removes what the hoist selected. So no placement of the
+//     hard-reserved check can be caught by a git row's packed set, and the
+//     tier assignment for those three names is answerable only through the
+//     warning and through the list-level rows in
+//     TestGitMetadataTierAgreesWithTheGitSafetyFilter and
+//     TestIsExcludedHardReservedCannotBeNegated.
 //
 // The "./node_modules" row moved into the first group with #346. Before it,
 // matchFilesField resolved no leading "./", so the entry selected nothing
@@ -4239,7 +4284,7 @@ func TestPackEnvExampleFixtureFromIssue321(t *testing.T) {
 // that caught namesHardReserved's comment claiming such an entry is refused in
 // silence, when the basename fold makes it warn.
 //
-// The warning half is load-bearing on all nine rows, since nothing else in the
+// The warning half is load-bearing on all thirteen rows, since nothing else in the
 // codebase produces that message.
 func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 	tests := []struct {
@@ -4299,6 +4344,40 @@ func TestPackWarnsWhenFilesNamesHardReserved(t *testing.T) {
 			name:  "dot slash prefixed nested lockfile",
 			entry: "./sub/package-lock.json",
 			files: map[string]string{"sub/package-lock.json": `{"lockfileVersion": 3}`},
+		},
+		// The three git metadata files #398 moved here. They are in the
+		// header's green group, beside "dot git" and for the same reason, so
+		// read them as evidence for the warning and not for the walk's check.
+		//
+		// Four spellings across the three names, because #402's gap is a
+		// property of the spelling rather than of the name: namesHardReserved
+		// trims a leading "/" and a trailing "/" but not a leading "./", so
+		// "./node_modules/dep" answers false where "node_modules/dep" answers
+		// true. These three names do not fall into that gap and it is measured
+		// rather than assumed — all four rows warn, for the reason the four
+		// lockfiles do: filepath.Base("./docs/.gitignore") is ".gitignore",
+		// which is the pattern itself, where Base("./node_modules/dep") is
+		// "dep". The "./"-prefixed nested row is the exact spelling #402
+		// records as silent for a directory entry.
+		{
+			name:  "gitignore",
+			entry: ".gitignore",
+			files: map[string]string{".gitignore": "node_modules\n"},
+		},
+		{
+			name:  "dot slash prefixed gitattributes",
+			entry: "./.gitattributes",
+			files: map[string]string{".gitattributes": "* text=auto\n"},
+		},
+		{
+			name:  "nested gitmodules",
+			entry: "docs/.gitmodules",
+			files: map[string]string{"docs/.gitmodules": "[submodule \"vendor\"]\n"},
+		},
+		{
+			name:  "dot slash prefixed nested gitignore",
+			entry: "./docs/.gitignore",
+			files: map[string]string{"docs/.gitignore": "node_modules\n"},
 		},
 	}
 
@@ -4702,6 +4781,9 @@ func TestPackWarnsWhenIgnoreNegationNamesHardReserved(t *testing.T) {
 		{"dot git", ".npmignore", "!.git\n", true},
 		{"trailing slash", ".npmignore", "!node_modules/\n", true},
 		{"lockfile", ".npmignore", "!package-lock.json\n", true},
+		{"gitignore", ".npmignore", "!.gitignore\n", true},
+		{"gitattributes", ".npmignore", "!.gitattributes\n", true},
+		{"gitmodules", ".npmignore", "!.gitmodules\n", true},
 		{"ordinary negation", ".npmignore", "dist/\n!dist/keep.js\n", false},
 		{"overridable default", ".npmignore", "!.env.example\n", false},
 		{"nested ignore file is not read", "src/.npmignore", "!node_modules\n", false},
@@ -4731,29 +4813,44 @@ func TestPackWarnsWhenIgnoreNegationNamesHardReserved(t *testing.T) {
 	}
 }
 
-// TestPackFilesEntryNamingAnIgnoreFile pins an asymmetry #321 created among the
-// three ignore-file entries in defaultExcludes. All three became overridable,
-// but only .npmignore actually publishes when named: filterGitFiles runs over
-// the finished set and drops .gitignore and .gitattributes by basename at every
-// depth, whatever collectFiles decided.
+// TestPackFilesEntryNamingAnIgnoreFile pins where each ignore-style file sits
+// after #398, on both halves of what a maintainer sees: what is packed, and
+// whether anything was said.
 //
-// Before the split none of the three could be published at all, so the
-// difference is new and user-visible. It is pinned rather than left to a comment
-// because a comment claiming it would be exactly the kind of assertion that goes
-// stale when #398 reconciles filterGitFiles with these lists — this test is what
-// will go red and make that reconciliation deliberate.
+// #321 put .gitignore and .gitattributes in defaultExcludes, the overridable
+// tier, and that assignment was inert. filterGitFiles runs over the finished set
+// and drops both by basename at every depth, so the "files" entry selected the
+// file and the safety pass took it straight back out — and because
+// warnHardReservedFilesEntry reads hardReservedExcludes only, nothing warned.
+// The packed half of this test was green through all of that. The warn column is
+// what #398 adds, and it is the column the defect lived in.
 //
-// Publishing an .npmignore is harmless: it describes what was left out, not a
-// secret. That is why #321 left it overridable rather than hard-reserving it,
-// which would have been a membership change and out of scope.
+// .gitmodules is the third row and was in neither list, so no part of the split
+// described it at all. All three are hard-reserved now.
+//
+// .npmignore is the row that must not move: it stays in defaultExcludes,
+// publishing one is harmless — it describes what was left out, not a secret —
+// and no safety pass covers it. A change that made "ignore files" one
+// undifferentiated group again turns this row red.
+//
+// Measured on 2026-08-25, `go vet ./...` clean first and the package's own
+// result line read rather than the absence of output. Putting the three names
+// back where #398 found them — .gitignore and .gitattributes in defaultExcludes,
+// .gitmodules in neither list — turns those three rows red and leaves the
+// .npmignore row green. Each fails on the warn assertion only; the packed-set
+// assertion stays green on every row, since filterGitFiles was already dropping
+// all three. That is the defect stated as a measurement: the file was refused
+// either way, and only the silence moved.
 func TestPackFilesEntryNamingAnIgnoreFile(t *testing.T) {
 	tests := []struct {
 		entry    string
 		wantPack bool
+		wantWarn bool
 	}{
-		{".npmignore", true},
-		{".gitignore", false},
-		{".gitattributes", false},
+		{".npmignore", true, false},
+		{".gitignore", false, true},
+		{".gitattributes", false, true},
+		{".gitmodules", false, true},
 	}
 
 	for _, tt := range tests {
@@ -4770,13 +4867,24 @@ func TestPackFilesEntryNamingAnIgnoreFile(t *testing.T) {
 			})
 
 			want := []string{"index.js", "package.json"}
-			why := "filterGitFiles strips this from the finished set whatever " +
-				"the \"files\" field says"
+			why := "the git metadata files are hard-reserved, so a \"files\" " +
+				"entry naming one does not publish it"
 			if tt.wantPack {
 				want = []string{tt.entry, "index.js", "package.json"}
-				why = "no safety pass covers .npmignore, so naming it publishes it"
+				why = "no safety pass covers .npmignore and it is on the " +
+					"overridable list, so naming it publishes it"
 			}
-			assertPackedSet(t, tmpDir, want, why)
+
+			out := capturePackStdout(t, func() {
+				assertPackedSet(t, tmpDir, want, why)
+			})
+
+			gotWarn := strings.Contains(out, warnMarker()) && strings.Contains(out, tt.entry)
+			if gotWarn != tt.wantWarn {
+				t.Errorf("Pack() warned about %q = %v, want %v: a \"files\" entry "+
+					"that does not publish must say so, and one that does publish "+
+					"must not cry wolf\ngot stdout: %q", tt.entry, gotWarn, tt.wantWarn, out)
+			}
 		})
 	}
 }
