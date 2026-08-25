@@ -269,7 +269,21 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		fmt.Println()
 
 		if !dryRun {
-			if confirm("Permanently delete these orphaned link(s)?", yes) {
+			// The second sentence says what declining achieves, because "no"
+			// reads as "leave this alone" and means only "leave the rows".
+			// The validLinks arithmetic above ran before the question and
+			// subtracted these links whatever the answer is, so refusing here
+			// keeps the records and leaves the versions they name exactly as
+			// collectable as they already were.
+			//
+			// "by itself" is load-bearing: declining withholds no protection, but
+			// it is not the only thing that can protect a version. One listed here
+			// whose package keeps a live link, or whose hash a tag other than
+			// latest names, is not collectable at all, and a flat "can still be
+			// collected" would tell that user something false. The default tag is
+			// not one of those protections - pinnedByTag skips it deliberately, and
+			// says why.
+			if confirm("Permanently delete these orphaned link(s)? Declining keeps the records, but does not by itself protect the version(s) they name from collection.", yes) {
 				removeOrphanedLinks(database, linksToRemove)
 			} else {
 				// A third question rather than one shared with the two below.
