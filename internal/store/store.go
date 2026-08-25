@@ -460,10 +460,30 @@ func stripLifecycleScripts(destPath string) error {
 	}
 	output = append(output, '\n')
 
+	// The rewrite replaces the store's own package.json, and both paths that put
+	// it there already gave it the source file's mode - copyFile below, and
+	// fsutil.Reflink's chmod for the clone path - so that mode is what the temp
+	// file has to carry over the rename. A hard-coded mode here would leave the
+	// manifest wider than its siblings in the same package.
+	info, err := os.Stat(pkgJSONPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat package.json: %w", err)
+	}
+	mode := info.Mode().Perm()
+
 	// Write to temp file first
 	tmpPath := pkgJSONPath + ".tmp"
-	if err := os.WriteFile(tmpPath, output, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, output, mode); err != nil {
 		return fmt.Errorf("failed to write temp package.json: %w", err)
+	}
+
+	// WriteFile's mode argument is masked by the process umask, for the reason
+	// copyFile's comment above spells out. Set the bits explicitly. Doing it on
+	// the temp file rather than after the rename keeps the mode part of what the
+	// rename commits, so package.json is never observable at the masked mode.
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		_ = os.Remove(tmpPath) // Clean up on failure (error ignored)
+		return fmt.Errorf("failed to set temp package.json mode: %w", err)
 	}
 
 	// Atomic rename (overwrites existing)

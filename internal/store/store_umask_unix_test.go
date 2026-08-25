@@ -3,8 +3,10 @@
 package store
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -111,5 +113,109 @@ func TestStore_PreservesModeUnderRestrictiveUmask(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0755 {
 		t.Errorf("Stored file mode = %04o, want 0755 (the store disagrees with the mode it hashed and recorded)", got)
+	}
+}
+
+// TestStripLifecycleScripts_PreservesManifestMode pins the permission bits of
+// the store's package.json across the rewrite that removes prepare/prepublish.
+// The file being rewritten is the store's own copy, which whichever path put it
+// there - copyFile or the reflink clone - has already given the source's mode,
+// so the rewrite has to read that mode back rather than name a number of its
+// own. These rows call stripLifecycleScripts directly, so neither of those
+// paths runs here: the fixture is chmodded to stand in for their result.
+//
+// Each row pins the umask rather than reading the ambient one, for the reason
+// copyFile's own comment gives: a mode handed to os.WriteFile is masked, so a
+// row can be satisfied by the mask instead of by the code. Under umask 0077 a
+// hard-coded 0644 write lands at 0600 - exactly the first row's want - so an
+// ambient 0077 would make that row pass without the fix. syscall.Umask is
+// process-global, so these rows must not call t.Parallel().
+func TestStripLifecycleScripts_PreservesManifestMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		mode  os.FileMode
+		umask int
+	}{
+		{"a manifest kept private", 0600, 0022},
+		{"a mode the umask would strip", 0640, 0077},
+		{"an ordinary manifest is unchanged", 0644, 0022},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "package.json")
+			manifest := []byte(`{"name":"m","version":"1.0.0","scripts":{"prepare":"husky install","build":"tsc"}}`)
+			if err := os.WriteFile(path, manifest, 0644); err != nil {
+				t.Fatalf("Failed to write manifest: %v", err)
+			}
+			// chmod is not masked by the umask, so the fixture really is tc.mode.
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatalf("Failed to chmod manifest: %v", err)
+			}
+
+			setUmask(t, tc.umask)
+
+			if err := stripLifecycleScripts(dir); err != nil {
+				t.Fatalf("stripLifecycleScripts failed: %v", err)
+			}
+
+			// A row that never reached the rewrite would preserve the mode for
+			// the wrong reason, so confirm the rewrite happened.
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("Failed to read manifest: %v", err)
+			}
+			if strings.Contains(string(data), "prepare") {
+				t.Fatalf("prepare survived, so this row never exercised the rewrite: %s", data)
+			}
+
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Failed to stat manifest: %v", err)
+			}
+			if got := info.Mode().Perm(); got != tc.mode {
+				t.Errorf("Rewritten manifest mode = %04o, want %04o", got, tc.mode)
+			}
+		})
+	}
+}
+
+// TestStripLifecycleScripts_LeavesAManifestWithoutLifecycleScriptsAlone covers
+// the other half: a manifest with neither prepare nor prepublish returns before
+// the rewrite, so its bytes and its mode must both come out untouched. The mode
+// here is 0640 under umask 0077 so the assertion is not one the mask could
+// satisfy on its own.
+func TestStripLifecycleScripts_LeavesAManifestWithoutLifecycleScriptsAlone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	manifest := []byte(`{"name":"m","version":"1.0.0","scripts":{"build":"tsc"}}`)
+	if err := os.WriteFile(path, manifest, 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+	if err := os.Chmod(path, 0640); err != nil {
+		t.Fatalf("Failed to chmod manifest: %v", err)
+	}
+
+	setUmask(t, 0077)
+
+	if err := stripLifecycleScripts(dir); err != nil {
+		t.Fatalf("stripLifecycleScripts failed: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Failed to read manifest: %v", err)
+	}
+	if !bytes.Equal(data, manifest) {
+		t.Errorf("Manifest was rewritten:\n got %s\nwant %s", data, manifest)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Failed to stat manifest: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0640 {
+		t.Errorf("Manifest mode = %04o, want 0640", got)
 	}
 }
