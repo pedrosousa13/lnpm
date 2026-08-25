@@ -462,23 +462,29 @@ func stripLifecycleScripts(destPath string) error {
 
 	// The rewrite replaces the store's own package.json, and every path that puts
 	// it there has already given it the source file's mode, so that mode is what
-	// the temp file has to carry over the rename. A hard-coded mode here would
-	// leave the manifest wider than its siblings in the same package.
+	// the temp file has to carry over the rename. A hard-coded mode here leaves
+	// the manifest disagreeing with its siblings in the same package - in which
+	// direction depends on the umask, so neither "wider" nor "narrower" is the
+	// right word: 0644 written under umask 0022 widens a 0600 manifest, and the
+	// same write under 0077 lands at 0600 and narrows a 0644 one.
 	//
-	// "Every path" is three, and they arrive at it differently - worth naming,
-	// because a reader checking one of them will not find the same mechanism in
-	// the others. copyFile above chmods the destination explicitly.
+	// The paths that set that mode arrive at it differently, which is worth
+	// naming because a reader checking one of them will not find the same
+	// mechanism in the others. copyFile above chmods the destination explicitly.
 	// fsutil.Reflink chmods on Linux (reflink_linux.go) but not on darwin, where
 	// unix.Clonefile carries the mode across as part of the metadata it clones.
-	// reflink_other.go has no clone path at all - Reflink always fails there and
+	// reflink_other.go has no clone path at all - Reflink always fails there, and
 	// the caller falls back to copyFile.
 	//
 	// Perm() masks off setuid, setgid and sticky, which copyFile does preserve.
-	// That is deliberate rather than an oversight: pack folds only Mode.Perm()
-	// into the content hash (internal/pack/pack.go), so the permission bits are
-	// the ones this file is recorded under. It does mean the "matches its
-	// siblings" claim above is exact for the permission bits and not for the
-	// other three.
+	// The claim that supports dropping them is narrow, so state it narrowly: pack
+	// folds only Mode.Perm() into the content hash (internal/pack/pack.go), so
+	// the permission bits are the ones the *hash* is taken over. The database row
+	// is a different matter - it records the full info.Mode() from the pack walk,
+	// so after this rewrite a manifest carrying setgid disagrees with its own
+	// row. Nothing reads that back today (fileManifestHash re-hashes with Perm()),
+	// which makes it harmless rather than intended, and it is recorded here so a
+	// later reader does not have to rediscover it.
 	info, err := os.Stat(pkgJSONPath)
 	if err != nil {
 		return fmt.Errorf("failed to stat package.json: %w", err)

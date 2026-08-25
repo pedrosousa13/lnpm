@@ -136,9 +136,12 @@ func TestStore_PreservesModeUnderRestrictiveUmask(t *testing.T) {
 // two halves - read the mode back instead of hard-coding 0644, and chmod past
 // the umask - and only one row pins both:
 //
-//   - "a mode the umask would strip" (0640 under 0077) is the load-bearing row.
-//     0640 &^ 0077 is 0600, so it goes red both when the mode is hard-coded and
-//     when the explicit chmod is dropped.
+//   - "a mode the umask would strip" (0640 under 0077) is the load-bearing row,
+//     and the two halves redden it for different reasons. Hard-code the mode and
+//     it lands at 0644 &^ 0077 = 0600, red because 0600 is not 0640 - the umask
+//     is incidental there, 0644 alone already misses. Drop the explicit chmod
+//     and the correct 0640 is masked to 0640 &^ 0077 = 0600, red because the
+//     mask ate bits the code asked for. It is the only row that catches both.
 //   - "a manifest kept private" (0600 under 0022) pins the hard-coded-0644 half
 //     only. 0600 has no bits either umask strips, so dropping the chmod leaves
 //     it green.
