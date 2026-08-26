@@ -227,6 +227,17 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		//
 		// It stays a cost rather than a loss because nothing a link or a tag
 		// still reaches is removed.
+		//
+		// A pinned link is one of those links and costs this arithmetic no new
+		// rule: the count is of every link the package has, and nothing here
+		// reads a link's tag or its pin. That is why ADR-0006 could settle "gc
+		// keeps a pinned build indefinitely" without touching gc - the version a
+		// project rolled back to was never collected because gc discounted the
+		// link, but because pull moved it first. No expiry sits on top of that,
+		// deliberately: a pin is a statement that this build matters, and ageing
+		// one out would delete deliberately-preserved data on a schedule the
+		// user did not set. Reclamation stays two deliberate steps - unpin, then
+		// collect - exactly as ADR-0002 already made it for a tagged build.
 		if validLinks == 0 {
 			// Check age if specified
 			if maxAge > 0 {
