@@ -185,6 +185,13 @@ and, after the second decision above, points at a command that will refuse.
 
 ## What this ADR raises but does not settle
 
+**Amendment: all three were ratified on #300 and are implemented.** The
+`moveLinksTx` change was made; `@<version>` pins exactly as `@<hash>` does, keyed
+off `specKind`; and `lnpm add <pkg>` with no build identifier is the unpin. The
+section is left as written because it records why each was a question, and the
+constraint at its foot — `db.InsertLink` copying the pin on its in-place update —
+is the one that would have defeated the unpin silently.
+
 Three things below are not among the four decisions. They came out of checking
 those four against the code, each is argued for, and none of them has been ruled
 on. A reader must not implement them as though they had been. They are carried
