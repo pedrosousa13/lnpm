@@ -120,14 +120,60 @@ Two consequences to know about:
   bits yourself.
 - **The protection is a lock, not a repair.** An entry poisoned before the
   upgrade stays as it is, protected in its tampered state. Catching one takes a
-  check that re-reads the entry, which is separate work — and note that such a
-  check cannot simply re-hash what is on disk and compare. lnpm folds a file's
-  permission bits into its content hash, and the write bits are stripped after
-  that hash is taken, so a protected entry no longer hashes to the hash it is
-  filed under. A verifier has to put the write bits back before hashing.
+  check that re-reads the entry, which is what `lnpm doctor --verify-content`
+  does. That check compares content and only content: a file's own hash covers
+  its bytes with no mode in it, while the package-level hash folds permission
+  bits in, so every mode the comparison uses comes out of the database rather
+  than off the protected files on disk. Putting the write bits back before
+  hashing is not the answer — `mode|0222` on a file published `0444` invents a
+  `0666` the file never had.
 
 Hard links cannot cross filesystem boundaries; lnpm falls back to a copy, which
 carries the same stripped mode.
+
+### Content Addressing
+
+The store files an entry under the hash of what it holds —
+`~/.lnpm/store/{name}/{hash}` — and that hash is **xxhash: 64 bits, and not a
+cryptographic hash**. A file is hashed over its bytes alone; the package-level
+hash folds each file's path, that per-file hash and its permission bits
+together. Nothing else is covered: not size, not modification time, not
+ownership.
+
+What that gives you:
+
+- Two publishes of identical content are the same entry, and a change to any
+  packed file's bytes, path or permission bits produces a different one.
+- A stored file that no longer hashes to the value recorded for it has changed
+  since it was published. `lnpm doctor --verify-content` re-reads the store and
+  reports those files.
+
+What it does not give you:
+
+- **It is not tamper evidence.** xxhash is not collision resistant and is not
+  designed to be. A 64-bit digest puts a birthday collision at roughly 2^32
+  hashed inputs, and the package-level hash is weaker than that bound suggests:
+  its fields are concatenated with no lengths and no separators, so two
+  different file sets can be made to produce the same input to the hash with no
+  cryptanalysis at all. Someone who controls two packages can make them share
+  one store entry.
+- What the hash detects is corruption and accident — a truncated write, a bad
+  disk, an edit by someone not trying to hide it. What resists deliberate
+  tampering is the write protection described above, not the hash.
+- A collision serves *stale* content rather than chosen content. `Store()`
+  returns the existing entry when the hash is already present and never
+  overwrites or deletes one, so the bytes that were there stay there and the
+  colliding publish is the one that gets ignored.
+- One file sits outside the guarantee today. lnpm removes `prepare` and
+  `prepublish` from a stored `package.json` after the content hash has been
+  taken, so for a package defining either, the entry does not hold what its hash
+  describes, and `doctor --verify-content` reports that manifest as unchecked
+  rather than as sound. Tracked in
+  [#447](https://github.com/pedrosousa13/lnpm/issues/447).
+
+The decision to accept a non-cryptographic hash here, and the route to tamper
+evidence if it is ever needed, are recorded in
+`docs/adr/0007-the-stores-content-hash-is-a-consistency-control-not-tamper-evidence.md`.
 
 ## Reporting a Vulnerability
 
