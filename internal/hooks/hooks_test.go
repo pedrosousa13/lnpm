@@ -68,23 +68,14 @@ func readOrderLog(t *testing.T, dir string) []string {
 	return strings.Fields(string(data))
 }
 
-// TestRunPrepareFollowsNpmScriptOrder pins the sequence lnpm runs the publish
-// lifecycle scripts in. It sits outside TestRunPrepare's table on purpose: the
-// order is a parity claim about npm, not a sequence lnpm chose for itself, so a
-// reader who later edits hooks.go should find the claim and the measurement
-// behind it rather than infer both from a slice literal.
+// TestRunPrepareFollowsNpmScriptOrder pins the sequence RunPrepare runs the
+// publish lifecycle scripts in, by observing the scripts themselves rather than
+// reading publishScripts back. See publishScripts for the order, the npm
+// measurement behind it, and why getting it wrong fails silently.
 //
-// Measured against npm 11.16.0, with a package.json defining all three scripts
-// and each one appending its own name to a single log:
-//
-//	npm publish --dry-run  ->  prepublishOnly, prepack, prepare
-//	npm pack               ->  prepack, prepare
-//
-// prepack before prepare is the half that is easy to get backwards and silent
-// when wrong: a prepare script that reads what prepack produced reads stale
-// bytes, and nothing reports an error. tests/e2e re-measures npm itself
-// (TestNpmPackRunsPrepackBeforePrepare), so this pin and npm cannot drift apart
-// unnoticed.
+// It sits outside TestRunPrepare's table on purpose. The table varies which
+// scripts a package defines; this varies nothing and asserts one thing, so the
+// sequence is stated somewhere a reader editing hooks.go will find it.
 func TestRunPrepareFollowsNpmScriptOrder(t *testing.T) {
 	requireNpm(t)
 
