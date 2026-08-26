@@ -135,9 +135,13 @@ type Link struct {
 	// Tag is the channel the project follows. When that tag is moved to
 	// another version - by a publish, or by tagging a version already in the
 	// store - this link is carried across to it, so the project keeps
-	// consuming the package it asked for rather than the release it happened
-	// to be pinned to. Empty means DefaultTag, which is what every link
-	// written before tags existed meant.
+	// consuming the channel it asked for rather than being left behind on the
+	// one release that channel happened to name when it was added. Empty means
+	// DefaultTag, which is what every link written before tags existed meant.
+	//
+	// The carry is no longer unconditional: Pinned below outranks it, and a
+	// pinned link stays where it is whatever this field says. Read the two
+	// together, in that order.
 	Tag string `json:"tag,omitempty"`
 	// Pinned says the project follows no channel at all: it was linked to one
 	// build, by hash or by exact version, and only the user moves it off. It is

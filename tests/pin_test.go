@@ -409,14 +409,64 @@ func assertBuildRetained(t *testing.T, env *TestEnvironment, name string, build 
 	}
 }
 
+// pinOnlyFixture leaves projectDir pinned to a build that nothing else in the
+// store reaches, and returns that build.
+//
+// The order is what makes it that, and it is the opposite of pinnedFixture's.
+// Here the project pins the build that is current when it adds, and the package
+// is published again afterwards. So the pinned record is one `latest` has since
+// moved off, no other tag names it, and the project's link is the only thing
+// left pointing at it - which is the state a gc test has to start from if the
+// pin is to be what the run turns on.
+//
+// pinnedFixture cannot be used for that. It rolls back to a build one generation
+// behind, and a link on a superseded record is a root whether it carries a pin or
+// not, so a gc built on it passes with pinning removed entirely and proves only
+// that gc counts links - which it did before #300.
+func pinOnlyFixture(t *testing.T, env *TestEnvironment, name, projectDir string) *db.Package {
+	t.Helper()
+
+	pkgDir := env.publishPkg(name, "1.0.0", map[string]string{
+		"index.js": "module.exports = 'the build that works';",
+	})
+	first, err := env.Database.GetPackageByName(name)
+	if err != nil || first == nil {
+		t.Fatalf("Failed to read the first build of %s: %v", name, err)
+	}
+
+	env.chdir(projectDir)
+	if err := cli.RunAdd(name+"@1.0.0", false, false, false); err != nil {
+		t.Fatalf("Failed to pin %s to its current build: %v", name, err)
+	}
+	env.republish(pkgDir, name, "2.0.0", "module.exports = 'the next release';")
+
+	// Stated rather than assumed, because everything below is about this build
+	// and nothing else reaching it. A run where the publish carried the link
+	// forward has a different subject and must not be allowed to report on this
+	// one's.
+	link := linkFor(t, env, projectDir, name)
+	if !link.Pinned {
+		t.Fatalf("%s is not pinned, so nothing here is about a pin", name)
+	}
+	if link.PackageID != first.ID {
+		t.Fatalf("the link names package %d, not the pinned %d: the publish carried it forward, so the pinned build is unreachable for reasons this test is not about",
+			link.PackageID, first.ID)
+	}
+	return first
+}
+
 // TestGCKeepsAPinnedBuildWithNoTimeBound covers the third decision directly
 // rather than inferring it from reachability, which is what its acceptance
 // criterion asks for.
 //
-// gc costs a pin no new rule - its arithmetic counts every link a package has
-// and never consults a link's tag, so a pinned link is already a root - and that
-// is exactly why it is worth a test of its own: nothing in gc.go names a pin, so
-// nothing in gc.go would stop someone changing the rule that protects one.
+// "Directly" is the whole difficulty. gc costs a pin no new rule - its
+// arithmetic counts every link a package has and never consults a link's tag or
+// its pin - so a test that merely puts a link on a superseded build proves what
+// gc already did before #300. pinOnlyFixture is what makes the pin load-bearing:
+// the project pinned the build that was current, the package was published
+// again, and the pin is the only reason the link did not move with it. Take the
+// pin away and the link follows the publish, the build is reached by nothing and
+// this run collects it.
 //
 // The zero threshold is the "no time bound" half. `--older-than 0d` bypasses the
 // age filter entirely, so a freshly published orphan is collected under it; a
@@ -425,7 +475,7 @@ func TestGCKeepsAPinnedBuildWithNoTimeBound(t *testing.T) {
 	env := setupTest(t)
 
 	projectDir := env.newProject("gc-pinner")
-	_, pinned := pinnedFixture(t, env, "gc-pin-lib", projectDir)
+	pinned := pinOnlyFixture(t, env, "gc-pin-lib", projectDir)
 
 	env.chdir(projectDir)
 	if err := cli.RunGC(false, "0d", false, true); err != nil {
@@ -436,21 +486,26 @@ func TestGCKeepsAPinnedBuildWithNoTimeBound(t *testing.T) {
 }
 
 // TestGCCollectsTheBuildOnceThePinIsDropped is the counterweight: the pin is
-// what kept the build, not something else about a superseded version. Without
-// this the test above would keep passing if gc stopped collecting anything at
-// all.
+// what kept the build in the test above, not something else about a superseded
+// version. Without it that test would keep passing if gc simply stopped
+// collecting anything at all.
 //
 // Reclaiming takes two steps, as ADR-0002 already made it take two for a tagged
-// build: drop the pin, then collect.
+// build: drop the pin, then collect. The unpin here is the same command the pull
+// refusal names, run against the same starting state, so this is also what a user
+// following that advice ends up doing.
 func TestGCCollectsTheBuildOnceThePinIsDropped(t *testing.T) {
 	env := setupTest(t)
 
 	projectDir := env.newProject("gc-unpinner")
-	_, pinned := pinnedFixture(t, env, "gc-unpin-lib", projectDir)
+	pinned := pinOnlyFixture(t, env, "gc-unpin-lib", projectDir)
 
 	env.chdir(projectDir)
 	if err := cli.RunAdd("gc-unpin-lib", false, false, false); err != nil {
 		t.Fatalf("Failed to unpin: %v", err)
+	}
+	if linkFor(t, env, projectDir, "gc-unpin-lib").PackageID == pinned.ID {
+		t.Fatal("the unpin left the project on the pinned build, so nothing has been released for gc to collect")
 	}
 	if err := cli.RunGC(false, "0d", false, true); err != nil {
 		t.Fatalf("RunGC() error = %v", err)
@@ -536,6 +591,38 @@ func TestPublishDoesNotCarryAPinnedLinkForward(t *testing.T) {
 		t.Fatalf("RunGC() error = %v", err)
 	}
 	assertBuildRetained(t, env, "carry-lib", current)
+}
+
+// TestPushLeavesAPinnedConsumerAlone is bare `lnpm push`, which "what does hold"
+// cites alongside `publish --push` and which reaches the consumer list by its own
+// call rather than through publish's. Both enumerate the record just written, so
+// a project pinned to an earlier one is not a target - but they are two call
+// sites, and only one of them is covered by the test below.
+func TestPushLeavesAPinnedConsumerAlone(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("bare-push-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+	})
+	projectDir := env.newProject("bare-push-consumer")
+	env.chdir(projectDir)
+	if err := cli.RunAdd("bare-push-lib@1.0.0", false, false, false); err != nil {
+		t.Fatalf("Failed to pin the current build: %v", err)
+	}
+
+	env.chdir(pkgDir)
+	env.writeFile(filepath.Join(pkgDir, "index.js"), "module.exports = 'v2';")
+	if err := cli.RunPush(false); err != nil {
+		t.Fatalf("RunPush() error = %v", err)
+	}
+
+	linked := readBytes(t, filepath.Join(projectDir, ".lnpm", "bare-push-lib", "index.js"))
+	if !strings.Contains(string(linked), "v1") {
+		t.Errorf("the push overwrote a pinned consumer's files, which now read:\n%s", linked)
+	}
+	if got := linkFor(t, env, projectDir, "bare-push-lib"); !got.Pinned {
+		t.Error("the push cleared the pin on a consumer it was not meant to reach")
+	}
 }
 
 // TestPublishWithPushLeavesAPinnedConsumerAlone is the other half of "what does

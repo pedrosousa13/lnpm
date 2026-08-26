@@ -241,7 +241,7 @@ func RunRestore() error {
 			failed++
 			continue
 		}
-		warnIfOffTheDefaultChannel(database, name, pkg, entry.Pinned)
+		reportWhatTheRestoredLinkFollows(database, name, pkg, entry.Pinned)
 
 		fmt.Printf("%s Restored %s@%s\n", ui.IconOK(), name, pkg.Version)
 		restored++
@@ -327,7 +327,7 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 	// that happen to name this build today would be a guess about what someone
 	// asked for months ago, and a wrong one is worse than none - it would have
 	// later publishes carry the project down a channel it never chose.
-	// warnIfOffTheDefaultChannel says so out loud instead.
+	// reportWhatTheRestoredLinkFollows says so out loud instead.
 	//
 	// pushTag reads the same tags and does infer from them, which is not a
 	// contradiction: it is asking a different question. Push asks which channel
@@ -356,16 +356,30 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 	return nil
 }
 
-// warnIfOffTheDefaultChannel reports that a restored package is on a build the
-// default tag does not name. The restored link follows that tag - the third
-// thing restore cannot rebuild from the snapshot, alongside whether a package
-// was added with --link and which dependency field it was in - so the project is
-// on one build and following another. Left unsaid it would surface later and
-// elsewhere: the files are right, so nothing looks wrong until the next `lnpm
-// pull` moves the project onto whatever the default tag names.
+// reportWhatTheRestoredLinkFollows says what the link restore has just written
+// will do on the next `lnpm pull`, whenever that is not the obvious thing.
 //
-// Three quite different things put a project there, and they take different
-// advice, so which one happened is worked out rather than hedged over.
+// It says nothing at all in the ordinary case - an unpinned link on the build the
+// default tag names, which is a project that will simply stay current. The three
+// cases below are the ones where the files on disk look right and the link does
+// something the user would not predict from them, which is exactly the shape of
+// surprise that surfaces later and elsewhere.
+//
+// A restored pin is answered first, and it is the one case that does not depend
+// on which build the default tag names. The trigger is wider than the other two
+// on purpose: a pin the user cannot see is a pin that ambushes them at the next
+// pull, and it does that whether or not the pinned build happens to be current
+// today - the moment the package is published again, a project that looked
+// current stops moving. Being off the default channel is the whole point here
+// rather than a problem to resolve, so the advice is not `lnpm pull`, which would
+// be backwards and which ADR-0006 has refuse a pinned package anyway. The user is
+// told the pin came back and how to leave it.
+//
+// The other two are both a restored link that follows the default tag - the third
+// thing restore cannot rebuild from the snapshot, alongside whether a package was
+// added with --link and which dependency field it was in - sitting on a build
+// that tag does not name. They take opposite advice, so which one happened is
+// worked out rather than hedged over.
 //
 // A tag naming the restored build means the project was following that channel:
 // the snapshot cannot say so, but a build that a channel still names is one a
@@ -377,18 +391,10 @@ func recordRestoredLink(database *db.DB, cwd string, pkg *db.Package, linkType l
 // simply behind. Sending that user after a dist-tag would have them hunt for a
 // channel their package never had; what they want is `lnpm pull`.
 //
-// A restored pin takes neither piece of advice, which is why it is answered
-// first and separately. A pin is the case where being off the default channel is
-// the whole point: the project asked for this build and restore has put it back
-// on it, pinned, so nothing is unresolved. Sending that user to `lnpm pull`
-// would be exactly backwards, and since ADR-0006 it would name a command that
-// refuses. What they are told instead is that the pin came back, so the state is
-// not a surprise the next pull springs on them, and how to leave it.
-//
-// A failure to read is not reported. The warning is advice about a state restore
-// has already left the project in, and turning a failed read into a second
-// warning about the first would say less than nothing.
-func warnIfOffTheDefaultChannel(database *db.DB, name string, pkg *db.Package, pinned bool) {
+// A failure to read is not reported. This is advice about a state restore has
+// already left the project in, and turning a failed read into a second warning
+// about the first would say less than nothing.
+func reportWhatTheRestoredLinkFollows(database *db.DB, name string, pkg *db.Package, pinned bool) {
 	if pinned {
 		fmt.Printf("  %s %s was pinned to %s before the retreat and is pinned again, so 'lnpm pull' will leave it there\n",
 			ui.IconTip(), name, pkg.Version)
