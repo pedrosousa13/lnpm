@@ -32,6 +32,18 @@ func TestCompareVersions(t *testing.T) {
 		{"newer pre-release", "1.11.0", "1.12.0-rc.1", true},
 		{"current pre-release newer than latest", "1.12.0-rc.1", "1.11.0", false},
 		{"release supersedes its own rc", "1.12.0-rc.1", "1.12.0", true},
+		// A Makefile build stamps `git describe` output, which semver ranks
+		// below the tag it descends from - so the release it is already ahead
+		// of used to be reported as an available update (#283).
+		{"git describe build against the tag it descends from", "v1.12.0-53-g7079f81-dirty", "v1.12.0", false},
+		{"git describe build without a dirty marker", "v1.12.0-53-g7079f81", "v1.12.0", false},
+		{"dirty checkout of a release tag", "v1.12.0-dirty", "v1.12.0", false},
+		{"git describe build against an older release", "v1.12.0-53-g7079f81-dirty", "v1.11.0", false},
+		// Suppressing the downgrade must not suppress the check: a genuinely
+		// newer release still reaches a dev build.
+		{"git describe build against a newer release", "v1.12.0-53-g7079f81-dirty", "v1.13.0", true},
+		{"git describe build from a pre-release tag against its release", "v2.1.0-rc.1-53-g7079f81", "v2.1.0", true},
+		{"unstamped build", "dev", "v1.13.0", false},
 	}
 
 	for _, tt := range tests {
@@ -306,11 +318,37 @@ func TestCheckFreshSkipsDevBuilds(t *testing.T) {
 	})
 
 	// The dev-build skip is not a failure, so it must not surface as an error.
-	for _, v := range []string{"dev", ""} {
+	// A pseudo-version and a "+dirty" stamp are skipped for the same reason
+	// "dev" is: neither names a release to compare against.
+	for _, v := range []string{"dev", "", "v1.12.1-0.20260819061412-6d9902254937", "v1.11.0+dirty"} {
 		result, err := CheckFresh(v)
 		if result != nil || err != nil {
 			t.Errorf("CheckFresh(%q) = (%+v, %v), want (nil, nil)", v, result, err)
 		}
+	}
+}
+
+// A `git describe` build does name a release - the tag it was built from - so
+// it is the one dev build the check still runs for. Suppressing the downgrade
+// in #283 must not have suppressed the check itself.
+func TestCheckFreshRunsForGitDescribeBuilds(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v1.13.0"}`))
+	})
+
+	result, err := CheckFresh("v1.12.0-53-g7079f81-dirty")
+	if err != nil {
+		t.Fatalf("CheckFresh returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("CheckFresh returned nil for a git describe build, want the check to run")
+	}
+	if !result.UpdateAvailable || result.LatestVersion != "v1.13.0" {
+		t.Errorf("CheckFresh = %+v, want LatestVersion v1.13.0 with UpdateAvailable true", result)
+	}
+	if result.CurrentVersion != "v1.12.0-53-g7079f81-dirty" {
+		t.Errorf("CheckFresh CurrentVersion = %q, want the full stamp", result.CurrentVersion)
 	}
 }
 
@@ -413,10 +451,46 @@ func TestCheckAsyncDisabled(t *testing.T) {
 
 	t.Run("for dev builds", func(t *testing.T) {
 		t.Setenv("LNPM_NO_UPDATE_CHECK", "")
-		for _, v := range []string{"dev", ""} {
+		// A pseudo-version and a "+dirty" stamp name no release to compare
+		// against, so they are skipped for the same reason "dev" is.
+		for _, v := range []string{"dev", "", "v1.12.1-0.20260819061412-6d9902254937", "v1.11.0+dirty"} {
 			if got := drain(CheckAsync(v)); len(got) != 0 {
 				t.Errorf("CheckAsync(%q) delivered %+v, want nothing", v, got)
 			}
 		}
 	})
+}
+
+// The notice a locally built binary used to get: `git describe` stamps
+// "v1.12.0-53-g7079f81-dirty", semver ranks that below the plain v1.12.0 tag,
+// and the background check offered to overwrite the newer local build with the
+// older release tarball (#283).
+func TestCheckAsyncNeverOffersADowngradeToAGitDescribeBuild(t *testing.T) {
+	t.Setenv("LNPM_NO_UPDATE_CHECK", "")
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v1.12.0"}`))
+	})
+
+	if got := drain(CheckAsync("v1.12.0-53-g7079f81-dirty")); len(got) != 0 {
+		t.Errorf("CheckAsync delivered %+v, want nothing for a build ahead of the latest release", got)
+	}
+}
+
+// The other half of the same rule: the downgrade is suppressed, the check is
+// not, so a genuinely newer release still reaches a git describe build.
+func TestCheckAsyncStillReportsANewerReleaseToAGitDescribeBuild(t *testing.T) {
+	t.Setenv("LNPM_NO_UPDATE_CHECK", "")
+	t.Setenv("LNPM_STORE", t.TempDir())
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v1.13.0"}`))
+	})
+
+	got := drain(CheckAsync("v1.12.0-53-g7079f81-dirty"))
+	if len(got) != 1 {
+		t.Fatalf("CheckAsync delivered %d results, want 1", len(got))
+	}
+	if got[0].LatestVersion != "v1.13.0" || !got[0].UpdateAvailable {
+		t.Errorf("CheckAsync = %+v, want LatestVersion v1.13.0 with UpdateAvailable true", got[0])
+	}
 }

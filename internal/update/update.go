@@ -53,7 +53,7 @@ type Result struct {
 // as an error rather than swallowed, so the caller can tell "no update
 // available" apart from "could not check".
 func CheckFresh(currentVersion string) (*Result, error) {
-	if currentVersion == "dev" || currentVersion == "" {
+	if _, ok := Baseline(currentVersion); !ok {
 		return nil, nil
 	}
 
@@ -88,8 +88,8 @@ func CheckAsync(currentVersion string) <-chan *Result {
 		return ch
 	}
 
-	// Skip for dev builds
-	if currentVersion == "dev" || currentVersion == "" {
+	// Skip builds that name no release to compare against
+	if _, ok := Baseline(currentVersion); !ok {
 		debug.Logf("update: skipping check for dev build")
 		close(ch)
 		return ch
@@ -208,16 +208,25 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 // their installed binary still sees it. See issue #297.
 func compareVersions(current, latest string) *Result {
 	// Normalize mixed v-prefixed and bare inputs to canonical vX.Y.Z form
-	currentSemver := "v" + strings.TrimPrefix(current, "v")
 	latestSemver := "v" + strings.TrimPrefix(latest, "v")
 
-	// semver.Compare treats an invalid version as less than any valid one, so an
-	// unparseable current (e.g. a bare commit hash from an untagged build) would
-	// otherwise always look outdated.
+	// Compare the release current descends from, not current itself: a
+	// `git describe` stamp such as "v1.12.0-53-g7079f81-dirty" is a pre-release
+	// of v1.12.0 as far as semver is concerned, so comparing it verbatim
+	// reported the tag it is 53 commits ahead of as an upgrade (#283).
+	//
+	// Baseline reporting no release also stands in for the validity check this
+	// comparison used to do itself: semver.Compare treats an invalid version as
+	// less than any valid one, so an unparseable current (e.g. a bare commit
+	// hash from an untagged build) would otherwise always look outdated.
+	currentSemver, ok := Baseline(current)
+
+	// CurrentVersion keeps the full stamp rather than the baseline, so the
+	// notice still tells the user which build they are actually running.
 	result := &Result{
 		CurrentVersion:  current,
 		LatestVersion:   latest,
-		UpdateAvailable: semver.IsValid(currentSemver) && semver.Compare(latestSemver, currentSemver) > 0,
+		UpdateAvailable: ok && semver.Compare(latestSemver, currentSemver) > 0,
 	}
 
 	debug.Logf("update: current=%s latest=%s available=%v", current, latest, result.UpdateAvailable)
