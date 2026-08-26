@@ -31,6 +31,10 @@ func TestPickVersion(t *testing.T) {
 		{"v-prefixed release tag", "v1.11.0", nil, false, "v1.11.0"},
 		{"bare release tag", "1.11.0", nil, false, "1.11.0"},
 		{"pre-release tag", "v1.12.0-rc.1", nil, false, "v1.12.0-rc.1"},
+		// The Makefile stamps `git describe --tags --always --dirty`. That full
+		// string is what `lnpm --version` must print - the update check
+		// disqualifies it separately, on its own terms (#283).
+		{"git describe stamp", "v1.12.0-53-g7079f81-dirty", nil, false, "v1.12.0-53-g7079f81-dirty"},
 		{"unstamped with released module version", "dev", buildInfo("v1.11.0"), true, "v1.11.0"},
 		{"empty stamp with released module version", "", buildInfo("v1.11.0"), true, "v1.11.0"},
 		{"no build info", "dev", nil, false, "dev"},
@@ -39,6 +43,8 @@ func TestPickVersion(t *testing.T) {
 		{"pseudo-version", "dev", buildInfo("v1.12.1-0.20260819061412-6d9902254937"), true, "dev"},
 		{"dirty pseudo-version", "dev", buildInfo("v1.12.1-0.20260819061412-6d9902254937+dirty"), true, "dev"},
 		{"dirty release tag", "dev", buildInfo("v1.11.0+dirty"), true, "dev"},
+		{"git describe module version", "dev", buildInfo("v1.12.0-53-g7079f81-dirty"), true, "dev"},
+		{"dirty-marked module version", "dev", buildInfo("v1.12.0-dirty"), true, "dev"},
 		{"non-semver module version", "dev", buildInfo("garbage"), true, "dev"},
 	}
 
