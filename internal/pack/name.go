@@ -31,6 +31,12 @@ const maxPackageNameLen = 214
 // trailing-character check in validatePackageName for what each one is and is
 // not backed by.
 //
+// It rejects an uppercase letter, which npm forbids in a new package name
+// (#327). That one rests on the parity and on nothing else: "MyPkg" and "mypkg"
+// were both accepted, which was proven, and the collision that would follow on a
+// case-insensitive filesystem was reasoned rather than observed. Following npm
+// is what makes the unreproduced half moot instead of deferred.
+//
 // This validates a name at the boundary it is presented at; it revalidates
 // nothing already on disk. A .lnpm or a store populated before these rules can
 // still hold an entry that breaks one, which is why the reap sweeps stay narrow
@@ -39,29 +45,39 @@ func ValidatePackageName(name string) error {
 	return validatePackageName(name, true)
 }
 
-// ValidatePackageNameForRemoval is ValidatePackageName with three reservations
+// ValidatePackageNameForRemoval is ValidatePackageName with four reservations
 // waived and nothing else changed: the leading-dot rule (#325), the Windows
-// device-name rule and the trailing dot-or-space rule (both #326). Use it on
-// paths that take a package away; creation, publish, store and pack paths use
-// the strict form.
+// device-name rule and the trailing dot-or-space rule (both #326), and the
+// uppercase rule (#327). Use it on paths that take a package away; creation,
+// publish, store and pack paths use the strict form.
 //
-// The waiver exists because none of the three is retroactive. A project linked
+// The waiver exists because none of the four is retroactive. A project linked
 // before #325 can hold .lnpm/.hidden-pkg and a lock entry naming it; a project
 // linked on Linux before #326 can hold .lnpm/con or .lnpm/foo., which are
-// perfectly ordinary distinct directories there. Enforcing a new rule on the way
-// out would make such an entry permanent: 'lnpm remove' would refuse it and
-// 'lnpm remove --all' would skip it on every future run, with no supported way
-// to get rid of it.
+// perfectly ordinary distinct directories there; a project linked before #327
+// can hold .lnpm/MyPkg, which every filesystem lnpm runs on today treats as an
+// ordinary name. Enforcing a new rule on the way out would make such an entry
+// permanent: 'lnpm remove' would refuse it and 'lnpm remove --all' would skip it
+// on every future run, with no supported way to get rid of it.
 //
-// Waiving them cannot widen the path surface, because not one of the three ever
+// Waiving them cannot widen the path surface, because not one of the four ever
 // guarded that surface. What keeps a removal inside the project is the "."/".."
 // segment check, the absolute-path check, the backslash check and the
 // two-segment limit, and every one of those still runs here. A leading dot, a
-// device name and a trailing dot or space are all names rather than routes:
-// ".hidden-pkg", "con", "foo." and "foo " each resolve to a child of .lnpm
-// exactly like "hidden-pkg" does.
+// device name, a trailing dot or space and an uppercase letter are all names
+// rather than routes: ".hidden-pkg", "con", "foo.", "foo " and "MyPkg" each
+// resolve to a child of .lnpm exactly like "hidden-pkg" does.
 //
-// The waiver is wider than those three shapes, though, and the extra case is
+// The uppercase waiver is the easiest of the four to check, and worth checking
+// rather than asserting. The names it newly admits are exactly those that differ
+// from their own lower-cased form. No path metacharacter has a case - "/", "\\",
+// "." and ":" are each their own lower-case - so a name admitted by this waiver
+// differs from an already-admitted one only in the spelling of its letters, and
+// its segment structure is identical. "C:\\evil" is refused by the backslash
+// check exactly as "c:\\evil" is; "@Org/.." is refused by the "."/".." segment
+// check exactly as "@org/.." is.
+//
+// The waiver is wider than those four shapes, though, and the extra case is
 // worth naming because it is not obvious: "@../pkg" is rejected by the strict
 // form via the dot rule, since the "."/".." segment check sees the segment as
 // "@.." rather than "..". Removal therefore accepts it. It stays
@@ -83,8 +99,9 @@ func ValidatePackageName(name string) error {
 //     and a one-segment name skips this entirely;
 //   - writes it as a package.json dependency key, on retreat's path.
 //
-// None of those is reached by a leading dot, a device name or a trailing dot or
-// space that the other checks would not already have caught.
+// None of those is reached by a leading dot, a device name, a trailing dot or
+// space, or an uppercase letter that the other checks would not already have
+// caught.
 //
 // That is the whole claim. This is not a "safer because removal is safer"
 // argument — an unlink is a destructive operation and the traversal checks are
@@ -269,5 +286,42 @@ func validatePackageName(name string, strict bool) error {
 				p, strings.TrimRight(p, ". "))
 		}
 	}
+
+	// #327's rule is last, and it is the only one here that is a property of the
+	// whole name rather than of a segment: case does not change at a "/".
+	// Running it after the loop is also what keeps the #326 messages intact.
+	// "CON" breaks both the device rule and the case rule, and "a Windows
+	// reserved device name" is the message worth printing, because `use "con"
+	// instead` would be advice to a name lnpm also refuses.
+	if !strict {
+		return nil
+	}
+
+	// npm forbids an uppercase letter in a new package name. lnpm follows that
+	// rule rather than inventing one, and the parity is the justification: a
+	// name lnpm refuses here is a name the registry would have refused too.
+	//
+	// What #327 wanted it for is a collision nobody reproduced. "MyPkg" and
+	// "mypkg" were both accepted, which was proven by calling this function, and
+	// on a case-insensitive filesystem - macOS APFS-insensitive or HFS+, or NTFS
+	// - they resolve to one .lnpm directory while the lock file holds two rows,
+	// so unlinking one RemoveAlls the other's content. That second half was
+	// reasoned and never observed: no case-insensitive filesystem was available
+	// to the audit, and none was available where this was written. Following npm
+	// is what makes the question moot rather than deferred - if "MyPkg" is never
+	// a valid name there is no pair to collide - but the rule stands on the
+	// parity, not on the consequence.
+	//
+	// The test is "differs from its own lower-cased form", not "contains A-Z":
+	// U+00C9 and U+00E9 are the same two spellings of one name outside ASCII,
+	// and a character with no lower-case form - a digit, a CJK ideograph - is
+	// untouched by it.
+	if lower := strings.ToLower(name); lower != name {
+		return fmt.Errorf("invalid package name %q: a package name must not contain uppercase letters; "+
+			"npm forbids them in new package names and lnpm follows the same rule, so that two "+
+			"spellings of one name cannot become two entries on a case-insensitive filesystem; "+
+			"use %q instead", name, lower)
+	}
+
 	return nil
 }

@@ -378,6 +378,102 @@ func TestValidatePackageNameAllowsInteriorDotsAndSpaces(t *testing.T) {
 	}
 }
 
+// TestValidatePackageNameRejectsUppercase pins the first of #327's two rules.
+// npm forbids an uppercase letter in a new package name, and lnpm now follows
+// that rule.
+//
+// What this rests on is npm parity, not a reproduced failure. #327 reasoned that
+// "MyPkg" and "mypkg" collide to one .lnpm directory on a case-insensitive
+// filesystem — macOS APFS-insensitive or HFS+, or NTFS — while the lock file
+// holds two rows, so unlinking one destroys the other's content. That
+// consequence was never observed: no such filesystem was available to the audit,
+// to the maintainer's environment, or to this one. Only the name acceptance was
+// proven, by calling the validator.
+//
+// The rule stands anyway, and stands on the parity rather than on the
+// consequence: npm would refuse to publish any of the names below, so a package
+// that carries one is already outside what the ecosystem accepts. That the rule
+// also makes the unproven collision impossible to construct is a consequence of
+// it, not the evidence for it.
+//
+// The "MyPkg"/"mypkg" pair is the one the issue body names, and it is asserted
+// as a pair — one rejected, the other accepted — because a rule that refused
+// both would close the collision by making the name unusable, which is not what
+// npm does.
+func TestValidatePackageNameRejectsUppercase(t *testing.T) {
+	rejected := []struct {
+		name string
+		desc string
+	}{
+		{"MyPkg", "the pair from the issue body: MyPkg against mypkg"},
+		{"Lodash", "a single leading capital"},
+		{"my-PKG", "capitals away from the start"},
+		{"myPkg", "an interior capital, which is the common accident"},
+		{"@Org/my-pkg", "scoped, capital in the scope segment"},
+		{"@org/MyPkg", "scoped, capital in the name segment"},
+		// Not an ASCII rule. U+00C9 lower-cases to U+00E9, so the same two
+		// spellings of one name exist outside A-Z and are refused there too.
+		{"caf\u00c9", "a non-ASCII capital: U+00C9 lower-cases to U+00E9"},
+	}
+	for _, tc := range rejected {
+		err := ValidatePackageName(tc.name)
+		if err == nil {
+			t.Errorf("ValidatePackageName(%q) = nil, want error (%s)", tc.name, tc.desc)
+			continue
+		}
+		// Same requirement the #325 and #326 rules carry: the message has to name
+		// the offender, because it comes out of a manifest the reader did not
+		// necessarily write.
+		if !strings.Contains(err.Error(), tc.name) {
+			t.Errorf("ValidatePackageName(%q) error %q does not name the package", tc.name, err)
+		}
+		// And it has to say whose rule this is. Rejecting a name a user has been
+		// publishing for months is only defensible if the message says the
+		// registry would refuse it too.
+		if !strings.Contains(err.Error(), "npm") {
+			t.Errorf("ValidatePackageName(%q) error %q does not cite npm's rule", tc.name, err)
+		}
+	}
+
+	// The other half of the pair. Lower-casing the name is the fix the message
+	// offers, so the lower-cased form has to be accepted for the advice to be
+	// worth anything.
+	valid := []string{
+		"mypkg",
+		"lodash",
+		"my-pkg",
+		"@org/my-pkg",
+		"caf\u00e9", // U+00E9, the lower-case of the rejected row above
+	}
+	for _, name := range valid {
+		if err := ValidatePackageName(name); err != nil {
+			t.Errorf("ValidatePackageName(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
+// TestValidatePackageNameAllowsCharactersThatHaveNoCase guards the uppercase
+// rule from over-reach. It is a rule about letters that have a lower-case form,
+// so digits, punctuation and scripts without a case distinction are untouched.
+// Every row here validates against HEAD before #327 as well: this exists to
+// catch an over-broad fix, not to prove the fix.
+func TestValidatePackageNameAllowsCharactersThatHaveNoCase(t *testing.T) {
+	valid := []string{
+		"pkg2",
+		"my-pkg.v2",
+		"under_score",
+		"@my.scope/pkg-1",
+		// Scripts with no case distinction at all.
+		"日本語",
+		"שלום",
+	}
+	for _, name := range valid {
+		if err := ValidatePackageName(name); err != nil {
+			t.Errorf("ValidatePackageName(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
 // TestValidatePackageNameForRemovalAcceptsDotPrefixedNames covers the one thing
 // the removal entry point exists for. #325 made the leading dot invalid, but a
 // project linked before it can still hold .lnpm/.hidden-pkg and a lock entry for
