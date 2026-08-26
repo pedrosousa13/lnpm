@@ -117,30 +117,40 @@ per-file comparison, and nothing runs `doctor` on its own.
 ## The birthday bound is not the binding constraint
 
 64 bits puts a birthday collision at roughly 2^32 hashed inputs. That
-approximation is the number #331 was filed on, and stating it alone would
-overstate the difficulty, because the package-level hash can be collided with no
-cryptanalysis at all.
+approximation is the number #331 was filed on, and it is where a reader should
+stop treating it as the operative figure: it is an *upper* bound on the work a
+collision takes, not the expected cost, because the package-level hash can be
+collided with no cryptanalysis and no search at all. Nobody needing a collision
+here would pay 2^32 for one. That is #453.
 
 `HashFiles` writes `RelPath`, `ContentHash` and the octal permission bits into
 the hash back to back with no separators and no lengths. `ContentHash` is a
 fixed sixteen characters, but `RelPath` is arbitrary and the permission field is
 one to three octal digits, so the boundary between one file's record and the
 next is not recoverable from the stream — and a filename can be chosen to
-contain it. Constructed and run against `pack.HashFiles` while writing this: a
-package holding `zfoo` (mode 0644) and `zzbar` (mode 0755) hashes identically to
-a package holding a single file named `zfoo<zfoo's 16-hex hash>644zzbar` with
-`zzbar`'s bytes and mode. The two sets differ in file count, both are made only
-of ordinary readable files with legal names, and the hashes involved are the
-real ones the files produce.
+contain it. Constructed and run against `pack.HashFiles` while writing this, and
+reproduced independently before it was filed: a package holding `zfoo` (mode
+0644) and `zzbar` (mode 0755) hashes identically to a package holding a single
+file named `zfoo<zfoo's 16-hex hash>644zzbar` with `zzbar`'s bytes and mode. The
+two sets differ in file count, both are made only of ordinary readable files
+with legal names, and the hashes involved are the real ones the files produce.
 
-That does not change the decision. The construction still needs a publisher who
+#453 tracks it rather than this document accepting it, and it does not reopen
+this decision: the construction still needs a publisher who
 controls both packages, which is the same actor #331 already assumed, and it
 still fails in the same direction — the colliding publish is the one that gets
-ignored. It is written down so that nobody defends this hash on the strength of
-2^32, and so that anyone who does decide to harden the framing knows the
-framing, not the hash width, is the cheaper thing to fix. Length-prefixing the
-fields would close it, and would also change every existing package hash, which
-puts it in the same migration bucket as changing the function.
+ignored. What it changes is which fix anyone reaching for one should reach for.
+Frame the fields, do not widen the hash: length-prefixing `RelPath` and the
+permission field closes the whole class for a few bytes per file, where a
+cryptographic function costs a rewrite of every store.
+
+The uncomfortable part, which #453 carries and this document should not hide:
+that cheap fix is a store-format migration too. Changing the framing changes
+every package hash ever computed, which is the same blast radius — store paths,
+committed `lnpm.lock` entries, retreat snapshots — that this document just
+declined to accept for the weaker version of the same problem. So the cheap fix
+is cheap to write and not cheap to land, and the metadata-digest route below is
+the one that avoids the migration entirely.
 
 ## Content addressing already has one exception, and it is on the manifest
 
@@ -226,12 +236,15 @@ metadata-digest route above delivers the same evidence without any of that, and
 should be the first thing tried.
 
 **Length-prefix the `HashFiles` fields, keeping xxhash.** Closes the framing
-ambiguity above for the price of a fixed prefix per field. Rejected for now on
-the same grounds as changing the function and not on merit: it changes every
-package hash that has ever been computed, so it is a store migration too, and it
-buys resistance to a construction whose only actor is a publisher colliding with
-themselves. It is the cheapest real hardening on the table and belongs in the
-same conversation as the metadata digest.
+ambiguity above for the price of a fixed prefix per field, and is the right
+shape of fix — it treats the parsing hole as a parsing hole rather than throwing
+a stronger hash at it. Not decided here, because it is not this document's to
+decide: it is #453, it changes every package hash ever computed, and it
+therefore carries the same migration cost this ADR just declined to pay for a
+weaker version of the same problem. Whoever rules on #453 should read this
+document's *Why not migrate* section first, and should weigh doing it at the
+same time as any other change that has to move the hash, since the migration is
+paid once whether one thing changes or three do.
 
 **Record the decision only in the code comment, with no ADR.** Rejected because
 the comment is at the place the assumption is made and cannot carry the reason

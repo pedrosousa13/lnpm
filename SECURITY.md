@@ -152,11 +152,12 @@ What it does not give you:
 
 - **It is not tamper evidence.** xxhash is not collision resistant and is not
   designed to be. A 64-bit digest puts a birthday collision at roughly 2^32
-  hashed inputs, and the package-level hash is weaker than that bound suggests:
-  its fields are concatenated with no lengths and no separators, so two
-  different file sets can be made to produce the same input to the hash with no
-  cryptanalysis at all. Someone who controls two packages can make them share
-  one store entry.
+  hashed inputs, but that is an upper bound on the work rather than the cost to
+  expect: the package-level hash concatenates its fields with no lengths and no
+  separators, so two different file sets can be made to produce the same input
+  to the hash with no cryptanalysis and no search at all. Someone who controls
+  two packages can make them share one store entry. That framing defect is
+  tracked in [#453](https://github.com/pedrosousa13/lnpm/issues/453).
 - What the hash detects is corruption and accident — a truncated write, a bad
   disk, an edit by someone not trying to hide it. What resists deliberate
   tampering is the write protection described above, not the hash.
