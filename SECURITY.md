@@ -88,10 +88,46 @@ lnpm uses bbolt, an embedded key-value database:
 
 ### Hard Links
 
-Hard links share the same inode as the source file:
-- Changes to linked files affect all links
-- This is intentional for the sync functionality
-- Hard links cannot cross filesystem boundaries (lnpm falls back to copy)
+Hard links share the same inode as the store's file, so a linked file in
+`.lnpm/{package}` and the store entry it came from are one file with two names.
+The space saving is the reason lnpm uses them, and the shared inode is what the
+saving is.
+
+The blast radius of that sharing reaches other projects. A write inside
+`.lnpm/{package}` — a `patch-package` run, a bundler emitting into
+`node_modules`, a shell redirect — does not change one project's copy of a
+package. It changes the store entry filed under that package's content hash, so
+every project that adds that version afterwards is materialised from the
+modified bytes, and nothing re-reads the store to notice.
+
+What now prevents it: the store's canonical copy is **write protected**. Store
+content is committed with its write bits stripped, so a write into a linked file
+fails with `EACCES` instead of rewriting the entry silently. Only the write bits
+go, so an executable stays executable, and only regular files are touched, so
+directories stay writable and `lnpm gc` can still remove an entry. The
+protection holds on every materialisation path — reflink, hard link and copy all
+preserve the source's mode — and a store written by an older lnpm is protected
+once, when a command next opens it.
+
+Two consequences to know about:
+
+- **Linked packages really are read-only now.** Anything that writes into a
+  dependency under `.lnpm` starts failing. That is the point: those writes were
+  the poisoning path. `link_mode: copy` and `lnpm add --link` are the modes for
+  a dependency you need to write to, and only `--link` gives you a writable
+  tree — the copy inherits the store's stripped mode, it just does not share the
+  store's inode, so a write there cannot reach the store even if you restore the
+  bits yourself.
+- **The protection is a lock, not a repair.** An entry poisoned before the
+  upgrade stays as it is, protected in its tampered state. Catching one takes a
+  check that re-reads the entry, which is separate work — and note that such a
+  check cannot simply re-hash what is on disk and compare. lnpm folds a file's
+  permission bits into its content hash, and the write bits are stripped after
+  that hash is taken, so a protected entry no longer hashes to the hash it is
+  filed under. A verifier has to put the write bits back before hashing.
+
+Hard links cannot cross filesystem boundaries; lnpm falls back to a copy, which
+carries the same stripped mode.
 
 ## Reporting a Vulnerability
 

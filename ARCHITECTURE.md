@@ -79,7 +79,11 @@ differ between the two hops:
   filed under its content hash. The store must own a private copy of its bytes.
 - **Store → project** (`add`, `push`): reflink → hard link → parallel copy. The
   store entry is already a private copy, so sharing its inode with consumers is
-  safe as long as consumers treat linked packages as read-only.
+  safe as long as consumers treat linked packages as read-only — which they now
+  have to. Store content is committed with its write bits stripped, so a write
+  into a hard-linked file fails instead of rewriting the entry every later `add`
+  of that version would serve. All three methods preserve the source's mode, so
+  a linked package is read-only whichever one ran. See `SECURITY.md`.
 
 | Method | Speed | Platform Support | Use Case | Disk Usage |
 |--------|-------|------------------|----------|------------|
@@ -470,9 +474,11 @@ A relink reads it to decide what it can leave alone. It is compared by name, not
 by content, so relinking still repairs a file deleted from under it or replaced
 by something that is not a regular file, and still drops a stray the package does
 not list — but it does not detect a file edited in place. Finding that out means
-reading every file, which is the cost this exists to remove, and in hardlink mode
-an in-place edit has already written through the shared inode into the store
-entry itself: `lnpm gc` and a re-publish are what fix that.
+reading every file, which is the cost this exists to remove. An edit that reached
+a hard-linked file wrote through the shared inode into the store entry itself, so
+no relink ever repaired it either; the store's write protection is what stops
+that edit now, and an entry damaged before it existed still needs `lnpm gc` and a
+re-publish.
 
 The location it records is the directory as the filesystem knows it — absolute,
 with the links along the way resolved — rather than the path the command that

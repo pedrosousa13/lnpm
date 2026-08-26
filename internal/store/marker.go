@@ -117,8 +117,11 @@ func hasMarker(entryPath string) bool {
 // a directory name is no longer self-evidently valid, which is what let a
 // backfill of every unmarked entry launder a gutted one into a complete one. It
 // is not content verification: nothing here reads a single byte of the package,
-// so an entry whose files were edited in place passes. Re-hashing store content
-// is #333.
+// so an entry whose files were edited in place passes. What stops that edit is
+// #333's write protection, one layer down - a consumer's hard link into the
+// entry is read-only, so the write fails rather than landing. Re-hashing store
+// content, which is what would catch an entry edited before that protection
+// existed, is #439.
 func CheckComplete(entryPath string) error {
 	return checkEntry(entryPath, "")
 }

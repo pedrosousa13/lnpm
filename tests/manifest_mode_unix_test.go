@@ -55,6 +55,16 @@ func assertMode(t *testing.T, path string, want os.FileMode, where string) {
 // TestStripLifecycleScripts_PreservesManifestMode's "a mode the umask would
 // strip" row (0640 under 0077) in internal/store. This test's own job is the
 // reach - that the mode survives all three stages - not the mechanism.
+//
+// The mode wanted changes at the store, from the author's 0600 to 0400, and
+// stays 0400 in the consumer. That is #333's write protection: the store strips
+// the write bits from an entry's content so a consumer's in-place write cannot
+// reach the canonical copy through the hard link it shares with it, and the
+// consumer copy inherits the stripped mode because every materialisation path
+// preserves the source's. Everything else about the mode still has to survive,
+// which is what keeps the two 0400 assertions worth making - a manifest kept
+// private by its author is not to come out group- or world-readable at either
+// step.
 func TestPublishPreservesManifestModeThroughStoreAndConsumer(t *testing.T) {
 	setUmask(t, 0022)
 
@@ -86,13 +96,13 @@ func TestPublishPreservesManifestModeThroughStoreAndConsumer(t *testing.T) {
 	// The rewrite is the step under test, so confirm it actually ran.
 	env.AssertScriptMissing(pkg.StorePath, "private-manifest-pkg", "prepare")
 
-	assertMode(t, filepath.Join(pkg.StorePath, "package.json"), 0600, "store manifest")
-	assertMode(t, filepath.Join(pkg.StorePath, "index.js"), 0600, "store sibling")
+	assertMode(t, filepath.Join(pkg.StorePath, "package.json"), 0400, "store manifest")
+	assertMode(t, filepath.Join(pkg.StorePath, "index.js"), 0400, "store sibling")
 
 	projectDir := env.newProject("private-manifest-project")
 	env.addPkg(projectDir, "private-manifest-pkg", false, false)
 
 	linked := filepath.Join(projectDir, ".lnpm", "private-manifest-pkg")
-	assertMode(t, filepath.Join(linked, "package.json"), 0600, "consumer manifest")
-	assertMode(t, filepath.Join(linked, "index.js"), 0600, "consumer sibling")
+	assertMode(t, filepath.Join(linked, "package.json"), 0400, "consumer manifest")
+	assertMode(t, filepath.Join(linked, "index.js"), 0400, "consumer sibling")
 }

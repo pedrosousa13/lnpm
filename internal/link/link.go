@@ -66,10 +66,13 @@ func New(projectPath string) *Linker {
 //
 // Files are materialised by reflink, hard link or copy, whichever the platform
 // allows. Where a hard link is used the linked file shares an inode with the
-// store entry, so a consumer that edits it in place writes back into the store
-// and corrupts that entry for every other consumer. Propagation is therefore
-// one-way by design: linked packages are read-only from the consumer's side,
-// and `push` is the supported way to update them.
+// store entry, so a consumer that edited it in place used to write back into the
+// store and corrupt that entry for every other consumer. The store's content is
+// write protected against exactly that (#333), and because all three
+// materialisation paths preserve the source's mode, what lands in
+// .lnpm/{package} is read-only whichever one ran. Propagation is one-way by
+// design - `push` is the supported way to update a linked package - and it is
+// now enforced rather than asked for.
 //
 // Only the files that differ from the last link are materialised. The rest are
 // hard linked across from the package already in place, one syscall each and no
@@ -82,10 +85,11 @@ func New(projectPath string) *Linker {
 // no longer a regular file, is materialised again out of the store, and a stray
 // the package does not list is dropped, but a file whose bytes have been edited
 // in place is left as it is and carried forward. Reading every file to find that
-// out is precisely the cost this exists to remove, and in hardlink mode an
-// in-place edit has already written through the shared inode into the store
-// entry itself, so no relink ever repaired it: `lnpm gc` and a re-publish are
-// what fix that.
+// out is precisely the cost this exists to remove. An edit that reached a
+// hardlinked file rewrote the store entry through the shared inode, so no relink
+// ever repaired it either; the store's write protection (#333) is what stops
+// that edit, and an entry damaged before it existed still needs `lnpm gc` and a
+// re-publish.
 //
 // The manifest is kept at .lnpm-linked inside the linked package, and that name
 // is the linker's. A package that ships a file called .lnpm-linked at its root
