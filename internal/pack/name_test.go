@@ -628,6 +628,55 @@ func TestNormalizePackageName(t *testing.T) {
 	}
 }
 
+// TestNormalizePackageNameIsCanonicalNotCompatibility is the guard the waiver
+// argument on ValidatePackageNameForRemoval asks for by name, and it exists
+// because that argument depends on a property of NFC that nothing in the code
+// would otherwise state: canonical composition never derives an ASCII character
+// from a non-ASCII one, so "differs from its own NFC form" cannot be the
+// difference between a name and a route.
+//
+// Compatibility composition does derive them. Each row below is a character NFC
+// leaves alone and NFKC turns into a path metacharacter, so swapping the
+// normaliser turns every row red - which is the point. A comment cannot fail a
+// build; this can.
+//
+// The rows are the measured set, not a guessed one. U+2044 FRACTION SLASH is
+// deliberately absent: it is the character the intuition reaches for first, and
+// it has no compatibility decomposition at all, so a row for it would pass under
+// both forms and quietly weaken the guard.
+func TestNormalizePackageNameIsCanonicalNotCompatibility(t *testing.T) {
+	unchangedByNFC := []struct {
+		in   string
+		nfkc string
+		desc string
+	}{
+		{"\uff0f", "/", "U+FF0F FULLWIDTH SOLIDUS"},
+		{"\uff3c", "\\", "U+FF3C FULLWIDTH REVERSE SOLIDUS"},
+		{"\uff0e", ".", "U+FF0E FULLWIDTH FULL STOP"},
+		{"\u2025", "..", "U+2025 TWO DOT LEADER"},
+	}
+	for _, tc := range unchangedByNFC {
+		if got := NormalizePackageName(tc.in); got != tc.in {
+			t.Errorf("NormalizePackageName(%s) = %q, want it unchanged: the removal waiver's "+
+				"path-surface argument holds only while the normaliser is NFC, and NFKC maps this to %q",
+				tc.desc, got, tc.nfkc)
+		}
+	}
+
+	// And the same statement at the level the argument is actually about: a name
+	// built from those characters is one ordinary segment today, and would read
+	// as a traversal if the normaliser ever composed it by compatibility.
+	for _, name := range []string{
+		"\uff0e\uff0e\uff0fevil", // "../evil" under NFKC
+		"\u2025\uff0fevil",       // likewise, with one code point for the two dots
+	} {
+		if err := ValidatePackageNameForRemoval(name); err != nil {
+			t.Errorf("ValidatePackageNameForRemoval(%q) = %v, want nil: these are ordinary "+
+				"letters under NFC and the test's value is that they stay so", name, err)
+		}
+	}
+}
+
 // TestValidatePackageNameForRemovalAcceptsUppercaseAndNonNFCNames is the same
 // argument as the two waivers above it, for #327's two rules. Neither is
 // retroactive and neither is a path-safety rule.

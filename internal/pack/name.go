@@ -101,6 +101,40 @@ func ValidatePackageName(name string) error {
 // the backslash check exactly as "c:\evil" is, and "@Org/.." is refused by the
 // "."/".." segment check exactly as "@org/.." is.
 //
+// What that last paragraph depends on is worth stating separately from what it
+// concludes, because the dependency is invisible and the conclusion is not. It
+// holds because the normal form in question is NFC. Canonical composition never
+// derives an ASCII character from a non-ASCII one, so "differs from its own NFC
+// form" cannot be the difference between a name and a route.
+//
+// NFKC does derive them, and a maintainer reaching for it - it matches more
+// spellings, which sounds like the stricter choice - would falsify the premise
+// without touching a line of this argument. Measured against
+// golang.org/x/text/unicode/norm rather than assumed:
+//
+//	U+FF0F FULLWIDTH SOLIDUS         NFC unchanged, NFKC "/"
+//	U+FF3C FULLWIDTH REVERSE SOLIDUS NFC unchanged, NFKC "\"
+//	U+FF0E FULLWIDTH FULL STOP       NFC unchanged, NFKC "."
+//	U+2025 TWO DOT LEADER            NFC unchanged, NFKC ".."
+//
+// So under NFKC a name's normal form can hold "/", "\" and "..", and one code
+// point can become a whole ".." segment. Note that U+2044 FRACTION SLASH is NOT
+// one of these - it has no compatibility decomposition and NFKC leaves it alone,
+// which is worth recording because it is the character everyone reaches for
+// first and putting it in this list would make the list wrong.
+//
+// The conclusion would survive the change, but only by accident and only for a
+// reason nothing above says out loud: no caller composes a name before joining
+// it into a path, so what reaches filepath.Join is the raw name, and to the
+// filesystem U+FF0F is an ordinary character in one segment. A name spelled
+// U+FF0E U+FF0E U+FF0F "evil", and one spelled U+2025 U+FF0F "evil", are both
+// accepted by this function today and are inert for exactly that reason - run
+// and confirmed, and both would read as "../evil" under NFKC. Change the
+// normaliser and that unstated assumption becomes the only thing holding, which
+// is a worse place to be than where this comment leaves it. If it is ever
+// changed, this paragraph is what has to be re-checked first.
+// TestNormalizePackageNameIsCanonicalNotCompatibility fails if it is.
+//
 // The waiver is wider than those five shapes, though, and the extra case is
 // worth naming because it is not obvious: "@../pkg" is rejected by the strict
 // form via the dot rule, since the "."/".." segment check sees the segment as
