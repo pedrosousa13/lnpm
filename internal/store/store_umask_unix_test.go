@@ -57,10 +57,15 @@ func TestCopyFile_PreservesModeUnderRestrictiveUmask(t *testing.T) {
 }
 
 // TestStore_PreservesModeUnderRestrictiveUmask is the end-to-end acceptance
-// check: a 0755 file stored under umask 0077 must be executable in the store,
-// because both the content hash and the database record 0755. Store tries a
-// reflink clone before falling back to a copy, so it logs which one ran — a
-// passing run only covers the path it actually took.
+// check: a 0755 file stored under umask 0077 must still be executable in the
+// store. Store tries a reflink clone before falling back to a copy, so it logs
+// which one ran — a passing run only covers the path it actually took.
+//
+// The mode wanted is 0555 rather than the 0755 the hash and the database
+// record, because Store takes the write bits off an entry's content on the way
+// in (#333). The two failures this separates are still distinct: the umask
+// deciding the mode lands the file at 0700 and then 0500, so the execute bit —
+// which is the bit this test exists for — is missing either way it goes wrong.
 func TestStore_PreservesModeUnderRestrictiveUmask(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("LNPM_STORE", filepath.Join(tmpDir, "store"))
@@ -111,8 +116,8 @@ func TestStore_PreservesModeUnderRestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to stat stored file: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0755 {
-		t.Errorf("Stored file mode = %04o, want 0755 (the store disagrees with the mode it hashed and recorded)", got)
+	if got := info.Mode().Perm(); got != 0555 {
+		t.Errorf("Stored file mode = %04o, want 0555 (the umask masked the mode instead of the store setting it, or the protection took more than the write bits)", got)
 	}
 }
 

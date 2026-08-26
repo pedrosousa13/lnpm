@@ -140,10 +140,17 @@ func TestStore_PreservesExecutablePermissions(t *testing.T) {
 }
 
 // TestStore_PreservesModeUmaskWouldStrip tests that the stored file carries the
-// exact permission bits of the source, even bits the process umask would mask
-// out of an open(2) mode argument. pack folds Mode.Perm() into the content hash,
-// so a store entry with different bits no longer hashes to the hash it is filed
-// under.
+// permission bits of the source, even bits the process umask would mask out of
+// an open(2) mode argument — all of them except the write bits, which Store
+// takes off an entry's content deliberately (#333).
+//
+// That exception is what limits this test, and the limit is what the skip below
+// is about. Under a umask that masks only write bits — 0022 and 0002, which is
+// most machines — the protection removes exactly the bits the umask would have,
+// and a store that let the umask decide is no longer distinguishable here from
+// one that did not. store_umask_unix_test.go's twin forces 0077 and keeps the
+// discrimination; this one runs under whatever umask the machine has and says
+// so rather than passing on a comparison that cannot fail.
 func TestStore_PreservesModeUmaskWouldStrip(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping on Windows - permission handling differs")
@@ -161,8 +168,8 @@ func TestStore_PreservesModeUmaskWouldStrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to stat probe file: %v", err)
 	}
-	if probeInfo.Mode().Perm() == 0666 {
-		t.Skip("Skipping - process umask masks nothing, so a umask regression cannot be detected here")
+	if masked := os.FileMode(0666) &^ probeInfo.Mode().Perm(); masked&^writeBits == 0 {
+		t.Skip("Skipping - the process umask masks nothing the write protection leaves behind, so a umask regression cannot be detected here")
 	}
 
 	tmpDir := t.TempDir()
@@ -207,8 +214,8 @@ func TestStore_PreservesModeUmaskWouldStrip(t *testing.T) {
 		t.Fatalf("Failed to stat stored file: %v", err)
 	}
 
-	if got := info.Mode().Perm(); got != 0666 {
-		t.Errorf("Stored mode %o, want %o - the umask masked the mode the hash was computed from", got, 0666)
+	if got := info.Mode().Perm(); got != 0666&^writeBits {
+		t.Errorf("Stored mode %o, want %o - the umask masked the mode instead of the store setting it", got, 0666&^writeBits)
 	}
 }
 

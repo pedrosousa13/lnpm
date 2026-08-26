@@ -61,6 +61,12 @@ func New() (*Store, error) {
 		return nil, err
 	}
 
+	// A store written before entries were protected on the way in holds writable
+	// content, and the consumer hard links into it are writable with it. It is
+	// protected once, here, after the backfill so the markers that pass writes
+	// exist to be left out of the protection.
+	protectExistingEntries(storePath)
+
 	return &Store{basePath: storePath}, nil
 }
 
@@ -270,6 +276,16 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	// when installed as file: dependency (matches yalc behavior)
 	if err := stripLifecycleScripts(destPath); err != nil {
 		return "", fmt.Errorf("failed to strip lifecycle scripts: %w", err)
+	}
+
+	// Take the write bits off the content before it is committed, so the entry
+	// is never observable at a mode a consumer could write through. writeBits'
+	// comment carries the reasoning; what matters to the order here is that this
+	// runs after stripLifecycleScripts, which rewrites package.json by renaming
+	// a temp file onto it, and before writeMarker, whose file the protection
+	// leaves out and which is easier to keep out by not having written it yet.
+	if err := protectTree(destPath); err != nil {
+		return "", fmt.Errorf("failed to write protect store content: %w", err)
 	}
 
 	// Mark the entry complete as the last file written inside the temp dir, so
