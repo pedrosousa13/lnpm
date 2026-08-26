@@ -91,9 +91,11 @@ than the store's own passes that is expected to find one.
 The "fails toward stale" claim is load-bearing, so here is the path, read from
 the code rather than assumed.
 
-`Store()`'s first act after validating the package name is
-`if s.CheckComplete(name, hash) == nil { return finalPath, nil }`. On a hash the
-store already holds it returns the existing directory and writes nothing. Nothing further down deletes or overwrites an entry either:
+`Store()` asks whether the entry is already there before it writes anything. It
+validates the package name, builds `finalPath` from the name and the hash, and
+returns that path untouched if `CheckComplete(name, hash)` reports the entry
+complete — so on a hash the store already holds, nothing is written and nothing
+is compared. Nothing further down deletes or overwrites an entry either:
 `finalize` never removes `finalPath`, and on a losing rename it re-checks
 completeness and treats the destination as authoritative. So a second publish
 that collided with a first would leave the first publish's bytes exactly where
@@ -136,9 +138,10 @@ two sets differ in file count, both are made only of ordinary readable files
 with legal names, and the hashes involved are the real ones the files produce.
 
 #453 tracks it rather than this document accepting it, and it does not reopen
-this decision: the construction still needs a publisher who
-controls both packages, which is the same actor #331 already assumed, and it
-still fails in the same direction — the colliding publish is the one that gets
+this decision: the construction still needs a publisher who controls the package
+name — an entry is filed at `{name}/{hash}` and `findPackageByHashTx` matches on
+name and hash together, so two names never share an entry or a record — which is
+the same actor #331 already assumed, and it still fails in the same direction — the colliding publish is the one that gets
 ignored. What it changes is which fix anyone reaching for one should reach for.
 Frame the fields, do not widen the hash: length-prefixing `RelPath` and the
 permission field closes the whole class for a few bytes per file, where a
