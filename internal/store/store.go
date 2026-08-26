@@ -113,7 +113,15 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 	finalPath := s.PackagePath(name, hash)
 	debug.Logf("store: storing %s hash=%s files=%d dest=%s", name, shortHash(hash), len(files), finalPath)
 
-	// Same hash = same content, skip if already exists (race-safe)
+	// Same hash = same content, skip if already exists (race-safe).
+	//
+	// That equation is a consistency control and not tamper evidence, and this
+	// is the line it is made at: the hash is a 64-bit xxhash, so two different
+	// publishes of one name can be made to meet here — a different name cannot,
+	// since finalPath is keyed by both. ADR-0007 records why that is accepted
+	// and what it costs — in short, this return keeps the bytes already stored,
+	// so a collision serves stale content rather than admitting chosen content,
+	// and what actually resists tampering is the write protection below (#333).
 	if s.CheckComplete(name, hash) == nil {
 		debug.Logf("store: package already exists at %s, skipping", finalPath)
 		return finalPath, nil

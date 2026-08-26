@@ -47,13 +47,22 @@ import (
 // and still runs from node_modules/.bin.
 //
 // One invariant this deliberately breaks, recorded here because the code cannot
-// state it anywhere else: pack folds Mode.Perm() into the content hash, and the
-// strip happens after that hash was computed, so a protected entry no longer
-// hashes to the hash it is filed under. Nothing re-derives that hash from the
-// store's own modes today — publish and push hash the source, and the manifest
-// checks in internal/cli use the modes recorded in the database — but a check
-// that re-hashes store content has to add the write bits back before it does.
-// That is #439's constraint, not this one's.
+// state it anywhere else: pack folds Mode.Perm() into the package-level content
+// hash, and the strip happens after that hash was computed, so a protected entry
+// no longer hashes to the hash it is filed under. Nothing re-derives that hash
+// from the store's own modes — publish and push hash the source, and the manifest
+// checks in internal/cli use the modes recorded in the database.
+//
+// #439's integrity check lives with that rather than working around it, and the
+// workaround this comment used to prescribe — put the write bits back, then
+// re-hash — is wrong: mode|0222 on a file published 0444 invents a 0666 the file
+// never had, so it faults healthy entries instead of repairing the comparison.
+// What that check compares is content and only content. pack.HashFile is xxhash
+// over the bytes with no mode in it, so a stored file can be re-read and matched
+// against the hash the database recorded for it; the package-level hash is
+// reproduced from the database rows rather than from disk, which is what keeps
+// every mode in the comparison on the side of the split this strip does not
+// touch. ADR-0007 records what that check does and does not establish.
 const writeBits = 0222
 
 // protectTree strips the write bits from every regular file under root.
