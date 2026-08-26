@@ -223,6 +223,101 @@ func TestRunDoctorPassesAStoreOfCommittedEntries(t *testing.T) {
 	}
 }
 
+// TestRunDoctorReportsAStoredNameTheCurrentRulesReject is #327's "do not leave
+// a user with an unusable store and no message" criterion, and the answer to it
+// is a report rather than a migration.
+//
+// #327 made uppercase invalid and made NFC the stored spelling of a name. A
+// store published before it can hold "MyPkg", and there is nothing wrong with
+// that directory: it is exactly what lnpm wrote. What is wrong is that no path
+// which creates anything will touch it again - 'lnpm add' and 'lnpm pull' both
+// validate strictly - so the entry is dead weight the user has no reason to
+// suspect. doctor is where lnpm answers questions about its own state, so this
+// is where the entry is named.
+//
+// Migration was the alternative and was rejected. Renaming "MyPkg" to "mypkg"
+// is a rename that differs only in case, which is precisely the operation the
+// case-insensitive filesystems #327 is about handle unpredictably, and if
+// "mypkg" already exists the rename destroys one of the two - the very failure
+// the issue was filed over, performed by lnpm. The lock files that name the old
+// spelling are not lnpm's to find either: they live in whichever projects
+// linked the package, and the name is written into their package.json as
+// file:.lnpm/{name} on top of that.
+//
+// The report is a warning and not an issue on purpose. Nothing is corrupt,
+// 'lnpm remove' still accepts the old name, and the fix is a rename in source
+// that only the package's author can make - which is what doctor's warnings are
+// for.
+func TestRunDoctorReportsAStoredNameTheCurrentRulesReject(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	seedVerifiableEntry(t, dir, "MyPkg", "1.0.0", map[string]string{"index.js": "module.exports = 1;"})
+
+	out, err := runDoctor(t, false)
+
+	if !strings.Contains(out, "MyPkg") {
+		t.Errorf("RunDoctor did not name the stored package, output was:\n%s", out)
+	}
+	// The validator's own message, so the report says which rule the name
+	// breaks rather than only that it breaks one.
+	if !strings.Contains(out, "uppercase") {
+		t.Errorf("RunDoctor did not say why the name is refused, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "Fix: Rename") {
+		t.Errorf("RunDoctor named the package without a remedy, output was:\n%s", out)
+	}
+	// A nil return is what says the finding was counted as a warning rather
+	// than an issue: doctor returns an error when, and only when, it counted an
+	// issue.
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a store whose only fault is a legacy name, want nil", err)
+	}
+}
+
+// TestRunDoctorReportsAStoredNameThatIsNotComposed is the same check for
+// #327's other rule, and it is the one a reader cannot verify by eye: the
+// directory below is named "cafe"+U+0301, which renders exactly like the
+// composed spelling lnpm would write today.
+//
+// No case-insensitive or normalizing filesystem was available to write this, and
+// none is needed: the entry is an ordinary directory on ext4 and the finding is
+// a name comparison, not a filesystem behaviour.
+func TestRunDoctorReportsAStoredNameThatIsNotComposed(t *testing.T) {
+	const nfd = "cafe\u0301" // "cafe" + COMBINING ACUTE ACCENT
+
+	dir := newDoctorStoreConfig(t)
+	seedVerifiableEntry(t, dir, nfd, "1.0.0", map[string]string{"index.js": "module.exports = 1;"})
+
+	out, err := runDoctor(t, false)
+
+	if !strings.Contains(out, nfd) {
+		t.Errorf("RunDoctor did not name the stored package, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "NFC") {
+		t.Errorf("RunDoctor did not say why the name is refused, output was:\n%s", out)
+	}
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a store whose only fault is a legacy name, want nil", err)
+	}
+}
+
+// TestRunDoctorDoesNotFaultAStoredNameTheCurrentRulesAccept is the other
+// direction, and it is what stops the check above being an alarm every store
+// trips. A name lnpm would write today is not reported, and doctor still passes
+// clean.
+func TestRunDoctorDoesNotFaultAStoredNameTheCurrentRulesAccept(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	seedVerifiableEntry(t, dir, "left-pad", "1.0.0", map[string]string{"index.js": "module.exports = 1;"})
+
+	out, err := runDoctor(t, false)
+
+	if strings.Contains(out, "no longer accepts") {
+		t.Errorf("RunDoctor faulted an ordinary package name, output was:\n%s", out)
+	}
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a healthy store, want nil", err)
+	}
+}
+
 // seedUnmarkedEntry writes a store entry with content and no completeness
 // marker - the shape an interrupted gc leaves, and the shape every entry had
 // before markers existed - and returns its path.
