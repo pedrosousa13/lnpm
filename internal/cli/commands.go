@@ -285,6 +285,35 @@ Examples:
 	},
 }
 
+// forgetCmd drops the record of a project whose filesystem is gone for good
+var forgetCmd = &cobra.Command{
+	Use:   "forget <project-path>",
+	Short: "Drop the record of a project whose filesystem is gone for good",
+	Long: `Remove a project and its links from the database.
+
+gc will not collect a version whose only consumer is on a filesystem that is not
+mounted where it was recorded: an unplugged drive and a deleted directory look
+the same to lnpm, so it declines to judge rather than delete a package that is
+still in use. That is the right answer for a drive you are going to plug back
+in, and it leaves the space unreclaimable when you are not. This is how you say
+you are not.
+
+It removes the record and stops there. The versions those links named become
+reachable by nothing, and the next 'lnpm gc' collects the ones no other project
+consumes - under gc's own confirmation, so nothing leaves the store here.
+
+A project still on disk is refused. Run 'lnpm retreat' inside it instead.
+
+Examples:
+  lnpm forget /mnt/external/myproject         # Ask before dropping the record
+  lnpm forget /mnt/external/myproject --yes   # Drop it without a confirmation prompt`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		yes, _ := cmd.Flags().GetBool("yes")
+		return RunForget(args[0], yes)
+	},
+}
+
 // doctorCmd diagnoses and fixes issues
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
@@ -429,6 +458,9 @@ func init() {
 	// Register tag command
 	rootCmd.AddCommand(tagCmd)
 
+	// Register forget command
+	rootCmd.AddCommand(forgetCmd)
+
 	// tag flags
 	tagCmd.Flags().Bool("delete", false, "Remove the tag instead of setting it")
 
@@ -468,6 +500,9 @@ func init() {
 	gcCmd.Flags().String("older-than", "", "Remove packages older than duration (e.g., 30d)")
 	gcCmd.Flags().Bool("fix-links", false, "Clean up orphaned link records")
 	gcCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
+
+	// forget flags
+	forgetCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
 
 	// doctor flags
 	doctorCmd.Flags().Bool("verify-content", false, "Re-hash every file in the store and check it against the recorded hashes")

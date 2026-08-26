@@ -92,6 +92,7 @@ lnpm push
 | `lnpm check` | Fail if lnpm has left anything an `npm publish` would ship (pre-publish guard) |
 | `lnpm doctor` | Diagnose issues |
 | `lnpm gc` | Garbage collect unused packages (`--dry-run`, `--older-than 30d`, `--fix-links`, `--yes`) |
+| `lnpm forget <project-path>` | Drop the record of a project whose filesystem is gone for good, so `lnpm gc` can reclaim what it was holding (`--yes`) |
 | `lnpm retreat` | Remove all lnpm changes |
 | `lnpm restore` | Re-link the packages `lnpm retreat` removed |
 | `lnpm config` | View/edit configuration |

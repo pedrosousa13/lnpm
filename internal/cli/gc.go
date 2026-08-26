@@ -264,14 +264,24 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		for _, s := range skippedLinks {
 			fmt.Printf("  - %s (consumes %s)\n", s.projectPath, s.packageLabel)
 		}
-		// No remedy is suggested, and the omission is deliberate. --fix-links
-		// would not collect these: the flag gates reporting and deleting the
-		// rows that were already classified as orphaned, and these were never
-		// classified at all. Nor would re-running with the filesystem mounted,
-		// which makes the project exist again and the link plainly live. There
-		// is currently no way to tell lnpm that a drive is gone for good, so
-		// saying "run X" would send the user somewhere that does nothing.
+		// The remedy is 'lnpm forget', and it is the only one. --fix-links is
+		// not: the flag gates reporting and deleting the rows that were already
+		// classified as orphaned, and these were never classified at all.
+		// Nor is re-running with the filesystem mounted, which makes the project
+		// exist again and the link plainly live - the right answer when the
+		// drive is coming back, and no answer at all when it is not. Until #382
+		// there was no way to tell lnpm that a drive is gone for good, so this
+		// block named no command; forget is that way, and it drops the project
+		// record and its links, which leaves the versions they named reached by
+		// nothing for the next gc to collect.
+		//
+		// It is stated as a conditional rather than an instruction. gc cannot
+		// tell an unplugged drive from a discarded one - that is the whole
+		// reason it skipped these - so the user is the only one who knows which
+		// this is, and a flat "run lnpm forget" would advise deleting the record
+		// of a project that is coming back tomorrow.
 		fmt.Println("  These links were kept, so the versions they name were not collected.")
+		fmt.Println("  If the filesystem is gone for good, run 'lnpm forget <path>' to drop the project; the next gc then collects what nothing else consumes.")
 		fmt.Println()
 	}
 
