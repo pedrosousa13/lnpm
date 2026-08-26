@@ -5,8 +5,8 @@ a channel. That link is pinned, and a pin is a fifth thing a link can say
 alongside the four `db.Link` already records. `lnpm pull` leaves a pinned link
 where it is, a publish does not carry it forward, `lnpm gc` keeps the build it
 names for as long as it names it and with no time bound, and `lnpm restore` puts
-it back pinned. The only things that move a project off a pin are adding the
-package again without naming a build, and removing it.
+it back pinned. Nothing moves a project off a pin but the user, deliberately —
+which command they do it with is proposed here rather than settled.
 
 Today none of that is true. An add by hash records `Tag: ""` — which
 `Link.tag()` reads as `DefaultTag`, the same as an ordinary add — so `pull`
@@ -15,7 +15,9 @@ release, rewrites `lnpm.lock` and repoints the database row off the historical
 record, after which nothing reaches that build and the next `gc` collects it.
 Bare `lnpm pull` refreshes every package in the lock, so pulling to update one
 package undoes another package's rollback with no signal. That is #300; this
-records the four decisions it is implemented against.
+records the four decisions it is implemented against, and — in its own section,
+because they must not be mistaken for the four — three further things that
+checking those decisions against the code turned up, which nobody has ruled on.
 
 ## The pin is its own field on `Link`, not a reserved `Tag` value
 
@@ -67,16 +69,19 @@ asymmetry is the point. A live link has nothing to refresh, so a skip is a
 complete answer. A pinned link has something to refresh and a reason not to, so
 the user who asked has to be told which of the two they are in.
 
-The refusal has to point somewhere real, and that is a constraint on the
-implementation rather than a detail of the wording. `lnpm add <pkg>` with no
-`@suffix` resolves through `packages_by_name` and returns `specDefault`, so it
-is the unpin: it is the way a user says *follow the default channel again*.
-Nothing else in the CLI clears a pin except `lnpm remove`, which also unlinks.
-If `InsertLink` does not clear the field on its same-record branch, `lnpm add
-<pkg>` is not an unpin whenever the pinned build is still the current one, and
-the refusal names a command that does not work.
+The refusal has to point somewhere real, and no command unpins today. Which one
+should is proposed rather than decided, under *What this ADR raises but does not
+settle* below, along with the one constraint that binds whatever answer is
+chosen.
 
 ## A publish must not carry a pinned link forward either
+
+This section is not a fifth decision. It is a defect in the premises the four
+were decided on, found while writing them down, and it is listed for
+ratification under *What this ADR raises but does not settle*. It is stated here
+rather than only there because the `gc` decision below does not hold without it:
+a pin a publish has dragged forward still roots something, just not the build
+the user pinned.
 
 `moveLinksTx` filters on the tag alone:
 
@@ -97,9 +102,11 @@ version, and `lnpm list mylib --versions` prints the current build's short hash
 for anyone who would rather type that. The very next `lnpm publish` then moves
 `latest` off it and drags the pin along, before `pull` is ever run.
 
-So `moveLinksTx` skips a pinned link regardless of tag. #300's "what does hold"
-section does not cover this: it reasons about generations, and this is the case
-where the pinned build and the tag's previous build are the same record.
+So `moveLinksTx` has to skip a pinned link regardless of tag. #300's "what does
+hold" section does not cover this: it reasons about generations, and this is the
+case where the pinned build and the tag's previous build are the same record.
+#300 has no acceptance criterion for a `moveLinksTx` change either, which is why
+this is raised rather than recorded.
 
 ## `gc` keeps a pinned build with no time bound, and a pin does not expire
 
@@ -142,13 +149,16 @@ recorded rather than by name, and that is what makes a pin restorable at all:
 the build comes back exactly. What does not come back is the link's state.
 `recordRestoredLink` writes a `db.Link` with no `Tag` on purpose, because
 nothing ever recorded the channel a consumer was on and guessing from the tags
-that name the build today would be a guess about a decision made months ago. Its
-comment lists a pin's three siblings — the channel, whether the package was
-added with `--link`, and which dependency field it was in — as the things
-restore cannot rebuild. Without this decision a pin becomes a fourth, and a
-project comes back following `latest` after being restored onto a build it
-pinned. That is #300's own defect in another place: a deliberate state silently
-undone.
+that name the build today would be a guess about a decision made months ago. The
+file-header comment on `restore.go` lists a pin's three siblings — whether the
+package was added with `--link`, which dependency field it was in, and the
+channel — as the parts of the pre-retreat state the lock file does not record
+and restore therefore cannot rebuild; `warnIfOffTheDefaultChannel`'s comment
+restates the list. (`recordRestoredLink`'s own comment argues only the channel,
+which is why it is the wrong place to read the set from.) Without this decision
+a pin becomes a fourth, and a project comes back following `latest` after being
+restored onto a build it pinned. That is #300's own defect in another place: a
+deliberate state silently undone.
 
 The snapshot is not a separate format. `lnpm retreat` renames `lnpm.lock` to
 `lnpm.lock.retreat` — `stashLockForRestore` does a plain `os.Rename`, or merges
@@ -172,6 +182,47 @@ restore when the restored build is not the one `latest` names, and when no tag
 names that build it prints *has been published since the retreat* and tells the
 user to run `lnpm pull`. For a restored pin that advice is exactly backwards —
 and, after the second decision above, points at a command that will refuse.
+
+## What this ADR raises but does not settle
+
+Three things below are not among the four decisions. They came out of checking
+those four against the code, each is argued for, and none of them has been ruled
+on. A reader must not implement them as though they had been. They are carried
+to #300 as questions.
+
+**The `moveLinksTx` change, above.** The finding is a fact about the code and is
+not in question: a pin on the record a tag is moving off is carried forward
+today. What is in question is that fixing it is a fifth change to a function
+#300 currently promises not to touch — its "what does hold" section cites
+`moveLinksTx` as something the fix must preserve. Preserving its behaviour and
+honouring a pin are not compatible, so one of the two has to give, and which is
+not this document's call.
+
+**Pinning by exact version, not only by hash.** #300's acceptance criterion says
+`lnpm add <pkg>@<hash>` records a pinned link. This ADR says `lnpm add
+<pkg>@1.2.0` does too. That is an inference from `resolveAddSpec`, which returns
+an empty tag for `specVersion` and `specHash` alike because both name a build
+rather than a channel, and from the README, which offers both identifiers as the
+way to roll back — *Either identifier the listing prints works*. It is very
+probably what was meant. It was not asked for, and pinning on a version is a
+wider behaviour change than pinning on a hash: a version is what most people
+type, so it is the spelling that decides how often a pin happens by accident.
+
+**Which command unpins.** The `pull` decision above requires `lnpm pull
+<pinned-pkg>` to refuse with a message naming the way to unpin, and nothing
+unpins today. The proposal here is `lnpm add <pkg>` with no `@suffix`: it
+resolves through `packages_by_name`, returns `specDefault`, and is already how a
+user says *follow the default channel again*. The only alternative in the CLI as
+it stands is `lnpm remove`, which unlinks the package as well and so is not an
+unpin. That reasoning is a derivation from what exists, but which command
+carries the meaning is a UX decision, and a dedicated `lnpm unpin` or an `lnpm
+pull --unpin` are both defensible answers this ADR has no standing to reject.
+
+Whichever is chosen, one constraint on it is not a matter of taste:
+`db.InsertLink` updates in place when the incoming link names the record the
+project is already on, copying only `LinkType` and `Tag` across. Unless the pin
+field is copied there too, no add-shaped unpin works while the pinned build is
+still the current one — the command would report success and change nothing.
 
 ## Why this is consistent with ADR-0002
 
@@ -230,7 +281,10 @@ only for an entry with no hash — which no lnpm has ever written, since
 content hash and resolution by exact version are the same act — both name a
 build rather than a channel, and `resolveAddSpec` returns an empty tag for both
 — so both must set the field. `lnpm add mylib` and `lnpm add mylib@beta` do not
-pin, and `lnpm add mylib` on a pinned package unpins it.
+pin, and `lnpm add mylib` on a pinned package unpins it. Two halves of that
+paragraph are proposals rather than decisions — pinning on a version, and `lnpm
+add` being the unpin — and both are listed above under *What this ADR raises but
+does not settle*. Only pinning on a hash was asked for.
 
 Bare `lnpm pull` in a project with a pinned package refreshes everything else
 and prints that it left that one alone and why. `lnpm pull mylib` on a pinned
@@ -252,8 +306,11 @@ absent from every lock file written so far, which reads as unpinned.
 
 `lnpm status` gains a way to see that a package is pinned. It shows no channel
 today — neither the "Active Links" table nor the "Current Project" block prints
-a link's tag — so this is a new column rather than an extension of one, and it
-is the only place a user can see the state without reading `lnpm.lock`.
+a link's tag — so this is a new column rather than an extension of one. The
+state is currently unnamed anywhere: `lnpm list <pkg> --versions` does show a
+project sitting on a superseded build, in its `LINKED IN` column, but that is
+the symptom rather than the pin, and nothing distinguishes a project that chose
+to be there from one that has simply not pulled.
 
 `README.md`'s "Version History and Rollback" section currently ends with *There
 is no pinned link yet: re-run `lnpm add mylib@<hash>` to go back.* That sentence
