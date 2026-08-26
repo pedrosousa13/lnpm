@@ -208,13 +208,17 @@ func RunPull(packageNames []string) error {
 
 		// Keep the original specifier: it lives only in the lock file once add
 		// has rewritten package.json, and remove/retreat need it to restore the
-		// dependency.
+		// dependency. The pin is kept for the same reason the repointed link row
+		// below keeps it: nothing pinned reaches here, and a literal that let the
+		// field default would unpin the project in the one place the database row
+		// and the lock entry could then disagree.
 		lock.Add(name, lockfile.Package{
 			Version:         pkg.Version,
 			Hash:            pkg.ContentHash,
 			Source:          pkg.SourcePath,
 			Linked:          time.Now(),
 			OriginalVersion: entry.OriginalVersion,
+			Pinned:          entry.Pinned,
 		})
 		lockChanged = true
 

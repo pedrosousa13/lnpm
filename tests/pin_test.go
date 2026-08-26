@@ -670,3 +670,37 @@ func TestStatusShowsThatAPackageIsPinned(t *testing.T) {
 		t.Errorf("status does not say the package is pinned:\n%s", line)
 	}
 }
+
+// TestAddMultiplePinsOnlyTheSpecThatNamedABuild covers the parallel add path,
+// which builds its own db.Link and lockfile.Package literals. One batch can carry
+// both spellings, so a path that pinned per run rather than per spec would pin
+// the ordinary add alongside the rollback.
+func TestAddMultiplePinsOnlyTheSpecThatNamedABuild(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("batch-pinned", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+	})
+	first, err := env.Database.GetPackageByName("batch-pinned")
+	if err != nil || first == nil {
+		t.Fatalf("Failed to read the first build: %v", err)
+	}
+	env.republish(pkgDir, "batch-pinned", "2.0.0", "module.exports = 'v2';")
+	env.simplePkg("batch-plain")
+
+	projectDir := env.newProject("batcher")
+	env.chdir(projectDir)
+	if err := cli.RunAddMultiple([]string{"batch-pinned@" + first.ContentHash[:8], "batch-plain"}, false, false, false, false); err != nil {
+		t.Fatalf("RunAddMultiple() error = %v", err)
+	}
+
+	if !linkFor(t, env, projectDir, "batch-pinned").Pinned {
+		t.Error("the batched add by hash did not pin")
+	}
+	if linkFor(t, env, projectDir, "batch-plain").Pinned {
+		t.Error("the batched add by name pinned, so the pin is decided per run rather than per spec")
+	}
+	if !lockEntry(t, env, projectDir, "batch-pinned").Pinned {
+		t.Error("the batched add by hash did not record the pin in the lock file")
+	}
+}
