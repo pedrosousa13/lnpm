@@ -1084,8 +1084,10 @@ func packageNameTx(tx *bolt.Tx, id int64) string {
 // An index entry that will not parse abandons the delete rather than being
 // scrubbed around, and the caller has to carry that outward: the row delete has
 // already run by then, so a refusal only holds if the transaction is rolled
-// back. Its one caller, InsertLink, returns this from its Update closure, which
-// is what does the rolling back.
+// back. Both callers return this from their own Update closure, which is what
+// does the rolling back: InsertLink, replacing a link it is about to supersede,
+// and DeleteProject, which #382 added and which calls this once per link the
+// project holds.
 func deleteLinkRowTx(tx *bolt.Tx, linkID, packageID, projectID int64) error {
 	if err := tx.Bucket(bucketLinks).Delete(itob(linkID)); err != nil {
 		return err
@@ -1428,10 +1430,20 @@ func (db *DB) DeleteProject(id int64) error {
 		projKey := itob(id)
 
 		// A record that will not parse still has its row and its links deleted;
-		// only the by-path entry it names cannot be found, and that entry is
-		// caught by doctor as a project ID naming no record. Erroring instead
-		// would leave the damaged record as the one thing forget cannot remove,
-		// which is the opposite of what an escape hatch is for.
+		// only the by-path entry it names cannot be found, since the path is
+		// readable from nowhere but the record. Nothing catches that entry -
+		// doctor walks packages, GetLinksForPackage and GetProjectByID, and no
+		// check it runs enumerates projects_by_path at all, so the stale key is
+		// reported by no part of lnpm. What makes leaving it defensible is that
+		// it is inert and self-healing, not that anything finds it. Inert
+		// because it now names an ID no row answers, which is the disagreement
+		// GetProjectByPath documents returning nil and no error for. Self-healing
+		// because InsertProject's update arm needs projects.Get(existingID) to
+		// both exist and parse, and neither holds here, so the next add at that
+		// path falls through to the insert arm and its byPath.Put overwrites the
+		// key. Erroring instead would leave the damaged record as the one thing
+		// forget cannot remove, which is the opposite of what an escape hatch is
+		// for.
 		if data := projects.Get(projKey); data != nil {
 			var proj Project
 			if json.Unmarshal(data, &proj) == nil {

@@ -2017,3 +2017,98 @@ func TestDeleteProject_SkipsALinkIndexEntryNamingNoRow(t *testing.T) {
 		t.Fatalf("Failed to read the store back: %v", err)
 	}
 }
+
+// TestDeleteProject_LeavesTheByPathEntryWhenTheRecordWillNotParse pins the one
+// index this delete knowingly leaves behind, and the reason that is tolerable.
+//
+// The path is readable from nowhere but the record, so a record that will not
+// parse takes the only way of finding its by-path key with it. The delete goes
+// ahead anyway - refusing would make the damaged record the single thing forget
+// cannot remove, and forget is the escape hatch - which leaves a key naming an
+// ID no row answers. Nothing catches it: doctor walks packages,
+// GetLinksForPackage and GetProjectByID, and enumerates projects_by_path
+// nowhere. So the assertions below are what stand in for a check that does not
+// exist, and they pin both halves of why that is survivable: the stale key
+// answers nothing, and the next InsertProject at that path overwrites it.
+func TestDeleteProject_LeavesTheByPathEntryWhenTheRecordWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	proj, err := database.GetProjectByID(link.ProjectID)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v, %v", proj, err)
+	}
+	staleID := proj.ID
+
+	putRaw(t, database, bucketProjects, itob(proj.ID), []byte("{ not a project"))
+
+	if err := database.DeleteProject(proj.ID); err != nil {
+		t.Fatalf("DeleteProject() refused a project whose own record will not parse: %v", err)
+	}
+
+	var byPathEntry []byte
+	err = database.db.View(func(tx *bolt.Tx) error {
+		// Everything reachable without reading the record still goes.
+		for _, gone := range []struct {
+			what   string
+			bucket []byte
+			key    []byte
+		}{
+			{"the project record", bucketProjects, itob(proj.ID)},
+			{"the link row", bucketLinks, itob(link.ID)},
+			{"the project's link index", bucketLinksByProject, itob(proj.ID)},
+			{"the package's link index", bucketLinksByPackage, itob(pkg.ID)},
+		} {
+			if v := tx.Bucket(gone.bucket).Get(gone.key); v != nil {
+				t.Errorf("DeleteProject() left %s behind: %q", gone.what, v)
+			}
+		}
+		byPathEntry = append(byPathEntry, tx.Bucket(bucketProjectsByPath).Get([]byte(proj.Path))...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+	// And the one thing it cannot reach stays, still naming the ID it named.
+	if len(byPathEntry) == 0 {
+		t.Fatalf("DeleteProject() found the by-path entry of a record it could not read; the path is only stored in that record")
+	}
+	if btoi(byPathEntry) != staleID {
+		t.Errorf("the by-path entry names project %d, want the deleted %d", btoi(byPathEntry), staleID)
+	}
+
+	// Inert: the stale key is a bucket disagreement, which GetProjectByPath
+	// answers with no project and no error rather than handing one back.
+	stale, err := database.GetProjectByPath(proj.Path)
+	if err != nil || stale != nil {
+		t.Errorf("GetProjectByPath() on the stale entry = %v, %v; want nil, nil", stale, err)
+	}
+
+	// Self-healing: InsertProject's update arm needs the row it finds to exist
+	// and to parse. Neither holds, so the insert arm runs and its byPath.Put
+	// lands on this very key.
+	fresh := &Project{Path: proj.Path, Name: "consumer"}
+	if err := database.InsertProject(fresh); err != nil {
+		t.Fatalf("InsertProject() at the forgotten path: %v", err)
+	}
+	if fresh.ID == staleID {
+		t.Fatalf("InsertProject() reused the deleted ID %d, so this asserts nothing about the key being overwritten", staleID)
+	}
+
+	byPathEntry = byPathEntry[:0]
+	err = database.db.View(func(tx *bolt.Tx) error {
+		byPathEntry = append(byPathEntry, tx.Bucket(bucketProjectsByPath).Get([]byte(proj.Path))...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+	if len(byPathEntry) == 0 {
+		t.Errorf("the fresh add left no by-path entry at all, want the new project %d", fresh.ID)
+	} else if btoi(byPathEntry) != fresh.ID {
+		t.Errorf("the by-path entry still names %d after a fresh add, want the new project %d", btoi(byPathEntry), fresh.ID)
+	}
+	if found, err := database.GetProjectByPath(proj.Path); err != nil || found == nil || found.ID != fresh.ID {
+		t.Errorf("GetProjectByPath() after the re-add = %v, %v; want the new project %d", found, err, fresh.ID)
+	}
+}

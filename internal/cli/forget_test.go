@@ -13,9 +13,22 @@ import (
 // whole point of the command: a drive that is gone for good leaves gc declining
 // its links forever, and forget is the only thing that turns that space back
 // into something gc will judge.
+//
+// The criterion says "the project record and its links", and the links half
+// needs its own assertion rather than being read off the collection at the end.
+// A DeleteProject that dropped the row alone and left every link in place still
+// reaches an empty store here: gc walks packages, and a link whose project row
+// is gone is not a consumer it can see, so the version is collected anyway and
+// the whole test stays green while half the criterion is unmet. The link rows
+// are therefore checked directly, in the window between forget and gc.
 func TestForgetDropsTheProjectSoGCCanCollect(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 	project, pkg := seedUnreachableProject(t, database, storeRoot, "offline-pkg")
+
+	proj, err := database.GetProjectByPath(project)
+	if err != nil || proj == nil {
+		t.Fatalf("GetProjectByPath = %v, %v", proj, err)
+	}
 
 	// Prove the fixture is the one this command exists for: gc declines to
 	// judge the link before forget runs, so the collection below is forget's
@@ -35,6 +48,20 @@ func TestForgetDropsTheProjectSoGCCanCollect(t *testing.T) {
 		}
 	})
 	t.Logf("forget output:\n%s", out)
+
+	// The record and its links, which is the whole of the criterion. The
+	// by-package read is the load-bearing one: it is what gc scans, and a link
+	// left there naming a project that no longer exists is the state #382 exists
+	// to clear rather than move.
+	if stored, err := database.GetProjectByID(proj.ID); err != nil || stored != nil {
+		t.Errorf("forget left the project record behind: %v, %v", stored, err)
+	}
+	if links, err := database.GetLinksForProject(proj.ID); err != nil || len(links) != 0 {
+		t.Errorf("forget left %d of the project's link(s) behind (err %v); the criterion is the record and its links", len(links), err)
+	}
+	if links, err := database.GetLinksForPackage(pkg.ID); err != nil || len(links) != 0 {
+		t.Errorf("forget left %d link(s) naming the package in links_by_package (err %v), so gc still scans a consumer that is gone", len(links), err)
+	}
 
 	// forget drops the record and stops there: the store entry is gc's to
 	// remove, behind gc's own confirmation.
