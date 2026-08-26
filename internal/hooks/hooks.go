@@ -12,9 +12,32 @@ import (
 	"github.com/pedrosousa13/lnpm/internal/shellcmd"
 )
 
+// publishScripts is the set of lifecycle scripts lnpm runs before packing, held
+// in the order it runs them. The order is npm's, not one lnpm chose: it was
+// measured against npm 11.16.0 with a package.json defining all three scripts,
+// each appending its own name to one shared log.
+//
+//	npm publish --dry-run  ->  prepublishOnly, prepack, prepare
+//	npm pack               ->  prepack, prepare
+//
+// prepack before prepare is the half worth guarding. Swap the two and a prepare
+// script that reads what prepack produced reads the previous run's bytes
+// instead; nothing exits non-zero to say so, and the packed tarball is quietly
+// one revision behind. So the order is pinned by a test that names the sequence
+// (TestRunPrepareFollowsNpmScriptOrder) rather than left implied by this
+// literal, and npm itself is re-measured in tests/e2e
+// (TestNpmPackRunsPrepackBeforePrepare) so the claim above cannot go stale
+// without a test noticing.
+//
+// lnpm runs all three on both its publish and its push path. The measurement
+// above settles the order of the scripts, not which of them npm would run for
+// any one of its own commands.
+var publishScripts = []string{"prepublishOnly", "prepack", "prepare"}
+
 // RunPrepare runs prepare scripts before publishing
-// Executes every prepublishOnly, prepare and prepack script present in
-// package.json, always in that order, and stops at the first one that fails
+// Executes every prepublishOnly, prepack and prepare script present in
+// package.json, always in that order, and stops at the first one that fails.
+// See publishScripts for why that is the order.
 func RunPrepare(pkgPath string, skipHooks bool) error {
 	// Check if hooks should be skipped
 	cfg := config.Get()
@@ -38,9 +61,8 @@ func RunPrepare(pkgPath string, skipHooks bool) error {
 	}
 
 	// Run every applicable script, in lnpm's publish order
-	scripts := []string{"prepublishOnly", "prepare", "prepack"}
 	ran := false
-	for _, scriptName := range scripts {
+	for _, scriptName := range publishScripts {
 		if _, exists := pkgJSON.Scripts[scriptName]; exists {
 			fmt.Printf("Running %s script...\n", scriptName)
 			debug.Logf("hooks: running %s via npm", scriptName)
