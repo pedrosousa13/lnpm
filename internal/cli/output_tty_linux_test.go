@@ -105,6 +105,11 @@ func noColor(t *testing.T, on bool) {
 
 // runDoctorOnTTY runs RunDoctor against a healthy store with stdout on a
 // terminal, and returns what it printed.
+//
+// Content verification is on, which costs nothing against an empty store and
+// makes this a run where every check ran - so the summary is the "all checks
+// passed" line the cases above pin, rather than the shorter one a skipped check
+// leaves behind.
 func runDoctorOnTTY(t *testing.T) string {
 	t.Helper()
 
@@ -115,8 +120,8 @@ func runDoctorOnTTY(t *testing.T) string {
 	t.Cleanup(db.ResetForTesting)
 
 	return captureTTYStdout(t, func() {
-		if err := RunDoctor(); err != nil {
-			t.Errorf("RunDoctor() = %v on a healthy store, want nil", err)
+		if err := RunDoctor(true); err != nil {
+			t.Errorf("RunDoctor(true) = %v on a healthy store, want nil", err)
 		}
 	})
 }

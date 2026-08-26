@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -346,14 +347,33 @@ func (s *Store) finalize(name, hash, destPath, finalPath string) (bool, error) {
 // succeeds and returns the files that survived, so there is no failure further
 // down to fall back on.
 func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
-	storePath := s.PackagePath(name, hash)
-
 	if err := s.CheckComplete(name, hash); err != nil {
 		return nil, err
 	}
 
+	return EntryFiles(s.PackagePath(name, hash))
+}
+
+// EntryFiles lists the files an entry holds, in the order the walk finds them.
+//
+// This is the definition of "what is in a store entry", and it is one function
+// rather than one per caller on purpose. What it returns is exactly what gets
+// copied into a consumer project, so anything that wants to reason about the
+// content of an entry — GetFiles above, and doctor's integrity check, which has
+// to know which files a row set is allowed not to mention — has to be looking at
+// the same set. A second walk with its own idea of what to leave out is a gap
+// between what lnpm serves and what lnpm checks.
+//
+// Unlike GetFiles this asks nothing about completeness. doctor calls it for
+// entries whose marker it has already read, and reporting the same fault twice
+// under two headings helps nobody.
+//
+// ContentHash is left empty: the walk records what is on disk, and nothing here
+// opens a file. Callers that need hashes take them from the database or compute
+// them themselves.
+func EntryFiles(entryPath string) ([]*pack.FileInfo, error) {
 	var files []*pack.FileInfo
-	err := filepath.Walk(storePath, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(entryPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -362,7 +382,7 @@ func (s *Store) GetFiles(name, hash string) ([]*pack.FileInfo, error) {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(storePath, path)
+		relPath, err := filepath.Rel(entryPath, path)
 		if err != nil {
 			return err
 		}
@@ -414,6 +434,69 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return dstFile.Sync()
 }
 
+// strippedScripts are the lifecycle scripts stripLifecycleScripts removes from a
+// stored manifest. Named once so that ManifestStrippedInStore, which has to
+// recognise this function's output, cannot come to disagree with it about which
+// scripts that is.
+var strippedScripts = []string{"prepare", "prepublish"}
+
+// marshalManifest renders a parsed package.json the way a stored one is written.
+//
+// Extracted for the same reason as strippedScripts: recognising the rewrite
+// after the fact means reproducing it byte for byte, and two copies of
+// "MarshalIndent with two spaces and a trailing newline" would eventually stop
+// being the same thing.
+func marshalManifest(manifest map[string]interface{}) ([]byte, error) {
+	output, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(output, '\n'), nil
+}
+
+// ManifestStrippedInStore reports whether data could be a manifest that
+// stripLifecycleScripts wrote.
+//
+// It exists because that rewrite happens after publish has hashed the packed
+// files, so a stored package.json legitimately fails to match the content hash
+// recorded for it — but only for a package that had one of those scripts.
+// doctor cannot ask the store which packages those were, so it asks this
+// instead: is what is on disk in the shape the rewrite produces?
+//
+// Three things have to hold, and each of them is a branch stripLifecycleScripts
+// returns early from. The document must parse. It must carry a scripts map, or
+// the rewrite returned without writing. And neither stripped script may remain
+// in it, because removing them is the only reason it writes at all. Then the
+// bytes must equal their own re-marshalled form, which is what the rewrite
+// emits and what a hand-edited manifest almost never is.
+//
+// That last test is what keeps this narrow, and it is worth being plain about
+// its limit: a tampered manifest that happens to be canonical JSON with a
+// scripts map and neither script in it is indistinguishable from a stripped
+// one. What this rules out is the ordinary edit, not a forgery built to match.
+func ManifestStrippedInStore(data []byte) bool {
+	var manifest map[string]interface{}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false
+	}
+
+	scripts, ok := manifest["scripts"].(map[string]interface{})
+	if !ok || scripts == nil {
+		return false
+	}
+	for _, script := range strippedScripts {
+		if _, exists := scripts[script]; exists {
+			return false
+		}
+	}
+
+	output, err := marshalManifest(manifest)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(data, output)
+}
+
 // stripLifecycleScripts removes prepare/prepublish scripts from package.json
 // This prevents npm from running these scripts when the package is installed as a file: dependency
 // Matches yalc behavior: https://github.com/wclr/yalc
@@ -456,8 +539,7 @@ func stripLifecycleScripts(destPath string) error {
 	// Remove lifecycle scripts that cause issues with file: dependencies
 	// - prepare/prepublish: run during npm install of file: deps, can fail (e.g., husky)
 	// Matches yalc behavior: https://github.com/wclr/yalc/blob/master/src/copy.ts
-	scriptsToRemove := []string{"prepare", "prepublish"}
-	for _, script := range scriptsToRemove {
+	for _, script := range strippedScripts {
 		if _, exists := scripts[script]; exists {
 			delete(scripts, script)
 			modified = true
@@ -470,11 +552,10 @@ func stripLifecycleScripts(destPath string) error {
 	}
 
 	// Write modified package.json atomically using temp file + rename
-	output, err := json.MarshalIndent(pkgJSON, "", "  ")
+	output, err := marshalManifest(pkgJSON)
 	if err != nil {
 		return fmt.Errorf("failed to marshal package.json: %w", err)
 	}
-	output = append(output, '\n')
 
 	// The rewrite replaces the store's own package.json, and every path that puts
 	// it there has already given it the source file's mode, so that mode is what
