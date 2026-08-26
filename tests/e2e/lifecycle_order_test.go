@@ -10,32 +10,32 @@ import (
 	"testing"
 )
 
-// TestNpmPackRunsPrepackBeforePrepare re-measures the claim internal/hooks
-// pins: npm runs prepack before prepare, so lnpm does too.
+// TestNpmPackRunsPrepackBeforePrepare re-measures against the installed npm the
+// order hooks.publishScripts follows. That declaration holds the measurement and
+// the argument for it; this test exists because a measurement written down once
+// rots silently. npm can change, and the only way to find out is to ask it.
 //
-// It exists because that claim is otherwise a comment. hooks.RunPrepare's order
-// is parity with npm, and parity claims rot silently — npm can change, and the
-// only way to find out is to ask it. This asks the npm actually installed
-// alongside the suite, so the day the answer changes, a test says so instead of
-// a user finding a stale build in a tarball.
-//
-// It runs `npm pack`, not `npm publish --dry-run`, on purpose. Both orders were
-// measured by hand against npm 11.16.0 (publish --dry-run gives prepublishOnly,
-// prepack, prepare; pack gives prepack, prepare), but only pack is fully local:
-// a dry-run publish still resolves the registry, which would tie this suite to
-// the network and to npm auth. pack settles prepack-before-prepare on its own,
-// and that is the half a wrong order breaks without an error.
-//
-// The package is deliberately dependency-free, so `npm pack` needs no install
-// and no network.
+// It asks with `npm pack`, not `npm publish --dry-run`, even though the latter
+// covers all three scripts: a dry-run publish still resolves the registry, which
+// would tie this suite to the network and to npm auth. pack settles
+// prepack-before-prepare on its own, which is the part of the order lnpm can get
+// wrong without anything failing. The probe package has no dependencies, so pack
+// needs no install and no network at all.
 func TestNpmPackRunsPrepackBeforePrepare(t *testing.T) {
 	t.Parallel()
 	if !nodeAvailable {
 		t.Skip("node not available; skipping real-npm lifecycle test")
 	}
 	// npm is not required by the rest of this package (resolution only needs
-	// the symlink lnpm writes), so its absence skips rather than fails.
+	// the symlink lnpm writes), so its absence skips on a developer machine.
+	// Not in CI: this test's whole job is to notice when npm's answer changes,
+	// and a skipped test and a passing one look the same in a run summary, so a
+	// CI box without npm would retire the canary without saying so. TestMain
+	// makes the same call for node, for the same reason.
 	if _, err := exec.LookPath("npm"); err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("npm is required in CI but was not found on PATH")
+		}
 		t.Skip("npm not found in PATH; skipping real-npm lifecycle test")
 	}
 
