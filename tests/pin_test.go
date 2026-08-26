@@ -566,3 +566,75 @@ func TestPublishWithPushLeavesAPinnedConsumerAlone(t *testing.T) {
 		t.Errorf("the publish --push overwrote a pinned consumer's files, which now read:\n%s", linked)
 	}
 }
+
+// TestRetreatAndRestoreReinstateThePin covers the fourth decision. Restore
+// rebuilds which build a project was on exactly, through the content hash the
+// snapshot recorded; without the pin travelling with it the project comes back
+// following latest, and the next pull moves it off the build it was just
+// restored onto. That is #300's own defect in another place - a deliberate state
+// silently undone.
+func TestRetreatAndRestoreReinstateThePin(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("retreater")
+	_, pinned := pinnedFixture(t, env, "retreat-lib", projectDir)
+
+	env.chdir(projectDir)
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("RunRetreat() error = %v", err)
+	}
+
+	// The snapshot is a lock file, so the pin has to be in it: it is the only
+	// thing restore has to rebuild the link row from.
+	snapshot, err := lockfile.LoadRetreat(projectDir)
+	if err != nil || snapshot == nil {
+		t.Fatalf("Failed to read the retreat snapshot: %v", err)
+	}
+	if entry, ok := snapshot.Get("retreat-lib"); !ok || !entry.Pinned {
+		t.Fatalf("the snapshot does not record the pin: %+v", entry)
+	}
+
+	if err := cli.RunRestore(); err != nil {
+		t.Fatalf("RunRestore() error = %v", err)
+	}
+
+	link := linkFor(t, env, projectDir, "retreat-lib")
+	if !link.Pinned {
+		t.Error("the restored link is not pinned, so the next pull would move it off the build restore just put it on")
+	}
+	if link.PackageID != pinned.ID {
+		t.Errorf("the restored link names package %d, want the pinned %d", link.PackageID, pinned.ID)
+	}
+	if !lockEntry(t, env, projectDir, "retreat-lib").Pinned {
+		t.Error("the restored lock entry does not record the pin")
+	}
+}
+
+// TestRestoreDoesNotSendARestoredPinToPull pins the advice. A restore onto a
+// build latest no longer names normally ends by telling the user to run `lnpm
+// pull`, because the recorded build is simply behind. For a restored pin that is
+// exactly backwards, and since the second decision it names a command that
+// refuses.
+func TestRestoreDoesNotSendARestoredPinToPull(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("advised")
+	pinnedFixture(t, env, "advised-lib", projectDir)
+
+	env.chdir(projectDir)
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("RunRetreat() error = %v", err)
+	}
+	out := captureStdout(t, func() {
+		if err := cli.RunRestore(); err != nil {
+			t.Errorf("RunRestore() error = %v", err)
+		}
+	})
+
+	if strings.Contains(out, "Run 'lnpm pull'") {
+		t.Errorf("restore told the user to run a pull that will refuse the pinned package, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "pinned") {
+		t.Errorf("restore did not say the package came back pinned, output was:\n%s", out)
+	}
+}
