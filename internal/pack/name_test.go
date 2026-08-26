@@ -463,7 +463,9 @@ func TestValidatePackageNameAllowsCharactersThatHaveNoCase(t *testing.T) {
 		"my-pkg.v2",
 		"under_score",
 		"@my.scope/pkg-1",
-		// Scripts with no case distinction at all.
+		// Scripts with no case distinction at all. Left as literals because
+		// neither has an upper-case form for strings.ToLower to reach, so what
+		// bytes an editor saved them as cannot change the answer.
 		"日本語",
 		"שלום",
 	}
@@ -488,9 +490,11 @@ func TestValidatePackageNameAllowsCharactersThatHaveNoCase(t *testing.T) {
 // is the acceptance: before #327 both spellings validated, so two rows could
 // name what a user reads as one package.
 //
-// Both spellings are written as escapes on purpose. A literal "café" in this
-// file would be whatever normalisation the editor that saved it applied, which
-// is exactly the ambiguity the rule exists to remove.
+// The two accented spellings are written as escapes on purpose. A literal
+// "café" in this file would be whatever normalisation the editor that saved it
+// applied, which is exactly the ambiguity the rule exists to remove. The rows
+// below that are not escaped are ones where no editor could have introduced the
+// ambiguity, and each says why.
 //
 // The rejection is the validator's guarantee, not the user's experience: a name
 // read out of a package.json is normalised before it is validated, so an NFD
@@ -536,6 +540,9 @@ func TestValidatePackageNameRejectsNamesNotInNFC(t *testing.T) {
 	valid := []string{
 		"my-pkg",
 		"@org/my-pkg",
+		// Left as a literal, and safe to: Han ideographs have no canonical
+		// decomposition, so U+65E5 U+672C U+8A9E is its own NFC form however
+		// this file was saved.
 		"日本語",
 		"@org/caf\u00e9",
 		// A combining mark with no precomposed form is already NFC: there is no
@@ -547,6 +554,51 @@ func TestValidatePackageNameRejectsNamesNotInNFC(t *testing.T) {
 		if err := ValidatePackageName(name); err != nil {
 			t.Errorf("ValidatePackageName(%q) = %v, want nil", name, err)
 		}
+	}
+}
+
+// TestValidatePackageNameAdviceIsItselfAValidName pins the property both #327
+// messages have to have and only one of them can carry on its own: a message
+// that tells the user what to write instead must name something lnpm accepts.
+//
+// The uppercase message is the only one of the five rules that suggests a
+// replacement, and its suggestion is the lower-cased name. That name is refused
+// in turn if the original was also decomposed - "Cafe"+U+0301 lower-cases to
+// "cafe"+U+0301, which the NFC rule then rejects - so the advice would fail on
+// re-submission. The fix is ordering, not wording: the NFC rule runs first and
+// names no replacement, so a decomposed name is reported as decomposed
+// whatever its case, and by the time the uppercase rule fires the name is
+// composed and its lower-cased form is composed too.
+//
+// This is the same defect the ordering against #326's device rule avoids one
+// level up, caught one line later.
+func TestValidatePackageNameAdviceIsItselfAValidName(t *testing.T) {
+	// Uppercase and decomposed at once. The NFC rule owns this, because its
+	// message does not promise a replacement.
+	const upperNFD = "Cafe\u0301"
+	err := ValidatePackageName(upperNFD)
+	if err == nil {
+		t.Fatalf("ValidatePackageName(%q) = nil, want error", upperNFD)
+	}
+	if !strings.Contains(err.Error(), "NFC") {
+		t.Errorf("ValidatePackageName(%q) = %v, want the NFC rule to fire: the case rule would advise %q, which lnpm also refuses",
+			upperNFD, err, strings.ToLower(upperNFD))
+	}
+
+	// And the composed spelling of the same name is then refused by the case
+	// rule, whose advice does validate. Together these are the two steps a user
+	// following the messages actually takes.
+	const upperNFC = "Caf\u00e9"
+	err = ValidatePackageName(upperNFC)
+	if err == nil {
+		t.Fatalf("ValidatePackageName(%q) = nil, want error", upperNFC)
+	}
+	if !strings.Contains(err.Error(), "uppercase") {
+		t.Errorf("ValidatePackageName(%q) = %v, want the case rule to fire", upperNFC, err)
+	}
+	if adviced := strings.ToLower(upperNFC); ValidatePackageName(adviced) != nil {
+		t.Errorf("ValidatePackageName(%q) advises %q, which is itself refused: %v",
+			upperNFC, adviced, ValidatePackageName(adviced))
 	}
 }
 
@@ -714,6 +766,15 @@ func TestValidatePackageNameForRemovalStillRejectsUnsafeNames(t *testing.T) {
 		{"@/name", "empty scope"},
 		{"name\\with\\backslash", "backslash"},
 		{"with\x00nul", "nul byte"},
+		// The three rows #327's waivers make worth stating. Waiving the case and
+		// NFC rules must not let a traversal through, and the reason it cannot
+		// is that no path metacharacter has a case or a canonical decomposition:
+		// each of these is caught by the same check that catches its all-lower,
+		// composed twin.
+		{"C:\\evil", "uppercase drive letter: still the backslash check"},
+		{"@Org/..", "mixed-case scope: still the \"..\" segment check"},
+		{"@cafe\u0301/..", "decomposed scope: still the \"..\" segment check"},
+		{"../cafe\u0301", "decomposed name behind a traversal: still the scoped-name check"},
 	}
 	for _, tc := range rejected {
 		if err := ValidatePackageNameForRemoval(tc.name); err == nil {

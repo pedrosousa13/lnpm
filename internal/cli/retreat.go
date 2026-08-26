@@ -205,12 +205,11 @@ func RunRetreat(force bool, runInstall bool) error {
 		// through Link, which validates the name again - strictly, so a
 		// dot-named entry retreated here cannot be restored.
 		//
-		// Removal entry point, which waives five reservations - #325's leading
-		// dot, #326's Windows device names and trailing dot or space, and #327's
-		// uppercase letter and non-NFC spelling. None of the five is a path
-		// check. Every check above that keeps the
-		// node_modules delete inside the project still runs. Refusing a package
-		// on one of those grounds here would be worse than pointless: the
+		// Removal entry point, which waives the reservations that are not path
+		// checks - ValidatePackageNameForRemoval lists them and says why. Every
+		// check above that keeps the node_modules delete inside the project
+		// still runs. Refusing a package on one of those grounds here would be
+		// worse than pointless: the
 		// RemoveAll of .lnpm below takes its files anyway, leaving a
 		// node_modules symlink and a package.json file:.lnpm/{name} reference
 		// pointing at nothing.
@@ -370,9 +369,8 @@ func RunRetreat(force bool, runInstall bool) error {
 // still carrying file:.lnpm/{name} pointing at nothing, lnpm.lock stashed so a
 // re-run reports "No lnpm links found", and reportRefused telling the user lnpm
 // had written nothing for it. That is the state the loop's removal-entry-point
-// waiver — #325's leading dot, #326's device-name and trailing dot-or-space
-// rules, and #327's uppercase and non-NFC rules, five reservations in all —
-// calls worse than pointless, for this same
+// waiver — see ValidatePackageNameForRemoval for which reservations it covers
+// and why — calls worse than pointless, for this same
 // reason, just above the removal itself. Refusing outright leaves a project the user can still act on: the
 // error names the path and the override, and nothing has been touched.
 //

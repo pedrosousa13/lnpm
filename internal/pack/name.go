@@ -314,13 +314,48 @@ func validatePackageName(name string, strict bool) error {
 
 	// #327's two rules are last, and they are the only ones here that are
 	// properties of the whole name rather than of a segment: neither case nor
-	// composition changes at a "/". Running them after the loop is also what
-	// keeps the #326 messages intact. "CON" breaks both the device rule and the
-	// case rule, and "a Windows reserved device name" is the message worth
-	// printing, because `use "con" instead` would be advice to a name lnpm also
-	// refuses.
+	// composition changes at a "/".
+	//
+	// The uppercase rule is last of all, and both halves of that ordering exist
+	// for one reason: it is the only rule whose message names a replacement to
+	// type, so it has to run where the replacement it names is itself valid.
+	// Every rule above it has already passed by then, and lower-casing cannot
+	// break one of them that the name in hand did not break.
+	//
+	// Put it earlier and the advice fails on re-submission, twice over. Before
+	// the #326 loop, "CON" would be told to use "con" - also refused. Before the
+	// NFC rule, "Cafe"+U+0301 would be told to use "cafe"+U+0301 - also refused.
+	// Neither is hypothetical; both were measured. The NFC rule names no
+	// replacement, so it is safe anywhere and sits first of the two.
 	if !strict {
 		return nil
+	}
+
+	// Unicode first, and the order is load-bearing rather than arbitrary - see
+	// the block comment above. "cafe" with an acute accent written as U+00E9 and
+	// as "e"+U+0301 are distinct byte sequences that render identically, were
+	// both accepted before #327, and would fold to one directory on a filesystem
+	// that normalizes names - HFS+ stores names decomposed. The acceptance was
+	// proven by calling this function; the folding was not observed anywhere.
+	//
+	// This is a rejection and not a rewrite, and the two are not in tension.
+	// readPackageJSON composes the name it reads before it validates it, so a
+	// decomposed manifest publishes fine and stores its NFC spelling; what this
+	// refusal is left for is a name that never went through that ingestion. A
+	// database row written before #327 is the case that matters, and refusing it
+	// is what lets 'lnpm doctor' report the row instead of lnpm quietly writing
+	// a second store entry beside the first.
+	//
+	// The message cannot lean on the name looking wrong, because it does not:
+	// the two spellings are indistinguishable on screen and in a terminal. It
+	// has to say what the defect is. It deliberately offers no replacement to
+	// type, because there is none a terminal could show that the user could tell
+	// from what they already have.
+	if composed := normalizePackageName(name); composed != name {
+		return fmt.Errorf("invalid package name %q: the name is not in Unicode normalization form NFC; "+
+			"its composed spelling looks identical but is a different byte sequence, and a filesystem "+
+			"that normalizes names would resolve both to one directory; re-publish the package so that "+
+			"lnpm stores its NFC spelling", name)
 	}
 
 	// npm forbids an uppercase letter in a new package name. lnpm follows that
@@ -342,36 +377,17 @@ func validatePackageName(name string, strict bool) error {
 	// U+00C9 and U+00E9 are the same two spellings of one name outside ASCII,
 	// and a character with no lower-case form - a digit, a CJK ideograph - is
 	// untouched by it.
+	//
+	// This is the one rule of the five whose message names a replacement, which
+	// is what makes its position the last of them: everything above has already
+	// passed, so the lower-cased name it offers differs from the name in hand
+	// only in case and cannot break a rule the name in hand did not.
+	// TestValidatePackageNameAdviceIsItselfAValidName pins that.
 	if lower := strings.ToLower(name); lower != name {
 		return fmt.Errorf("invalid package name %q: a package name must not contain uppercase letters; "+
 			"npm forbids them in new package names and lnpm follows the same rule, so that two "+
 			"spellings of one name cannot become two entries on a case-insensitive filesystem; "+
 			"use %q instead", name, lower)
-	}
-
-	// And the same question for Unicode. "cafe" with an acute accent written as
-	// U+00E9 and as "e"+U+0301 are distinct byte sequences that render
-	// identically, were both accepted before #327, and would fold to one
-	// directory on a filesystem that normalizes names - HFS+ stores names
-	// decomposed. Same standing as the rule above: the acceptance was proven by
-	// calling this function, the folding was not observed anywhere.
-	//
-	// This is a rejection and not a rewrite, and the two are not in tension.
-	// readPackageJSON composes the name it reads before it validates it, so a
-	// decomposed manifest publishes fine and stores its NFC spelling; what this
-	// refusal is left for is a name that never went through that ingestion. A
-	// database row written before #327 is the case that matters, and refusing it
-	// is what lets 'lnpm doctor' report the row instead of lnpm quietly writing
-	// a second store entry beside the first.
-	//
-	// The message cannot lean on the name looking wrong, because it does not:
-	// the two spellings are indistinguishable on screen and in a terminal. It
-	// has to say what the defect is.
-	if composed := normalizePackageName(name); composed != name {
-		return fmt.Errorf("invalid package name %q: the name is not in Unicode normalization form NFC; "+
-			"its composed spelling looks identical but is a different byte sequence, and a filesystem "+
-			"that normalizes names would resolve both to one directory; re-publish the package so that "+
-			"lnpm stores its NFC spelling", name)
 	}
 
 	return nil
