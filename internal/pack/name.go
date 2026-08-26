@@ -46,8 +46,8 @@ const maxPackageNameLen = 214
 // contradiction: readPackageJSON composes the name it reads before validating
 // it, so a decomposed manifest publishes fine and stores its composed spelling,
 // and what this refuses is a name that never passed through that ingestion.
-// normalizePackageName documents why that is the only place the composition
-// happens.
+// NormalizePackageName documents where the composition may and may not
+// happen.
 //
 // This validates a name at the boundary it is presented at; it revalidates
 // nothing already on disk. A .lnpm or a store populated before these rules can
@@ -79,7 +79,7 @@ func ValidatePackageName(name string) error {
 // removal that composed its argument would go looking for a sibling of the entry
 // it was asked to delete, find nothing, and report success - which is worse than
 // the refusal the waiver exists to prevent, because it is silent. Nothing on the
-// removal path calls normalizePackageName, and nothing on it should.
+// removal path calls NormalizePackageName, and nothing on it should.
 //
 // Waiving them cannot widen the path surface, because not one of the five ever
 // guarded that surface. What keeps a removal inside the project is the "."/".."
@@ -351,7 +351,7 @@ func validatePackageName(name string, strict bool) error {
 	// has to say what the defect is. It deliberately offers no replacement to
 	// type, because there is none a terminal could show that the user could tell
 	// from what they already have.
-	if composed := normalizePackageName(name); composed != name {
+	if composed := NormalizePackageName(name); composed != name {
 		return fmt.Errorf("invalid package name %q: the name is not in Unicode normalization form NFC; "+
 			"its composed spelling looks identical but is a different byte sequence, and a filesystem "+
 			"that normalizes names would resolve both to one directory; re-publish the package so that "+
@@ -393,28 +393,41 @@ func validatePackageName(name string, strict bool) error {
 	return nil
 }
 
-// normalizePackageName returns name in Unicode normalization form NFC.
+// NormalizePackageName returns name in Unicode normalization form NFC.
 //
 // This is the transformation half of #327, and it is deliberately the only
 // transformation: it composes, it does not lower-case. Lower-casing here would
 // turn the uppercase rule into a silent rewrite, where #327 decided on npm's
 // rule, which is a refusal a user can see.
 //
-// Where it is applied is the whole of the design, so it is named here rather
-// than left to a reader to discover: readPackageJSON, and nowhere else. That is
-// the single point at which a package name enters lnpm's own state. The store
-// path, the database row, and through the row the lock file and the
-// package.json dependency key all come from the *PackageJSON it returns, and
-// the raw JSON string is discarded, so composing there means every name lnpm
-// writes is composed with no second, uncomposed copy left anywhere.
+// Where it is applied is the whole of the design, so the rule is written down
+// here rather than left to a reader to infer. There are exactly two kinds of
+// place, and the difference between them is whether the composed name is
+// written down anywhere.
 //
-// It is emphatically NOT applied to a name on the way out, and not to a lookup
-// key either. An entry stored as .lnpm/"cafe"+U+0301 before this rule existed is
-// a directory of that literal name on every filesystem lnpm runs on, and a
-// removal that composed its argument first would look for a sibling that does
-// not exist and report success having deleted nothing. Composing a name on the
-// way out is the same retroactivity mistake as validating one on the way out,
+// One place composes a name lnpm goes on to store: readPackageJSON. That is the
+// single point at which a package name enters lnpm's own state. The store path,
+// the database row, and through the row the lock file and the consumer's
+// package.json dependency key all come from the *PackageJSON it returns, and the
+// raw JSON string is discarded, so composing there means every name lnpm writes
+// is composed with no second, uncomposed copy left anywhere.
+//
+// The other kind composes a name it is about to look something up by, and
+// records nothing: parsePackageSpec, so that a spec typed decomposed finds the
+// composed row it names. That strands nothing, and the reason is worth stating
+// rather than assuming. The only row it can step past is a decomposed one
+// written before #327, and such a row cannot be linked by any spelling of the
+// spec, because link.Link validates strictly and refuses it. 'lnpm doctor'
+// reports it and packageNotInStoreError points there.
+//
+// It is emphatically NOT applied to a name on the way out. An entry stored as
+// .lnpm/"cafe"+U+0301 before this rule existed is a directory of that literal
+// name on every filesystem lnpm runs on, and a removal that composed its
+// argument first would look for a sibling that does not exist and report success
+// having deleted nothing. There the decomposed name is the only handle on the
+// entry, which is exactly what a lookup key is not. Composing a name on the way
+// out is the same retroactivity mistake as validating one on the way out,
 // wearing different clothes. See ValidatePackageNameForRemoval.
-func normalizePackageName(name string) string {
+func NormalizePackageName(name string) string {
 	return norm.NFC.String(name)
 }

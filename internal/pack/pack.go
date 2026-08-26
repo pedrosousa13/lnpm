@@ -790,7 +790,7 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	// Before the validation, not after, so that what the rules are applied to is
 	// the name lnpm will actually write - the 214-byte limit above all, which
 	// composing can move in either direction.
-	pkg.Name = normalizePackageName(pkg.Name)
+	pkg.Name = NormalizePackageName(pkg.Name)
 	if err := ValidatePackageName(pkg.Name); err != nil {
 		return nil, err
 	}

@@ -622,8 +622,8 @@ func TestNormalizePackageName(t *testing.T) {
 		{"", "", "an empty name is left empty for the validator to reject"},
 	}
 	for _, tc := range cases {
-		if got := normalizePackageName(tc.in); got != tc.want {
-			t.Errorf("normalizePackageName(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.desc)
+		if got := NormalizePackageName(tc.in); got != tc.want {
+			t.Errorf("NormalizePackageName(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.desc)
 		}
 	}
 }

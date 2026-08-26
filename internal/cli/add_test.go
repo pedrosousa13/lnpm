@@ -612,6 +612,96 @@ func TestResolveAddSpecRefusesATooShortHashPrefix(t *testing.T) {
 // TestResolveAddSpecOnAnUnknownNameResolvesNothing pins that a name the store
 // has never held stays a nil package rather than becoming an error. The two add
 // paths word that one differently, and both wordings predate this change.
+// TestParsePackageSpecComposesTheName pins the lookup half of #327's second
+// criterion. The store holds composed names, so a spec typed decomposed has to
+// compose before it is looked up or it misses a row that is there - and the two
+// spellings render identically, so the miss is undiagnosable from the terminal.
+//
+// Composing here strands nothing, which is what separates this from the removal
+// path, where composing would be a bug. A decomposed row can only be one written
+// before #327, and such a row cannot be linked in any case: linkPackage goes
+// through link.Link, which validates strictly and refuses it. So the row this
+// composition steps past is one no spelling of the spec could have used. Removal
+// is the opposite - there the decomposed name is the only handle on the entry.
+//
+// The version half of the spec is deliberately untouched. It is matched against
+// a semver string, not against a path or a name, and #327 says nothing about it.
+func TestParsePackageSpecComposesTheName(t *testing.T) {
+	const nfc = "caf\u00e9"  // "caf" + LATIN SMALL LETTER E WITH ACUTE
+	const nfd = "cafe\u0301" // "cafe" + COMBINING ACUTE ACCENT
+
+	cases := []struct {
+		spec        string
+		wantName    string
+		wantVersion string
+	}{
+		{nfd, nfc, ""},
+		{nfd + "@1.2.3", nfc, "1.2.3"},
+		{"@org/" + nfd, "@org/" + nfc, ""},
+		{"@" + nfd + "/pkg@2.0.0", "@" + nfc + "/pkg", "2.0.0"},
+		{"left-pad@1.0.0", "left-pad", "1.0.0"},
+	}
+	for _, tc := range cases {
+		name, version := parsePackageSpec(tc.spec)
+		if name != tc.wantName {
+			t.Errorf("parsePackageSpec(%q) name = %q, want %q", tc.spec, name, tc.wantName)
+		}
+		if version != tc.wantVersion {
+			t.Errorf("parsePackageSpec(%q) version = %q, want %q", tc.spec, version, tc.wantVersion)
+		}
+	}
+}
+
+// TestPackageNotInStoreErrorNamesADecomposedRow is the other direction, and the
+// one composing the spec cannot fix. A store published before #327 can hold a
+// decomposed row, and after the composition above no spelling anyone can type
+// reaches it. Without this the user is told "Did you run 'lnpm publish' in the
+// package directory?" about a package they did publish, under a name that
+// renders exactly like the one in the store.
+//
+// The remedy has to be doctor rather than a name to retype, because there is no
+// name to retype: the row cannot be linked whatever it is called until it is
+// re-published.
+func TestPackageNotInStoreErrorNamesADecomposedRow(t *testing.T) {
+	const nfc = "caf\u00e9"
+	const nfd = "cafe\u0301"
+
+	_, database := newGCStore(t)
+	seedVersion(t, database, nfd, "1.0.0", "aaa111")
+
+	err := packageNotInStoreError(database, nfc)
+
+	if err == nil {
+		t.Fatalf("packageNotInStoreError(%q) = nil, want an error", nfc)
+	}
+	if strings.Contains(err.Error(), "Did you run") {
+		t.Errorf("packageNotInStoreError(%q) accused the user of not publishing: %v", nfc, err)
+	}
+	if !strings.Contains(err.Error(), "lnpm doctor") {
+		t.Errorf("packageNotInStoreError(%q) = %v, want it to point at doctor", nfc, err)
+	}
+}
+
+// TestPackageNotInStoreErrorKeepsTheOrdinaryAdviceOtherwise is what stops the
+// hint above becoming the message everyone sees. A name genuinely absent from
+// the store still gets the question that is right for it.
+func TestPackageNotInStoreErrorKeepsTheOrdinaryAdviceOtherwise(t *testing.T) {
+	_, database := newGCStore(t)
+	seedVersion(t, database, "left-pad", "1.0.0", "aaa111")
+
+	err := packageNotInStoreError(database, "no-such-pkg")
+
+	if err == nil {
+		t.Fatalf("packageNotInStoreError = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "Did you run") {
+		t.Errorf("packageNotInStoreError = %v, want the ordinary publish question", err)
+	}
+	if strings.Contains(err.Error(), "lnpm doctor") {
+		t.Errorf("packageNotInStoreError = %v, want no normalization hint for an absent name", err)
+	}
+}
+
 func TestResolveAddSpecOnAnUnknownNameResolvesNothing(t *testing.T) {
 	_, database := newGCStore(t)
 

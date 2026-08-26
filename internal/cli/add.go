@@ -549,7 +549,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return err
 	}
 	if pkg == nil {
-		return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
+		return packageNotInStoreError(database, name)
 	}
 
 	if useLink && kind != specDefault {
@@ -693,22 +693,38 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 }
 
 // parsePackageSpec parses a package spec like "name" or "name@version"
+//
+// The name comes back composed to NFC (#327). lnpm stores composed names, so a
+// spec typed decomposed would otherwise miss a row that is there - and the two
+// spellings render identically, so the miss is not diagnosable from the
+// terminal. Both callers use what this returns to look a package up and nothing
+// else: the name written into the lock file, package.json and the link paths is
+// the resolved row's, not this one.
+//
+// Composing a lookup key is not the mistake composing a removal argument would
+// be, and NormalizePackageName sets out why: the only row this can step past is
+// a decomposed one written before #327, which link.Link refuses in any case, so
+// no spelling of the spec could have used it. packageNotInStoreError says so
+// when it happens.
+//
+// The version half is left alone. It is matched against a semver string rather
+// than a path or a name, and #327 says nothing about it.
 func parsePackageSpec(spec string) (name, version string) {
 	// Handle scoped packages (@org/name@version)
 	if strings.HasPrefix(spec, "@") {
 		// Find second @ for version
 		idx := strings.LastIndex(spec, "@")
 		if idx > 0 && idx != strings.Index(spec, "@") {
-			return spec[:idx], spec[idx+1:]
+			return pack.NormalizePackageName(spec[:idx]), spec[idx+1:]
 		}
-		return spec, ""
+		return pack.NormalizePackageName(spec), ""
 	}
 
 	// Regular package (name@version)
 	if idx := strings.Index(spec, "@"); idx > 0 {
-		return spec[:idx], spec[idx+1:]
+		return pack.NormalizePackageName(spec[:idx]), spec[idx+1:]
 	}
-	return spec, ""
+	return pack.NormalizePackageName(spec), ""
 }
 
 // specKind says how a spec's @suffix resolved.
@@ -1127,4 +1143,35 @@ func getProjectName(projectPath string) string {
 		}
 	}
 	return filepath.Base(projectPath)
+}
+
+// packageNotInStoreError words the failure of a lookup that resolved nothing.
+//
+// The ordinary wording asks whether the user ran 'lnpm publish', which is the
+// right question almost always and the wrong one in exactly one case: a store
+// published before #327 can hold a row whose name is not composed, and
+// parsePackageSpec composes what it is asked for, so no spelling anyone can type
+// reaches that row. The two names render identically, so the ordinary message
+// would accuse a user of not publishing a package they can see the name of.
+//
+// The remedy is doctor and not a name to retype, because there is no name to
+// retype. The row cannot be linked whatever it is called - link.Link validates
+// strictly and refuses it - so it has to be re-published before it is reachable
+// at all, and doctor is what lists it and says that.
+//
+// The scan costs a ListPackages, which is affordable here because this path is
+// already failing and about to stop. An unreadable database is not reported: the
+// caller is being told its package is missing either way, and a second failure
+// wedged into that sentence would obscure it.
+func packageNotInStoreError(database *db.DB, name string) error {
+	if packages, err := database.ListPackages(); err == nil {
+		for _, pkg := range packages {
+			if pkg.Name != name && pack.NormalizePackageName(pkg.Name) == name {
+				return fmt.Errorf("package %s not found in store, but the store holds one whose name "+
+					"renders identically and is not in Unicode NFC, so lnpm cannot link it under any "+
+					"spelling. Run 'lnpm doctor' to see it, then re-publish it", name)
+			}
+		}
+	}
+	return fmt.Errorf("package %s not found in store. Did you run 'lnpm publish' in the package directory?", name)
 }
