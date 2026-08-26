@@ -17,7 +17,7 @@ func TestDoctorHealthyStore(t *testing.T) {
 	env.publishAndAdd("doctor-pkg")
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err != nil {
+		if err := cli.RunDoctor(false); err != nil {
 			t.Errorf("RunDoctor() error = %v", err)
 		}
 	})
@@ -46,7 +46,7 @@ func TestDoctorReportsOrphanedPackage(t *testing.T) {
 	env.simplePkg("doctor-orphan")
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err != nil {
+		if err := cli.RunDoctor(false); err != nil {
 			t.Errorf("RunDoctor() error = %v", err)
 		}
 	})

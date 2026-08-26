@@ -284,9 +284,20 @@ This command checks:
   - Store directory exists and is writable
   - Database integrity
   - Orphaned links and packages
-  - Cross-filesystem issues`,
+  - Cross-filesystem issues
+
+The store is content-addressed, so an entry's directory name is a claim about
+the bytes inside it. --verify-content re-reads every stored file and checks that
+claim. It is left off by default because it costs one read of the whole store,
+and the report says plainly when it was not done.
+
+Examples:
+  lnpm doctor                    # The checks that cost no more than a stat
+  lnpm doctor --verify-content   # Also re-hash every file in the store`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunDoctor()
+		verifyContent, _ := cmd.Flags().GetBool("verify-content")
+
+		return RunDoctor(verifyContent)
 	},
 }
 
@@ -446,4 +457,7 @@ func init() {
 	gcCmd.Flags().String("older-than", "", "Remove packages older than duration (e.g., 30d)")
 	gcCmd.Flags().Bool("fix-links", false, "Clean up orphaned link records")
 	gcCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
+
+	// doctor flags
+	doctorCmd.Flags().Bool("verify-content", false, "Re-hash every file in the store and check it against the recorded hashes")
 }

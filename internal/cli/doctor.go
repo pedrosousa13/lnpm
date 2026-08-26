@@ -7,12 +7,17 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/db"
+	"github.com/pedrosousa13/lnpm/internal/pack"
 	"github.com/pedrosousa13/lnpm/internal/store"
 	"github.com/pedrosousa13/lnpm/internal/ui"
 )
 
-// RunDoctor executes the doctor command
-func RunDoctor() error {
+// RunDoctor executes the doctor command.
+//
+// verifyContent turns on the one check that reads stored content rather than
+// asking about it, which costs a read of the whole store and is therefore opt
+// in. Every other check here is bounded by the number of entries.
+func RunDoctor(verifyContent bool) error {
 	fmt.Println("Running lnpm doctor...")
 	fmt.Println()
 
@@ -50,7 +55,7 @@ func RunDoctor() error {
 		}
 	}
 
-	// Store entries Check 5 looked at, so that Check 6's store-wide sweep does
+	// Store entries Check 5 looked at, so that Check 7's store-wide sweep does
 	// not report the same directory a second time. Matched by path string: a
 	// store reached through a different spelling of the same directory would be
 	// reported by both checks, which is noise rather than a wrong finding.
@@ -61,7 +66,7 @@ func RunDoctor() error {
 	//
 	// On such a store a missing marker says nothing about the entry: no release
 	// that wrote it had markers at all, so every entry lacks one and none of
-	// them is damaged. Checks 5 and 6 would otherwise fault the entire store and
+	// them is damaged. Checks 5 and 7 would otherwise fault the entire store and
 	// send the user to re-publish all of it, which is both alarming and wrong -
 	// the store is migrated in one pass the next time any command opens it, and
 	// doctor is the one command that never does.
@@ -230,8 +235,18 @@ func RunDoctor() error {
 		// entry that is gone entirely still fails this check — there is no
 		// marker to read in a directory that does not exist — so nothing the
 		// stat caught is lost.
-		fmt.Print("Checking store file integrity... ")
+		//
+		// This asks whether the entry is there and finished, and it used to
+		// print under the name "store file integrity" — which it never
+		// established, since a complete entry whose files were overwritten
+		// passes it unchanged. Integrity is Check 6, and it is named for what
+		// it does.
+		fmt.Print("Checking store entries... ")
 		var damaged []string
+		// The entries Check 6 must not read. A missing or gutted entry is
+		// already reported here, and re-hashing one would list every file in it
+		// a second time under a different heading.
+		damagedEntries := make(map[string]bool)
 		for _, pkg := range packages {
 			if pkg.StorePath == "" {
 				continue
@@ -239,7 +254,7 @@ func RunDoctor() error {
 			checkedEntries[pkg.StorePath] = true
 			// On an unmigrated store the marker cannot be asked about, so this
 			// falls back to the question doctor asked before it existed: is the
-			// entry there at all. Check 6 reports the migration itself.
+			// entry there at all. Check 7 reports the migration itself.
 			//
 			// The directory is named per package rather than only counted,
 			// because for the entries that are still there the fix below cannot
@@ -254,6 +269,7 @@ func RunDoctor() error {
 			}
 			if err != nil {
 				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
+				damagedEntries[pkg.StorePath] = true
 			}
 		}
 		if len(damaged) > 0 {
@@ -266,9 +282,64 @@ func RunDoctor() error {
 		} else {
 			fmt.Printf("%s OK\n", ui.IconOK())
 		}
+
+		// Check 6: Re-hash stored content and compare it against the hashes the
+		// database records for it.
+		//
+		// This is the only check that tests the store's central claim. The
+		// store is content-addressed, so an entry's directory name asserts what
+		// the bytes inside it hash to, and nothing ever asked. During #333's
+		// reproduction the store was provably poisoned — one project's write
+		// reached the shared inode and a second project was then created from
+		// the tampered file — and doctor reported the store healthy throughout,
+		// because every check it had was about presence, not content.
+		//
+		// What is compared is content and only content, and that is what keeps
+		// the check off the trap #333 laid. Stored files are chmodded to
+		// mode &^ 0222 once they are materialised, while the database row
+		// records the mode the package was published with, so the two differ on
+		// a perfectly healthy store. pack.HashFile is xxhash over the bytes with
+		// no mode in it; pack.HashFiles, the package-level hash, folds
+		// Mode.Perm() in. Recomputing that package hash from the modes found on
+		// disk would fault every entry in the store and advise re-publishing all
+		// of it. Undoing the write protection with mode|0222 does not work
+		// either: it is a no-op on a file published 0444, so restoring the write
+		// bits invents a 0666 the file never had. Neither is needed, because
+		// every mode the comparison uses comes out of the database.
+		//
+		// The package-level hash is not recomputed from disk at all, and does
+		// not need to be. fileManifestHash establishes that the recorded rows
+		// describe the entry the directory is named for, and each file's content
+		// is then checked against those rows — so if both hold, the bytes on
+		// disk hash to the name the entry is stored under, by construction.
+		//
+		// What this detects is corruption and accident: a file overwritten
+		// through a shared inode, a truncated write, a bad disk. It is not
+		// evidence against someone who chose the replacement bytes — a 64-bit
+		// non-cryptographic hash can be collided deliberately, which is #331 —
+		// and it does not claim to be.
+		//
+		// Off by default, because it is the only check here whose cost grows
+		// with the size of the store rather than with the number of entries.
+		// Measured on a 105 MB store of 5,043 files, the rest of doctor takes
+		// under 10 ms and this check takes 0.16-0.19 s warm - about 550 MB/s, so
+		// roughly two seconds a gigabyte, and more than that on a cold cache. A
+		// small store would not notice; a large one would wait for something the
+		// user did not ask for. So the default run says plainly that it did not
+		// read the content, rather than printing OK for something it never did.
+		fmt.Print("Checking store file integrity... ")
+		if verifyContent {
+			contentIssues, contentWarnings := reportContentIntegrity(database, packages, damagedEntries)
+			issues += contentIssues
+			warnings += contentWarnings
+		} else {
+			fmt.Println("SKIPPED")
+			fmt.Println("  Stored content was not re-hashed: that costs one read of the whole store")
+			fmt.Println("  Run 'lnpm doctor --verify-content' to check it")
+		}
 	}
 
-	// Check 6: store entries that carry no usable completeness marker, swept
+	// Check 7: store entries that carry no usable completeness marker, swept
 	// from the store itself rather than from the database.
 	//
 	// This is the same fault Check 5 reports, reached from the other side, and
@@ -363,4 +434,151 @@ func RunDoctor() error {
 	}
 
 	return nil
+}
+
+// reportContentIntegrity re-reads every stored file of every package and checks
+// it against the content hash the database records, printing the result of
+// Check 6 and returning the issues and warnings to add to doctor's tally.
+//
+// It reports and never repairs, which is deliberate: what to do about an entry
+// whose content has changed is a decision lnpm cannot make for the user. The
+// entry may be linked into projects that already hold the same bytes, and lnpm
+// will not overwrite or delete a store entry in any case.
+//
+// The findings are kept in three buckets because they are three different
+// things, and collapsing them would either alarm the user about something lnpm
+// did on purpose or print OK over something nothing checked:
+//
+//   - altered: a file whose bytes are not the ones recorded for it. Damage, and
+//     an issue.
+//   - unverifiable: an entry whose recorded file list cannot be used at all -
+//     unreadable, absent, or describing another generation of the package. Not
+//     damage, but a part of the store this check could not speak for, so it is
+//     reported rather than passed over.
+//   - rewritten: the one file lnpm changes behind the hash's back. See
+//     manifestRewrittenByStore below.
+func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntries map[string]bool) (issues, warnings int) {
+	var altered, unverifiable, rewritten []string
+	verified, filesRead, bytesRead := 0, 0, int64(0)
+	skipped := 0
+
+	for _, pkg := range packages {
+		if pkg.StorePath == "" {
+			continue
+		}
+		if damagedEntries[pkg.StorePath] {
+			skipped++
+			continue
+		}
+
+		entries, err := database.GetFilesForPackage(pkg.ID)
+		switch {
+		case err != nil:
+			unverifiable = append(unverifiable, fmt.Sprintf("%s@%s  its recorded file list could not be read: %v", pkg.Name, pkg.Version, err))
+			continue
+		case len(entries) == 0:
+			unverifiable = append(unverifiable, fmt.Sprintf("%s@%s  no file list is recorded for it, so there is nothing to compare the entry against", pkg.Name, pkg.Version))
+			continue
+		}
+		// The link between the file rows and the name the entry is stored
+		// under, and the reason the per-file comparison below is enough on its
+		// own. Rows that reproduce the package's content hash describe this
+		// generation of it; rows that do not describe some other one, and
+		// checking the store against those would pass a stale entry or fault a
+		// current one. The same question add asks before it trusts a manifest.
+		if got := fileManifestHash(entries); got != pkg.ContentHash {
+			unverifiable = append(unverifiable, fmt.Sprintf("%s@%s  its recorded file list describes %s, not the %s the entry is stored under",
+				pkg.Name, pkg.Version, shortHash(got), shortHash(pkg.ContentHash)))
+			continue
+		}
+
+		for _, entry := range entries {
+			path := filepath.Join(pkg.StorePath, filepath.FromSlash(entry.RelativePath))
+			hash, err := pack.HashFile(path)
+			if err != nil {
+				altered = append(altered, fmt.Sprintf("%s@%s  %s  could not be read: %v", pkg.Name, pkg.Version, entry.RelativePath, err))
+				continue
+			}
+			filesRead++
+			bytesRead += entry.Size
+			if hash == entry.ContentHash {
+				continue
+			}
+			if manifestRewrittenByStore(entry.RelativePath) {
+				rewritten = append(rewritten, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, entry.RelativePath))
+				continue
+			}
+			altered = append(altered, fmt.Sprintf("%s@%s  %s  holds %s, not the recorded %s",
+				pkg.Name, pkg.Version, entry.RelativePath, shortHash(hash), shortHash(entry.ContentHash)))
+		}
+		verified++
+	}
+
+	switch {
+	case len(altered) > 0:
+		fmt.Printf("%s %d stored file(s) do not hold the content recorded for them\n", ui.IconFail(), len(altered))
+	case len(unverifiable) > 0:
+		fmt.Printf("%s %d store entry(ies) could not be verified\n", ui.IconFail(), len(unverifiable))
+	default:
+		fmt.Printf("%s OK (%d package(s), %d file(s), %s re-hashed)\n", ui.IconOK(), verified, filesRead, formatSize(bytesRead))
+	}
+
+	for _, finding := range altered {
+		fmt.Printf("  %s\n", finding)
+	}
+	if len(unverifiable) > 0 {
+		if len(altered) > 0 {
+			fmt.Printf("  %d further store entry(ies) could not be verified:\n", len(unverifiable))
+		}
+		for _, finding := range unverifiable {
+			fmt.Printf("  %s\n", finding)
+		}
+	}
+	if len(altered) > 0 || len(unverifiable) > 0 {
+		fmt.Println("  Fix: Re-publish the affected packages; lnpm will not overwrite or remove a store entry, so delete the entry directory yourself first")
+		fmt.Println("  Projects already linked to an affected package hold the same content, so re-run 'lnpm add' or 'lnpm push' for them afterwards")
+		// One issue rather than one per finding, so that the summary counts
+		// checks that failed rather than files, the way every check above it
+		// does.
+		issues = 1
+	}
+
+	if skipped > 0 {
+		// Named rather than passed over, because a run that prints OK has to be
+		// OK about the whole store. These entries are reported by Check 5, not
+		// excused by it, so they add nothing to the tally here.
+		fmt.Printf("  %d entry(ies) were not re-hashed: Check 5 already reported them as missing or incomplete\n", skipped)
+	}
+	if len(rewritten) > 0 {
+		fmt.Printf("  %s %d manifest(s) could not be checked, because lnpm rewrote them after hashing them:\n", ui.IconWarn(), len(rewritten))
+		for _, finding := range rewritten {
+			fmt.Printf("    %s\n", finding)
+		}
+		fmt.Println("    A stored package.json has its prepare and prepublish scripts removed once the content hash has been taken, so the recorded hash does not describe the stored bytes")
+		// A warning and not an issue. This is lnpm's own doing on a healthy
+		// store, so failing the command for it would make
+		// `lnpm doctor --verify-content && ...` unusable against any package
+		// with a build step in it. It is still said out loud, because the file
+		// it covers is the one an attacker would most want to change.
+		warnings = 1
+	}
+
+	return issues, warnings
+}
+
+// manifestRewrittenByStore reports whether relPath names the one file whose
+// stored bytes are allowed to differ from the hash recorded for them.
+//
+// store.stripLifecycleScripts re-marshals the entry's root package.json to
+// remove prepare and prepublish, and it runs after publish has hashed the
+// packed files, so for a package that has either script the store legitimately
+// holds a manifest the database's hash does not describe. Nothing records which
+// packages that happened to, so a mismatch here cannot be told apart from
+// damage and is reported as unchecked rather than as either.
+//
+// Only the root manifest: the strip opens exactly destPath/package.json, so a
+// package.json nested inside the package is an ordinary file and is compared
+// like one.
+func manifestRewrittenByStore(relPath string) bool {
+	return relPath == "package.json"
 }

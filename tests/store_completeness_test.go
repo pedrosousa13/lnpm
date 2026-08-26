@@ -85,7 +85,7 @@ func TestDoctorReportsGuttedStoreEntry(t *testing.T) {
 	storePath := env.gutStoreEntry("doctor-partialpkg", "index.js", "lib")
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err == nil {
+		if err := cli.RunDoctor(false); err == nil {
 			t.Error("RunDoctor() = nil for a store holding a gutted entry, want an error so `lnpm doctor && ...` stops")
 		}
 	})
@@ -119,7 +119,7 @@ func TestDoctorReportsIncompleteEntryNoPackageRowNames(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err == nil {
+		if err := cli.RunDoctor(false); err == nil {
 			t.Error("RunDoctor() = nil for a store holding an unmarked entry, want an error")
 		}
 	})
@@ -192,7 +192,7 @@ func TestDoctorReportsAnUnmigratedStoreAsPending(t *testing.T) {
 	env.unmigrateStore()
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err != nil {
+		if err := cli.RunDoctor(false); err != nil {
 			t.Errorf("RunDoctor() = %v for a store awaiting migration, want nil", err)
 		}
 	})

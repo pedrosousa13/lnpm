@@ -115,8 +115,8 @@ func runDoctorOnTTY(t *testing.T) string {
 	t.Cleanup(db.ResetForTesting)
 
 	return captureTTYStdout(t, func() {
-		if err := RunDoctor(); err != nil {
-			t.Errorf("RunDoctor() = %v on a healthy store, want nil", err)
+		if err := RunDoctor(false); err != nil {
+			t.Errorf("RunDoctor(false) = %v on a healthy store, want nil", err)
 		}
 	})
 }

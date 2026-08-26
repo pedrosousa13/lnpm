@@ -536,7 +536,7 @@ func TestDoctorDoesNotCallATagPinnedBuildOrphaned(t *testing.T) {
 	env.addPkg(projectDir, "doctor-tagged-lib", false, false)
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err != nil {
+		if err := cli.RunDoctor(false); err != nil {
 			t.Errorf("RunDoctor() error = %v", err)
 		}
 	})
@@ -560,7 +560,7 @@ func TestDoctorStillReportsAnUntaggedOrphan(t *testing.T) {
 	env.republish(pkgDir, "doctor-super-lib", "2.0.0", "module.exports = 'new';")
 
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(); err != nil {
+		if err := cli.RunDoctor(false); err != nil {
 			t.Errorf("RunDoctor() error = %v", err)
 		}
 	})

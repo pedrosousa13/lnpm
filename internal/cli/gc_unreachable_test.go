@@ -370,7 +370,7 @@ func TestDoctorDoesNotCallAnUnreachableProjectAnOrphanedLink(t *testing.T) {
 	storeRoot, database := newGCStore(t)
 	seedUnreachableProject(t, database, storeRoot, "offline-pkg")
 
-	out, _ := runDoctor(t)
+	out, _ := runDoctor(t, false)
 	t.Logf("doctor output:\n%s", out)
 
 	if strings.Contains(out, "orphaned link(s)") {
