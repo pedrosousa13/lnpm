@@ -51,8 +51,10 @@ Examples:
 
 // RunUpdate handles the update logic
 func RunUpdate(checkOnly bool, currentVersion string) error {
-	// Skip for dev builds
-	if currentVersion == "dev" || currentVersion == "" {
+	// Refuse builds that name no release to update from. A `git describe` build
+	// is deliberately not one of them: it names the tag it was built from, so it
+	// is checked like any other version - see update.Baseline.
+	if _, ok := update.Baseline(currentVersion); !ok {
 		return fmt.Errorf("update not supported for dev builds. Install from source: go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest")
 	}
 
@@ -66,9 +68,9 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 
 	// CheckFresh returns a nil result only for the dev-build skip, which the
 	// guard at the top of this function already rejects - so this is unreachable
-	// today. It stays because that agreement is two copies of the same condition
-	// in two packages: widen CheckFresh's skip list and this would panic on the
-	// next line instead of exiting cleanly.
+	// today. It stays because that agreement is one predicate asked twice across
+	// a package boundary: teach update.Baseline a new shape it cannot resolve and
+	// this would panic on the next line instead of exiting cleanly.
 	if result == nil {
 		return fmt.Errorf("update check returned no result")
 	}

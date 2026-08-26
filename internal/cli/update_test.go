@@ -93,6 +93,46 @@ func TestRunUpdateReportsCheckFailure(t *testing.T) {
 	}
 }
 
+// RunUpdate refuses to run for a build that names no release to update from.
+// The guard used to compare against "dev" and "" alone, which let a
+// pseudo-version and a "+dirty" stamp through to a version comparison neither
+// can win.
+//
+// Don't use t.Parallel() here - this swaps the process-wide default transport.
+func TestRunUpdateRefusesBuildsWithNoRelease(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+
+	prev := http.DefaultTransport
+	http.DefaultTransport = failingTransport{}
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	for _, v := range []string{"dev", "", "v1.12.1-0.20260819061412-6d9902254937", "v1.11.0+dirty"} {
+		err := RunUpdate(true, v)
+		if err == nil || !strings.Contains(err.Error(), "not supported for dev builds") {
+			t.Errorf("RunUpdate(true, %q) error = %v, want the dev-build refusal", v, err)
+		}
+	}
+}
+
+// A `git describe` build is the one dev build that does name a release, so
+// `lnpm update` still checks for it rather than refusing outright - it just
+// never finds an upgrade in the tag it is already ahead of (#283). Reaching the
+// network failure below is what proves the guard let it through.
+//
+// Don't use t.Parallel() here - this swaps the process-wide default transport.
+func TestRunUpdateChecksGitDescribeBuilds(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+
+	prev := http.DefaultTransport
+	http.DefaultTransport = failingTransport{}
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	err := RunUpdate(true, "v1.12.0-53-g7079f81-dirty")
+	if err == nil || !strings.Contains(err.Error(), "failed to check for updates") {
+		t.Errorf("RunUpdate error = %v, want the update check to have run", err)
+	}
+}
+
 func TestBuildDownloadURL(t *testing.T) {
 	ext := ".tar.gz"
 	if runtime.GOOS == "windows" {
