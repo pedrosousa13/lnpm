@@ -110,6 +110,66 @@ func TestReadPackageJSONRejectsADotPrefixedName(t *testing.T) {
 	}
 }
 
+// TestReadPackageJSONRejectsAnUppercaseName states #327's case rule where the
+// untrusted value actually enters: a manifest. Every path that stores, links or
+// publishes a package reads its name from here. The rule itself is exercised in
+// name_test.go.
+func TestReadPackageJSONRejectsAnUppercaseName(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `{"name": "MyPkg", "version": "1.0.0"}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkg, err := readPackageJSON(dir)
+	if err == nil {
+		t.Fatalf("readPackageJSON() accepted %q, returning %+v", manifest, pkg)
+	}
+	if !strings.Contains(err.Error(), "MyPkg") {
+		t.Errorf("readPackageJSON() error %q does not name the package", err)
+	}
+}
+
+// TestReadPackageJSONNormalizesTheNameToNFC is #327's other half, and it is the
+// one place the transformation happens. A manifest whose name is decomposed
+// publishes fine — the rule is not a refusal for the user — and what comes back
+// is the composed spelling, which is then what every path downstream uses: the
+// store directory, the database row, and through the row the lock file and the
+// package.json dependency key.
+//
+// Asserted on the returned struct rather than on any filesystem. That is the
+// point of the acceptance criterion #327 wrote — "without requiring a
+// case-insensitive filesystem" — and it is also all that is available: no
+// filesystem that folds case or normalizes names existed anywhere this was
+// written, so the collision the composition forecloses is still unobserved. What
+// is asserted here is the composition, which is entirely in lnpm's hands.
+//
+// The two spellings are written as escapes because they are indistinguishable
+// any other way: "caf"+U+00E9 and "cafe"+U+0301 render identically.
+func TestReadPackageJSONNormalizesTheNameToNFC(t *testing.T) {
+	const nfc = "caf\u00e9"  // "caf" + LATIN SMALL LETTER E WITH ACUTE
+	const nfd = "cafe\u0301" // "cafe" + COMBINING ACUTE ACCENT
+
+	dir := t.TempDir()
+	manifest := `{"name": "` + nfd + `", "version": "1.0.0"}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkg, err := readPackageJSON(dir)
+	if err != nil {
+		t.Fatalf("readPackageJSON() rejected a decomposed name: %v", err)
+	}
+	if pkg.Name != nfc {
+		t.Errorf("readPackageJSON() name = %q, want the composed spelling %q", pkg.Name, nfc)
+	}
+	// And the composed form validates, which is what makes the store and link
+	// paths downstream reachable at all.
+	if err := ValidatePackageName(pkg.Name); err != nil {
+		t.Errorf("ValidatePackageName(%q) = %v, want nil after composition", pkg.Name, err)
+	}
+}
+
 func TestIsExcluded(t *testing.T) {
 	tests := []struct {
 		path     string
