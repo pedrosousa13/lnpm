@@ -66,11 +66,13 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
-	// CheckFresh returns a nil result only for the dev-build skip, which the
-	// guard at the top of this function already rejects - so this is unreachable
-	// today. It stays because that agreement is one predicate asked twice across
-	// a package boundary: teach update.Baseline a new shape it cannot resolve and
-	// this would panic on the next line instead of exiting cleanly.
+	// Structurally unreachable: CheckFresh returns a nil result only when
+	// update.Baseline finds no release to compare against, and the guard at the
+	// top of this function asks update.Baseline the same question about the same
+	// version and has already returned. The two can no longer disagree - they
+	// used to be separate hand-written conditions, which is why this branch was
+	// added. It stays only so a future caller that reaches CheckFresh by some
+	// other route gets an error rather than a nil dereference on the next line.
 	if result == nil {
 		return fmt.Errorf("update check returned no result")
 	}

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
@@ -49,9 +48,10 @@ type Result struct {
 // CheckFresh checks for latest version without using cache
 // Used when user explicitly runs 'lnpm update'
 //
-// It returns (nil, nil) only for the dev-build skip. A failed fetch is returned
-// as an error rather than swallowed, so the caller can tell "no update
-// available" apart from "could not check".
+// It returns (nil, nil) only when the running version names no release to
+// compare against - see Baseline, which does check a dev build that names one.
+// A failed fetch is returned as an error rather than swallowed, so the caller
+// can tell "no update available" apart from "could not check".
 func CheckFresh(currentVersion string) (*Result, error) {
 	if _, ok := Baseline(currentVersion); !ok {
 		return nil, nil
@@ -90,7 +90,7 @@ func CheckAsync(currentVersion string) <-chan *Result {
 
 	// Skip builds that name no release to compare against
 	if _, ok := Baseline(currentVersion); !ok {
-		debug.Logf("update: skipping check for dev build")
+		debug.Logf("update: skipping check for %q, which names no release", currentVersion)
 		close(ch)
 		return ch
 	}
@@ -208,7 +208,7 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 // their installed binary still sees it. See issue #297.
 func compareVersions(current, latest string) *Result {
 	// Normalize mixed v-prefixed and bare inputs to canonical vX.Y.Z form
-	latestSemver := "v" + strings.TrimPrefix(latest, "v")
+	latestSemver := vPrefixed(latest)
 
 	// Compare the release current descends from, not current itself: a
 	// `git describe` stamp such as "v1.12.0-53-g7079f81-dirty" is a pre-release
