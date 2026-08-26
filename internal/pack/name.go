@@ -93,15 +93,15 @@ func ValidatePackageName(name string) error {
 // The two #327 waivers are the easiest of the five to check, and worth checking
 // rather than asserting. The names they newly admit are exactly those that
 // differ from their own lower-cased form, or from their own NFC form. No path
-// metacharacter has a case or a canonical decomposition - "/", "\\", "." and ":"
+// metacharacter has a case or a canonical decomposition - "/", "\", "." and ":"
 // are each their own lower-case and their own NFC - so neither rule can be the
 // only thing standing between a name and a traversal. A name either waiver newly
 // admits differs from an already-admitted one only in the spelling of its
-// letters, and has exactly the same segment structure: "C:\\evil" is refused by
-// the backslash check exactly as "c:\\evil" is, and "@Org/.." is refused by the
+// letters, and has exactly the same segment structure: "C:\evil" is refused by
+// the backslash check exactly as "c:\evil" is, and "@Org/.." is refused by the
 // "."/".." segment check exactly as "@org/.." is.
 //
-// The waiver is wider than those four shapes, though, and the extra case is
+// The waiver is wider than those five shapes, though, and the extra case is
 // worth naming because it is not obvious: "@../pkg" is rejected by the strict
 // form via the dot rule, since the "."/".." segment check sees the segment as
 // "@.." rather than "..". Removal therefore accepts it. It stays
