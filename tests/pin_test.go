@@ -638,3 +638,35 @@ func TestRestoreDoesNotSendARestoredPinToPull(t *testing.T) {
 		t.Errorf("restore did not say the package came back pinned, output was:\n%s", out)
 	}
 }
+
+// TestStatusShowsThatAPackageIsPinned covers the last surface a pin touches. The
+// state was unnameable anywhere before this: `lnpm list <pkg> --versions` shows
+// a project sitting on a superseded build, but that is the symptom, and nothing
+// distinguished a project that chose to be there from one that had simply not
+// pulled.
+func TestStatusShowsThatAPackageIsPinned(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("status-pinner")
+	pinnedFixture(t, env, "status-pin-lib", projectDir)
+
+	env.chdir(projectDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunStatus(); err != nil {
+			t.Errorf("RunStatus() error = %v", err)
+		}
+	})
+
+	line := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "status-pin-lib@") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("status did not list the linked package at all, output was:\n%s", out)
+	}
+	if !strings.Contains(line, "pinned") {
+		t.Errorf("status does not say the package is pinned:\n%s", line)
+	}
+}
