@@ -535,8 +535,11 @@ func TestDoctorDoesNotCallATagPinnedBuildOrphaned(t *testing.T) {
 	projectDir := env.newProject("doctor-tagged-project")
 	env.addPkg(projectDir, "doctor-tagged-lib", false, false)
 
+	// Verified in full, so the "all checks passed" assertion below is about a run
+	// where every check ran. A default run skips the content check and says so
+	// in the summary instead.
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(false); err != nil {
+		if err := cli.RunDoctor(true); err != nil {
 			t.Errorf("RunDoctor() error = %v", err)
 		}
 	})

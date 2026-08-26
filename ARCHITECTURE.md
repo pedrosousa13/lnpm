@@ -702,11 +702,36 @@ lnpm doctor
 # Checking for orphaned packages... ✓ OK
 # Checking for orphaned links... ⚠ 1 orphaned link(s)
 #   Fix: Run 'lnpm gc --fix-links' to clean up
-# Checking store file integrity... ✓ OK
+# Checking store entries... ✓ OK
+# Checking store file integrity... SKIPPED
+#   Stored content was not re-hashed: that costs one read of the whole store
+#   Run 'lnpm doctor --verify-content' to check it
 # Checking store completeness markers... ✓ OK
 #
 # ⚠ Found 1 warning(s)
 ```
+
+The two store checks answer different questions, and only one of them is free.
+`store entries` reads each entry's completeness marker: it says the entry is
+there and was finished, which costs a stat per package and says nothing about
+what is inside it. `store file integrity` opens the files.
+
+The store is content-addressed, so an entry's directory name is a claim about
+the bytes inside it. `--verify-content` tests that claim: it re-reads every
+stored file, checks each one against the content hash the database records, and
+faults a file the entry holds that no record mentions — the shape that would
+otherwise be copied into consumer projects unnoticed. It is off by default
+because it costs one read of the whole store, about two seconds a gigabyte, and
+doctor's other checks are bounded by the number of entries rather than by their
+size.
+
+A default run therefore ends with `✓ Every check that ran passed` rather than
+`✓ All checks passed!`, and names what it left out. Doctor never reports a check
+it did not run as one that passed.
+
+What the content check detects is corruption and accident. The store hashes with
+a 64-bit non-cryptographic function, which is not evidence against someone who
+chose the replacement bytes.
 
 Doctor separates issues from warnings, and so does its exit code: it exits
 non-zero once it has reported an issue, and zero otherwise. Warnings alone —

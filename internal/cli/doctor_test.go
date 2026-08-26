@@ -312,6 +312,218 @@ func TestRunDoctorDoesNotFaultProtectedStoreContent(t *testing.T) {
 	}
 }
 
+// TestRunDoctorReportsAFileNoRowRecords covers the one poisoning shape a
+// row-by-row comparison cannot see, and it is the shape that reaches consumers.
+//
+// store.EntryFiles walks the entry directory and returns everything but the
+// completeness marker, and storeFilesForLink starts from that walk and only
+// annotates the paths it finds rows for - a file no row records keeps its place
+// in the list and is materialised into every project that links the package. A
+// check that only iterated the rows would never open it.
+func TestRunDoctorReportsAFileNoRowRecords(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"index.js": "module.exports = 'left-pad';",
+	})
+
+	writeDoctorFixtureFile(t, pkg.StorePath, "lib/injected.js", "module.exports = 'injected';", 0444)
+
+	out, err := runDoctor(t, true)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for an entry holding an injected file, want an error; output was:\n%s", out)
+	}
+
+	for _, want := range []string{"left-pad", "1.2.3", "lib/injected.js"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("RunDoctor did not name %q, output was:\n%s", want, out)
+		}
+	}
+}
+
+// TestRunDoctorDoesNotCountTheCompletenessMarkerAsInjected keeps the check
+// above off the one file that is meant to be in an entry and is deliberately
+// absent from the rows. The marker belongs to the store rather than to the
+// package, which is why store.EntryFiles leaves it out of what a consumer
+// receives, and it must be left out here for the same reason.
+func TestRunDoctorDoesNotCountTheCompletenessMarkerAsInjected(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"index.js": "module.exports = 'left-pad';",
+	})
+
+	out, err := runDoctor(t, true)
+
+	if line := doctorCheckLine(t, out, "Checking store file integrity... "); !strings.Contains(line, "OK") {
+		t.Errorf("integrity check reported %q for an untouched entry, want OK; output was:\n%s", line, out)
+	}
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for an untouched entry, want nil", err)
+	}
+}
+
+// TestRunDoctorReportsAnEntryStoredUnderAnotherHash closes the last step
+// between the rows and the claim the check exists to test. The rows are
+// compared against the package row's content hash, which is a database column;
+// what the store asserts is the directory the entry sits in. An entry moved or
+// copied into a directory named for other content satisfies every other
+// comparison here.
+func TestRunDoctorReportsAnEntryStoredUnderAnotherHash(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"index.js": "module.exports = 'left-pad';",
+	})
+
+	moved := filepath.Join(filepath.Dir(pkg.StorePath), "ffffffffffffffff")
+	if err := os.Rename(pkg.StorePath, moved); err != nil {
+		t.Fatalf("move store entry: %v", err)
+	}
+	writeCompletenessMarker(t, moved, "ffffffffffffffff")
+	// Addressed by name and content hash, so re-inserting the same pair updates
+	// the record in place and repoints it at the directory the entry was moved
+	// to. The content hash is deliberately left alone: that disagreement with
+	// the directory name is the whole fixture.
+	pkg.StorePath = moved
+	if err := openDoctorDB(t).InsertPackage(pkg); err != nil {
+		t.Fatalf("repoint package at the moved entry: %v", err)
+	}
+
+	out, err := runDoctor(t, true)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for an entry stored under another hash, want an error; output was:\n%s", out)
+	}
+
+	if !strings.Contains(out, "ffffffffffffffff") && !strings.Contains(out, "ffffffff") {
+		t.Errorf("RunDoctor did not name the directory the entry is stored under, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorFaultsATamperedRootManifest keeps the carve-out for lnpm's own
+// rewrite as narrow as the rewrite is.
+//
+// store.stripLifecycleScripts returns without writing anything unless the
+// manifest has a scripts map holding prepare or prepublish, and what it does
+// write is a re-marshalled document. So a stored manifest that is not in that
+// form was never rewritten, and a mismatch on it is damage - on the one file
+// worth tampering with, since main, bin and postinstall survive the strip
+// untouched.
+func TestRunDoctorFaultsATamperedRootManifest(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"package.json": `{"name":"left-pad","version":"1.2.3"}`,
+	})
+
+	tamperWithStoreFile(t, pkg.StorePath, "package.json", `{"name":"left-pad","version":"1.2.3","bin":{"left-pad":"./pwn.js"}}`)
+
+	out, err := runDoctor(t, true)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for a tampered root manifest, want an error; output was:\n%s", out)
+	}
+
+	if !strings.Contains(out, "do not hold the content recorded for them") {
+		t.Errorf("RunDoctor excused a tampered manifest as one lnpm rewrote itself, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorExcusesAManifestTheStripCouldHaveWritten is the same carve-out
+// read the other way: a stored manifest that is exactly what the strip emits -
+// a re-marshalled document with a scripts map and neither prepare nor
+// prepublish left in it - is the one case doctor cannot tell from damage, so it
+// is reported as unchecked rather than faulted.
+//
+// The expected bytes are spelled out rather than produced with encoding/json,
+// so a change to how the store re-marshals a manifest has to be made here too
+// and cannot quietly stop this test exercising the excusing branch.
+func TestRunDoctorExcusesAManifestTheStripCouldHaveWritten(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"package.json": `{"name":"left-pad","version":"1.2.3","scripts":{"prepare":"build","test":"t"}}`,
+	})
+
+	tamperWithStoreFile(t, pkg.StorePath, "package.json", "{\n  \"name\": \"left-pad\",\n  \"scripts\": {\n    \"test\": \"t\"\n  },\n  \"version\": \"1.2.3\"\n}\n")
+
+	out, err := runDoctor(t, true)
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a manifest the store's own rewrite could have written, want nil", err)
+	}
+
+	if strings.Contains(out, "do not hold the content recorded for them") {
+		t.Errorf("RunDoctor faulted a manifest lnpm rewrote itself, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "could not be checked") {
+		t.Errorf("RunDoctor passed over the manifest it could not check instead of naming it, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorDoesNotFailForAPackageWithNoRecordedFiles aligns this check with
+// what add already does about the same state. storeFilesForLink treats a
+// missing file manifest as a reason to relink the entry in full rather than as
+// damage, and Checks 5 and 7 make the same allowance for a store written before
+// completeness markers existed. An entry doctor cannot verify is named, but it
+// is a gap in what was checked and not a broken install.
+func TestRunDoctorDoesNotFailForAPackageWithNoRecordedFiles(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+	writeCompletenessMarker(t, entry, "aaa111")
+	if err := openDoctorDB(t).InsertPackage(&db.Package{
+		Name: "left-pad", Version: "1.2.3", ContentHash: "aaa111", StorePath: entry,
+	}); err != nil {
+		t.Fatalf("insert package: %v", err)
+	}
+
+	out, err := runDoctor(t, true)
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a package with no recorded file list, want nil: add relinks that in full rather than calling it damage", err)
+	}
+
+	if !strings.Contains(out, "could not be verified") {
+		t.Errorf("RunDoctor printed OK over an entry it never compared against anything, output was:\n%s", out)
+	}
+}
+
+// TestRunDoctorReportsTheBytesItActuallyRead pins the count in the OK line to
+// the files on disk rather than to the sizes the database happens to record.
+// The two are independent - size is not part of any hash - so a stale or wrong
+// Size would otherwise be reported as though it had been read.
+func TestRunDoctorReportsTheBytesItActuallyRead(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"index.js": "0123456789", // ten bytes on disk
+	})
+	misrecordFileSize(t, "left-pad", "index.js", 999999)
+
+	out, _ := runDoctor(t, true)
+
+	line := doctorCheckLine(t, out, "Checking store file integrity... ")
+	if !strings.Contains(line, "10 B") {
+		t.Errorf("integrity check reported %q, want the 10 bytes it actually read; output was:\n%s", line, out)
+	}
+}
+
+// misrecordFileSize rewrites the recorded size of one file row, leaving its
+// content hash alone, so the row still describes the stored bytes but no longer
+// describes how many of them there are.
+func misrecordFileSize(t *testing.T, packageName, relPath string, size int64) {
+	t.Helper()
+
+	database := openDoctorDB(t)
+	pkg, err := database.GetPackageByName(packageName)
+	if err != nil || pkg == nil {
+		t.Fatalf("look up %s: pkg = %v, err = %v", packageName, pkg, err)
+	}
+	entries, err := database.GetFilesForPackage(pkg.ID)
+	if err != nil {
+		t.Fatalf("read file rows: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.RelativePath == relPath {
+			entry.Size = size
+		}
+	}
+	if err := database.InsertFiles(pkg.ID, entries); err != nil {
+		t.Fatalf("rewrite file rows: %v", err)
+	}
+}
+
 // TestRunDoctorChecksANestedManifest keeps the carve-out for lnpm's own rewrite
 // as narrow as the rewrite is. store.stripLifecycleScripts opens exactly one
 // path, the entry's root package.json, so a package.json shipped inside the
@@ -445,12 +657,10 @@ func writeDoctorFixtureFile(t *testing.T, root, relPath, content string, mode os
 }
 
 // tamperWithStoreFile replaces a file inside a store entry with other bytes,
-// which is the damage the integrity check exists to find.
-//
-// Removed and recreated rather than written in place, and that is not a detail:
-// #333 leaves store content read-only, so an in-place write fails outright, and
-// on a hardlink store the file is one inode shared with every project the
-// package is linked into.
+// which is the damage the integrity check exists to find. It removes and
+// recreates rather than writing in place, for the reasons poisonStoreFile in
+// the tests package records - it is the same manoeuvre against an entry this
+// package assembled rather than one lnpm published.
 func tamperWithStoreFile(t *testing.T, entry, relPath, content string) {
 	t.Helper()
 
@@ -488,13 +698,41 @@ func TestRunDoctorSucceedsWhenAllChecksPass(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
 	newDoctorStore(t, dir)
 
-	out, err := runDoctor(t, false)
+	out, err := runDoctor(t, true)
 
 	if !strings.Contains(out, "All checks passed") {
 		t.Fatalf("this test needs a run where every check passes, output was:\n%s", out)
 	}
 	if err != nil {
 		t.Errorf("RunDoctor() = %v on a healthy store, want nil", err)
+	}
+}
+
+// TestRunDoctorDoesNotClaimAFullPassWithContentUnchecked is #439's own defect
+// reproduced in the line users actually read. The check line saying SKIPPED is
+// no use if the summary two lines later says every check passed: a skip adds
+// neither an issue nor a warning, so the run ended by claiming a clean bill of
+// health over a check that never ran.
+//
+// The summary must not say that, and it must not shout either - a default run
+// is the ordinary way to use doctor, not a fault.
+func TestRunDoctorDoesNotClaimAFullPassWithContentUnchecked(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	newDoctorStore(t, dir)
+
+	out, err := runDoctor(t, false)
+	if err != nil {
+		t.Errorf("RunDoctor() = %v on a healthy store with content unchecked, want nil: a skip is not a fault", err)
+	}
+
+	if strings.Contains(out, "All checks passed") {
+		t.Errorf("RunDoctor claimed every check passed after skipping one, output was:\n%s", out)
+	}
+	if strings.Contains(out, "issue(s)") || strings.Contains(out, "warning(s)") {
+		t.Errorf("RunDoctor reported a skipped check as a finding, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "--verify-content") {
+		t.Errorf("RunDoctor did not say what was left unchecked or how to check it, output was:\n%s", out)
 	}
 }
 
@@ -541,6 +779,9 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 		// requires, when set, skips the scenario where the platform cannot
 		// produce the failure its branch is reached through.
 		requires func(t *testing.T)
+		// verifyContent runs the scenario with the content check on, for the
+		// call sites that only exist inside it.
+		verifyContent bool
 	}{
 		{
 			name: "store missing",
@@ -573,7 +814,40 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 			name: "everything healthy",
 			setup: func(t *testing.T, dir string) string {
 				newDoctorStore(t, dir)
+				return "Every check that ran passed" // the default run skips Check 6
+			},
+		},
+		{
+			name:          "everything healthy, content verified",
+			verifyContent: true,
+			setup: func(t *testing.T, dir string) string {
+				newDoctorStore(t, dir)
 				return "All checks passed"
+			},
+		},
+		{
+			name:          "tampered store content",
+			verifyContent: true,
+			setup: func(t *testing.T, dir string) string {
+				pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+					"index.js": "module.exports = 'left-pad';",
+				})
+				tamperWithStoreFile(t, pkg.StorePath, "index.js", "module.exports = 'poisoned';")
+				return "do not hold the content recorded for them" // and the "x Found N issue(s)" summary
+			},
+		},
+		{
+			name:          "store entry that could not be verified",
+			verifyContent: true,
+			setup: func(t *testing.T, dir string) string {
+				entry := seedUnmarkedEntry(t, dir, "left-pad", "aaa111")
+				writeCompletenessMarker(t, entry, "aaa111")
+				if err := openDoctorDB(t).InsertPackage(&db.Package{
+					Name: "left-pad", Version: "1.2.3", ContentHash: "aaa111", StorePath: entry,
+				}); err != nil {
+					t.Fatalf("insert package: %v", err)
+				}
+				return "could not be verified" // and the "! Found N warning(s)" summary
 			},
 		},
 		{
@@ -665,7 +939,7 @@ func TestRunDoctorMarkersComeFromTheIconHelpers(t *testing.T) {
 			dir := newDoctorStoreConfig(t)
 			want := tc.setup(t, dir)
 
-			out, _ := runDoctor(t, false)
+			out, _ := runDoctor(t, tc.verifyContent)
 
 			if !strings.Contains(out, want) {
 				t.Fatalf("this scenario needs a report containing %q, output was:\n%s", want, out)

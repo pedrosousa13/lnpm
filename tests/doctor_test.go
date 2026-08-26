@@ -16,8 +16,12 @@ func TestDoctorHealthyStore(t *testing.T) {
 	env := setupTest(t)
 	env.publishAndAdd("doctor-pkg")
 
+	// Content verification is on, so that "healthy" here means every check ran
+	// and passed. A default run leaves Check 6 out, and the summary then says so
+	// rather than claiming a full pass - which is the honest answer, but not the
+	// one this test is about.
 	out := captureStdout(t, func() {
-		if err := cli.RunDoctor(false); err != nil {
+		if err := cli.RunDoctor(true); err != nil {
 			t.Errorf("RunDoctor() error = %v", err)
 		}
 	})
