@@ -166,9 +166,10 @@ func writeManifest(dir, lnpmPath string, linkType LinkType, files []*pack.FileIn
 	}
 }
 
-// reusableFiles returns the relative paths whose copy in the previous link is
-// already what the new link wants, so it can be carried over instead of
-// materialised again.
+// reusableFiles returns the relative paths whose copy in the previous link the
+// manifest and a listing of the directory agree is already what the new link
+// wants. They are candidates and not the answer: verifiedReusable reads their
+// bytes back before any of them is carried over.
 //
 // present is what scanLinked found on disk, and a path missing from it is never
 // reusable however well the manifest describes it. The manifest records what was
@@ -194,6 +195,107 @@ func reusableFiles(prior *linkManifest, present map[string]bool, files []*pack.F
 		}
 	}
 	return reusable
+}
+
+// hashLinkedFile is pack.HashFile behind a variable so a test can record which
+// paths verifiedReusable reads. Production code never reassigns it, and the
+// hashing itself is the packer's: a second implementation of "the hash of this
+// file's bytes" that drifted from pack.HashFile would decide every reuse wrongly
+// rather than fail visibly.
+var hashLinkedFile = pack.HashFile
+
+// verifiedReusable is reusable less the files whose bytes in the previous link
+// are no longer the ones the manifest recorded (#332).
+//
+// reusableFiles answers from the manifest and a listing of what is on disk, and
+// neither says anything about content: a file edited in place since it was
+// linked is present, and the manifest's hash for it still matches the hash of
+// the file now being linked, so it was carried over unread and the store's bytes
+// never arrived. The relink then reported it unchanged, which is true of the
+// package and false of the file. The manifest's own path check is not an
+// integrity check and was never meant to be one - see linkManifest.
+//
+// Only the candidates are read, and that is the whole set at risk. A file whose
+// content really differs between the two links fails was.Hash == f.ContentHash
+// and is materialised out of the store whatever is on disk, so reading it would
+// buy nothing and cost a read of a file about to be overwritten. What is left is
+// exactly what reusableFiles returned, which is also the bound on the cost: one
+// read of the reuse set, once, and nothing outside it.
+//
+// This is not free, and it is not always cheaper than the materialisation it
+// avoids. The tempting argument - #295 exists to avoid writes, hashing only
+// reads, so verifying must cost less than declining to reuse - is wrong on the
+// two paths lnpm prefers. A reflink is an ioctl and a hard link is one link(2);
+// neither moves a byte of file data. Verification reads the whole file. So per
+// file it is the expensive side of that trade, not the cheap one, and it gets
+// worse rather than better when the bytes are not in the page cache: the read
+// becomes real I/O while the syscalls it is compared against still move nothing.
+// Only in copy mode, where materialising reads and writes every byte, is
+// verifying plainly the cheaper of the two.
+//
+// BenchmarkVerifiedReusable and the BenchmarkRelink* cases beside it measure the
+// whole shape, warm, over 2000 files of 5KB; the numbers below are from an
+// Intel N150 on ext4, where reflink is unavailable and a hard link is what runs.
+// Relinking with nothing changed - Link's shortcut, where verification is the
+// only work - is 38ms against 5.5ms before this existed. Relinking with one
+// file changed is 61ms, against 45ms to give up on reuse and materialise all
+// 2000 out of the store: on this filesystem the incremental path now costs more
+// than the non-incremental one it was built to beat. Reuse still buys what a
+// benchmark does not show - a carried-over file keeps its inode, so a watcher or
+// a bundler does not see the whole package change - and copy mode still favours
+// it outright. But the honest justification for reading these files is that a
+// relink which reports a file unchanged has to be right about that, not that the
+// reading is cheap.
+//
+// The reads are serial, and that was measured too: the same check spread across
+// as many workers as Link's own passes use came to 29ms rather than 38ms, 1.4x
+// on the hashing and 24% on the relink, because hashing a warm file is dominated
+// by the read syscall rather than by xxhash and the cores do not show up. Worth
+// revisiting if the cost above is judged too high - but not worth putting a
+// second concurrent pass over the consumer's tree into a fix whose whole point
+// is correctness, for that.
+//
+// A candidate that cannot be hashed is not reusable. It is not an error either:
+// a file that has gone, or turned unreadable, between scanLinked and here is a
+// damaged .lnpm/{package}, and relinking has always been the way to repair one.
+// Materialising it out of the store is that repair; failing the link would
+// refuse to perform it.
+//
+// The on-disk mode is deliberately not compared. Since #333 the store's content
+// is write protected and every materialisation path carries that through, so a
+// linked file's mode is f.Mode &^ 0222 rather than the f.Mode the manifest
+// records - the two recorded modes reusableFiles compares are a different
+// question. Content is what a consumer builds against, and re-materialising over
+// a chmod the user made themselves would be a repair nobody asked for.
+//
+// It walks files and filters, rather than taking the expected hash along in the
+// map reusableFiles returns and walking that. Two reasons, both small: an empty
+// ContentHash already means "no hash recorded" here, so it could not double as a
+// map's absent-sentinel without overloading a live value; and walking files reads
+// the tree in the package's own path order, where ranging a map would scatter the
+// reads across it at random.
+func verifiedReusable(lnpmPath string, reusable map[string]bool, files []*pack.FileInfo) map[string]bool {
+	if len(reusable) == 0 {
+		return reusable
+	}
+
+	verified := make(map[string]bool, len(reusable))
+	for _, f := range files {
+		if !reusable[f.RelPath] {
+			continue
+		}
+		hash, err := hashLinkedFile(filepath.Join(lnpmPath, f.RelPath))
+		if err != nil {
+			debug.Logf("link: cannot read the linked %s to check it, re-materialising it: %v", f.RelPath, err)
+			continue
+		}
+		if hash != f.ContentHash {
+			debug.Logf("link: the linked %s no longer holds the content recorded for it, re-materialising it", f.RelPath)
+			continue
+		}
+		verified[f.RelPath] = true
+	}
+	return verified
 }
 
 // scanLinked reports what a linked package directory actually holds: the regular

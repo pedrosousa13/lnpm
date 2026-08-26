@@ -441,10 +441,12 @@ lnpm push --skip-hooks
    - Skip it if it is live-linked (`.lnpm/{package}` is a link, not a
      directory): it already resolves to the source directory being pushed, and
      relinking would swap its live link for a snapshot copy
-   - Compare the package against `.lnpm/{package}/.lnpm-linked`. If every file
-     is unchanged and the directory holds nothing else, there is nothing to do:
-     the directory is left exactly as it is, no file changes identity, and only
-     the `node_modules` symlink is checked
+   - Compare the package against `.lnpm/{package}/.lnpm-linked`, then read back
+     the files that comparison says are unchanged and confirm they still hold
+     the recorded content. If every file passes both and the directory holds
+     nothing else, there is nothing to do: the directory is left exactly as it
+     is, no file changes identity, and only the `node_modules` symlink is
+     checked
    - Otherwise create a temporary directory alongside `.lnpm/{package}/` and
      fill it: an unchanged file is hard linked across from the package already
      in place, one syscall and no data moved; a changed one is materialised out
@@ -457,8 +459,9 @@ lnpm push --skip-hooks
    `node_modules/{package}` never sees an empty or half-written package, and a
    failed or interrupted push leaves the previous package in place.
 
-   A push therefore costs each project the size of the change rather than the
-   size of the package, and reports both: `3 changed, 1997 unchanged`.
+   A push therefore *writes* each project the size of the change rather than the
+   size of the package, and reports both: `3 changed, 1997 unchanged`. It reads
+   more than it writes — see the manifest section below.
 
 #### The link manifest (`.lnpm-linked`)
 
@@ -470,14 +473,34 @@ last, inside the temporary directory — so it commits with the content it
 describes and can never outlive a swap that did not happen or survive one that
 did.
 
-A relink reads it to decide what it can leave alone. It is compared by name, not
-by content, so relinking still repairs a file deleted from under it or replaced
-by something that is not a regular file, and still drops a stray the package does
-not list — but it does not detect a file edited in place. Finding that out means
-reading every file, which is the cost this exists to remove. An edit that reached
-a hard-linked file wrote through the shared inode into the store entry itself, so
-no relink ever repaired it either; the store's write protection is what stops
-that edit now, and an entry damaged before it existed still needs `lnpm gc` and a
+A relink reads it to decide what it can leave alone, and then reads the files it
+was about to leave alone to confirm they still hold the recorded content. So
+relinking repairs a file deleted from under it or replaced by something that is
+not a regular file, drops a stray the package does not list, and re-materialises
+a file edited in place — which it reports as changed, because it wrote it.
+
+Only the files a relink was about to skip are read. A file whose content differs
+between the two links fails the manifest's hash comparison and is materialised
+out of the store whatever is on disk, so reading it would decide nothing and cost
+a read of a file about to be overwritten.
+
+Reading the rest is not free, and on a filesystem that hard links or reflinks it
+is not cheaper than the materialisation it avoids either — those move no file
+data at all, where verification reads every byte. Warm, over 2000 files of 5 KB:
+a relink with nothing changed costs 38 ms against 5.5 ms before the check, and a
+relink with one file changed costs 61 ms against 45 ms to abandon reuse and
+materialise all 2000. Copy mode, and a cold page cache, move the trade in
+opposite directions. Reuse still keeps a carried-over file's inode, which is what
+stops a watcher seeing the whole package change — but the reason these files are
+read is that a relink reporting a file unchanged has to be right about it. The
+full argument and the benchmarks behind it are on `verifiedReusable` in
+`internal/link/manifest.go`.
+
+What that repairs is accidental damage — a build step that wrote into
+`node_modules`, a script that cleaned too much. An edit that reached a hard-linked
+file wrote through the shared inode into the store entry itself, and then there
+was nothing left to repair from; the store's write protection is what stops that
+edit now, and an entry damaged before it existed still needs `lnpm gc` and a
 re-publish.
 
 The location it records is the directory as the filesystem knows it — absolute,
