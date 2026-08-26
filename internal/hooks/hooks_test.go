@@ -15,6 +15,43 @@ import (
 // orderLogName is the file each test lifecycle script appends its own name to.
 const orderLogName = "order.log"
 
+// requireNpm skips the calling test when npm is not on PATH. RunPrepare shells
+// out to `npm run <script>`, so without npm the script tests fail rather than
+// exercise the hook (e.g. CI without Node).
+func requireNpm(t *testing.T) {
+	t.Helper()
+
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm not found in PATH; skipping prepare-hook tests")
+	}
+}
+
+// logFor returns a script that appends the hook name to one shared log file, so
+// a test can prove which scripts ran and in which order. It goes through node
+// rather than shell built-ins because npm runs scripts under cmd.exe on Windows,
+// where `>>` appends a trailing space and `;` is not a command separator. node is
+// already required here, so this costs nothing.
+func logFor(name string) string {
+	return `node -e "require('fs').appendFileSync('` + orderLogName + `','` + name + `\n')"`
+}
+
+// writePackageJSON writes a minimal package.json carrying scripts into dir.
+func writePackageJSON(t *testing.T, dir string, scripts map[string]string) {
+	t.Helper()
+
+	data, err := json.MarshalIndent(map[string]interface{}{
+		"name":    "test-pkg",
+		"version": "1.0.0",
+		"scripts": scripts,
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write package.json: %v", err)
+	}
+}
+
 // readOrderLog returns the script names recorded in dir's order log, in the
 // order they ran. A missing log means no script ran.
 func readOrderLog(t *testing.T, dir string) []string {
@@ -31,22 +68,36 @@ func readOrderLog(t *testing.T, dir string) []string {
 	return strings.Fields(string(data))
 }
 
-func TestRunPrepare(t *testing.T) {
-	// RunPrepare shells out to `npm run <script>` for any matched script.
-	// Without npm on PATH the script tests fail rather than exercise the hook,
-	// so skip them when npm is unavailable (e.g. CI without Node).
-	if _, err := exec.LookPath("npm"); err != nil {
-		t.Skip("npm not found in PATH; skipping prepare-hook tests")
+// TestRunPrepareFollowsNpmScriptOrder pins the sequence RunPrepare runs the
+// publish lifecycle scripts in, by observing the scripts themselves rather than
+// reading publishScripts back. See publishScripts for the order, the npm
+// measurement behind it, and why getting it wrong fails silently.
+//
+// It sits outside TestRunPrepare's table on purpose. The table varies which
+// scripts a package defines; this varies nothing and asserts one thing, so the
+// sequence is stated somewhere a reader editing hooks.go will find it.
+func TestRunPrepareFollowsNpmScriptOrder(t *testing.T) {
+	requireNpm(t)
+
+	dir := t.TempDir()
+	writePackageJSON(t, dir, map[string]string{
+		"prepack":        logFor("prepack"),
+		"prepare":        logFor("prepare"),
+		"prepublishOnly": logFor("prepublishOnly"),
+	})
+
+	if err := RunPrepare(dir, false); err != nil {
+		t.Fatalf("RunPrepare returned an error: %v", err)
 	}
 
-	// logFor returns a script that appends the hook name to one shared log file,
-	// so the test can prove which scripts ran and in which order. It goes
-	// through node rather than shell built-ins because npm runs scripts under
-	// cmd.exe on Windows, where `>>` appends a trailing space and `;` is not a
-	// command separator. node is already required here, so this costs nothing.
-	logFor := func(name string) string {
-		return `node -e "require('fs').appendFileSync('` + orderLogName + `','` + name + `\n')"`
+	want := []string{"prepublishOnly", "prepack", "prepare"}
+	if got := readOrderLog(t, dir); !slices.Equal(got, want) {
+		t.Errorf("scripts ran %v, want %v", got, want)
 	}
+}
+
+func TestRunPrepare(t *testing.T) {
+	requireNpm(t)
 
 	// failAfterLog returns a script that logs its own name and then fails.
 	failAfterLog := func(name string) string {
@@ -81,15 +132,6 @@ func TestRunPrepare(t *testing.T) {
 				"prepublishOnly": logFor("prepublishOnly"),
 			},
 			wantRun: []string{"prepublishOnly", "prepare"},
-		},
-		{
-			name: "runs every publish script in order",
-			scripts: map[string]string{
-				"prepack":        logFor("prepack"),
-				"prepare":        logFor("prepare"),
-				"prepublishOnly": logFor("prepublishOnly"),
-			},
-			wantRun: []string{"prepublishOnly", "prepare", "prepack"},
 		},
 		{
 			name: "runs prepack if no prepare",
@@ -135,24 +177,10 @@ func TestRunPrepare(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create temp directory
 			tmpDir := t.TempDir()
-
-			// Write package.json with scripts
-			pkgJSON := map[string]interface{}{
-				"name":    "test-pkg",
-				"version": "1.0.0",
-				"scripts": tt.scripts,
-			}
-			data, err := json.MarshalIndent(pkgJSON, "", "  ")
-			if err != nil {
-				t.Fatalf("failed to marshal package.json: %v", err)
-			}
-			pkgJSONPath := filepath.Join(tmpDir, "package.json")
-			if err := os.WriteFile(pkgJSONPath, data, 0644); err != nil {
-				t.Fatalf("failed to write package.json: %v", err)
-			}
+			writePackageJSON(t, tmpDir, tt.scripts)
 
 			// Run prepare
-			err = RunPrepare(tmpDir, tt.skipHooks)
+			err := RunPrepare(tmpDir, tt.skipHooks)
 
 			if tt.wantError {
 				if err == nil {

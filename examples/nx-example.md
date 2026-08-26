@@ -356,7 +356,7 @@ Pushed to 1/1 projects
 
 Build before you push, and make sure the build output lands where push will see it. The library's `main` is `./dist/index.js`, so the app loads `libs/feature-auth/dist` — editing `src/` and pushing ships the new sources alongside the old build, and the app keeps running the previous one. Note that the `build` target above writes to `dist/libs/feature-auth` at the workspace root, which is outside the directory push packs; point its `outputPath` at `libs/feature-auth/dist` so the output lands inside the library.
 
-lnpm does run your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so wiring `nx build feature-auth` into one of those makes push rebuild for you. A plain `build` script is not run automatically — that is what the `lnpm-push` target's `dependsOn` is for.
+lnpm does run your `prepublishOnly`, `prepack` and `prepare` scripts before packing, so wiring `nx build feature-auth` into one of those makes push rebuild for you. A plain `build` script is not run automatically — that is what the `lnpm-push` target's `dependsOn` is for.
 
 **Issue: Nx cache conflicts**
 

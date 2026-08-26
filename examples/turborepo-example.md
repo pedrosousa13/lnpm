@@ -259,5 +259,5 @@ turbo run build --filter=@my/ui
 cd packages/ui && lnpm push
 ```
 
-lnpm does run your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so moving the build into one of those makes push rebuild for you. The plain `build` script above is not run automatically.
+lnpm does run your `prepublishOnly`, `prepack` and `prepare` scripts before packing, so moving the build into one of those makes push rebuild for you. The plain `build` script above is not run automatically.
 

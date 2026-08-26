@@ -609,7 +609,7 @@ cd libs/feature-auth && lnpm push
 
 With Nx, also check where the build writes: its default `outputPath` sits at the workspace root, outside the directory push packs, so the rebuild never reaches the pushed package. See [Nx Project Configuration](#nx-project-configuration).
 
-lnpm runs your `prepublishOnly`, `prepare` and `prepack` scripts before packing, so if your build is wired into one of those, push rebuilds for you. A plain `build` script is not run automatically.
+lnpm runs your `prepublishOnly`, `prepack` and `prepare` scripts before packing, so if your build is wired into one of those, push rebuilds for you. A plain `build` script is not run automatically.
 
 ### Issue: Slow push times
 

@@ -426,10 +426,12 @@ lnpm automatically runs your package's build (prepare) scripts before publishing
 Before publishing or pushing, lnpm runs every one of these scripts that your `package.json` defines, always in this order:
 
 1. `prepublishOnly` — Runs only on publish
-2. `prepare` — General build script
-3. `prepack` — Runs before packing files
+2. `prepack` — Runs before packing files
+3. `prepare` — General build script
 
 If a script fails, the ones after it do not run and the command stops.
+
+This is npm's own order, so a package that builds under `npm publish` builds the same way under lnpm. `prepack` before `prepare` matters when one reads what the other wrote.
 
 **Example package.json:**
 ```json
