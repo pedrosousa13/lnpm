@@ -75,6 +75,15 @@ func (p projectLinks) tag(name string) string {
 	return ""
 }
 
+// pinned reports whether the project is pinned to one build of name, which is
+// what an add that named a build rather than a channel records. An absent link
+// is not pinned: a package the database has no row for is one nothing ever
+// pinned. See ADR-0006.
+func (p projectLinks) pinned(name string) bool {
+	l, ok := p[name]
+	return ok && l.Pinned
+}
+
 // linksOfProject reads the links the project at path holds, keyed by package
 // name.
 //

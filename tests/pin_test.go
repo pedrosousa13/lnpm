@@ -248,3 +248,143 @@ func TestAddSaysWhenItPins(t *testing.T) {
 		t.Errorf("the add that pinned the link never said so, output was:\n%s", out)
 	}
 }
+
+// TestPullLeavesAPinnedPackageAlone is the defect #300 reports, from the side
+// bare `lnpm pull` reaches it: a sweep over the whole lock must refresh
+// everything else and leave the pin where it is.
+func TestPullLeavesAPinnedPackageAlone(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("sweeper")
+	_, pinned := pinnedFixture(t, env, "swept-lib", projectDir)
+
+	env.chdir(projectDir)
+	if err := cli.RunPull(nil); err != nil {
+		t.Fatalf("RunPull() error = %v", err)
+	}
+
+	entry := lockEntry(t, env, projectDir, "swept-lib")
+	if entry.Hash != pinned.ContentHash {
+		t.Errorf("the lock entry moved to %s, want the pinned %s", entry.Hash, pinned.ContentHash)
+	}
+	if !entry.Pinned {
+		t.Error("the pull dropped the pin from the lock entry")
+	}
+
+	link := linkFor(t, env, projectDir, "swept-lib")
+	if link.PackageID != pinned.ID {
+		t.Errorf("the pull repointed the link to package %d, want the pinned %d", link.PackageID, pinned.ID)
+	}
+	if !link.Pinned {
+		t.Error("the pull dropped the pin from the link row")
+	}
+}
+
+// TestPullReportsThePackageItSkipped covers the reporting half of the second
+// decision. Silence is what makes the current behaviour a defect rather than a
+// preference: a user who pulled to update one package has to be told another was
+// left alone and why.
+func TestPullReportsThePackageItSkipped(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("reporter")
+	pinnedFixture(t, env, "reported-lib", projectDir)
+
+	env.chdir(projectDir)
+	out := captureStdout(t, func() {
+		if err := cli.RunPull(nil); err != nil {
+			t.Errorf("RunPull() error = %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "reported-lib") {
+		t.Errorf("the pull did not name the package it skipped, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "pinned") {
+		t.Errorf("the pull did not say a pin was why it skipped, output was:\n%s", out)
+	}
+}
+
+// TestPullRefreshesOthersAroundAPin is the regression this issue reports, and
+// the reason a pin is skipped rather than refused when the pull is a sweep:
+// pulling to update one package must not undo another package's rollback, and
+// must not be stopped by it either.
+func TestPullRefreshesOthersAroundAPin(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("mixed")
+
+	// Y is rolled back; X is an ordinary consumer with an update waiting.
+	_, pinnedY := pinnedFixture(t, env, "rollback-y", projectDir)
+
+	pkgX := env.publishPkg("update-x", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'x-v1';",
+	})
+	env.addPkg(projectDir, "update-x", false, false)
+	env.republish(pkgX, "update-x", "2.0.0", "module.exports = 'x-v2';")
+
+	env.chdir(projectDir)
+	if err := cli.RunPull(nil); err != nil {
+		t.Fatalf("RunPull() error = %v", err)
+	}
+
+	assertLockVersion(t, env, projectDir, "update-x", "2.0.0")
+	if got := lockEntry(t, env, projectDir, "rollback-y").Hash; got != pinnedY.ContentHash {
+		t.Errorf("pulling to update update-x moved rollback-y to %s, undoing its rollback", got)
+	}
+}
+
+// TestPullNamingAPinnedPackageRefuses is the asymmetry ADR-0006 argues for.
+// Naming a package is a request rather than a sweep, and the request cannot be
+// honoured: a newer build is in the store and the link says not to take it. So
+// the user who asked is told which of the two they are in, and how to get out.
+func TestPullNamingAPinnedPackageRefuses(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("asker")
+	_, pinned := pinnedFixture(t, env, "asked-lib", projectDir)
+
+	env.chdir(projectDir)
+	var err error
+	out := captureStdout(t, func() {
+		err = cli.RunPull([]string{"asked-lib"})
+	})
+	if err == nil {
+		t.Fatal("RunPull() reported success for a package it cannot move")
+	}
+	message := err.Error() + "\n" + out
+	if !strings.Contains(message, "pinned") {
+		t.Errorf("the refusal does not say the package is pinned:\n%s", message)
+	}
+	if !strings.Contains(message, "lnpm add asked-lib") {
+		t.Errorf("the refusal does not name the command that unpins:\n%s", message)
+	}
+
+	if got := lockEntry(t, env, projectDir, "asked-lib").Hash; got != pinned.ContentHash {
+		t.Errorf("the refused pull moved the lock entry to %s anyway", got)
+	}
+}
+
+// TestPullNamingAPinnedPackageLeavesTheRestAlone pins the refusal's timing. It
+// happens with the rest of the named-package checks, before anything is linked,
+// so a run that refuses cannot leave the project half-pulled - which is the
+// property that block already exists for.
+func TestPullNamingAPinnedPackageLeavesTheRestAlone(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("half-puller")
+	pinnedFixture(t, env, "refused-lib", projectDir)
+
+	pkgX := env.publishPkg("companion-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'x-v1';",
+	})
+	env.addPkg(projectDir, "companion-lib", false, false)
+	env.republish(pkgX, "companion-lib", "2.0.0", "module.exports = 'x-v2';")
+
+	env.chdir(projectDir)
+	if err := cli.RunPull([]string{"companion-lib", "refused-lib"}); err == nil {
+		t.Fatal("RunPull() reported success for a run naming a pinned package")
+	}
+
+	assertLockVersion(t, env, projectDir, "companion-lib", "1.0.0")
+}
