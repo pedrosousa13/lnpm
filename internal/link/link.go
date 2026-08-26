@@ -80,16 +80,21 @@ func New(projectPath string) *Linker {
 // the size of the package. When nothing differs at all there is nothing to swap
 // and the package is left exactly as it is.
 //
-// Relinking repairs a deletion, not a modification. What is on disk is compared
-// against the manifest by name, not by content: a file that has gone, or that is
-// no longer a regular file, is materialised again out of the store, and a stray
-// the package does not list is dropped, but a file whose bytes have been edited
-// in place is left as it is and carried forward. Reading every file to find that
-// out is precisely the cost this exists to remove. An edit that reached a
-// hardlinked file rewrote the store entry through the shared inode, so no relink
-// ever repaired it either; the store's write protection (#333) is what stops
-// that edit, and an entry damaged before it existed still needs `lnpm gc` and a
-// re-publish.
+// Relinking repairs a modification as well as a deletion. A file that has gone,
+// or that is no longer a regular file, is materialised again out of the store,
+// and a stray the package does not list is dropped; a file still sitting there
+// under the right name is only carried over once its bytes have been read back
+// and found to be the ones recorded for it (#332). Only the files a relink was
+// about to skip are read - a file that really differs between the two links is
+// materialised whatever is on disk - so the reads are bounded by the set this
+// exists to leave alone, and reading a file costs less than rewriting it.
+//
+// What that repairs is accidental damage: a build step that wrote into
+// node_modules, a script that cleaned too much. An edit that reached a
+// hardlinked file used to rewrite the store entry through the shared inode, and
+// then there was nothing left to repair from; the store's write protection
+// (#333) is what stops that edit, and an entry damaged before it existed still
+// needs `lnpm gc` and a re-publish.
 //
 // The manifest is kept at .lnpm-linked inside the linked package, and that name
 // is the linker's. A package that ships a file called .lnpm-linked at its root
@@ -142,7 +147,13 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	if prior != nil {
 		present, unexpected = scanLinked(lnpmPath)
 	}
-	reusable := reusableFiles(prior, present, files)
+	// Candidates first, then their bytes. The two passes are separate because
+	// they cost differently: reusableFiles is a map lookup per file and answers
+	// for all of them, and the verification reads whole files and answers only
+	// for the ones that survived. Verifying here rather than further down is what
+	// puts it above the shortcut below, which decides from this same set whether
+	// to skip the relink entirely - the case #332 was reported against.
+	reusable := verifiedReusable(lnpmPath, reusableFiles(prior, present, files), files)
 
 	// Nothing to do at all: every file the package lists is already there and
 	// unchanged, and the directory holds nothing besides those files and the

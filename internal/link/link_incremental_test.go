@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
@@ -846,5 +847,211 @@ func TestLink_ReusesWhenTheProjectIsReachedByAnotherSpellingOfItsPath(t *testing
 		if !os.SameFile(was, after[rel]) {
 			t.Errorf("%s is a different file after relinking through a second spelling of the project path, so it was rewritten", rel)
 		}
+	}
+}
+
+// TestLink_ReplacesALinkedFileEditedInPlace is #332, and it is the scenario the
+// issue reported: a pull from 1.0.0 to 1.0.0 that reported "0 changed, 2
+// unchanged" while the consumer's file still held content nobody published.
+//
+// Reuse was decided from the manifest's recorded hash and the file's presence by
+// name, and the recorded hash describes what was linked rather than what is
+// there now. A file edited since is exactly the case those two questions cannot
+// separate: it is present, and the manifest says its content matches, so it was
+// carried over unread and the store's bytes never arrived.
+//
+// The tampered file is removed and rewritten rather than written through,
+// because the linked copy may share its inode with the store entry and writing
+// in place would edit the store as well. That is the damage #333 write protects
+// against; this is the damage relinking has to repair.
+func TestLink_ReplacesALinkedFileEditedInPlace(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	contents := map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+	}
+
+	v1 := filepath.Join(tmpDir, "store", "v1")
+	files1 := writeHashedStoreFiles(t, v1, contents)
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", v1, files1); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	tampered := filepath.Join(lnpmPath, "dist", "index.js")
+	if err := os.Remove(tampered); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tampered, []byte("module.exports = 'tampered';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second store entry holding the same content, which is what a pull of a
+	// re-published version links: nothing differs between the two, so every file
+	// is a reuse candidate and the tampered one is carried over unless its bytes
+	// are checked.
+	v2 := filepath.Join(tmpDir, "store", "v2")
+	files2 := writeHashedStoreFiles(t, v2, contents)
+
+	res, err := linker.Link("my-package", v2, files2)
+	if err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+
+	got, err := os.ReadFile(tampered)
+	if err != nil {
+		t.Fatalf("failed to read relinked dist/index.js: %v", err)
+	}
+	if string(got) != contents["dist/index.js"] {
+		t.Errorf("relinked dist/index.js = %q, want the store's content %q", string(got), contents["dist/index.js"])
+	}
+
+	// And the run must say so. Reporting a file it replaced as unchanged is the
+	// second half of the defect: a consumer who read "0 changed" would have no
+	// reason to look.
+	if res.Changed != 1 || res.Unchanged != 1 {
+		t.Errorf("Link() reported %d changed / %d unchanged, want 1 / 1: the edited file was re-materialised and must be counted as changed", res.Changed, res.Unchanged)
+	}
+}
+
+// TestLink_MaterialisesAReuseCandidateItCannotRead covers the other end of the
+// verification: a candidate whose bytes cannot be read answers the question no
+// better than one whose bytes are wrong, so it is materialised out of the store
+// rather than carried over or made to fail the link.
+//
+// Relinking has always been the way to repair a damaged .lnpm/{package}, so
+// failing to hash must mean "not reusable" and never "abort". Mode 0000 is a
+// standing version of the file that vanishes between the scan and the hash,
+// which cannot be arranged deterministically.
+func TestLink_MaterialisesAReuseCandidateItCannotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0000 does not deny reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 0000 does not deny reads")
+	}
+
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(tmpDir, "store", "my-package")
+	files := writeHashedStoreFiles(t, storePath, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+	})
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", storePath, files); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	// Replaced rather than chmod'd, for the reason the test above removes before
+	// it writes: the linked copy shares its inode with the store entry here, so
+	// chmod 0000 on it would deny reads of the store file too and the relink
+	// would materialise an unreadable file out of an unreadable source.
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	unreadable := filepath.Join(lnpmPath, "dist", "index.js")
+	if err := os.Remove(unreadable); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unreadable, []byte("module.exports = 1;\n"), 0000); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := linker.Link("my-package", storePath, files)
+	if err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+	if res.Changed != 1 || res.Unchanged != 1 {
+		t.Errorf("Link() reported %d changed / %d unchanged, want 1 / 1", res.Changed, res.Unchanged)
+	}
+
+	got, err := os.ReadFile(unreadable)
+	if err != nil {
+		t.Fatalf("the unreadable file was carried over rather than materialised out of the store: %v", err)
+	}
+	if string(got) != "module.exports = 1;\n" {
+		t.Errorf("relinked dist/index.js = %q, want the store's content", string(got))
+	}
+}
+
+// TestLink_HashesOnlyTheReuseCandidates pins the bound on #332's verification.
+//
+// Reading a file the relink is about to overwrite buys nothing: a file whose
+// content differs between the two links fails the manifest's hash comparison and
+// is materialised out of the store however it looks on disk. Widening the check
+// to every file would pay a read for each of those and change no decision, and
+// it would turn a relink of a package where everything changed - the worst case
+// #295 exists to keep cheap - into a full read of the previous link on top of a
+// full write of the new one.
+//
+// The seam is the only way to observe it. Hashing a non-candidate would change
+// neither the result nor the counts, so nothing about the linked package can
+// tell the two implementations apart.
+func TestLink_HashesOnlyTheReuseCandidates(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	v1 := filepath.Join(tmpDir, "store", "v1")
+	files1 := writeHashedStoreFiles(t, v1, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+		"dist/utils.js": "module.exports = 2;\n",
+	})
+
+	linker := New(projectPath)
+	if _, err := linker.Link("my-package", v1, files1); err != nil {
+		t.Fatalf("first Link() error: %v", err)
+	}
+
+	// Only dist/utils.js differs, so it is the one file outside the reuse set.
+	v2 := filepath.Join(tmpDir, "store", "v2")
+	files2 := writeHashedStoreFiles(t, v2, map[string]string{
+		"package.json":  `{"name":"my-package","version":"1.0.0"}`,
+		"dist/index.js": "module.exports = 1;\n",
+		"dist/utils.js": "module.exports = 99;\n",
+	})
+
+	var mu sync.Mutex
+	var hashed []string
+	original := hashLinkedFile
+	hashLinkedFile = func(path string) (string, error) {
+		mu.Lock()
+		hashed = append(hashed, path)
+		mu.Unlock()
+		return original(path)
+	}
+	t.Cleanup(func() { hashLinkedFile = original })
+
+	if _, err := linker.Link("my-package", v2, files2); err != nil {
+		t.Fatalf("second Link() error: %v", err)
+	}
+
+	lnpmPath := filepath.Join(projectPath, ".lnpm", "my-package")
+	want := map[string]bool{
+		filepath.Join(lnpmPath, "package.json"):     true,
+		filepath.Join(lnpmPath, "dist", "index.js"): true,
+	}
+	for _, path := range hashed {
+		if !want[path] {
+			t.Errorf("the relink hashed %s, which is not a reuse candidate", path)
+		}
+		delete(want, path)
+	}
+	for path := range want {
+		t.Errorf("the relink did not hash the reuse candidate %s", path)
 	}
 }

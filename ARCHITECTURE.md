@@ -470,14 +470,26 @@ last, inside the temporary directory — so it commits with the content it
 describes and can never outlive a swap that did not happen or survive one that
 did.
 
-A relink reads it to decide what it can leave alone. It is compared by name, not
-by content, so relinking still repairs a file deleted from under it or replaced
-by something that is not a regular file, and still drops a stray the package does
-not list — but it does not detect a file edited in place. Finding that out means
-reading every file, which is the cost this exists to remove. An edit that reached
-a hard-linked file wrote through the shared inode into the store entry itself, so
-no relink ever repaired it either; the store's write protection is what stops
-that edit now, and an entry damaged before it existed still needs `lnpm gc` and a
+A relink reads it to decide what it can leave alone, and then reads the files it
+was about to leave alone to confirm they still hold the recorded content. So
+relinking repairs a file deleted from under it or replaced by something that is
+not a regular file, drops a stray the package does not list, and re-materialises
+a file edited in place — which it reports as changed, because it wrote it.
+
+Only the files a relink was about to skip are read. A file whose content differs
+between the two links fails the manifest's hash comparison and is materialised
+out of the store whatever is on disk, so reading it would decide nothing and cost
+a read of a file about to be overwritten. Reading the rest is affordable because
+the saving this exists for is the *write* — the reflink syscall or the byte copy —
+and verifying a file costs less than materialising it: relinking a 2000-file,
+10 MB package where nothing changed went from 5.5 ms to 38 ms with the check,
+against 46 ms to materialise the same files instead.
+
+What that repairs is accidental damage — a build step that wrote into
+`node_modules`, a script that cleaned too much. An edit that reached a hard-linked
+file wrote through the shared inode into the store entry itself, and then there
+was nothing left to repair from; the store's write protection is what stops that
+edit now, and an entry damaged before it existed still needs `lnpm gc` and a
 re-publish.
 
 The location it records is the directory as the filesystem knows it — absolute,
