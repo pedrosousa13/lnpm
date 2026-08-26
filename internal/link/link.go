@@ -76,18 +76,18 @@ func New(projectPath string) *Linker {
 //
 // Only the files that differ from the last link are materialised. The rest are
 // hard linked across from the package already in place, one syscall each and no
-// data moved, so the cost of a relink follows the size of the change rather than
-// the size of the package. When nothing differs at all there is nothing to swap
-// and the package is left exactly as it is.
+// data moved, so a carried-over file keeps the inode the consumer already had
+// rather than becoming an identical replacement. When nothing differs at all
+// there is nothing to swap and the package is left exactly as it is.
 //
 // Relinking repairs a modification as well as a deletion. A file that has gone,
 // or that is no longer a regular file, is materialised again out of the store,
 // and a stray the package does not list is dropped; a file still sitting there
 // under the right name is only carried over once its bytes have been read back
 // and found to be the ones recorded for it (#332). Only the files a relink was
-// about to skip are read - a file that really differs between the two links is
-// materialised whatever is on disk - so the reads are bounded by the set this
-// exists to leave alone, and reading a file costs less than rewriting it.
+// about to skip are read. What that costs, and why it is worth paying when it is
+// not the cheaper option, is set out on verifiedReusable, which is the one place
+// this argument lives.
 //
 // What that repairs is accidental damage: a build step that wrote into
 // node_modules, a script that cleaned too much. An edit that reached a
@@ -153,6 +153,8 @@ func (l *Linker) Link(packageName string, storePath string, files []*pack.FileIn
 	// for the ones that survived. Verifying here rather than further down is what
 	// puts it above the shortcut below, which decides from this same set whether
 	// to skip the relink entirely - the case #332 was reported against.
+	//
+	// The reads are quantified on verifiedReusable, not here.
 	reusable := verifiedReusable(lnpmPath, reusableFiles(prior, present, files), files)
 
 	// Nothing to do at all: every file the package lists is already there and

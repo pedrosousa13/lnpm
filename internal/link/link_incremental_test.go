@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 
 	"github.com/pedrosousa13/lnpm/internal/config"
@@ -985,19 +984,18 @@ func TestLink_MaterialisesAReuseCandidateItCannotRead(t *testing.T) {
 	}
 }
 
-// TestLink_HashesOnlyTheReuseCandidates pins the bound on #332's verification.
-//
-// Reading a file the relink is about to overwrite buys nothing: a file whose
-// content differs between the two links fails the manifest's hash comparison and
-// is materialised out of the store however it looks on disk. Widening the check
-// to every file would pay a read for each of those and change no decision, and
-// it would turn a relink of a package where everything changed - the worst case
-// #295 exists to keep cheap - into a full read of the previous link on top of a
-// full write of the new one.
+// TestLink_HashesOnlyTheReuseCandidates pins the bound on #332's verification:
+// one read of the reuse set, and nothing outside it. verifiedReusable's comment
+// says what that bound is worth and what it costs; this holds it in place, since
+// widening it is a one-word edit that no other test would notice.
 //
 // The seam is the only way to observe it. Hashing a non-candidate would change
 // neither the result nor the counts, so nothing about the linked package can
 // tell the two implementations apart.
+//
+// The recorded paths are not guarded by a lock, deliberately: verifiedReusable
+// reads serially, and a change that made it concurrent should trip the race
+// detector here rather than quietly keep passing.
 func TestLink_HashesOnlyTheReuseCandidates(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectPath := filepath.Join(tmpDir, "project")
@@ -1025,13 +1023,10 @@ func TestLink_HashesOnlyTheReuseCandidates(t *testing.T) {
 		"dist/utils.js": "module.exports = 99;\n",
 	})
 
-	var mu sync.Mutex
 	var hashed []string
 	original := hashLinkedFile
 	hashLinkedFile = func(path string) (string, error) {
-		mu.Lock()
 		hashed = append(hashed, path)
-		mu.Unlock()
 		return original(path)
 	}
 	t.Cleanup(func() { hashLinkedFile = original })

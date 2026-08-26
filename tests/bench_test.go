@@ -393,9 +393,10 @@ func benchPushSetup(b *testing.B, name string, fileCount int) string {
 }
 
 // BenchmarkLnpmPushLargeIncremental is the case the incremental relink exists
-// for: a package with many files where one of them changed. Only that file
-// should reach the linked project, so the relink's share of the push should
-// track the size of the edit rather than the size of the package.
+// for: a package with many files where one of them changed. Only that file is
+// written into the linked project, so the relink's *writes* track the size of
+// the edit rather than the size of the package. Its reads do not, since #332:
+// every file it carries over is read back first. See verifiedReusable.
 func BenchmarkLnpmPushLargeIncremental(b *testing.B) {
 	pkgDir := benchPushSetup(b, "bench-incremental", 2000)
 
@@ -411,8 +412,13 @@ func BenchmarkLnpmPushLargeIncremental(b *testing.B) {
 	}
 }
 
-// BenchmarkLnpmPushLargeUnchanged pushes a large package nothing has changed
-// in, which is the case that should cost the linked project nothing at all.
+// BenchmarkLnpmPushLargeUnchanged pushes a large package nothing has changed in.
+// The linked project writes nothing: no file is materialised, no directory is
+// swapped. It does read, though - since #332 a relink confirms that the files it
+// is about to leave alone still hold the content recorded for them, so this case
+// costs one pass over the package's bytes rather than nothing at all. What that
+// pass is worth is argued on verifiedReusable, and BenchmarkVerifiedReusable in
+// internal/link measures it away from the rest of a push.
 func BenchmarkLnpmPushLargeUnchanged(b *testing.B) {
 	benchPushSetup(b, "bench-unchanged", 2000)
 
