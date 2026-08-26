@@ -278,20 +278,100 @@ func TestNewProtectsExistingEntriesOnlyOnce(t *testing.T) {
 	if _, err := New(); err != nil {
 		t.Fatalf("new store: %v", err)
 	}
+	// Establish that the first pass did something, so the assertion below is
+	// about the second pass not running rather than about neither running.
+	content := filepath.Join(entry, "index.js")
+	info, err := os.Stat(content)
+	if err != nil {
+		t.Fatalf("stat index.js: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0444 {
+		t.Fatalf("the first pass left index.js at %04o, want 0444; nothing after this would be measuring the second pass", got)
+	}
 	// A file the user deliberately made writable again after the migration is
 	// the observable proxy for "the pass ran a second time".
-	if err := os.Chmod(filepath.Join(entry, "index.js"), 0644); err != nil {
+	if err := os.Chmod(content, 0644); err != nil {
 		t.Fatalf("chmod back: %v", err)
 	}
 	if _, err := New(); err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
 
-	info, err := os.Stat(filepath.Join(entry, "index.js"))
+	info, err = os.Stat(content)
 	if err != nil {
 		t.Fatalf("stat index.js: %v", err)
 	}
 	if got := info.Mode().Perm(); got != 0644 {
 		t.Errorf("index.js mode = %04o, want 0644: the one-time pass ran again on a store that already recorded it", got)
+	}
+}
+
+// TestNewDoesNotRepeatAPassItCouldNotRecord covers the cost of the sentinel
+// failing to land. A store root that is not writable takes no sentinel, so
+// nothing on disk says the pass has run and the next store open would walk every
+// file of every entry again. The walk is what the sentinel exists to avoid, and
+// a store that can never record one would otherwise pay it forever.
+//
+// The in-process memo cannot make the next lnpm invocation cheaper - each
+// command is its own process - so what it bounds is a process that opens the
+// store more than once. That is the case measured here.
+func TestNewDoesNotRepeatAPassItCouldNotRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory mode does not deny writing on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses the directory permissions this test relies on")
+	}
+	root := t.TempDir()
+	t.Setenv("LNPM_STORE", root)
+
+	storeRoot := filepath.Join(root, "store")
+	entry := filepath.Join(storeRoot, "old-pkg", "abc123")
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("create legacy entry: %v", err)
+	}
+	content := filepath.Join(entry, "index.js")
+	if err := os.WriteFile(content, []byte("old"), 0644); err != nil {
+		t.Fatalf("write legacy content: %v", err)
+	}
+	if err := writeMarker(entry, "abc123"); err != nil {
+		t.Fatalf("mark legacy entry: %v", err)
+	}
+
+	// The store root refuses new files, so neither sentinel can be written. The
+	// entry directory below it is untouched, so the pass can still chmod its way
+	// through what is already there.
+	if err := os.Chmod(storeRoot, 0555); err != nil {
+		t.Fatalf("chmod store root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(storeRoot, 0755) })
+
+	if _, err := New(); err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	info, err := os.Stat(content)
+	if err != nil {
+		t.Fatalf("stat index.js: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0444 {
+		t.Fatalf("the pass left index.js at %04o, want 0444; nothing after this would be measuring a repeat", got)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, contentProtectedSentinelName)); !os.IsNotExist(err) {
+		t.Fatalf("the sentinel was written to a read-only store root (stat err = %v), so this test is not measuring what it claims", err)
+	}
+
+	if err := os.Chmod(content, 0644); err != nil {
+		t.Fatalf("chmod back: %v", err)
+	}
+	if _, err := New(); err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+
+	info, err = os.Stat(content)
+	if err != nil {
+		t.Fatalf("stat index.js: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0644 {
+		t.Errorf("index.js mode = %04o, want 0644: the pass walked the store again after failing to record itself", got)
 	}
 }
