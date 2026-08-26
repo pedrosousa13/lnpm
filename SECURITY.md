@@ -119,8 +119,12 @@ Two consequences to know about:
   store's inode, so a write there cannot reach the store even if you restore the
   bits yourself.
 - **The protection is a lock, not a repair.** An entry poisoned before the
-  upgrade stays as it is, protected in its tampered state. Verifying that a
-  store entry still hashes to the hash it is filed under is a separate check.
+  upgrade stays as it is, protected in its tampered state. Catching one takes a
+  check that re-reads the entry, which is separate work — and note that such a
+  check cannot simply re-hash what is on disk and compare. lnpm folds a file's
+  permission bits into its content hash, and the write bits are stripped after
+  that hash is taken, so a protected entry no longer hashes to the hash it is
+  filed under. A verifier has to put the write bits back before hashing.
 
 Hard links cannot cross filesystem boundaries; lnpm falls back to a copy, which
 carries the same stripped mode.

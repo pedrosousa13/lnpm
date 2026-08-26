@@ -105,7 +105,7 @@ func TestGetFilesReportsAnAbsentEntryAsAbsent(t *testing.T) {
 // and marked, but the marker was minted for a different hash, which is what an
 // entry copied or moved into another hash's directory looks like.
 //
-// This is not content verification - re-hashing the entry is #333's job - so
+// This is not content verification - re-hashing the entry is #439's job - so
 // the only thing it can catch is a marker that does not belong to the directory
 // it sits in.
 func TestGetFilesRefusesEntryWhoseMarkerNamesAnotherHash(t *testing.T) {
