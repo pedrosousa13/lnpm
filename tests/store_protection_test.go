@@ -75,7 +75,21 @@ func TestGCRemovesAWriteProtectedStoreEntry(t *testing.T) {
 
 	env.simplePkg("collectable-pkg")
 	storePath := env.storePathOf("collectable-pkg")
-	env.AssertFileExists(filepath.Join(storePath, "index.js"), true)
+
+	// Establish that there is a protected entry to collect. Without this the
+	// test passes against a build that never protects anything, which is the
+	// wrong thing to be reassured by: what is being checked is that gc survives
+	// the protection, so the protection has to be there. A read-only file reads
+	// back as 0444 on Windows too, where os.Stat synthesises the mode from the
+	// file attributes, so this needs no platform split.
+	content := filepath.Join(storePath, "index.js")
+	info, err := os.Stat(content)
+	if err != nil {
+		t.Fatalf("Failed to stat the store's index.js: %v", err)
+	}
+	if info.Mode().Perm()&0222 != 0 {
+		t.Fatalf("The store's index.js is %04o, want no write bits; gc is not being asked the question this test exists for", info.Mode().Perm())
+	}
 
 	if err := cli.RunGC(false, "", false, true); err != nil {
 		t.Fatalf("Failed to run GC: %v", err)
