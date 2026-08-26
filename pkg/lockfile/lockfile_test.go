@@ -589,3 +589,73 @@ func TestLoadParsesARealisticLockFile(t *testing.T) {
 		t.Errorf("len(Packages) = %d, want %d", len(got.Packages), entries)
 	}
 }
+
+// TestPinSurvivesASaveAndLoad pins the field the retreat snapshot carries. The
+// database's link row is the authority on a pin, but this file is the only thing
+// `lnpm restore` has to rebuild that row from, so a pin that did not survive the
+// round trip would put a retreated project back following latest. See ADR-0006.
+func TestPinSurvivesASaveAndLoad(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	lock := &LockFile{Version: currentVersion, Packages: make(map[string]Package)}
+	lock.Add("pinned-pkg", Package{Version: "1.0.0", Hash: "abc123", Pinned: true})
+	lock.Add("following-pkg", Package{Version: "2.0.0", Hash: "def456"})
+	if err := lock.Save(tmpDir); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	reloaded, err := Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if entry, _ := reloaded.Get("pinned-pkg"); !entry.Pinned {
+		t.Error("the pin did not survive the round trip")
+	}
+	if entry, _ := reloaded.Get("following-pkg"); entry.Pinned {
+		t.Error("an entry that was never pinned came back pinned")
+	}
+}
+
+// TestAnEntryWithNoPinKeyReadsAsUnpinned covers every lock file written before
+// the field existed, which is all of them. The field is optional and its absence
+// has to mean what those projects are: following a channel.
+//
+// The direction that does lose information is the reverse - an older lnpm
+// re-saving a newer lock file drops a key it has no field for - which is why the
+// link row rather than this file is what any command acts on.
+func TestAnEntryWithNoPinKeyReadsAsUnpinned(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(Path(tmpDir), []byte("version: 1\npackages:\n  my-package:\n    version: 1.0.0\n    hash: abc123\n"), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	lock, err := Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if entry, _ := lock.Get("my-package"); entry.Pinned {
+		t.Error("an entry with no pinned key read as pinned, so every lock file written before the field would freeze its packages")
+	}
+}
+
+// TestAnUnpinnedEntryWritesNoPinKey keeps the field off files that do not need
+// it. It is what makes the addition invisible to a project that never pins: the
+// lock file it commits is byte-for-byte what it was.
+func TestAnUnpinnedEntryWritesNoPinKey(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	lock := &LockFile{Version: currentVersion, Packages: make(map[string]Package)}
+	lock.Add("plain-pkg", Package{Version: "1.0.0", Hash: "abc123"})
+	if err := lock.Save(tmpDir); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	data, err := os.ReadFile(Path(tmpDir))
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	if strings.Contains(string(data), "pinned") {
+		t.Errorf("an unpinned entry wrote a pinned key:\n%s", data)
+	}
+}

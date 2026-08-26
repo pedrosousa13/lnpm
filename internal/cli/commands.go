@@ -75,15 +75,21 @@ last two are what roll a project back to a build a later release superseded - ru
 'lnpm list <pkg> --versions' to see what is there. A spec matching two retained
 versions is refused with their hashes rather than resolved to one of them.
 
-A spec with no @ resolves to latest, as it always has. A tag cannot be combined
-with --link: that resolves to the package's source directory, which is not the
-build any tag names.
+A version or a hash names a build rather than a channel, so the link it writes is
+pinned: no publish carries it forward, 'lnpm pull' leaves it where it is and
+'lnpm gc' keeps that build for as long as the pin names it. A tag does not pin -
+following a channel means being carried along it.
+
+A spec with no @ resolves to latest, as it always has, and clears any pin the
+package had: it is how a project says it wants to follow the channel again. A tag
+cannot be combined with --link: that resolves to the package's source directory,
+which is not the build any tag names.
 
 Examples:
-  lnpm add my-package            # Add latest version
+  lnpm add my-package            # Add latest version, or unpin a pinned package
   lnpm add pkg1 pkg2 pkg3        # Add multiple packages
-  lnpm add my-package@1.0.0      # Add specific version
-  lnpm add my-package@a1b2c3d4   # Roll back to a specific published build
+  lnpm add my-package@1.0.0      # Pin to a specific version
+  lnpm add my-package@a1b2c3d4   # Roll back to a specific published build, pinned
   lnpm add my-package@beta       # Add the build tagged beta
   lnpm add my-package --dev      # Add as devDependency
   lnpm add my-package --install  # Add and run npm install
@@ -147,6 +153,11 @@ This command:
 A package added as <pkg>@<tag> follows that channel, so pull moves it to
 whatever the tag names and never onto ` + db.DefaultTag + `. Everything else follows
 ` + db.DefaultTag + `, as it always has.
+
+A package added as <pkg>@<version> or <pkg>@<hash> is pinned to that one build
+and follows no channel at all. A bare pull leaves it there and says so; naming it
+is refused, because there is nothing pull can do for it. Run 'lnpm add <pkg>' to
+unpin it and follow ` + db.DefaultTag + ` again.
 
 package.json is never modified: its reference already points at .lnpm/{package}.
 

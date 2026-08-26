@@ -25,6 +25,22 @@ type Package struct {
 	Source          string    `yaml:"source"`
 	Linked          time.Time `yaml:"linked"`
 	OriginalVersion string    `yaml:"originalVersion,omitempty"` // For restore
+	// Pinned says the project was linked to this build rather than to a
+	// channel, so nothing but the user moves it off. See ADR-0006.
+	//
+	// The database's link row is the authority on this, not the entry here: the
+	// row is what pull, push and gc read. The entry is transport, exactly as
+	// Hash already is - `lnpm retreat` renames this file to lnpm.lock.retreat
+	// and `lnpm restore` rebuilds the row from it, and a pin the file did not
+	// carry would come back as a project following latest again.
+	//
+	// It is optional, and absent from every lock file written before it
+	// existed, which reads as unpinned - the state those projects are in. The
+	// direction that loses information is an older lnpm re-saving a newer lock
+	// file: yaml.v3 drops what it has no field for, so the pin would be gone on
+	// the next write. The database row survives that, and a re-add restores the
+	// entry.
+	Pinned bool `yaml:"pinned,omitempty"`
 }
 
 const (

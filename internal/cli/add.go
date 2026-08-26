@@ -39,6 +39,9 @@ type addResult struct {
 	// recorded on the link so that moving latest later does not drag a
 	// consumer that asked for another channel onto it.
 	tag string
+	// pinned says the spec named a build rather than a channel, so the link
+	// follows nothing and only the user moves it off. See pinsTheLink.
+	pinned bool
 	// rolledBack records that this package's package.json handling failed and
 	// the package was undone, so every later step - the lock entry, the
 	// package.json write, the database link, the success line - skips it.
@@ -116,6 +119,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 			result.pkg = pkg
 			result.tag = tag
+			result.pinned = pinsTheLink(kind)
 
 			if useLink && kind != specDefault {
 				result.err = liveLinkSpecError(name, version, kind)
@@ -226,6 +230,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			Source:          r.pkg.SourcePath,
 			Linked:          time.Now(),
 			OriginalVersion: origVersion,
+			Pinned:          r.pinned,
 		})
 	}
 
@@ -281,6 +286,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			ProjectID: existingProj.ID,
 			LinkType:  string(r.linkType),
 			Tag:       r.tag,
+			Pinned:    r.pinned,
 		}
 		// A link that cannot be recorded is a failure, not a warning to add
 		// beneath a success line. The files are in the project either way, but
@@ -297,7 +303,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 
 		// Reported exactly as the single-package path reports it, so a live link
 		// is spelled out rather than shown as the bare type name "link".
-		fmt.Printf("%s Added %s@%s%s\n", ui.IconOK(), r.pkg.Name, r.pkg.Version, tagSuffix(r.tag))
+		fmt.Printf("%s Added %s@%s%s\n", ui.IconOK(), r.pkg.Name, r.pkg.Version, linkSuffix(r.tag, r.pinned))
 		fmt.Printf("  Link type: %s\n", linkTypeLabel(r.linkType))
 	}
 
@@ -550,10 +556,14 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		return liveLinkSpecError(name, version, kind)
 	}
 
+	// A spec that named a build rather than a channel pins the link. --link is
+	// already refused above for every such spec, so a live link never pins.
+	pinned := pinsTheLink(kind)
+
 	if useLink {
 		fmt.Printf("Adding %s@%s (linked to source%s)...\n", pkg.Name, pkg.Version, tagClause(tag))
 	} else {
-		fmt.Printf("Adding %s@%s%s...\n", pkg.Name, pkg.Version, tagSuffix(tag))
+		fmt.Printf("Adding %s@%s%s...\n", pkg.Name, pkg.Version, linkSuffix(tag, pinned))
 	}
 
 	// Get store
@@ -621,6 +631,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		Source:          pkg.SourcePath,
 		Linked:          time.Now(),
 		OriginalVersion: originalVersion,
+		Pinned:          pinned,
 	})
 
 	if err := lock.Save(cwd); err != nil {
@@ -655,12 +666,13 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 		ProjectID: existingProj.ID,
 		LinkType:  string(linkType),
 		Tag:       tag,
+		Pinned:    pinned,
 	}
 	if err := database.InsertLink(dbLink); err != nil {
 		return fmt.Errorf("failed to record link: %w", err)
 	}
 
-	fmt.Printf("%s Added %s@%s%s\n", ui.IconOK(), pkg.Name, pkg.Version, tagSuffix(tag))
+	fmt.Printf("%s Added %s@%s%s\n", ui.IconOK(), pkg.Name, pkg.Version, linkSuffix(tag, pinned))
 	fmt.Printf("  Link type: %s\n", linkTypeLabel(linkType))
 	fmt.Printf("  Package manager: %s\n", pm)
 	if !pure {
@@ -718,6 +730,41 @@ const (
 	specVersion specKind = "version"
 	specHash    specKind = "hash"
 )
+
+// pinsTheLink reports whether a spec that resolved this way names a build rather
+// than a channel, which is what a pin records. See ADR-0006.
+//
+// It keys off the kind and not off "was it a hash" deliberately. A version and a
+// hash both name one build, and resolveAddSpec returns an empty tag for both, so
+// the returned tag cannot tell them from a bare name. A version is also the
+// spelling most people type - `lnpm list <pkg> --versions` prints both, and the
+// README offers both as the way to roll back - so pinning only the hash would
+// leave the common rollback exactly as exposed to the next pull as it was
+// before.
+//
+// specDefault and specTag do not pin, and the difference is who moves the link
+// afterwards. A channel is meant to carry a consumer along it; a build is a
+// consumer saying they want this one and no other. That is why the bare `lnpm
+// add <pkg>` this returns false for is the unpin.
+func pinsTheLink(kind specKind) bool {
+	return kind == specVersion || kind == specHash
+}
+
+// linkSuffix names what a link follows, as a trailing parenthetical for a line
+// that has none of its own: the tag it was added under, or the pin that says it
+// follows no channel at all.
+//
+// The two cannot both be spelled out, and by construction never both apply: a
+// pin comes only from a spec that named a build, which resolves with no tag. A
+// pin is said out loud where the default tag is left unsaid, because a pin
+// changes what every later `lnpm pull` does to this package - it is a decision
+// someone made, which is the same test tagNote applies to a tag.
+func linkSuffix(tag string, pinned bool) string {
+	if pinned {
+		return " (pinned)"
+	}
+	return tagSuffix(tag)
+}
 
 // minHashPrefix is the shortest @suffix the hash step will consider, borrowed
 // from git's minimum for an abbreviated object name.

@@ -135,10 +135,28 @@ type Link struct {
 	// Tag is the channel the project follows. When that tag is moved to
 	// another version - by a publish, or by tagging a version already in the
 	// store - this link is carried across to it, so the project keeps
-	// consuming the package it asked for rather than the release it happened
-	// to be pinned to. Empty means DefaultTag, which is what every link
-	// written before tags existed meant.
-	Tag       string    `json:"tag,omitempty"`
+	// consuming the channel it asked for rather than being left behind on the
+	// one release that channel happened to name when it was added. Empty means
+	// DefaultTag, which is what every link written before tags existed meant.
+	//
+	// The carry is no longer unconditional: Pinned below outranks it, and a
+	// pinned link stays where it is whatever this field says. Read the two
+	// together, in that order.
+	Tag string `json:"tag,omitempty"`
+	// Pinned says the project follows no channel at all: it was linked to one
+	// build, by hash or by exact version, and only the user moves it off. It is
+	// a field of its own rather than a reserved Tag value because tag names are
+	// whatever a user types at `lnpm tag`, so a sentinel would be collidable,
+	// and because Tag means "follow this channel" - a value meaning "follow
+	// nothing" would make every reader of that field ask which kind it holds.
+	// See ADR-0006.
+	//
+	// A pin outranks the tag rather than sitting beside it. moveLinksTx will not
+	// carry a pinned link across a tag move whatever tag it records, which
+	// matters because a pin records none: Tag is empty, so tag() reads it as the
+	// default channel and the tag alone cannot tell a pin from an ordinary
+	// latest-follower.
+	Pinned    bool      `json:"pinned,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -555,6 +573,15 @@ func setTagTx(tx *bolt.Tx, name, tag, hash string, id int64) error {
 // to name the same version. A project that already has a link on the
 // destination keeps that one and loses the duplicate, because everything that
 // reads links treats one row per project and package as given.
+//
+// A pinned link stays put whatever tag it records, and the tag is why that has
+// to be said separately. A pin follows no channel, so it records no tag, so
+// Link.tag() reads it as the default one - and a pin on the build that tag
+// currently names, which `lnpm add mylib@1.3.0` produces whenever 1.3.0 is the
+// current release, would otherwise be carried onto the next publish before pull
+// is ever involved. That would leave the pinned build with no link reaching it,
+// and gc collects what nothing reaches: #300's failure by another route. See
+// ADR-0006.
 func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 	links := tx.Bucket(bucketLinks)
 	byPackage := tx.Bucket(bucketLinksByPackage)
@@ -594,7 +621,7 @@ func moveLinksTx(tx *bolt.Tx, fromID, toID int64, tag string) error {
 			continue // Index entry naming no link row: drop it
 		}
 		var l Link
-		if err := json.Unmarshal(data, &l); err != nil || l.tag() != tag {
+		if err := json.Unmarshal(data, &l); err != nil || l.Pinned || l.tag() != tag {
 			stay = append(stay, id)
 			continue
 		}
@@ -1452,7 +1479,7 @@ func (db *DB) GetProjectByPath(path string) (*Project, error) {
 // onto each new release, and `publish --push` then overwrites the channel
 // consumer's files with what latest names.
 func (db *DB) InsertLink(link *Link) error {
-	debug.Logf("db: insert link pkg=%d proj=%d tag=%q", link.PackageID, link.ProjectID, link.Tag)
+	debug.Logf("db: insert link pkg=%d proj=%d tag=%q pinned=%t", link.PackageID, link.ProjectID, link.Tag, link.Pinned)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -1506,6 +1533,15 @@ func (db *DB) InsertLink(link *Link) error {
 				// The tag too. Without it a project that switches channel onto
 				// the version it is already on keeps following the old one.
 				existing.Tag = link.Tag
+				// And the pin, in both directions. This branch is the one an
+				// add reaches when it names the build the project is already
+				// on, and a pin has that shape twice over: `lnpm add
+				// mylib@<hash-of-current-build>` must pin, and the bare `lnpm
+				// add mylib` that unpins is most likely to be run while the
+				// pinned build is still the current record. A field left alone
+				// here would have both report success and change nothing. See
+				// ADR-0006.
+				existing.Pinned = link.Pinned
 				existing.UpdatedAt = time.Now()
 				link.ID = existing.ID
 

@@ -227,6 +227,19 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 		//
 		// It stays a cost rather than a loss because nothing a link or a tag
 		// still reaches is removed.
+		//
+		// A pinned link is one of those links and costs this arithmetic no new
+		// rule: the count is of every link the package has, and nothing here
+		// reads a link's tag or its pin. That is why ADR-0006 could settle "gc
+		// keeps a pinned build indefinitely" without touching gc. The version a
+		// project had rolled back to was collected before #300 - that is the
+		// whole of the bug - but not because gc discounted the link: pull
+		// repointed the link off that version first, and gc then found it
+		// reached by nothing. No expiry sits on top of that,
+		// deliberately: a pin is a statement that this build matters, and ageing
+		// one out would delete deliberately-preserved data on a schedule the
+		// user did not set. Reclamation stays two deliberate steps - unpin, then
+		// collect - exactly as ADR-0002 already made it for a tagged build.
 		if validLinks == 0 {
 			// Check age if specified
 			if maxAge > 0 {
@@ -357,6 +370,15 @@ func RunGC(dryRun bool, olderThan string, fixLinks bool, yes bool) error {
 
 // pinnedByTag reports whether a tag other than the default one names the version
 // with this content hash.
+//
+// The "pinned" here is not the pin of ADR-0006, and the two must not be folded
+// together: they answer different questions about different records. This one is
+// ADR-0002's rule and is about a *version* — some channel names this build, so
+// keep it, whoever consumes it. A pin is about a *link* — this project follows no
+// channel and is not to be moved off this build — and it reaches gc as an
+// ordinary entry in the link count above, never through this predicate. A version
+// can be kept by either, by both, or by a plain link, and nothing here needs to
+// know which.
 //
 // The default tag is excluded, and that asymmetry is the whole of the rule worth
 // arguing about. Every publish moves it onto whatever it just wrote, so it

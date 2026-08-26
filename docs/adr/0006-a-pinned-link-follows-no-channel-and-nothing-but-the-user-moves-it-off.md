@@ -186,9 +186,10 @@ and, after the second decision above, points at a command that will refuse.
 ## What this ADR raises but does not settle
 
 Three things below are not among the four decisions. They came out of checking
-those four against the code, each is argued for, and none of them has been ruled
-on. A reader must not implement them as though they had been. They are carried
-to #300 as questions.
+those four against the code, each is argued for, and none of them had been ruled
+on when this was written. They were carried to #300 as questions, and all three
+were answered there: see *Amendment: #300 ratifies all three open questions* at
+the foot of this document before reading any of them as still open.
 
 **The `moveLinksTx` change, above.** The finding is a fact about the code and is
 not in question: a pin on the record a tag is moving off is carried forward
@@ -360,3 +361,40 @@ was never written down anywhere, so restoring one would be an invention; a pin
 is a fact the lock file can carry, alongside the content hash it already carries
 for the same purpose. Declining to record a fact that is available is not
 caution.
+
+## Amendment: #300 ratifies all three open questions
+
+Everything under *What this ADR raises but does not settle* was ruled on when
+#300 was implemented. All three went the way this document argued for, and all
+three are in the code. A reader arriving at that section should treat it as the
+record of why each was a question rather than as an open list.
+
+**`moveLinksTx` skips a pinned link regardless of tag.** The conflict the section
+names — #300's "what does hold" cites `moveLinksTx` as something the fix must
+preserve, and preserving it is incompatible with honouring a pin — was resolved
+in the pin's favour. The filter reads `err != nil || l.Pinned || l.tag() != tag`.
+The rest of "what does hold" was unaffected and still holds: it was the tag alone
+that could not tell a pin from a latest-follower.
+
+**A version pins exactly as a hash does.** `pinsTheLink` keys off `specKind`, so
+`specVersion` and `specHash` both pin and `specDefault` and `specTag` do not. The
+section's own reason is the one that decided it: a version is the spelling most
+people type, so pinning only the hash would have left the common rollback as
+exposed to the next pull as it was before.
+
+**`lnpm add <pkg>` with no `@suffix` is the unpin.** No new command. The
+constraint at the foot of that section was the load-bearing part and is
+implemented: `db.InsertLink`'s in-place update assigns the pin rather than
+merging it, so it clears as well as sets, which is what makes the unpin work
+while the pinned build is still the current record — the case a user is most
+likely to be in.
+
+**One thing the section did not foresee.** Reclaiming through the unpin can be
+blocked. A pinned link no longer counts toward the record `latest` names, so a
+project that pinned the only consumer leaves that record linkless; `gc` collects
+it, because `latest` is not a root (ADR-0002), and `DeletePackage` clears the
+name index. `lnpm add <pkg>` then resolves nothing and reports the package is not
+in the store, so the command this ADR nominates as the unpin can itself fail. The
+pinned build and the project's files are untouched, and a republish restores the
+name index. What "unpin" should mean when `latest` names nothing is a design
+question #300 deliberately did not answer; it is filed separately.

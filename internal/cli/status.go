@@ -113,9 +113,26 @@ func RunStatus() error {
 		fmt.Println(ui.Header("📍", "Current Project"))
 		fmt.Printf("  %s\n", cwd)
 		fmt.Printf("  Linked packages:\n")
+		// The pin is shown here and not in the tables above, and it is read from
+		// the lock file rather than from the link row. Both follow from what
+		// this block is: the one part of status that is about the project the
+		// user is standing in, which is the only project whose lock file status
+		// has. A display may read the pin from there - the database row is the
+		// authority, but nothing here acts on it - while the tables above cover
+		// every project in the store and would need a link lookup per project to
+		// say the same thing. See ADR-0006.
+		//
+		// It is worth saying at all because the state was unnameable before it:
+		// `lnpm list <pkg> --versions` shows a project sitting on a superseded
+		// build, but that is the symptom, and it does not distinguish a project
+		// that chose to be there from one that has simply not pulled.
 		for _, name := range lock.List() {
 			entry, _ := lock.Get(name)
-			fmt.Printf("    • %s@%s (hash: %s)\n", name, entry.Version, shortHash(entry.Hash))
+			pin := ""
+			if entry.Pinned {
+				pin = ", pinned"
+			}
+			fmt.Printf("    • %s@%s (hash: %s%s)\n", name, entry.Version, shortHash(entry.Hash), pin)
 		}
 	}
 

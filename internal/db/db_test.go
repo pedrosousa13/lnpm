@@ -1726,3 +1726,157 @@ func TestGetProjectByPath_ReturnsNothingForAPathNoRecordAnswers(t *testing.T) {
 		t.Errorf("GetProjectByPath() returned a project for a path no record answers: %+v", proj)
 	}
 }
+
+// insertProjectFor registers a project at path and returns the record the
+// database assigned an ID to.
+func insertProjectFor(t *testing.T, d *DB, path, name string) *Project {
+	t.Helper()
+
+	if err := d.InsertProject(&Project{Path: path, Name: name}); err != nil {
+		t.Fatalf("Failed to insert the project at %s: %v", path, err)
+	}
+	proj, err := d.GetProjectByPath(path)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project at %s back: %v", path, err)
+	}
+	return proj
+}
+
+// linkOnPackage returns the one link the project holds, failing when it holds
+// none or several - a project holds one row per package name, which is the
+// invariant InsertLink is responsible for.
+func linkOnPackage(t *testing.T, d *DB, projectID int64) *Link {
+	t.Helper()
+
+	links, err := d.GetLinksForProject(projectID)
+	if err != nil {
+		t.Fatalf("Failed to read the project's links: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("The project holds %d link rows, want exactly one", len(links))
+	}
+	return links[0]
+}
+
+// TestSetTag_LeavesAPinnedLinkOnTheBuildItNames pins ADR-0006's correction to
+// #300: a tag move must not carry a pinned link forward, whatever tag the link
+// records.
+//
+// A pin records no tag, so Link.tag() reads it as the default one and the filter
+// on the tag alone cannot tell it from an ordinary latest-follower. That matters
+// for a pin on the build latest currently names - `lnpm add mylib@1.3.0` while
+// 1.3.0 is the current release produces exactly that - because the very next
+// publish is a tag move off that record. Carried forward, the pin roots the new
+// build instead of the pinned one, the pinned build loses its last reference and
+// the next gc collects it: #300's failure arriving through publish rather than
+// through pull.
+func TestSetTag_LeavesAPinnedLinkOnTheBuildItNames(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	pinned := insertVersion(t, database, "pin-pkg", "h1")
+	next := insertVersion(t, database, "pin-pkg", "h2")
+
+	// Inserting the second version already moved the default tag onto it, so put
+	// it back: the case this test is about is a pin on the build the tag is
+	// about to move off, which is the only one a tag move can reach at all.
+	if err := database.SetTag("pin-pkg", DefaultTag, "h1"); err != nil {
+		t.Fatalf("Failed to put the default tag back on the pinned build: %v", err)
+	}
+
+	proj := insertProjectFor(t, database, filepath.FromSlash("/projects/pinner"), "pinner")
+	if err := database.InsertLink(&Link{PackageID: pinned.ID, ProjectID: proj.ID, LinkType: "hardlink", Pinned: true}); err != nil {
+		t.Fatalf("Failed to record the pinned link: %v", err)
+	}
+
+	// What a publish of a new build does: move the default tag off the record
+	// the project is pinned to.
+	if err := database.SetTag("pin-pkg", DefaultTag, "h2"); err != nil {
+		t.Fatalf("Failed to move the default tag: %v", err)
+	}
+
+	link := linkOnPackage(t, database, proj.ID)
+	if link.PackageID != pinned.ID {
+		t.Errorf("the tag move carried the pinned link onto package %d, want it left on the pinned %d", link.PackageID, pinned.ID)
+	}
+	if !link.Pinned {
+		t.Errorf("the tag move cleared the pin on a link it was not allowed to move")
+	}
+	if links, err := database.GetLinksForPackage(next.ID); err != nil {
+		t.Fatalf("Failed to read the new build's links: %v", err)
+	} else if len(links) != 0 {
+		t.Errorf("the new build gained %d link(s) from a pinned consumer", len(links))
+	}
+}
+
+// TestSetTag_StillCarriesAnUnpinnedLinkForward is the other half of the test
+// above: the pin is what holds a link back, not the tag move being weakened.
+func TestSetTag_StillCarriesAnUnpinnedLinkForward(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	first := insertVersion(t, database, "follow-pkg", "h1")
+	next := insertVersion(t, database, "follow-pkg", "h2")
+
+	if err := database.SetTag("follow-pkg", DefaultTag, "h1"); err != nil {
+		t.Fatalf("Failed to put the default tag back on the first build: %v", err)
+	}
+
+	proj := insertProjectFor(t, database, filepath.FromSlash("/projects/follower"), "follower")
+	if err := database.InsertLink(&Link{PackageID: first.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("Failed to record the link: %v", err)
+	}
+
+	if err := database.SetTag("follow-pkg", DefaultTag, "h2"); err != nil {
+		t.Fatalf("Failed to move the default tag: %v", err)
+	}
+
+	if link := linkOnPackage(t, database, proj.ID); link.PackageID != next.ID {
+		t.Errorf("the tag move left an unpinned link on package %d, want it carried onto %d", link.PackageID, next.ID)
+	}
+}
+
+// TestInsertLink_RecordsAPinOnTheVersionTheProjectAlreadyHolds pins the update
+// branch ADR-0006 warns about. When the incoming link names the record the
+// project is already on, InsertLink updates that row in place and copies only
+// the fields it is told to copy. `lnpm add mylib@<hash-of-current-build>` in a
+// project already on that build takes exactly that branch, so a pin that is not
+// copied there is reported as recorded and is not.
+func TestInsertLink_RecordsAPinOnTheVersionTheProjectAlreadyHolds(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	pkg := insertVersion(t, database, "repin-pkg", "h1")
+	proj := insertProjectFor(t, database, filepath.FromSlash("/projects/repinner"), "repinner")
+
+	if err := database.InsertLink(&Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("Failed to record the link: %v", err)
+	}
+	if err := database.InsertLink(&Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink", Pinned: true}); err != nil {
+		t.Fatalf("Failed to record the pinned link: %v", err)
+	}
+
+	if link := linkOnPackage(t, database, proj.ID); !link.Pinned {
+		t.Errorf("InsertLink left the row unpinned after an add that pins the build the project was already on")
+	}
+}
+
+// TestInsertLink_ClearsAPinOnTheVersionTheProjectAlreadyHolds is the unpin, and
+// the same branch again. `lnpm add mylib` with no build identifier is what
+// unpins, and the moment a user most wants it is while the pinned build is still
+// the current record - which is the case that reaches the in-place update. A
+// branch that leaves the old value alone reports success and changes nothing.
+func TestInsertLink_ClearsAPinOnTheVersionTheProjectAlreadyHolds(t *testing.T) {
+	database := openStore(t, t.TempDir())
+
+	pkg := insertVersion(t, database, "unpin-pkg", "h1")
+	proj := insertProjectFor(t, database, filepath.FromSlash("/projects/unpinner"), "unpinner")
+
+	if err := database.InsertLink(&Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink", Pinned: true}); err != nil {
+		t.Fatalf("Failed to record the pinned link: %v", err)
+	}
+	if err := database.InsertLink(&Link{PackageID: pkg.ID, ProjectID: proj.ID, LinkType: "hardlink"}); err != nil {
+		t.Fatalf("Failed to record the unpinned link: %v", err)
+	}
+
+	if link := linkOnPackage(t, database, proj.ID); link.Pinned {
+		t.Errorf("InsertLink kept the pin after an add that unpins the build the project was already on")
+	}
+}

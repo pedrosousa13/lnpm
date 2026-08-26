@@ -21,6 +21,10 @@ import (
 // Unlike add, pull never touches package.json: the reference there already
 // points at .lnpm/<pkg>, and only the contents behind it and the lock entry
 // change when the source package is republished.
+//
+// A pinned package is the one thing pull will not move, and it answers the two
+// ways it can be asked differently: a sweep skips it and says so, and a request
+// that names it is refused. See ADR-0006, and pinnedPullError.
 func RunPull(packageNames []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -68,6 +72,26 @@ func RunPull(packageNames []string) error {
 		return err
 	}
 
+	// A pinned package the user named by hand refuses the whole run, and it
+	// refuses it from here - alongside the "not linked in this project" check
+	// above, before anything is linked - so a run that cannot be honoured leaves
+	// the project exactly as it found it rather than half-pulled.
+	//
+	// Naming a package is a request rather than a sweep, and this request cannot
+	// be honoured: there is a newer build in the store and the link says not to
+	// take it. That is deliberately not what a live link does, which is skipped
+	// even when it is named. A live link has nothing to refresh, so a skip is a
+	// complete answer; a pinned link has something to refresh and a reason not
+	// to, so the user who asked has to be told which of the two they are in and
+	// how to get out of it. See ADR-0006.
+	if len(packageNames) > 0 {
+		for _, name := range names {
+			if held.pinned(name) {
+				return pinnedPullError(name)
+			}
+		}
+	}
+
 	s, err := store.New()
 	if err != nil {
 		return fmt.Errorf("failed to access store: %w", err)
@@ -79,6 +103,7 @@ func RunPull(packageNames []string) error {
 	refreshed := 0
 	upToDate := 0
 	liveLinked := 0
+	pinned := 0
 	lockChanged := false
 	lastVersion := ""
 
@@ -104,6 +129,23 @@ func RunPull(packageNames []string) error {
 		if live {
 			fmt.Printf("Pulling %s... skipped (live link to source)\n", name)
 			liveLinked++
+			continue
+		}
+
+		// A pinned package follows no channel, so there is nothing for a sweep
+		// to resolve it through and nothing it should be moved onto. Reaching
+		// this at all means the pull was a bare one - a named pin was refused
+		// above - and a bare pull is a sweep over the whole lock, so one pinned
+		// package must not stop the other twenty being refreshed.
+		//
+		// It is reported rather than passed over, because silence is the whole
+		// of #300: a rollback undone by a pull the user ran for some other
+		// package is a defect precisely because nothing said so. The version is
+		// named so the line says what the project is being left on, and the
+		// closing count says how to move it.
+		if held.pinned(name) {
+			fmt.Printf("Pulling %s... skipped (pinned to %s)\n", name, entry.Version)
+			pinned++
 			continue
 		}
 
@@ -166,13 +208,17 @@ func RunPull(packageNames []string) error {
 
 		// Keep the original specifier: it lives only in the lock file once add
 		// has rewritten package.json, and remove/retreat need it to restore the
-		// dependency.
+		// dependency. The pin is kept for the same reason the repointed link row
+		// below keeps it: nothing pinned reaches here, and a literal that let the
+		// field default would unpin the project in the one place the database row
+		// and the lock entry could then disagree.
 		lock.Add(name, lockfile.Package{
 			Version:         pkg.Version,
 			Hash:            pkg.ContentHash,
 			Source:          pkg.SourcePath,
 			Linked:          time.Now(),
 			OriginalVersion: entry.OriginalVersion,
+			Pinned:          entry.Pinned,
 		})
 		lockChanged = true
 
@@ -200,6 +246,12 @@ func RunPull(packageNames []string) error {
 				ProjectID: l.ProjectID,
 				LinkType:  l.LinkType,
 				Tag:       l.Tag,
+				// Carried rather than assumed false. Nothing pinned reaches
+				// here today - a pinned package is skipped or refused above -
+				// but this literal is built field by field, and one that
+				// dropped the pin would unpin a project as a side effect of a
+				// refresh it was never meant to get.
+				Pinned: l.Pinned,
 			}
 			// Reported as a failed pull, not warned past. Leaving the old row in
 			// place is not a smaller version of the same state: it names the
@@ -242,6 +294,15 @@ func RunPull(packageNames []string) error {
 		fmt.Printf("%s Skipped %d live-linked package(s)\n", ui.IconOK(), liveLinked)
 	}
 
+	// Pinned packages are counted apart from both of those, for the live-linked
+	// line's own reason and one more. Nothing about them was compared against
+	// the store either, and a pin is a state the user can leave, so the count
+	// carries the way out - a skip nobody knows how to undo is only half a
+	// report.
+	if pinned > 0 && len(failed) == 0 {
+		fmt.Printf("%s Skipped %d pinned package(s); run 'lnpm add <package>' to unpin one\n", ui.IconOK(), pinned)
+	}
+
 	if len(failed) > 0 {
 		fmt.Printf("\n%s Some packages failed:\n", ui.IconWarn())
 		for _, err := range failed {
@@ -257,4 +318,21 @@ func RunPull(packageNames []string) error {
 		pullErr = fmt.Errorf("%d of %d package(s) failed to pull", len(failed), len(names))
 	}
 	return errors.Join(pullErr, saveErr)
+}
+
+// pinnedPullError refuses a pull that names a pinned package.
+//
+// It names the unpin, and the unpin has to be a command that exists and does
+// something: `lnpm add <package>` with no @suffix resolves through the default
+// channel and clears the pin, which is the same act as saying "follow the
+// channel again". A refusal pointing at nothing would leave the user with a
+// package they cannot pull and no way to change that.
+//
+// It says pinned rather than naming the build. The version is in lnpm.lock and
+// in `lnpm status`, and this message's job is the state and the way out of it -
+// a user who wants to see which build they are on has `lnpm list <package>
+// --versions`, which shows the alternatives too.
+func pinnedPullError(name string) error {
+	return fmt.Errorf("%s is pinned to one build, so 'lnpm pull' will not move it; run 'lnpm add %s' to unpin it and follow %s again",
+		name, name, db.DefaultTag)
 }

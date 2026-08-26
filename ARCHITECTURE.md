@@ -235,6 +235,7 @@ named was that package's latest by definition.
   "project_id": 1,
   "link_type": "hardlink",
   "tag": "beta",  // channel followed; absent means latest
+  "pinned": true, // follows no channel: one build, moved only by the user
   "created_at": "2024-01-15T10:00:00Z",
   "updated_at": "2024-01-15T10:30:00Z"
 }
@@ -344,8 +345,11 @@ lnpm add my-package --link
    spec that matches two retained versions is refused with their full hashes
    rather than resolved to one of them. A tag is recorded on the link row, so a
    later move of `latest` does not carry this project onto it; a version and a
-   hash name a build rather than a channel, so the link they write follows
-   `latest` and the next `lnpm pull` moves the project off that build
+   hash name a build rather than a channel, so the link they write is **pinned**
+   — it follows nothing, no tag move carries it forward, `lnpm pull` leaves it
+   where it is and `lnpm gc` keeps the build it names for as long as it names it.
+   A spec with no `@` clears the pin, which is how a project says it wants to
+   follow the channel again (ADR-0006)
 
    None of the three can be combined with `--link`: that resolves to the source
    directory, which holds the working tree and is not the build any of them
@@ -555,15 +559,21 @@ lnpm pull my-package other-pkg
 2. Skip any package that is live-linked (`.lnpm/{package}` is a link, not a
    directory): it resolves to its source, so there is nothing to refresh, and
    relinking it would silently swap the live link for a snapshot copy
-3. For each remaining package, resolve the channel this project's link row
+3. Skip any package whose link is pinned, reporting it and the build it stays
+   on. A pin follows no channel, so there is nothing to resolve it through. A
+   `pull` that *names* a pinned package is refused instead, before anything is
+   linked, and the refusal names `lnpm add <package>` as the unpin: naming a
+   package is a request rather than a sweep, and this one cannot be honoured
+   (ADR-0006)
+4. For each remaining package, resolve the channel this project's link row
    follows — `latest` for a link that names none — and skip the package when the
    lock entry already matches that version and content hash. Resolving by name
    instead would answer with `latest` for every project and quietly move a
    tagged consumer onto the stable release
-4. Relink it from the store, exactly as `add` and `push` do — including the
+5. Relink it from the store, exactly as `add` and `push` do — including the
    incremental path, so a `pull` that finds only a few files changed rewrites
    only those
-5. Update the entry in `lnpm.lock`, preserving the original `package.json`
+6. Update the entry in `lnpm.lock`, preserving the original `package.json`
    specifier recorded by `add`
 
 `package.json` is never touched: the `file:.lnpm/{package}` reference it holds
@@ -673,6 +683,13 @@ not count: every publish moves it onto what it just wrote, so treating it as a
 root would leave nothing collectable — see
 `docs/adr/0002-latest-is-not-a-garbage-collection-root.md`.
 
+A pinned link is a link, so a build a project pinned is a root and stays one for
+as long as the pin does, with no time bound. That costs the arithmetic no extra
+rule — it counts every link and reads no tags — and it is deliberate that no
+expiry sits on top: reclaiming a pinned build takes two steps, unpin then
+collect, as it already does for a version you tagged. See
+`docs/adr/0006-a-pinned-link-follows-no-channel-and-nothing-but-the-user-moves-it-off.md`.
+
 ```bash
 # Dry run - show what would be removed
 lnpm gc --dry-run
@@ -776,7 +793,14 @@ packages:
     hash: 789xyz000111
     source: ~/code/other-pkg
     linked: 2024-01-15T09:00:00Z
+    pinned: true              # linked to this build, not to a channel
 ```
+
+`pinned` is optional and absent from every lock file written before it existed,
+which reads as unpinned. The database's link row is the authority on it — that is
+what `pull`, `push` and `gc` read — and the entry here is transport, exactly as
+`hash` already is: `lnpm retreat` renames this file to `lnpm.lock.retreat`, and
+`lnpm restore` rebuilds the link row from it.
 
 ---
 

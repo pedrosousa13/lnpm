@@ -159,9 +159,10 @@ content-hash prefix — the last two are what [roll a project back](#version-his
 A project that added a package under a tag keeps following it: `lnpm pull`
 refreshes it to whatever that tag now names, never to `latest`. Switching
 channels is just another `lnpm add` — `lnpm add my-package@beta` in a project
-already on `latest` moves it over, and dropping the tag moves it back. None of
-the three can be combined with `--link`, which resolves to the source directory
-rather than to any published build.
+already on `latest` moves it over, and dropping the tag moves it back — and so
+does [unpinning](#version-history-and-rollback), which is the same command. None
+of the three can be combined with `--link`, which resolves to the source
+directory rather than to any published build.
 
 `lnpm push` goes to the channel the build in the store already carries, so
 pushing a pre-release keeps it a pre-release. An edit gives the tree content no
@@ -214,12 +215,28 @@ as a link or a tag you set reaches it. A version a project has rolled back to is
 linked, so `gc` keeps it — while the versions in between, which nothing reaches
 any more, are reclaimed.
 
-A rollback holds until that project runs `lnpm pull`. A rolled-back link follows
-no channel, so a pull resolves it through `latest`, moves the project onto the
-current release and repoints the link — after which `gc` is free to collect the
-build the project was on. Bare `lnpm pull` refreshes every package in the lock,
-so pulling one package can undo another package's rollback with no signal. There
-is no pinned link yet: re-run `lnpm add mylib@<hash>` to go back.
+**A rollback pins the link, and nothing but you moves it off.** Naming a build —
+either identifier — says *follow this build*, where naming a channel says *follow
+this channel*, so a pinned project stays where you put it:
+
+```bash
+lnpm pull                 # Refreshes everything else; leaves mylib pinned and says so
+lnpm pull mylib           # Refuses: mylib is pinned, and names the way out
+lnpm publish              # In the package: moves latest, does not drag the pin along
+lnpm gc                   # Keeps the pinned build, with no time limit
+lnpm status               # Shows the pin next to the linked package
+
+lnpm add mylib            # Unpin: follow latest again
+```
+
+A pin has no expiry. `lnpm gc` keeps the build for as long as the pin names it,
+so reclaiming that space takes two deliberate steps — unpin, then collect —
+exactly as it does for a version you tagged. `lnpm retreat` and `lnpm restore`
+carry the pin, which travels in `lnpm.lock`; the field is optional, and a lock
+file written before it existed reads as unpinned.
+
+`lnpm add mylib@beta` does not pin, because a tag is a channel and following one
+means being carried along it.
 
 ### Monorepo Support
 
