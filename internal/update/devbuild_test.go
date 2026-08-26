@@ -21,6 +21,11 @@ func TestIsDevBuild(t *testing.T) {
 		{"git describe with commits ahead and dirty tree", "v1.12.0-53-g7079f81-dirty", true},
 		{"git describe on the tag itself with dirty tree", "v1.12.0-dirty", true},
 		{"git describe from a pre-release tag", "v2.1.0-rc.1-53-g7079f81-dirty", true},
+		// git emits a lowercase sha, but the version string can also be stamped
+		// by hand, and case is the only thing standing between such a stamp and
+		// the downgrade #283 was filed for.
+		{"git describe with an uppercase sha", "v1.12.0-53-g7079F81-dirty", true},
+		{"git describe with an uppercase marker", "v1.12.0-53-G7079F81", true},
 		{"bare git describe of an untagged repo", "7079f81-dirty", true},
 		{"unparseable version", "garbage", false},
 	}
@@ -48,10 +53,16 @@ func TestBaseline(t *testing.T) {
 		{"git describe with commits ahead and dirty tree", "v1.12.0-53-g7079f81-dirty", "v1.12.0", true},
 		{"git describe on the tag itself with dirty tree", "v1.12.0-dirty", "v1.12.0", true},
 		{"git describe from a pre-release tag", "v2.1.0-rc.1-53-g7079f81", "v2.1.0-rc.1", true},
+		{"git describe with an uppercase sha", "v1.12.0-53-g7079F81-dirty", "v1.12.0", true},
+		{"git describe with an uppercase marker", "v1.12.0-53-G7079F81", "v1.12.0", true},
+		// Build metadata marks a working tree, but it does not hide which
+		// release the build came from - and semver ignores it when comparing,
+		// so v1.11.0+dirty must still hear about v1.12.0.
+		{"release tag with build metadata", "v1.11.0+dirty", "v1.11.0", true},
 		{"unstamped placeholder", "dev", "", false},
 		{"empty stamp", "", "", false},
 		{"pseudo-version", "v1.12.1-0.20260819061412-6d9902254937", "", false},
-		{"release tag with build metadata", "v1.11.0+dirty", "", false},
+		{"pseudo-version with build metadata", "v1.12.1-0.20260819061412-6d9902254937+dirty", "", false},
 		{"bare git describe of an untagged repo", "7079f81-dirty", "", false},
 		{"unparseable version", "release-1.12", "", false},
 	}

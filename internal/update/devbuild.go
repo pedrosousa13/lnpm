@@ -17,16 +17,30 @@ import (
 // The shape is matched specifically rather than treating every pre-release as a
 // dev build, because a real release may well carry one: "v2.1.0-rc.1" and
 // "v2.0.0-beta.2" are versions we ship and must keep updating.
-var describeSuffixRE = regexp.MustCompile(`(?:-[0-9]+-g[0-9a-f]+)?-dirty$|-[0-9]+-g[0-9a-f]+$`)
+//
+// Two details are load-bearing, because Baseline cuts the version at wherever
+// this matches - it decides not just whether a suffix is there but where the
+// tag ends:
+//
+//   - The leading "-N-g<sha>" group is optional but must stay part of the
+//     "-dirty" alternative. Simplify it to `-dirty$|-[0-9]+-g[0-9a-f]+$` and
+//     "v1.12.0-53-g7079f81-dirty" cuts to "v1.12.0-53-g7079f81" instead of
+//     "v1.12.0", which is still ranked below v1.12.0 and reinstates #283.
+//   - The sha and its "g" marker are matched case-insensitively. git emits
+//     lowercase, so the Makefile is safe either way, but a version stamped by
+//     hand is not, and case is not what should decide whether the guard holds.
+var describeSuffixRE = regexp.MustCompile(`(?:-[0-9]+-[gG][0-9a-fA-F]+)?-dirty$|-[0-9]+-[gG][0-9a-fA-F]+$`)
 
 // IsDevBuild reports whether version names a build made from a working tree
 // rather than a published release.
 //
-// This is the single answer to that question for the whole program - the
-// version reporting in cmd/lnpm and every update-check guard below ask through
-// here. They used to each spell it out inline, and disagreed: three copies of
-// `v == "dev" || v == ""` never learned about the pseudo-version case cmd/lnpm
-// knew about, and none of them knew about `git describe` output at all.
+// This is the single definition of that question for the whole program.
+// cmd/lnpm calls it directly, to decide which version to report; the three
+// update-check guards reach it through Baseline, which is the form of the
+// question they actually need. Those four sites used to spell the test out
+// inline and disagreed: three copies of `v == "dev" || v == ""` never learned
+// about the pseudo-version case cmd/lnpm knew about, and none of them knew
+// about `git describe` output at all.
 //
 // Note that an unparseable version (a bare commit sha, "garbage") is not a dev
 // build by this definition. It is not a release either; callers that care reject
@@ -52,23 +66,36 @@ func IsDevBuild(version string) bool {
 // not be told that v1.12.0, the tag it is already ahead of, is an upgrade.
 // Comparing the tag rather than the full stamp gives both: semver ranks the
 // pre-release-suffixed string below the plain tag it descends from, which is
-// exactly the downgrade that got reported in issue #283.
+// exactly the downgrade that got reported in issue #283. Being a dev build is
+// therefore not the test - naming a release is, and "v1.11.0+dirty" names one
+// just as "v1.12.0-53-g7079f81-dirty" does.
 //
-// The other dev-build shapes name no release. "dev" and "" carry no version at
-// all; a pseudo-version's base is synthesised from a timestamp and a commit,
-// not from a tag anyone published. Those keep skipping the check outright.
+// Only the shapes that name no release skip the check outright: "dev" and ""
+// carry no version at all, an untagged `git describe --always` sha is not a
+// version, and a pseudo-version's base is synthesised from a timestamp and a
+// commit rather than from a tag anyone published.
 func Baseline(version string) (string, bool) {
+	// Strip the two markers a build picks up from the working tree it was made
+	// in: the `git describe` suffix, and build metadata (semver.Canonical drops
+	// that, along with normalising a "v1.12" style tag to "v1.12.0"). Canonical
+	// also returns "" for anything it cannot parse, which is what rejects "dev",
+	// "" and an untagged `git describe --always` sha.
 	v := vPrefixed(version)
 	if loc := describeSuffixRE.FindStringIndex(v); loc != nil {
 		v = v[:loc[0]]
-	} else if IsDevBuild(version) {
+	}
+	base := semver.Canonical(v)
+
+	// Whatever survives that has to be a release. Asking IsDevBuild here rather
+	// than about the original is what separates the two questions: a dev build
+	// whose markers strip away to a real tag has a baseline, and a
+	// pseudo-version - whose base is synthesised from a timestamp and a commit
+	// rather than from a tag anyone published - does not, because stripping
+	// leaves it still a pseudo-version.
+	if base == "" || IsDevBuild(base) {
 		return "", false
 	}
-
-	// semver.Canonical returns "" for anything it cannot parse, which covers
-	// both an untagged `git describe --always` sha and outright garbage.
-	base := semver.Canonical(v)
-	return base, base != ""
+	return base, true
 }
 
 // vPrefixed puts version into the "v"-prefixed form golang.org/x/mod requires.
