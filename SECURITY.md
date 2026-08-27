@@ -23,8 +23,15 @@ free: `extra-files` is a manifest-config option, while the release workflow
 runs the action with `release-type: go` and no config file, so buying it means
 migrating a working release pipeline to manifest mode.
 
-A CI check that would catch this table going stale is proposed in
-[#438](https://github.com/pedrosousa13/lnpm/issues/438) and has not landed.
+What does catch the table going stale is a CI check.
+`scripts/check-security-versions.sh` compares the major named by the
+`:white_check_mark:` row above against the version in `CHANGELOG.md`'s topmost
+`## ` heading, and fails when they disagree — so a major release whose table has
+not been updated cannot be merged. It runs in
+`.github/workflows/security-versions.yaml`, and `docs/releasing.md` records why
+that is a workflow of its own. Only the supported row is checked: whether a
+major moves to unsupported is the policy call described above, and stays with
+the maintainer.
 
 ## Security Considerations
 

@@ -39,12 +39,18 @@ after the merge is automatic.
 
    If the head is release-please's `chore(main): release X.Y.Z` rather than your notes commit, the
    notes are gone; write them again. Nothing downstream will notice: the squash carries whatever
-   `CHANGELOG.md` the branch holds at merge time, and step 5 publishes that. A missing note is
+   `CHANGELOG.md` the branch holds at merge time, and step 6 publishes that. A missing note is
    exactly the failure this runbook exists to prevent.
 
-4. **Approve the held workflow run**, so the required check can report. See the gate below.
+4. **If `X.Y.Z` is a new major, update `SECURITY.md`'s supported-versions table on that same
+   branch.** Do this from the version number, not from a red tick: this pull request is
+   bot-authored, so its runs are held behind the gate below and the `Check supported versions` job
+   reports nothing until you approve them in step 5. The check is the backstop for forgetting, not
+   the prompt. It fails deliberately, and only on this pull request. See the check below.
 
-5. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release; the
+5. **Approve the held workflow run**, so the required check can report. See the gate below.
+
+6. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release; the
    `goreleaser` job builds and uploads the archives; the `sync-release-notes` job then overwrites
    the release body with the version's `CHANGELOG.md` section, hand-written notes included. That
    last job is ordered after `goreleaser` but does not depend on it succeeding: the `goreleaser`
@@ -230,6 +236,38 @@ make test-changelog-section
 ```
 
 CI runs it too, in `.github/workflows/ci.yaml`, since no Go test covers a shell script.
+
+## The supported-versions check
+
+`SECURITY.md`'s supported-versions table is hand-maintained, a decision recorded in the file itself:
+no release-please substitution token can express a previous major moving from supported to
+unsupported, so annotating the table would leave it wrong rather than merely stale. What that leaves
+is the ordinary failure of anything manual — at some major release someone forgets, and a security
+document goes on claiming support for a line that is no longer supported.
+
+`scripts/check-security-versions.sh` compares the major named by the table's `:white_check_mark:`
+row against the version in `CHANGELOG.md`'s topmost `## ` heading, which is the version
+release-please maintains in-repo. Git tags are not used: a CI checkout is frequently shallow and may
+carry no tags, and a check that passed vacuously in CI would be no check at all.
+
+```bash
+make check-security-versions        # the check itself
+make test-check-security-versions   # its own tests
+```
+
+**On an ordinary pull request this passes and says nothing.** The top heading is the last released
+version and the table already matches it, so this is not a per-PR chore. On the release pull request
+the heading is the *new* version, so a patch or a minor still passes and **a new major fails** —
+which is the entire feature. The failure is the reminder, and it lands on the one pull request where
+the fix is a one-line edit to the table. Step 4 above is that edit.
+
+The unsupported rows are not checked. Whether a major moves from supported to unsupported is a
+policy judgement about how long you intend to support it, and it stays with the maintainer.
+
+This runs in `.github/workflows/security-versions.yaml` rather than in `ci.yaml`, and the separation
+is load-bearing: `ci.yaml` carries `paths-ignore` with `'**.md'` on both its triggers, so a pull
+request touching only `SECURITY.md` or only `CHANGELOG.md` does not start CI at all — which is
+exactly the release pull request this check exists for. The new workflow has no `paths-ignore`.
 
 ## Backfilling a published release
 

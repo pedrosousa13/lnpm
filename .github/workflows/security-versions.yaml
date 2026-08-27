@@ -1,0 +1,45 @@
+# Checks that SECURITY.md's supported-versions table still names the major of
+# the current release, and that the script doing the checking works. Both are
+# scripts/check-security-versions.sh; its header carries the reasoning.
+#
+# This is a separate workflow rather than a job in ci.yaml, and the separation
+# is load-bearing rather than tidiness. ci.yaml carries `paths-ignore` on both
+# its triggers, with `'**.md'` and `'docs/**'` among the entries, so a pull
+# request touching only SECURITY.md or only CHANGELOG.md does not start CI at
+# all. Those are exactly the two files this check reads, and a release-please
+# PR that bumps the major touches one of them — so a check placed in ci.yaml
+# would simply not run in precisely the case it exists to catch. A filtered
+# workflow creates no check run at all, so what a reader sees is an absence,
+# and docs/releasing.md records how easily an absent required check is read as
+# a passing one. There is no `paths-ignore` here on purpose: do not add one.
+name: Security Versions
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Check supported versions
+    runs-on: ubuntu-latest
+    # Explicit, for the reason ci.yaml's `jobs:` header gives: GitHub's default
+    # is 360 minutes, so a stalled job would hold a runner for six hours and
+    # leave the PR unmergeable with a spinner as the only signal. This job is a
+    # checkout and two bash scripts with no toolchain setup, no network use and
+    # no test binary, so it takes seconds; 5 is the floor that convention gives
+    # a job measured in seconds rather than a proportional share of anything.
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Runs first, so a break in the check itself is reported as a broken
+      # check rather than as a stale table.
+      - name: Test the supported-versions check
+        run: make test-check-security-versions
+
+      - name: Check SECURITY.md against the current release
+        run: make check-security-versions
