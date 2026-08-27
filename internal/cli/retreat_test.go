@@ -994,6 +994,39 @@ func TestLinksOfProjectRefusesARecordThatWillNotParse(t *testing.T) {
 	}
 }
 
+// TestRunRetreatTipNamesTheProjectsInstallCommand covers retreat's half of
+// #384. Its tip is not the shared one - it says the install restores the
+// original packages, not that it resolves peer dependencies - so the wording
+// has to survive the fix while the command name stops being hardcoded to npm.
+//
+// The project is pnpm's, so a tip still saying npm sends the user to a command
+// that rewrites pnpm-lock.yaml. runInstall is false, which is both what gates
+// the tip and what keeps the test from starting a real install.
+func TestRunRetreatTipNamesTheProjectsInstallCommand(t *testing.T) {
+	project, _ := newRetreatProject(t)
+	writeRetreatLock(t, project, map[string]string{"my-package": "^1.0.0"})
+	writeFile(t, filepath.Join(project, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+
+	var err error
+	out := captureStdout(t, func() { err = RunRetreat(true, false) })
+
+	if err != nil {
+		t.Fatalf("RunRetreat() = %v, want nil; output was:\n%s", err, out)
+	}
+	// The whole sentence, not just "pnpm install": the wording is half of what
+	// this pins. A fix that folded retreat into printPeerDependencyTip would
+	// name pnpm correctly and still fail here, which is the point — retreat's
+	// tip is about restoring the original packages, not about peer
+	// dependencies.
+	const want = "Run 'pnpm install' to restore original packages"
+	if !strings.Contains(out, want) {
+		t.Errorf("retreat's tip = want it to contain %q, output was:\n%s", want, out)
+	}
+	if strings.Contains(out, "peer dependencies") {
+		t.Errorf("retreat's tip took the shared tip's wording, output was:\n%s", out)
+	}
+}
+
 // writeFile writes content to path, failing the test if it cannot. It lives
 // here rather than beside its first caller in output_tty_linux_test.go, which
 // carries a linux build tag the tests above do not.

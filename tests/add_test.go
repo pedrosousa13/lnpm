@@ -497,3 +497,78 @@ func TestAddMultipleFailsWhenALinkCannotBeRecorded(t *testing.T) {
 		t.Fatal("RunAddMultiple() reported success for packages whose links it could not record; gc reads those store entries as consumed by nobody and deletes them")
 	}
 }
+
+// TestAddTipNamesTheProjectsInstallCommand pins the single-package half of #384
+// at its call site, rather than at the helper.
+//
+// internal/cli's TestPrintPeerDependencyTipNamesTheProjectsInstallCommand drives
+// printPeerDependencyTip directly, so it cannot see who calls it: measured, the
+// hardcoded line #384 removed can be put back at all three of the helper's
+// non-retreat call sites and that test, go vet and the whole suite stay green.
+// These two tests and TestRestoreTipNamesTheProjectsInstallCommand are what
+// turns that red.
+//
+// Measured on 2026-08-27, each site reverted on its own to the literal line
+// #384 removed, each run preceded by go vet ./... exiting 0 and each read for
+// the FAIL <package> result line with a duration rather than for silence, since
+// a revert that orphans output.go's config import fails to build instead: each
+// revert turns exactly one of the three red, and every package outside tests
+// prints ok. So no two of them cover each other, and none of the three is held
+// up by another site still calling the helper.
+//
+// The project is pnpm's, so 'npm install --legacy-peer-deps' is not merely a
+// wrong-looking string here - following it rewrites package-lock.json in a
+// project that keeps pnpm-lock.yaml. 'pnpm install' is also a string the old
+// hardcoded line could not produce under any project, which is why the fixture
+// is deliberately not npm's.
+//
+// runInstall is false, which is both what gates the tip and what keeps the test
+// from starting a real install.
+func TestAddTipNamesTheProjectsInstallCommand(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("tip-single-pkg")
+	projectDir := env.newProject("tip-single-project")
+	env.writeFile(filepath.Join(projectDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+
+	var err error
+	out := captureStdout(t, func() { err = cli.RunAdd("tip-single-pkg", false, false, false) })
+
+	if err != nil {
+		t.Fatalf("RunAdd() = %v, want nil; output was:\n%s", err, out)
+	}
+	const want = "Run 'pnpm install' if you need to resolve peer dependencies"
+	if !strings.Contains(out, want) {
+		t.Errorf("add's tip = want it to contain %q, output was:\n%s", want, out)
+	}
+}
+
+// TestAddMultipleTipNamesTheProjectsInstallCommand is the same pin for the
+// batch path, which prints its own copy of the tip after the whole batch rather
+// than reaching the single-package one.
+//
+// Two specs is what routes through that path at all: RunAddMultiple hands a
+// one-spec batch straight to runAddSingle, so a one-spec fixture here would
+// exercise the call site the test above already covers and say nothing about
+// this one.
+func TestAddMultipleTipNamesTheProjectsInstallCommand(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("tip-batch-pkg-a")
+	env.simplePkg("tip-batch-pkg-b")
+	projectDir := env.newProject("tip-batch-project")
+	env.writeFile(filepath.Join(projectDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = cli.RunAddMultiple([]string{"tip-batch-pkg-a", "tip-batch-pkg-b"}, false, false, false, false)
+	})
+
+	if err != nil {
+		t.Fatalf("RunAddMultiple() = %v, want nil; output was:\n%s", err, out)
+	}
+	const want = "Run 'pnpm install' if you need to resolve peer dependencies"
+	if !strings.Contains(out, want) {
+		t.Errorf("add's batch tip = want it to contain %q, output was:\n%s", want, out)
+	}
+}

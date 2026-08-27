@@ -331,7 +331,7 @@ func RunAddMultiple(packageSpecs []string, dev bool, pure bool, runInstall bool,
 			fmt.Printf("  %s npm install failed: %v\n", ui.IconWarn(), err)
 		}
 	} else if !pure && added > 0 {
-		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", ui.IconTip())
+		printPeerDependencyTip(cwd)
 	}
 
 	// Exit non-zero if any package failed, so scripts can detect it.
@@ -686,7 +686,7 @@ func runAddSingle(packageSpec string, dev bool, pure bool, runInstall bool, useL
 			fmt.Printf("  %s npm install failed: %v\n", ui.IconWarn(), err)
 		}
 	} else if !pure {
-		fmt.Printf("\n  %s Run 'npm install' if you need to resolve peer dependencies\n", ui.IconTip())
+		printPeerDependencyTip(cwd)
 	}
 
 	return nil
