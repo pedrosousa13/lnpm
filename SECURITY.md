@@ -8,9 +8,23 @@
 | 1.x     | :x:                |
 
 This table is not generated. The maintainer updates it by hand when the
-supported line changes, which in practice means at a major release. Whether
-release tooling should own it instead is undecided, and is tracked in
-[#389](https://github.com/pedrosousa13/lnpm/issues/389).
+supported line changes, which in practice means at a major release. Release
+tooling will not own it — a settled decision rather than an unexamined one.
+
+Every release-please substitution token puts *the version being released* into
+a line or block that already exists. None adds, removes or moves a line, and
+none can name a previous major. Annotate the supported row, cut v3.0.0, and the
+table reads `3.x` supported over `1.x` unsupported: 2.x has vanished from it
+entirely, listed as neither, at the moment a reader would check. Annotating the
+second row is worse — with no previous-major token it renders `3.x`
+unsupported, contradicting the row above. So the half that can be automated
+leaves this file wrong rather than merely stale — and even that half is not
+free: `extra-files` is a manifest-config option, while the release workflow
+runs the action with `release-type: go` and no config file, so buying it means
+migrating a working release pipeline to manifest mode.
+
+A CI check that would catch this table going stale is proposed in
+[#438](https://github.com/pedrosousa13/lnpm/issues/438) and has not landed.
 
 ## Security Considerations
 
