@@ -1,4 +1,4 @@
-.PHONY: build test clean install install-local lint fmt deps test-changelog-section
+.PHONY: build test clean install install-local lint fmt deps test-changelog-section check-security-versions test-check-security-versions
 
 # Build variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -55,6 +55,17 @@ bench-compare:
 # docs/releasing.md). Not a Go test, so `go test ./...` does not cover it.
 test-changelog-section:
 	./scripts/test-changelog-section.sh
+
+# Check SECURITY.md's supported-versions table against the current release.
+# Not a Go test, so `go test ./...` does not cover it. This is the target CI
+# runs; it fails on a major release whose table has not been updated yet, which
+# is the whole point — see the script's header.
+check-security-versions:
+	./scripts/check-security-versions.sh
+
+# Test that check above. Also not a Go test.
+test-check-security-versions:
+	./scripts/test-check-security-versions.sh
 
 # Run linter
 lint:
@@ -113,6 +124,8 @@ help:
 	@echo "  bench-mem     - Run benchmarks with memory stats"
 	@echo "  bench-compare - Compare lnpm vs yalc/relative-deps"
 	@echo "  test-changelog-section - Test the release notes extractor"
+	@echo "  check-security-versions - Check SECURITY.md against the current release"
+	@echo "  test-check-security-versions - Test that check"
 	@echo "  lint          - Run linter"
 	@echo "  fmt           - Format code"
 	@echo "  install       - Install to GOPATH/bin"
