@@ -3,6 +3,11 @@ version: 2
 
 project_name: lnpm
 
+# goreleaser's own default, stated rather than assumed: the release workflow
+# verifies dist/checksums.txt.sig after this file's `signs:` block produces it,
+# and that step should not depend on an unstated default staying put.
+dist: dist
+
 before:
   hooks:
     - go mod tidy
