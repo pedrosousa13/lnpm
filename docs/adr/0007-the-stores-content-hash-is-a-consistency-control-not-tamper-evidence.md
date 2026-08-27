@@ -249,6 +249,25 @@ document's *Why not migrate* section first, and should weigh doing it at the
 same time as any other change that has to move the hash, since the migration is
 paid once whether one thing changes or three do.
 
+**That ruling has since been made: deferred to 4.0.0**, on 2026-08-27, with
+#447 alongside it and for the reason this section anticipated — the migration
+is paid once, so the framing fix and the strip-before-hashing fix travel
+together. #464 tracks the pair and blocks both, so neither can be picked up
+before the migration is actually wanted. 3.0.0 shipped earlier the same day and
+the decision came after it, so the carrier is the next major rather than that
+one.
+
+What makes deferring a flaw this cheap to exploit and this cheap to fix
+defensible is the failure direction rather than any difficulty, and the
+distinction is worth keeping straight: framing costs nothing to break, but
+`Store()` returns the existing entry when the hash is already present and never
+overwrites, so a collision still serves stale content rather than
+attacker-chosen content, and the actor is still someone who controls two
+versions of a package they publish. That is an argument for scheduling it, not
+for leaving it. If either half of it stops holding — if any write path learns
+to overwrite an existing entry, or a collision becomes reachable by someone who
+does not already control the name — the deferral expires with it.
+
 **Record the decision only in the code comment, with no ADR.** Rejected because
 the comment is at the place the assumption is made and cannot carry the reason
 it is safe there, and because #330, #332, #333 and #439 each needed to cite
