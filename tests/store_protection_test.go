@@ -108,7 +108,7 @@ func TestRemoveDeletesAWriteProtectedLinkedPackage(t *testing.T) {
 	_, projectDir := env.publishAndAdd("removable-pkg")
 
 	env.chdir(projectDir)
-	if err := cli.RunRemove("removable-pkg", false, true); err != nil {
+	if err := cli.RunRemove("removable-pkg", false, true, false); err != nil {
 		t.Fatalf("Failed to remove package: %v", err)
 	}
 

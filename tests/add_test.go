@@ -503,18 +503,33 @@ func TestAddMultipleFailsWhenALinkCannotBeRecorded(t *testing.T) {
 //
 // internal/cli's TestPrintPeerDependencyTipNamesTheProjectsInstallCommand drives
 // printPeerDependencyTip directly, so it cannot see who calls it: measured, the
-// hardcoded line #384 removed can be put back at all three of the helper's
-// non-retreat call sites and that test, go vet and the whole suite stay green.
-// These two tests and TestRestoreTipNamesTheProjectsInstallCommand are what
-// turns that red.
+// hardcoded line #384 removed can be put back at any of the helper's non-retreat
+// call sites and that test, go vet and the whole suite stay green. These two
+// tests, TestRestoreTipNamesTheProjectsInstallCommand and internal/cli's
+// TestRunRemoveTipNamesTheProjectsInstallCommand are what turns that red.
+//
+// There are four such sites, not three: #336 gave remove a tip of its own when
+// it stopped installing unconditionally, and its guard lives beside RunRemove in
+// internal/cli rather than here. Count the call sites from the code before
+// trusting this number.
 //
 // Measured on 2026-08-27, each site reverted on its own to the literal line
 // #384 removed, each run preceded by go vet ./... exiting 0 and each read for
 // the FAIL <package> result line with a duration rather than for silence, since
-// a revert that orphans output.go's config import fails to build instead: each
-// revert turns exactly one of the three red, and every package outside tests
-// prints ok. So no two of them cover each other, and none of the three is held
-// up by another site still calling the helper.
+// a revert that orphans output.go's config import fails to build instead. Read
+// the split rather than the totals - the four are not symmetrical:
+//
+//   - add's two sites and restore's turn exactly one test red each - the one
+//     named for them, all three in this package - and every other package prints
+//     ok. So no two of them cover each other, and none is held up by another
+//     site still calling the helper.
+//   - remove's site turns three red, all in internal/cli and none here:
+//     TestRunRemoveTipNamesTheProjectsInstallCommand, which is its named guard,
+//     plus TestRunRemoveRunsNoInstallWithoutTheFlag and
+//     TestRunRemoveAdvisesAfterAPartialRemoval. Those two match remove_test.go's
+//     peerDepTip constant, which carries the --legacy-peer-deps an npm project's
+//     derived command has and the reverted literal does not, so they catch the
+//     revert as a side effect of asserting the tip was printed at all.
 //
 // The project is pnpm's, so 'npm install --legacy-peer-deps' is not merely a
 // wrong-looking string here - following it rewrites package-lock.json in a

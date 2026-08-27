@@ -18,7 +18,7 @@ func TestGCRemovesOrphans(t *testing.T) {
 		env := setupTest(t)
 
 		env.publishAndAdd("gc-pkg")
-		if err := cli.RunRemove("gc-pkg", false, false); err != nil {
+		if err := cli.RunRemove("gc-pkg", false, false, false); err != nil {
 			t.Fatalf("Failed to remove package: %v", err)
 		}
 		env.AssertPackageInDatabase("gc-pkg", true) // orphaned, not yet collected

@@ -461,6 +461,13 @@ lnpm add my-package             # Adds package, no install (default)
 lnpm add my-package --install   # Adds package, then runs npm install
 ```
 
+`lnpm remove` and `lnpm retreat` take the same flag, and default the same way. An install runs every dependency's install scripts, so none of these commands starts one unless you ask for it.
+
+```bash
+lnpm remove my-package             # Removes package, no install (default)
+lnpm remove my-package --install   # Removes package, then runs npm install
+```
+
 ### Package Validation
 
 lnpm validates packages before publishing:
@@ -533,7 +540,7 @@ Debug output goes to stderr with timestamps, useful for diagnosing slow operatio
 4. **Push** — Updates store and re-links all files to consuming projects
 5. **Auto .gitignore** — Optionally manages `.lnpm/` in `.gitignore` (enabled by default)
 
-**Note:** `lnpm add` does NOT run `npm install` automatically (matches yalc) — pass `--install` or run it yourself if you need to resolve peer dependencies. `lnpm remove`, however, runs your package manager's install afterward to restore the removed dependency.
+**Note:** `lnpm add` does NOT run `npm install` automatically (matches yalc) — pass `--install` or run it yourself if you need to resolve peer dependencies. `lnpm remove` and `lnpm retreat` behave the same way: pass `--install` to have the removed dependency reinstalled.
 
 ```
 Source Package          Store                    Project

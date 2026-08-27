@@ -118,13 +118,15 @@ This command:
   4. Updates lnpm.lock
 
 Examples:
-  lnpm remove my-package   # Remove specific package
-  lnpm remove --all        # Remove all linked packages
-  lnpm remove --all --yes  # Remove all without a confirmation prompt`,
+  lnpm remove my-package             # Remove specific package
+  lnpm remove my-package --install   # Remove, then run npm install
+  lnpm remove --all                  # Remove all linked packages
+  lnpm remove --all --yes            # Remove all without a confirmation prompt`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		yes, _ := cmd.Flags().GetBool("yes")
+		install, _ := cmd.Flags().GetBool("install")
 		var packageName string
 		if len(args) > 0 {
 			packageName = args[0]
@@ -132,7 +134,7 @@ Examples:
 		if !all && packageName == "" {
 			return fmt.Errorf("please specify a package name or use --all")
 		}
-		return RunRemove(packageName, all, yes)
+		return RunRemove(packageName, all, yes, install)
 	},
 }
 
@@ -485,6 +487,7 @@ func init() {
 	// remove flags
 	removeCmd.Flags().Bool("all", false, "Remove all linked packages")
 	removeCmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
+	removeCmd.Flags().Bool("install", false, "Run npm install after removing (default: no)")
 
 	// push flags
 	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
