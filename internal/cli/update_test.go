@@ -445,7 +445,7 @@ func trustReleaseKeys(t *testing.T, keys ...*ecdsa.PublicKey) {
 	t.Helper()
 
 	prev := trustedReleaseKeys
-	trustedReleaseKeys = keys
+	trustedReleaseKeys = func() ([]*ecdsa.PublicKey, error) { return keys, nil }
 	t.Cleanup(func() { trustedReleaseKeys = prev })
 }
 
@@ -473,8 +473,8 @@ func signChecksums(t *testing.T, key *ecdsa.PrivateKey, body string) []byte {
 }
 
 // releaseHandler serves a release: checksums.txt, its signature, and - when
-// filename is non-empty - the archive. A nil sig publishes no signature at all,
-// as every release up to v2.0.0 does. Anything else 404s.
+// filename is non-empty - the archive. A nil sig publishes no checksums.txt.sig
+// at all, which is what an unsigned release looks like. Anything else 404s.
 func releaseHandler(filename string, archive []byte, checksums string, sig []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -503,85 +503,82 @@ func startReleaseServer(t *testing.T, checksums string) {
 	serveRelease(t, releaseHandler("", nil, checksums, signChecksums(t, key, checksums)))
 }
 
-// writeArchiveFixture writes content to a temp file and returns its path plus
-// the hex SHA-256 of the content, computed independently of production code.
-func writeArchiveFixture(t *testing.T, filename, content string) (string, string) {
+// archiveFixtureContent is the stand-in for a release archive's bytes in the
+// verification tests, which never extract it - only hash it.
+const archiveFixtureContent = "archive-bytes"
+
+// archiveWithChecksums writes an archive fixture to a temp file and returns its
+// path alongside a checksums.txt body listing that file's real SHA-256 under
+// filename.
+//
+// It serves nothing and signs nothing. What the release publishes, and which
+// keys the updater trusts, are exactly what these tests vary, so the helper
+// must not decide either.
+func archiveWithChecksums(t *testing.T, filename string) (path, checksums string) {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), filename)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	path = filepath.Join(t.TempDir(), filename)
+	if err := os.WriteFile(path, []byte(archiveFixtureContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256([]byte(content))
-	return path, hex.EncodeToString(sum[:])
+	return path, archiveChecksums(filename, []byte(archiveFixtureContent))
 }
 
-func TestVerifyChecksumMatches(t *testing.T) {
+func TestVerifyReleaseMatches(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, sum := writeArchiveFixture(t, filename, "archive-bytes")
-	startReleaseServer(t, fmt.Sprintf("0000  other-file.zip\n%s  %s\n", sum, filename))
+	path, checksums := archiveWithChecksums(t, filename)
+	startReleaseServer(t, "0000  other-file.zip\n"+checksums)
 
-	if err := verifyChecksum("1.2.3", filename, path); err != nil {
-		t.Errorf("verifyChecksum returned error: %v", err)
+	if err := verifyRelease("1.2.3", filename, path); err != nil {
+		t.Errorf("verifyRelease returned error: %v", err)
 	}
 }
 
-func TestVerifyChecksumMismatch(t *testing.T) {
+func TestVerifyReleaseMismatch(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, _ := writeArchiveFixture(t, filename, "archive-bytes")
+	path, _ := archiveWithChecksums(t, filename)
 	tampered := strings.Repeat("ab", 32)
 	startReleaseServer(t, fmt.Sprintf("%s  %s\n", tampered, filename))
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil for a tampered archive, want a mismatch error")
+		t.Fatal("verifyRelease returned nil for a tampered archive, want a mismatch error")
 	}
 	if !strings.Contains(err.Error(), "mismatch") {
 		t.Errorf("error = %q, want it to mention a mismatch", err)
 	}
 }
 
-func TestVerifyChecksumNotListed(t *testing.T) {
+func TestVerifyReleaseNotListed(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, sum := writeArchiveFixture(t, filename, "archive-bytes")
-	startReleaseServer(t, fmt.Sprintf("%s  lnpm_1.2.3_darwin_arm64.tar.gz\n", sum))
+	path, _ := archiveWithChecksums(t, filename)
+	// The archive's own checksum, listed under a platform this run is not: the
+	// entry verifyRelease looks for is absent.
+	startReleaseServer(t, archiveChecksums("lnpm_1.2.3_darwin_arm64.tar.gz", []byte(archiveFixtureContent)))
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil for an unlisted file, want an error")
+		t.Fatal("verifyRelease returned nil for an unlisted file, want an error")
 	}
 	if !strings.Contains(err.Error(), "no checksum listed") {
 		t.Errorf("error = %q, want it to mention no checksum was listed", err)
 	}
 }
 
-// signedReleaseFixture writes an archive, then serves a release publishing its
-// real checksums.txt alongside sig, and returns the archive path and the
-// checksums body a caller may want to have signed.
-//
-// The trusted key set is left to the caller: that is the whole point of these
-// tests, so the helper must not decide it.
-func signedReleaseFixture(t *testing.T, filename string) (path, checksums string) {
-	t.Helper()
-
-	path, sum := writeArchiveFixture(t, filename, "archive-bytes")
-	return path, fmt.Sprintf("%s  %s\n", sum, filename)
-}
-
 // A checksums.txt is only worth trusting because a maintainer signed it. One
 // signed by anybody else proves nothing, so it must be refused - this is the
 // case an attacker who can serve their own release assets produces.
-func TestVerifyChecksumRefusesASignatureFromAnUntrustedKey(t *testing.T) {
+func TestVerifyReleaseRefusesASignatureFromAnUntrustedKey(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, checksums := signedReleaseFixture(t, filename)
+	path, checksums := archiveWithChecksums(t, filename)
 
 	attacker := newReleaseKey(t)
 	trustReleaseKeys(t, &newReleaseKey(t).PublicKey)
 	serveRelease(t, releaseHandler("", nil, checksums, signChecksums(t, attacker, checksums)))
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil for checksums signed by an untrusted key, want an error")
+		t.Fatal("verifyRelease returned nil for checksums signed by an untrusted key, want an error")
 	}
 	const want = "signature verification failed for checksums.txt: not signed by any trusted key"
 	if !strings.Contains(err.Error(), want) {
@@ -592,18 +589,18 @@ func TestVerifyChecksumRefusesASignatureFromAnUntrustedKey(t *testing.T) {
 // A signature is over specific bytes. Replaying a genuine signature over a
 // mutated checksums.txt - swapping in the attacker's own archive hash - is the
 // attack the signature exists to stop.
-func TestVerifyChecksumRefusesTamperedChecksums(t *testing.T) {
+func TestVerifyReleaseRefusesTamperedChecksums(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, checksums := signedReleaseFixture(t, filename)
+	path, checksums := archiveWithChecksums(t, filename)
 
 	key := trustNewReleaseKey(t)
 	sig := signChecksums(t, key, checksums)
 	tampered := fmt.Sprintf("%s  %s\n", strings.Repeat("ab", 32), filename)
 	serveRelease(t, releaseHandler("", nil, tampered, sig))
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil for a mutated checksums.txt, want an error")
+		t.Fatal("verifyRelease returned nil for a mutated checksums.txt, want an error")
 	}
 	if !strings.Contains(err.Error(), "not signed by any trusted key") {
 		t.Errorf("error = %q, want it to report the signature did not verify", err)
@@ -618,16 +615,16 @@ func TestVerifyChecksumRefusesTamperedChecksums(t *testing.T) {
 // 'lnpm update' only ever installs the latest release, so a release with no
 // signature is not an old one - it is tampering or a broken release job. The
 // message has to tell the user that rather than just failing.
-func TestVerifyChecksumRefusesAReleaseWithNoSignature(t *testing.T) {
+func TestVerifyReleaseRefusesAReleaseWithNoSignature(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, checksums := signedReleaseFixture(t, filename)
+	path, checksums := archiveWithChecksums(t, filename)
 
 	trustReleaseKeys(t, &newReleaseKey(t).PublicKey)
 	serveRelease(t, releaseHandler("", nil, checksums, nil))
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil for a release publishing no signature, want an error")
+		t.Fatal("verifyRelease returned nil for a release publishing no signature, want an error")
 	}
 	for _, want := range []string{"checksums.txt.sig", "unsigned", "will not be installed"} {
 		if !strings.Contains(err.Error(), want) {
@@ -639,9 +636,9 @@ func TestVerifyChecksumRefusesAReleaseWithNoSignature(t *testing.T) {
 // A signature that cannot be fetched at all is a different problem from one the
 // release never published, and the user's next move differs too - retry versus
 // do not install. The two must not produce the same message.
-func TestVerifyChecksumDistinguishesAFetchFailureFromAnUnsignedRelease(t *testing.T) {
+func TestVerifyReleaseDistinguishesAFetchFailureFromAnUnsignedRelease(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, checksums := signedReleaseFixture(t, filename)
+	path, checksums := archiveWithChecksums(t, filename)
 
 	trustReleaseKeys(t, &newReleaseKey(t).PublicKey)
 	// The signature request has its connection dropped mid-response, which is
@@ -663,9 +660,9 @@ func TestVerifyChecksumDistinguishesAFetchFailureFromAnUnsignedRelease(t *testin
 		w.WriteHeader(http.StatusNotFound)
 	})
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil when the signature could not be fetched, want an error")
+		t.Fatal("verifyRelease returned nil when the signature could not be fetched, want an error")
 	}
 	if !strings.Contains(err.Error(), "failed to fetch") {
 		t.Errorf("error = %q, want it to report the fetch failed", err)
@@ -677,16 +674,29 @@ func TestVerifyChecksumDistinguishesAFetchFailureFromAnUnsignedRelease(t *testin
 
 // Bytes that are not ASN.1 DER at all must be refused like any other bad
 // signature, and must not take the process down on the way.
-func TestVerifyChecksumRefusesAMalformedSignature(t *testing.T) {
+//
+// The signature served here is the release's own - made by the trusted key over
+// the exact checksums.txt served - with only its outer SEQUENCE tag cleared, so
+// the DER framing is the single thing wrong with it. That is what separates
+// this test from the untrusted-key and tampered-body ones: with the tag left
+// alone the release verifies and this test fails, so nothing but the framing
+// can be what refuses it. Corrupting a fresh unused key's signature instead
+// would have been refused on the key mismatch alone.
+func TestVerifyReleaseRefusesAMalformedSignature(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, checksums := signedReleaseFixture(t, filename)
+	path, checksums := archiveWithChecksums(t, filename)
 
-	trustReleaseKeys(t, &newReleaseKey(t).PublicKey)
-	serveRelease(t, releaseHandler("", nil, checksums, []byte("not-a-der-signature")))
+	key := trustNewReleaseKey(t)
+	sig := signChecksums(t, key, checksums)
+	if sig[0] != 0x30 {
+		t.Fatalf("signature starts with %#x, want the DER SEQUENCE tag 0x30", sig[0])
+	}
+	sig[0] = 0x00
+	serveRelease(t, releaseHandler("", nil, checksums, sig))
 
-	err := verifyChecksum("1.2.3", filename, path)
+	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
-		t.Fatal("verifyChecksum returned nil for a malformed signature, want an error")
+		t.Fatal("verifyRelease returned nil for a malformed signature, want an error")
 	}
 	if !strings.Contains(err.Error(), "not signed by any trusted key") {
 		t.Errorf("error = %q, want it to report the signature did not verify", err)
@@ -696,17 +706,17 @@ func TestVerifyChecksumRefusesAMalformedSignature(t *testing.T) {
 // The key set is a list so a key can be rotated without breaking updaters built
 // against the old one: a release signed by any trusted key verifies, not only
 // by the first.
-func TestVerifyChecksumAcceptsASignatureFromAnyTrustedKey(t *testing.T) {
+func TestVerifyReleaseAcceptsASignatureFromAnyTrustedKey(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
-	path, checksums := signedReleaseFixture(t, filename)
+	path, checksums := archiveWithChecksums(t, filename)
 
 	retired := newReleaseKey(t)
 	current := newReleaseKey(t)
 	trustReleaseKeys(t, &retired.PublicKey, &current.PublicKey)
 	serveRelease(t, releaseHandler("", nil, checksums, signChecksums(t, current, checksums)))
 
-	if err := verifyChecksum("1.2.3", filename, path); err != nil {
-		t.Errorf("verifyChecksum returned error for a release signed by the second trusted key: %v", err)
+	if err := verifyRelease("1.2.3", filename, path); err != nil {
+		t.Errorf("verifyRelease returned error for a release signed by the second trusted key: %v", err)
 	}
 }
 

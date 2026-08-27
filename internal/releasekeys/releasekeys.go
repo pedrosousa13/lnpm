@@ -28,22 +28,18 @@ import (
 //go:embed keys/*.pem
 var keyFiles embed.FS
 
-// MustTrusted returns the trusted release signing keys, parsed from the
-// embedded SPKI PEM files.
+// Trusted returns the trusted release signing keys, parsed from the embedded
+// SPKI PEM files.
 //
-// It panics rather than returning an error because the input is compiled into
-// the binary: a PEM that does not parse is a build that should never have been
-// made, not a condition a user can do anything about. The package's own test
-// parses them, so the panic is caught before it can ship.
-func MustTrusted() []*ecdsa.PublicKey {
-	keys, err := trusted()
-	if err != nil {
-		panic("releasekeys: " + err.Error())
-	}
-	return keys
-}
-
-func trusted() ([]*ecdsa.PublicKey, error) {
+// A PEM that does not parse is a build that should never have been made, so
+// the error is not a condition a user can act on. It is still returned rather
+// than panicked, because only the update path needs these keys: a bad embed
+// must fail 'lnpm update' loudly and leave every other command working. The
+// package's own test parses them, so a bad embed is caught before it ships.
+//
+// It returns an error rather than an empty slice when nothing is embedded,
+// since a build trusting no key silently refuses every release.
+func Trusted() ([]*ecdsa.PublicKey, error) {
 	entries, err := fs.Glob(keyFiles, "keys/*.pem")
 	if err != nil {
 		return nil, err

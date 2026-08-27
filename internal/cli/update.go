@@ -34,10 +34,15 @@ var updateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 // var so tests can point it at a local httptest server instead of GitHub.
 var releaseBaseURL = "https://github.com/pedrosousa13/lnpm/releases/download"
 
-// trustedReleaseKeys are the keys a release's checksums.txt must be signed by.
-// It is a var so tests can swap in their own generated keys, the same way they
-// swap releaseBaseURL.
-var trustedReleaseKeys = releasekeys.MustTrusted()
+// trustedReleaseKeys returns the keys a release's checksums.txt must be signed
+// by. It is a var so tests can swap in their own generated keys, the same way
+// they swap releaseBaseURL.
+//
+// It is called from the update path rather than resolved at package init: the
+// embedded PEMs are only needed to verify a release, and a build whose embed
+// does not parse must fail 'lnpm update' with an error the user can read, not
+// take down add, remove, gc and doctor along with it.
+var trustedReleaseKeys = releasekeys.Trusted
 
 // updateCmd updates lnpm to the latest version
 var updateCmd = &cobra.Command{
@@ -401,11 +406,12 @@ func downloadBinary(version, url, filename string) (binaryPath, tmpDir string, e
 	// Verify the release BEFORE extracting or installing — a tampered or
 	// corrupted asset must never reach the running binary.
 	//
-	// The wrapper says "release" rather than "checksum" because verifyChecksum
-	// refuses on two distinct grounds now: a checksum that does not match, and
-	// a signature that does not verify or was never published. Naming only the
-	// first told a user with an unsigned release that their checksums were bad.
-	if err := verifyChecksum(version, filename, filePath); err != nil {
+	// The wrapper says "release" rather than "checksum" because verifyRelease
+	// refuses on two distinct grounds: a checksum that does not match, and a
+	// signature that does not verify or was never published. A wrapper naming
+	// only the first tells a user with an unsigned release that their checksums
+	// are bad, which is a different problem with a different response.
+	if err := verifyRelease(version, filename, filePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", tmpDir, fmt.Errorf("release verification failed: %w", err)
 	}
@@ -455,14 +461,16 @@ func buildChecksumsURL(version string) string {
 	return fmt.Sprintf("%s/v%s/checksums.txt", releaseBaseURL, version)
 }
 
-// verifyChecksum computes the SHA-256 of filePath and compares it to the entry
-// for filename in the release checksums.txt.
+// verifyRelease establishes that the archive at filePath is the one the
+// maintainer released, on two grounds: the release's checksums.txt carries a
+// signature from a trusted key, and the SHA-256 of filePath matches the entry
+// that checksums.txt lists for filename.
 //
-// The checksums are only consulted once their signature has been verified
-// against a trusted key. Without that, matching them proves the archive is the
-// one *some* checksums.txt describes - which whoever served the archive can
-// always arrange - rather than the one the maintainer released.
-func verifyChecksum(version, filename, filePath string) error {
+// Both are needed, and the order matters. Matching an unverified checksums.txt
+// proves only that the archive is the one *some* checksums.txt describes -
+// which whoever served the archive can always arrange - rather than the one the
+// maintainer released.
+func verifyRelease(version, filename, filePath string) error {
 	sum, err := sha256File(filePath)
 	if err != nil {
 		return err
@@ -500,7 +508,13 @@ func fetchSignedChecksums(version string) ([]byte, error) {
 		return nil, signatureUnavailableError(version, err)
 	}
 
-	if !verifySignature(checksums, sig) {
+	keys, err := trustedReleaseKeys()
+	if err != nil {
+		return nil, fmt.Errorf("this build trusts no usable release signing key, so no release can be verified - "+
+			"reinstall lnpm from a build that does: %w", err)
+	}
+
+	if !verifySignature(keys, checksums, sig) {
 		return nil, fmt.Errorf("signature verification failed for checksums.txt: not signed by any trusted key")
 	}
 	return checksums, nil
@@ -510,30 +524,35 @@ func fetchSignedChecksums(version string) ([]byte, error) {
 // read, keeping "the release published none" apart from "the fetch failed":
 // the first means do not install, the second means try again.
 //
-// A missing signature is refused rather than tolerated because 'lnpm update'
-// only ever installs the *latest* release - there is no flag to target an older
-// one - and every release from the next one onward is signed. So an absent
-// signature on a newer release means tampering or a broken release job, never a
-// legitimate old artifact. Releases up to and including v2.0.0 are unsigned,
-// but no update path can reach them.
+// A missing signature is refused rather than tolerated. The rule for whether a
+// release is signed is what it publishes: a release is signed if it publishes
+// checksums.txt.sig, and unsigned if it does not. Releases up to and including
+// v3.0.0 publish none - do not restate that as a boundary the next release
+// moves, since it has gone stale here once already.
+//
+// Refusing is still right for an unsigned release, because 'lnpm update' only
+// ever installs the *latest* release - there is no flag to target an older one.
+// So the release this refuses is never one of those old artifacts: it is a
+// release published after this check shipped, and a missing signature on one of
+// those means tampering or a broken release job.
 func signatureUnavailableError(version string, err error) error {
 	if errors.Is(err, errAssetNotFound) {
 		return fmt.Errorf("release v%s publishes no checksums.txt.sig, so it appears unsigned: it will not be installed. "+
 			"Do not install it by hand either - report it at https://github.com/pedrosousa13/lnpm/issues",
 			strings.TrimPrefix(version, "v"))
 	}
-	return fmt.Errorf("failed to fetch the checksums signature: %w. "+
-		"The release cannot be verified, so it will not be installed - check your connection and try again", err)
+	return fmt.Errorf("failed to fetch the checksums signature, so the release cannot be verified and "+
+		"will not be installed - check your connection and try again: %w", err)
 }
 
 // verifySignature reports whether sig is an ASN.1 DER ECDSA signature over the
-// SHA-256 of body made by any one of the trusted release keys.
+// SHA-256 of body made by any one of keys.
 //
 // Any key verifying is enough, so that rotating the signing key does not break
 // updaters built while an older key was the only one embedded.
-func verifySignature(body, sig []byte) bool {
+func verifySignature(keys []*ecdsa.PublicKey, body, sig []byte) bool {
 	digest := sha256.Sum256(body)
-	for _, key := range trustedReleaseKeys {
+	for _, key := range keys {
 		if ecdsa.VerifyASN1(key, digest[:], sig) {
 			return true
 		}
