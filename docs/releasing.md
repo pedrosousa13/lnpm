@@ -4,8 +4,11 @@ A release is cut by release-please, built by GoReleaser, and has its notes synce
 `CHANGELOG.md` — three jobs in `.github/workflows/release-please.yaml`, all triggered by a push to
 `main`.
 
-Two steps need a person: writing the upgrade notes, and approving the held workflow run. Everything
-after the merge is automatic.
+One step needs a person: writing the upgrade notes. Everything after the merge is automatic.
+
+Approving a held workflow run used to be a second one. It is not any more — see
+[The App token that keeps checks running](#the-app-token-that-keeps-checks-running), which is also
+where to look when checks stop reporting on a release pull request again.
 
 ## The flow
 
@@ -39,18 +42,16 @@ after the merge is automatic.
 
    If the head is release-please's `chore(main): release X.Y.Z` rather than your notes commit, the
    notes are gone; write them again. Nothing downstream will notice: the squash carries whatever
-   `CHANGELOG.md` the branch holds at merge time, and step 6 publishes that. A missing note is
+   `CHANGELOG.md` the branch holds at merge time, and step 5 publishes that. A missing note is
    exactly the failure this runbook exists to prevent.
 
 4. **If `X.Y.Z` is a new major, update `SECURITY.md`'s supported-versions table on that same
-   branch.** Do this from the version number, not from a red tick: this pull request is
-   bot-authored, so its runs are held behind the gate below and the `Check supported versions` job
-   reports nothing until you approve them in step 5. The check is the backstop for forgetting, not
-   the prompt. It fails deliberately, and only on this pull request. See the check below.
+   branch.** Do this from the version number rather than from waiting on a red tick. The
+   `Check supported versions` job does now run unattended on this pull request, but the check is the
+   backstop for forgetting, not the prompt. It fails deliberately, and only on this pull request.
+   See the check below.
 
-5. **Approve the held workflow run**, so the required check can report. See the gate below.
-
-6. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release; the
+5. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release; the
    `goreleaser` job builds and uploads the archives; the `sync-release-notes` job then overwrites
    the release body with the version's `CHANGELOG.md` section, hand-written notes included. That
    last job is ordered after `goreleaser` but does not depend on it succeeding: the `goreleaser`
@@ -143,48 +144,103 @@ functions": `success`, `always`, `cancelled`, `failure`. The job's `if` therefor
 released, tagged and note-less, with `sync-release-notes` *skipped* rather than failed — #410
 recurring inside the fix for #410, on a run that still looks green.
 
-## The bot-authored-PR gate
+## The App token that keeps checks running
 
-The release pull request is authored by `github-actions[bot]`, and GitHub holds workflow runs
-triggered by it behind a manual approval. The run is created and finishes immediately without
-executing anything, so the required `Conventional Commit` check does not report "pending" — it does
-not report at all.
+The `release-please` job mints a GitHub App installation token and passes it to
+`googleapis/release-please-action` as `token:`. That is the only reason checks report on the release
+pull request without anyone clicking anything, and it is the part of this pipeline most likely to
+break quietly. [#457](https://github.com/pedrosousa13/lnpm/issues/457) is the history.
 
-Measured on 2026-08-25:
+### What it replaced
 
-- Open release pull request [#412](https://github.com/pedrosousa13/lnpm/pull/412) has
+Without a `token:`, the action defaults that input to `${{ github.token }}` — its `action.yml` says
+so — and the release pull request is then opened by `github-actions[bot]`. GitHub does not start
+workflow runs from events raised by `GITHUB_TOKEN`, so that a workflow cannot retrigger itself
+forever. The run is created and parked, having executed nothing, so the required
+`Conventional Commit` check does not report "pending": it does not report at all.
+
+Measured on 2026-08-25, before the fix:
+
+- Open release pull request [#412](https://github.com/pedrosousa13/lnpm/pull/412) had
   `statusCheckRollup: []` and `mergeStateStatus: BLOCKED`. That empty rollup is the "no checks
   reported" the merge box shows.
-- Its run `32816558361` has `conclusion: action_required`, `triggering_actor: github-actions[bot]`,
+- Its run `32816558361` had `conclusion: action_required`, `triggering_actor: github-actions[bot]`,
   and `created_at`, `run_started_at` and `updated_at` all equal to `2026-08-25T06:20:43Z` — created
   and finished in the same second, having run nothing.
 - The equivalent run for 2.3.0, `32755038068`, was created at `17:09:59` and has
   `run_started_at: 17:11:36` with `triggering_actor: pedrosousa13` and `conclusion: success`. The
-  ninety-seven second gap is the approval. Approving is what starts the run.
+  ninety-seven second gap is a human clicking **Approve workflows to run**. Approving is what
+  started the run.
 
-**What to click:** the pull request carries a banner in the merge box, and **Approve workflows to
-run** starts the held run. GitHub documents that for exactly this case — a pull request created by
-a workflow using `GITHUB_TOKEN`, which is what this workflow does: it passes no `token` to
-`googleapis/release-please-action@v4`, whose `action.yml` defaults that input to
-`${{ github.token }}`. From
-[Triggering a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow):
-"the resulting `pull_request` event creates workflow runs in an **approval-required** state. The
-pull request displays a banner in the merge box, and a user with write access to the repository can
-start the runs by selecting **Approve workflows to run**".
+By 2026-08-27 that cost two approvals per release pull request rather than one, three parked runs
+having landed in a single day (`32963252535`, `32970558695`, `32972580212`).
 
-The route to that button is *not* documented for this case. GitHub's
-[Approving workflow runs from forks](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks)
-says to "click the button in the upper right corner labeled **Awaiting approval**, which will open
-the **Merge status** panel", then "Find and click **Approve workflows to run**" — but that page
-opens "Workflow runs triggered by a contributor's pull request from a fork may require manual
-approval", and a release pull request is not from a fork. Treat the *Awaiting approval* label and
-the panel name as unverified here; only the button they lead to is sourced.
+A repository setting cannot fix this. The fork-approval policy accepts only
+`first_time_contributors_new_to_github`, `first_time_contributors` and `all_external_contributors`,
+none of which turns the guard off, and it governs fork pull requests in any case — the release pull
+request has `isCrossRepository: false`.
 
-In practice step 3 often does this for you. A push of your own to the release branch triggers a run
-whose actor is you rather than the bot, and that one is not gated: run `32755370188`, for the notes
-commit `25789a79`, has `triggering_actor: pedrosousa13` with `created_at` equal to `run_started_at`
-and concluded `success`. The check is recorded per commit SHA, though, so it is the newest commit's
-run that has to report — approve if you merge without pushing anything.
+An App installation token is a distinct identity, so the guard does not apply to events raised with
+it. The App was chosen over a personal access token because it does not expire and is not tied to
+one person's account.
+
+### What it needs
+
+Two repository secrets, both set on 2026-08-27:
+
+- `RELEASE_APP_ID` — the App's numeric App ID. The action's newer input is `client-id`; the workflow
+  passes the value as `app-id`, which the action still reads as a fallback, because the secret holds
+  the App ID and switching inputs would mean reissuing it.
+- `RELEASE_APP_PRIVATE_KEY` — a PEM private key generated for that App.
+
+The App must be **installed on this repository**, with these repository permissions and no others:
+
+| Permission      | Level        | Why                                                            |
+| --------------- | ------------ | -------------------------------------------------------------- |
+| `Contents`      | read + write | Push the release branch; create the tag and the GitHub release |
+| `Pull requests` | read + write | Open, update and label the release pull request                |
+
+`Metadata: read` comes with every installation and is not something you grant. Nothing else is
+needed: the token is used by one action, in one job, and that job does not check out the repository,
+touch workflow files, or read Actions state.
+
+The token is minted per run and revoked when the job ends. It is not stored anywhere.
+
+### What breaks when it goes stale, and what that looks like
+
+This is the part worth knowing before it happens, because **the failure looks exactly like the bug
+the token fixes**: no checks on the release pull request, or no release pull request at all. The
+merge box says the same thing either way.
+
+Two shapes, and they fail differently:
+
+- **Loud, on `main`.** If `RELEASE_APP_ID` or `RELEASE_APP_PRIVATE_KEY` is missing or empty, the
+  mint step fails with a message naming the input. If the key has been rotated in the App's settings
+  and the secret still holds the old one, or the App has been uninstalled from this repository, the
+  token request is rejected and the step fails too. In all of these the `release-please` job goes
+  red on a push to `main`.
+
+  Red, but easy to miss. Nobody watches a green `main`, and the *visible* consequence is on the pull
+  request side: no release pull request is opened, or an existing one silently stops being updated
+  as commits land. **If `main` has moved and the release pull request has not, look at the last
+  `Release Please` run before looking at anything else.**
+
+- **Quiet, on the pull request.** If the App is still installed and its key is still valid but its
+  permissions have been narrowed — `Pull requests` dropped to read, say — the mint step succeeds and
+  hands release-please a token that cannot do the work. The failure then surfaces inside the
+  release-please step as an API error, or as a pull request that is opened but not updated.
+
+  A permission added to an App after installation is **not** granted until the installation is
+  reviewed and accepted. Changing the App's permissions is therefore not enough on its own.
+
+Neither shape is caught by anything automatic. There is no check that the App is installed, no
+expiry to watch — an App installation token is minted fresh each run and has no long-lived
+credential to lapse — and no alert when a release pull request stops receiving commits. The
+diagnosis is the run log of the `release-please` job.
+
+If the token cannot be restored quickly, the release is not blocked: remove the `token:` line and
+the mint step, and the pipeline reverts to the behaviour above — a release pull request that works,
+with two approval clicks per run. That is the fallback, not the fix.
 
 ## The extractor
 
