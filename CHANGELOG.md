@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.0.0](https://github.com/pedrosousa13/lnpm/compare/v2.4.0...v3.0.0) (2026-08-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **remove:** `lnpm remove` no longer runs the package manager's install automatically. Pass --install to keep the old behaviour.
+* **pack:** package names containing uppercase are now rejected, and names are composed to NFC before they reach the store or the lock file.
+
+### Features
+
+* **pack:** reject uppercase package names and compose them to NFC ([#462](https://github.com/pedrosousa13/lnpm/issues/462)) ([88c517a](https://github.com/pedrosousa13/lnpm/commit/88c517aa0d71462fcce923a90fb6c350f2ca24e0)), closes [#327](https://github.com/pedrosousa13/lnpm/issues/327)
+* **remove:** gate the package-manager install behind --install ([#386](https://github.com/pedrosousa13/lnpm/issues/386)) ([fed8d5e](https://github.com/pedrosousa13/lnpm/commit/fed8d5e638c1393e47cf4a2c01151b59afa16766)), closes [#336](https://github.com/pedrosousa13/lnpm/issues/336)
+
 ## [2.4.0](https://github.com/pedrosousa13/lnpm/compare/v2.3.0...v2.4.0) (2026-08-27)
 
 
