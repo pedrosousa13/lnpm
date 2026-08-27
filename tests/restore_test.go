@@ -576,3 +576,36 @@ func TestRestoreDropsAReAddedPackageFromTheSnapshot(t *testing.T) {
 		t.Errorf("Expected the re-added package to be gone from the snapshot, it holds %v", snapshot.List())
 	}
 }
+
+// TestRestoreTipNamesTheProjectsInstallCommand pins restore's call site of the
+// #384 tip, for the reason the two add tests in add_test.go give: the helper's
+// own unit test drives printPeerDependencyTip directly and so cannot tell
+// whether any command still spells the command out itself.
+//
+// restored > 0 is what gates the tip, so the snapshot has to be restored
+// cleanly rather than merely read - a run where every package failed prints the
+// re-run advice instead and would pass a weaker assertion.
+func TestRestoreTipNamesTheProjectsInstallCommand(t *testing.T) {
+	env := setupTest(t)
+
+	env.simplePkg("tip-restore-pkg")
+	projectDir := env.newProject("tip-restore-project")
+	env.addPkg(projectDir, "tip-restore-pkg", false, false)
+	env.writeFile(filepath.Join(projectDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+
+	if err := cli.RunRetreat(true, false); err != nil {
+		t.Fatalf("Failed to retreat: %v", err)
+	}
+	env.chdir(projectDir)
+
+	var err error
+	out := captureStdout(t, func() { err = cli.RunRestore() })
+
+	if err != nil {
+		t.Fatalf("RunRestore() = %v, want nil; output was:\n%s", err, out)
+	}
+	const want = "Run 'pnpm install' if you need to resolve peer dependencies"
+	if !strings.Contains(out, want) {
+		t.Errorf("restore's tip = want it to contain %q, output was:\n%s", want, out)
+	}
+}

@@ -11,8 +11,9 @@ import (
 // used to say 'npm install' whatever the project was, sending a pnpm or yarn
 // user to a command that rewrites the wrong lock file.
 //
-// Each case is a directory holding one lock file and nothing else, and the
-// directory is passed in rather than chdir'd into. That is deliberate: the
+// Each case is a directory holding at most one lock file and nothing else - the
+// last row holds none at all - and the directory is passed in rather than
+// chdir'd into. Passing it in is deliberate: the
 // helper takes a project path precisely so it does not read the process working
 // directory. Measured against a helper rewritten to call os.Getwd() instead,
 // which answers npm for every row because the package's own source directory
