@@ -20,7 +20,8 @@ jobs:
     # about an action's internals, not a measurement, and it cannot be tested
     # before a real release runs. If it were wrong, the symptom would be a
     # release that stalls silently: precisely the failure #457 exists to remove.
-    # Tracked separately rather than bundled into the fix for that failure.
+    # Tracked as #469 rather than bundled into the fix for that failure; one
+    # successful release after #457 is what would settle it.
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}

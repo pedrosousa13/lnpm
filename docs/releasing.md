@@ -172,8 +172,15 @@ Measured on 2026-08-25, before the fix:
   ninety-seven second gap is a human clicking **Approve workflows to run**. Approving is what
   started the run.
 
-By 2026-08-27 that cost two approvals per release pull request rather than one, three parked runs
-having landed in a single day (`32963252535`, `32970558695`, `32972580212`).
+Each parked run needs its own click, and by 2026-08-27 a single pushed commit parked two of them
+rather than one, because `Security Versions` had been added alongside `PR Title`. Runs
+`33071277230` (`PR Title`) and `33071277248` (`Security Versions`) were both created at
+`2026-08-27T12:18:55Z` on the same SHA `1af4a2b`, both `action_required`.
+
+The cost scales with commits, not with pull requests: three separate SHAs on 2026-08-26 parked one
+run each (`32963252535`, `32970558695`, `32972580212`), all `PR Title`. A release pull request that
+takes several commits therefore accumulates clicks, and the release stalls until every one of them
+is made.
 
 A repository setting cannot fix this. The fork-approval policy accepts only
 `first_time_contributors_new_to_github`, `first_time_contributors` and `all_external_contributors`,
@@ -205,6 +212,13 @@ needed: the token is used by one action, in one job, and that job does not check
 touch workflow files, or read Actions state.
 
 The token is minted per run and revoked when the job ends. It is not stored anywhere.
+
+One check does not come back with the others, and that is expected rather than a symptom. `ci.yaml`
+carries `paths-ignore: '**.md'`, so a release pull request whose only change is `CHANGELOG.md`
+starts no `CI` run at all — not a parked one, none. What the App token restores is the checks that
+would otherwise be parked, `PR Title` and `Security Versions` among them. An absent `CI` on a
+markdown-only release pull request is the path filter doing its job; an absent `PR Title` is the
+credential having gone stale.
 
 ### What breaks when it goes stale, and what that looks like
 
@@ -240,7 +254,8 @@ diagnosis is the run log of the `release-please` job.
 
 If the token cannot be restored quickly, the release is not blocked: remove the `token:` line and
 the mint step, and the pipeline reverts to the behaviour above — a release pull request that works,
-with two approval clicks per run. That is the fallback, not the fix.
+at the cost of one approval click per parked run, which today means two per commit pushed to the
+release branch. That is the fallback, not the fix.
 
 ## The extractor
 
