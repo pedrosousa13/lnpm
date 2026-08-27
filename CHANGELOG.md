@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/pedrosousa13/lnpm/compare/v3.0.0...v3.1.0) (2026-08-27)
+
+
+### Features
+
+* **release:** sign release artifacts with a maintainer-held key ([#467](https://github.com/pedrosousa13/lnpm/issues/467)) ([2446032](https://github.com/pedrosousa13/lnpm/commit/2446032ca1787f3b73b1c741c4982935c8252e9b))
+
 ## [3.0.0](https://github.com/pedrosousa13/lnpm/compare/v2.4.0...v3.0.0) (2026-08-27)
 
 
