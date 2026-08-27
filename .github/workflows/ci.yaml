@@ -16,10 +16,34 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
+# Every job below carries an explicit `timeout-minutes`, because GitHub's
+# default is 360. A deadlocked test or a `go mod download` stalled on a network
+# partition would otherwise hold a runner for six hours and leave the PR
+# unmergeable that whole time, with a spinner as the only signal.
+#
+# Each value is at least 4x the slowest run measured for that job on
+# 2026-08-27, rounded to something a human would pick. The multiple is not
+# uniform and is not meant to be: the ceiling is what matters, so a job
+# measured in seconds gets a floor of 5 or 10 minutes rather than a
+# proportional share. The per-job comments carry the observed range, which is
+# the only evidence behind any of these numbers — a passing pipeline is none,
+# because a job that finishes proves only that it stayed under its limit.
+#
+# This does not address a run stuck in `queued`. `timeout-minutes` governs a
+# job that is running, so no value here could have fired on the 2026-08-26
+# outage, where GitHub accepted four runs and never materialized a single job
+# on any of them. Nothing in workflow YAML can time out a run that never
+# began, and for GitHub-hosted runners nothing else times one out quickly
+# either: the documented 24h queue cancel is a self-hosted limit, and the only
+# ceiling that covers a hosted run is the 35-day workflow-run limit, which
+# explicitly counts time spent waiting. These limits are for hung *running*
+# jobs, which is a real but different failure.
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Observed 66-85s.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -63,6 +87,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # Observed 21-44s.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -81,6 +107,10 @@ jobs:
   test-windows:
     name: Test (Windows)
     runs-on: windows-latest
+    # Double every other job's limit, because this one is genuinely slower
+    # rather than more variable: observed 185-257s, against 55-85s for the same
+    # suite on Linux and macOS. A shared 10 would sit under 3x its slowest run.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -108,6 +138,8 @@ jobs:
   test-macos:
     name: Test (macOS)
     runs-on: macos-latest
+    # Observed 55-72s.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -135,6 +167,8 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    # Observed 67-77s.
+    timeout-minutes: 10
     needs: [test, test-windows, test-macos, lint]
 
     steps:
