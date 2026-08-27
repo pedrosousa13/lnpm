@@ -3,6 +3,11 @@ version: 2
 
 project_name: lnpm
 
+# goreleaser's own default, stated rather than assumed: the release workflow
+# verifies dist/checksums.txt.sig after this file's `signs:` block produces it,
+# and that step should not depend on an unstated default staying put.
+dist: dist
+
 before:
   hooks:
     - go mod tidy
@@ -43,6 +48,25 @@ archives:
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
+
+# Sign checksums.txt only: every archive and package already has an entry in it,
+# so one signature covers the whole release. The signature is ASN.1 DER over the
+# SHA-256 digest of the file, which is what crypto/ecdsa.VerifyASN1 consumes in
+# internal/releasekeys. RELEASE_SIGNING_KEY_PATH is written by the release
+# workflow before goreleaser runs; openssl needs the key as a file on disk.
+signs:
+  - id: checksums
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    cmd: openssl
+    args:
+      - dgst
+      - -sha256
+      - -sign
+      - "{{ .Env.RELEASE_SIGNING_KEY_PATH }}"
+      - -out
+      - "${signature}"
+      - "${artifact}"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

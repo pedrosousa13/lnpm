@@ -61,6 +61,60 @@ jobs:
         with:
           version: v2.12.2
 
+      - name: Write release signing key
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        # The key path is spelled once, here, as "$RUNNER_TEMP/...", and handed
+        # to every later step through $GITHUB_ENV. `$RUNNER_TEMP` and
+        # `${{ runner.temp }}` name the same directory but are not the same kind
+        # of thing: the first is an environment variable the shell expands when
+        # the step runs, the second is an expression Actions substitutes into
+        # the YAML before any shell exists. This job used to use both for this
+        # one path. The `uses:` step below has no shell, which is why the
+        # expression form was there — exporting the variable instead means the
+        # path has a single definition rather than two spellings that are only
+        # equal by convention.
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "RELEASE_SIGNING_KEY is not set; refusing to publish an unsigned release" >&2
+            exit 1
+          fi
+          install -m 600 /dev/null "$RUNNER_TEMP/release-signing-key.pem"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
+          echo "RELEASE_SIGNING_KEY_PATH=$RUNNER_TEMP/release-signing-key.pem" >> "$GITHUB_ENV"
+
+      # The worst thing this pipeline can do is publish a release signed by a
+      # key that no installed binary knows. `lnpm update` verifies
+      # checksums.txt.sig against the public keys embedded from
+      # internal/releasekeys/keys/*.pem, so a rotated, mistyped or simply
+      # different RELEASE_SIGNING_KEY still produces a green release that every
+      # existing install then refuses to update from — recoverable only by
+      # reinstalling by hand. #297 is what that costs.
+      #
+      # This is the cheap half of the guard: derive the public half of the
+      # secret and compare it to what is committed, before anything is built or
+      # published. The post-sign step below re-checks the artefact goreleaser
+      # actually produced; this one just fails first, when failing is free.
+      #
+      # Every keys/*.pem counts, because that directory is a set for rotation
+      # and any one of them verifying is a release the fleet can consume. Only
+      # public halves are ever printed. An empty glob leaves `pub` as the
+      # literal pattern, which matches nothing and falls through to the failure
+      # — the check has no way to pass by finding no keys.
+      - name: Check the signing key matches an embedded public key
+        run: |
+          derived="$RUNNER_TEMP/release-signing-key.pub.pem"
+          openssl pkey -in "$RELEASE_SIGNING_KEY_PATH" -pubout -out "$derived"
+          for pub in internal/releasekeys/keys/*.pem; do
+            if openssl pkey -pubin -in "$pub" -pubout 2>/dev/null | cmp -s - "$derived"; then
+              echo "RELEASE_SIGNING_KEY matches the embedded public key in $pub"
+              exit 0
+            fi
+          done
+          echo "RELEASE_SIGNING_KEY does not match any key in internal/releasekeys/keys/*.pem." >&2
+          echo "Publishing would produce a release that no installed lnpm can update from." >&2
+          exit 1
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -69,6 +123,33 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The other half of the guard, against the bytes that were really
+      # published rather than against the key that was meant to sign them. This
+      # cannot run any earlier — the signature does not exist until goreleaser
+      # has made it — so it is a late check by necessity, and it catches what
+      # the pre-flight cannot: goreleaser signing with something other than
+      # RELEASE_SIGNING_KEY_PATH, or checksums.txt changing after it was signed.
+      #
+      # `dist` is set explicitly in .goreleaser.yaml so this path is not an
+      # assumption about a default.
+      - name: Verify the release signature against the embedded public keys
+        run: |
+          checksums=dist/checksums.txt
+          signature="$checksums.sig"
+          if [ ! -s "$signature" ]; then
+            echo "$signature is missing or empty; goreleaser did not sign the release" >&2
+            exit 1
+          fi
+          for pub in internal/releasekeys/keys/*.pem; do
+            if openssl dgst -sha256 -verify "$pub" -signature "$signature" "$checksums" > /dev/null 2>&1; then
+              echo "$signature verifies against $pub"
+              exit 0
+            fi
+          done
+          echo "$signature verifies against no key in internal/releasekeys/keys/*.pem." >&2
+          echo "Installed copies of lnpm will refuse to update to this release." >&2
+          exit 1
 
   # release-please builds the release body from the merged release PR's body,
   # which it computed from commit subjects when it opened the PR. Upgrade notes

@@ -4,9 +4,12 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"compress/gzip"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +21,7 @@ import (
 	"time"
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/releasekeys"
 	"github.com/pedrosousa13/lnpm/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -29,6 +33,16 @@ var updateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 // releaseBaseURL is the root under which release assets are published. It is a
 // var so tests can point it at a local httptest server instead of GitHub.
 var releaseBaseURL = "https://github.com/pedrosousa13/lnpm/releases/download"
+
+// trustedReleaseKeys returns the keys a release's checksums.txt must be signed
+// by. It is a var so tests can swap in their own generated keys, the same way
+// they swap releaseBaseURL.
+//
+// It is called from the update path rather than resolved at package init: the
+// embedded PEMs are only needed to verify a release, and a build whose embed
+// does not parse must fail 'lnpm update' with an error the user can read, not
+// take down add, remove, gc and doctor along with it.
+var trustedReleaseKeys = releasekeys.Trusted
 
 // updateCmd updates lnpm to the latest version
 var updateCmd = &cobra.Command{
@@ -389,13 +403,19 @@ func downloadBinary(version, url, filename string) (binaryPath, tmpDir string, e
 		return "", tmpDir, fmt.Errorf("download failed: %w", err)
 	}
 
-	// Verify checksum BEFORE extracting or installing — a tampered or
+	// Verify the release BEFORE extracting or installing — a tampered or
 	// corrupted asset must never reach the running binary.
-	if err := verifyChecksum(version, filename, filePath); err != nil {
+	//
+	// The wrapper says "release" rather than "checksum" because verifyRelease
+	// refuses on two distinct grounds: a checksum that does not match, and a
+	// signature that does not verify or was never published. A wrapper naming
+	// only the first tells a user with an unsigned release that their checksums
+	// are bad, which is a different problem with a different response.
+	if err := verifyRelease(version, filename, filePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return "", tmpDir, fmt.Errorf("checksum verification failed: %w", err)
+		return "", tmpDir, fmt.Errorf("release verification failed: %w", err)
 	}
-	fmt.Println("  ✓ Checksum verified")
+	fmt.Println("  ✓ Signature and checksum verified")
 
 	// Extract binary
 	if strings.HasSuffix(filename, ".zip") {
@@ -441,24 +461,27 @@ func buildChecksumsURL(version string) string {
 	return fmt.Sprintf("%s/v%s/checksums.txt", releaseBaseURL, version)
 }
 
-// verifyChecksum computes the SHA-256 of filePath and compares it to the entry
-// for filename in the release checksums.txt.
-func verifyChecksum(version, filename, filePath string) error {
+// verifyRelease establishes that the archive at filePath is the one the
+// maintainer released, on two grounds: the release's checksums.txt carries a
+// signature from a trusted key, and the SHA-256 of filePath matches the entry
+// that checksums.txt lists for filename.
+//
+// Both are needed, and the order matters. Matching an unverified checksums.txt
+// proves only that the archive is the one *some* checksums.txt describes -
+// which whoever served the archive can always arrange - rather than the one the
+// maintainer released.
+func verifyRelease(version, filename, filePath string) error {
 	sum, err := sha256File(filePath)
 	if err != nil {
 		return err
 	}
 
-	resp, err := updateHTTPClient.Get(buildChecksumsURL(version))
+	checksums, err := fetchSignedChecksums(version)
 	if err != nil {
-		return fmt.Errorf("failed to fetch checksums: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to fetch checksums: status %d", resp.StatusCode)
+		return err
 	}
 
-	want, ok := findChecksum(resp.Body, filename)
+	want, ok := findChecksum(bytes.NewReader(checksums), filename)
 	if !ok {
 		return fmt.Errorf("no checksum listed for %s", filename)
 	}
@@ -466,6 +489,96 @@ func verifyChecksum(version, filename, filePath string) error {
 		return fmt.Errorf("sha256 mismatch for %s (got %s, want %s)", filename, sum, want)
 	}
 	return nil
+}
+
+// fetchSignedChecksums returns the release's checksums.txt, but only after its
+// detached signature has been verified against a trusted key. Every failure
+// refuses the install; nothing here warns and continues.
+func fetchSignedChecksums(version string) ([]byte, error) {
+	// Read the whole body - it is a handful of lines - before anything looks at
+	// it, because the bytes that get verified must be the same bytes that get
+	// parsed.
+	checksums, err := fetchReleaseAsset(buildChecksumsURL(version))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch checksums: %w", err)
+	}
+
+	sig, err := fetchReleaseAsset(buildChecksumsURL(version) + ".sig")
+	if err != nil {
+		return nil, signatureUnavailableError(version, err)
+	}
+
+	keys, err := trustedReleaseKeys()
+	if err != nil {
+		return nil, fmt.Errorf("this build trusts no usable release signing key, so no release can be verified - "+
+			"reinstall lnpm from a build that does: %w", err)
+	}
+
+	if !verifySignature(keys, checksums, sig) {
+		return nil, fmt.Errorf("signature verification failed for checksums.txt: not signed by any trusted key")
+	}
+	return checksums, nil
+}
+
+// signatureUnavailableError explains a checksums.txt.sig that could not be
+// read, keeping "the release published none" apart from "the fetch failed":
+// the first means do not install, the second means try again.
+//
+// A missing signature is refused rather than tolerated. The rule for whether a
+// release is signed is what it publishes: a release is signed if it publishes
+// checksums.txt.sig, and unsigned if it does not. Releases up to and including
+// v3.0.0 publish none - do not restate that as a boundary the next release
+// moves, since it has gone stale here once already.
+//
+// Refusing is still right for an unsigned release, because 'lnpm update' only
+// ever installs the *latest* release - there is no flag to target an older one.
+// So the release this refuses is never one of those old artifacts: it is a
+// release published after this check shipped, and a missing signature on one of
+// those means tampering or a broken release job.
+func signatureUnavailableError(version string, err error) error {
+	if errors.Is(err, errAssetNotFound) {
+		return fmt.Errorf("release v%s publishes no checksums.txt.sig, so it appears unsigned: it will not be installed. "+
+			"Do not install it by hand either - report it at https://github.com/pedrosousa13/lnpm/issues",
+			strings.TrimPrefix(version, "v"))
+	}
+	return fmt.Errorf("failed to fetch the checksums signature, so the release cannot be verified and "+
+		"will not be installed - check your connection and try again: %w", err)
+}
+
+// verifySignature reports whether sig is an ASN.1 DER ECDSA signature over the
+// SHA-256 of body made by any one of keys.
+//
+// Any key verifying is enough, so that rotating the signing key does not break
+// updaters built while an older key was the only one embedded.
+func verifySignature(keys []*ecdsa.PublicKey, body, sig []byte) bool {
+	digest := sha256.Sum256(body)
+	for _, key := range keys {
+		if ecdsa.VerifyASN1(key, digest[:], sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// errAssetNotFound reports a release asset the release does not publish, as
+// distinct from one that could not be fetched.
+var errAssetNotFound = errors.New("not published on this release")
+
+// fetchReleaseAsset reads a small release asset fully into memory.
+func fetchReleaseAsset(url string) ([]byte, error) {
+	resp, err := updateHTTPClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errAssetNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // sha256File returns the hex-encoded SHA-256 of a file.
