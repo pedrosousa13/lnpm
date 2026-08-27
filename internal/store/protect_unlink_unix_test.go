@@ -8,32 +8,35 @@ import (
 	"testing"
 )
 
-// TestStoreProtectionSurvivesAConsumerUnlinkOnUnix is the control for the
-// Windows probe in protect_unlink_windows_test.go, and it is not an answer to
-// issue #444.
+// TestRetirementKeepsStoreContentProtectedOnUnix is the control for the Windows
+// tests in protect_unlink_windows_test.go, and it is not an answer to issue
+// #444.
 //
-// #444 is a Windows claim, and this file cannot speak to it: on Unix the write
+// #444 is a Windows claim and this file cannot speak to it. On Unix the write
 // protection is permission bits on the inode, and unlinking one name does not
-// touch them. This test is expected to pass here, and passing here says nothing
-// about what happens on Windows.
+// touch them, so both rows are expected to pass here and their passing says
+// nothing about Windows. That is why both retirement calls are kept in this
+// file while the Windows side splits them: the os.Remove row is a hazard there
+// and an ordinary pass here, and the difference is the whole of #444.
 //
-// What it does establish is that the shared harness both files use — build an
+// What this does establish is that the shared harness both files use — build an
 // entry, protect it through protectTree, hard link it, retire the link, then
 // read the mode and attempt a write — measures what it claims to, on the one
-// platform the author could run. Without it, a green Windows run could mean the
-// protection held or could mean the fixture never protected anything and the
-// assertions never had teeth. newUnlinkProbe's own pre-checks cover the second
-// case, and this test is what confirms those pre-checks and the verdict compose
-// into a working measurement.
+// platform the author could run. Without it, a green Windows guard could mean
+// the protection held or could mean the fixture never protected anything.
+// newUnlinkProbe's own pre-checks cover the second case; this test is what
+// confirms those pre-checks and the verdict compose into a working measurement.
 //
-// Measured on 2026-08-27 on Linux, Go 1.26.7, both rows passing, with
-// go vet ./... clean first and internal/store printing its ok result line.
-func TestStoreProtectionSurvivesAConsumerUnlinkOnUnix(t *testing.T) {
+// Measured on 2026-08-27 on Linux, Go 1.26.7, both rows running and passing,
+// with go vet ./... clean first and internal/store printing its ok result line.
+// The same day's CI run 33066579971 passed its Linux and macOS jobs.
+func TestRetirementKeepsStoreContentProtectedOnUnix(t *testing.T) {
 	// Root writes through a mode with no write bit, so newUnlinkProbe's own
 	// pre-check would fail there and report a fixture problem for what is really
 	// a privilege one. This is the same guard protect_test.go and entries_test.go
 	// use. It is in this file and not in the shared harness because it answers a
-	// Unix question: os.Geteuid is -1 on Windows and could never skip the probe.
+	// Unix question: os.Geteuid is -1 on Windows and could never skip anything
+	// there.
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: a mode with no write bit does not deny a write")
 	}
