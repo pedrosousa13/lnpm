@@ -1880,3 +1880,235 @@ func TestInsertLink_ClearsAPinOnTheVersionTheProjectAlreadyHolds(t *testing.T) {
 		t.Errorf("InsertLink kept the pin after an add that unpins the build the project was already on")
 	}
 }
+
+// TestDeleteProject_ScrubsEveryIndexThatNamedIt pins that forget leaves nothing
+// behind for lnpm doctor to complain about.
+//
+// The row is the easy half. The four keys below it are the ones a delete written
+// as projects.Delete alone would leave: a by-path entry naming a record that is
+// gone, a link row nothing can reach, and that link's ID sitting in both link
+// indexes. The by-package entry is the one that costs something beyond untidiness
+// - GetLinksForPackage refuses an index naming a row the store does not hold, so
+// a single ID left there aborts gc's scan for every package.
+func TestDeleteProject_ScrubsEveryIndexThatNamedIt(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	proj, err := database.GetProjectByID(link.ProjectID)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v, %v", proj, err)
+	}
+
+	if err := database.DeleteProject(proj.ID); err != nil {
+		t.Fatalf("DeleteProject() error = %v", err)
+	}
+
+	err = database.db.View(func(tx *bolt.Tx) error {
+		for _, gone := range []struct {
+			what   string
+			bucket []byte
+			key    []byte
+		}{
+			{"the project record", bucketProjects, itob(proj.ID)},
+			{"the by-path index entry", bucketProjectsByPath, []byte(proj.Path)},
+			{"the link row", bucketLinks, itob(link.ID)},
+			{"the project's link index", bucketLinksByProject, itob(proj.ID)},
+			{"the package's link index", bucketLinksByPackage, itob(pkg.ID)},
+		} {
+			if v := tx.Bucket(gone.bucket).Get(gone.key); v != nil {
+				t.Errorf("DeleteProject() left %s behind: %q", gone.what, v)
+			}
+		}
+		// The package itself is not forget's to remove. gc collects it, behind
+		// its own confirmation, once nothing reaches it.
+		if tx.Bucket(bucketPackages).Get(itob(pkg.ID)) == nil {
+			t.Error("DeleteProject() removed the package record; forget drops the project and stops there")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeleteProject_DeletesNothingWhenALinkRowWillNotParse pins the refusal, and
+// the rollback that makes it mean anything.
+//
+// The row is read only for the package ID, which is the only way to learn which
+// links_by_package entry has to lose this link. Deleting the row without it would
+// leave the ID in the one index no read tolerates a dangling ID in:
+// GetLinksForPackage refuses such an entry outright, so lnpm would have
+// manufactured, out of damage it could have reported, a state that breaks every
+// later read of that package's links.
+func TestDeleteProject_DeletesNothingWhenALinkRowWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	damaged := []byte("{ not a link")
+	putRaw(t, database, bucketLinks, itob(link.ID), damaged)
+
+	if err := database.DeleteProject(link.ProjectID); err == nil {
+		t.Fatal("DeleteProject() reported success for a project holding a link row it could not read")
+	}
+
+	err := database.db.View(func(tx *bolt.Tx) error {
+		for _, kept := range []struct {
+			what   string
+			bucket []byte
+			key    []byte
+		}{
+			{"the project record", bucketProjects, itob(link.ProjectID)},
+			{"the project's link index", bucketLinksByProject, itob(link.ProjectID)},
+			{"the package's link index", bucketLinksByPackage, itob(pkg.ID)},
+		} {
+			if tx.Bucket(kept.bucket).Get(kept.key) == nil {
+				t.Errorf("DeleteProject() removed %s after refusing the delete; the transaction was not rolled back", kept.what)
+			}
+		}
+		if after := tx.Bucket(bucketLinks).Get(itob(link.ID)); !bytes.Equal(after, damaged) {
+			t.Errorf("DeleteProject() left link row %d as %q, want the damaged row %q it could not read", link.ID, after, damaged)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeleteProject_SkipsALinkIndexEntryNamingNoRow pins the one shape this
+// delete tolerates, and it disagrees with DeletePackage on purpose.
+//
+// DeletePackage errors on the same shape because it walks links_by_package, where
+// every writer scrubs the ID inside the transaction that deletes the row - so a
+// dangling ID there means the file was damaged. This walks links_by_project,
+// where GetLinksForProject documents the opposite: pre-#355 DeletePackage deleted
+// an unparseable link row and left its ID here, nothing repairs those stores, and
+// every read of the index skips such an ID rather than refuse. Refusing here
+// would make forget the one command a user with that damage cannot run, which is
+// the wrong command to lock: it is the escape hatch, and there is nowhere else to
+// send them. Skipping costs nothing, because the key goes with the project.
+func TestDeleteProject_SkipsALinkIndexEntryNamingNoRow(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	_, link := seedLink(t, database)
+
+	// The shape pre-#355 DeletePackage left behind: the row gone, the ID still
+	// named by the project's index.
+	err := database.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketLinks).Delete(itob(link.ID))
+	})
+	if err != nil {
+		t.Fatalf("Failed to remove the link row: %v", err)
+	}
+
+	if err := database.DeleteProject(link.ProjectID); err != nil {
+		t.Fatalf("DeleteProject() refused a project whose link index holds a dangling ID lnpm made itself: %v", err)
+	}
+
+	err = database.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(bucketProjects).Get(itob(link.ProjectID)); v != nil {
+			t.Errorf("DeleteProject() left the project record behind: %q", v)
+		}
+		if v := tx.Bucket(bucketLinksByProject).Get(itob(link.ProjectID)); v != nil {
+			t.Errorf("DeleteProject() left the dangling ID behind in %q; the delete is also the repair", v)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+}
+
+// TestDeleteProject_LeavesTheByPathEntryWhenTheRecordWillNotParse pins the one
+// index this delete knowingly leaves behind, and the reason that is tolerable.
+//
+// The path is readable from nowhere but the record, so a record that will not
+// parse takes the only way of finding its by-path key with it. The delete goes
+// ahead anyway - refusing would make the damaged record the single thing forget
+// cannot remove, and forget is the escape hatch - which leaves a key naming an
+// ID no row answers. Nothing catches it: doctor walks packages,
+// GetLinksForPackage and GetProjectByID, and enumerates projects_by_path
+// nowhere. So the assertions below are what stand in for a check that does not
+// exist, and they pin both halves of why that is survivable: the stale key
+// answers nothing, and the next InsertProject at that path overwrites it.
+func TestDeleteProject_LeavesTheByPathEntryWhenTheRecordWillNotParse(t *testing.T) {
+	database := openStore(t, t.TempDir())
+	pkg, link := seedLink(t, database)
+
+	proj, err := database.GetProjectByID(link.ProjectID)
+	if err != nil || proj == nil {
+		t.Fatalf("Failed to read the project back: %v, %v", proj, err)
+	}
+	staleID := proj.ID
+
+	putRaw(t, database, bucketProjects, itob(proj.ID), []byte("{ not a project"))
+
+	if err := database.DeleteProject(proj.ID); err != nil {
+		t.Fatalf("DeleteProject() refused a project whose own record will not parse: %v", err)
+	}
+
+	var byPathEntry []byte
+	err = database.db.View(func(tx *bolt.Tx) error {
+		// Everything reachable without reading the record still goes.
+		for _, gone := range []struct {
+			what   string
+			bucket []byte
+			key    []byte
+		}{
+			{"the project record", bucketProjects, itob(proj.ID)},
+			{"the link row", bucketLinks, itob(link.ID)},
+			{"the project's link index", bucketLinksByProject, itob(proj.ID)},
+			{"the package's link index", bucketLinksByPackage, itob(pkg.ID)},
+		} {
+			if v := tx.Bucket(gone.bucket).Get(gone.key); v != nil {
+				t.Errorf("DeleteProject() left %s behind: %q", gone.what, v)
+			}
+		}
+		byPathEntry = append(byPathEntry, tx.Bucket(bucketProjectsByPath).Get([]byte(proj.Path))...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+	// And the one thing it cannot reach stays, still naming the ID it named.
+	if len(byPathEntry) == 0 {
+		t.Fatalf("DeleteProject() found the by-path entry of a record it could not read; the path is only stored in that record")
+	}
+	if btoi(byPathEntry) != staleID {
+		t.Errorf("the by-path entry names project %d, want the deleted %d", btoi(byPathEntry), staleID)
+	}
+
+	// Inert: the stale key is a bucket disagreement, which GetProjectByPath
+	// answers with no project and no error rather than handing one back.
+	stale, err := database.GetProjectByPath(proj.Path)
+	if err != nil || stale != nil {
+		t.Errorf("GetProjectByPath() on the stale entry = %v, %v; want nil, nil", stale, err)
+	}
+
+	// Self-healing: InsertProject's update arm needs the row it finds to exist
+	// and to parse. Neither holds, so the insert arm runs and its byPath.Put
+	// lands on this very key.
+	fresh := &Project{Path: proj.Path, Name: "consumer"}
+	if err := database.InsertProject(fresh); err != nil {
+		t.Fatalf("InsertProject() at the forgotten path: %v", err)
+	}
+	if fresh.ID == staleID {
+		t.Fatalf("InsertProject() reused the deleted ID %d, so this asserts nothing about the key being overwritten", staleID)
+	}
+
+	byPathEntry = byPathEntry[:0]
+	err = database.db.View(func(tx *bolt.Tx) error {
+		byPathEntry = append(byPathEntry, tx.Bucket(bucketProjectsByPath).Get([]byte(proj.Path))...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to read the store back: %v", err)
+	}
+	if len(byPathEntry) == 0 {
+		t.Errorf("the fresh add left no by-path entry at all, want the new project %d", fresh.ID)
+	} else if btoi(byPathEntry) != fresh.ID {
+		t.Errorf("the by-path entry still names %d after a fresh add, want the new project %d", btoi(byPathEntry), fresh.ID)
+	}
+	if found, err := database.GetProjectByPath(proj.Path); err != nil || found == nil || found.ID != fresh.ID {
+		t.Errorf("GetProjectByPath() after the re-add = %v, %v; want the new project %d", found, err, fresh.ID)
+	}
+}

@@ -1084,8 +1084,10 @@ func packageNameTx(tx *bolt.Tx, id int64) string {
 // An index entry that will not parse abandons the delete rather than being
 // scrubbed around, and the caller has to carry that outward: the row delete has
 // already run by then, so a refusal only holds if the transaction is rolled
-// back. Its one caller, InsertLink, returns this from its Update closure, which
-// is what does the rolling back.
+// back. Both callers return this from their own Update closure, which is what
+// does the rolling back: InsertLink, replacing a link it is about to supersede,
+// and DeleteProject, which #382 added and which calls this once per link the
+// project holds.
 func deleteLinkRowTx(tx *bolt.Tx, linkID, packageID, projectID int64) error {
 	if err := tx.Bucket(bucketLinks).Delete(itob(linkID)); err != nil {
 		return err
@@ -1361,6 +1363,124 @@ func (db *DB) SetProjectDevice(id int64, device uint64) error {
 			return err
 		}
 		return projects.Put(itob(id), updated)
+	})
+}
+
+// DeleteProject removes a project record, every link it holds, and every index
+// entry that named either.
+//
+// It exists for one situation, which is the whole of #382: a project on a drive
+// that is gone for good. gc will not judge such a project - classifyProjectDir
+// reports it unreachable and gc declines the link rather than guess - so the
+// versions those links name are kept forever and the space is unreclaimable.
+// Dropping the record is what makes them reachable by nothing, and the next gc
+// then collects them under its own confirmation. Nothing here touches the store:
+// one command removes the record, the other removes the bytes.
+//
+// Every index is scrubbed, not only the row, for the reason DeletePackage gives:
+// an index entry that outlives what it named is exactly what lnpm doctor exists
+// to complain about. Four things go - the project row, its projects_by_path
+// entry, each link row, and each of those links' entry in links_by_package -
+// and the links_by_project key last.
+//
+// The by-path entry is cleared only when it names this very record, as
+// DeletePackage clears the name index only when it names the version being
+// collected. A path index pointing at some other project's ID is a disagreement
+// this delete did not create and must not resolve by guessing.
+//
+// # What damage refuses the delete, and what does not
+//
+// The two shapes are not treated alike, and the asymmetry is inherited from what
+// the readers of these buckets already promise rather than invented here.
+//
+// A link row that will not parse refuses the whole delete. The row is read only
+// to learn which package's index has to be scrubbed, so deleting it without
+// reading it would leave that link's ID in links_by_package - the one index
+// where no read tolerates a dangling ID at all. GetLinksForPackage refuses such
+// an entry outright, so a single ID left there would cost every read of that
+// package's links, gc's scan included. Returning the error out of the Update
+// closure rolls the transaction back, so the project, its links and its indexes
+// are exactly as they were and doctor has something to name. That is the line
+// #355 drew for DeletePackage, met here from the other side.
+//
+// A links_by_project entry naming a row the store does not hold is skipped, and
+// this is a deliberate disagreement with DeletePackage, which errors on the same
+// shape. DeletePackage walks links_by_package, where every writer scrubs the ID
+// inside the transaction that deletes the row, so a dangling ID there means the
+// file was damaged. This walk is over links_by_project, where GetLinksForProject
+// documents at length that a dangling ID is damage lnpm manufactured itself:
+// pre-#355 DeletePackage deleted an unparseable link row while leaving its ID
+// here, and nothing repairs those stores. Refusing would lock a user out of
+// forget on a store lnpm broke, with nowhere to send them - doctor cannot mend
+// links_by_project, and remove and retreat find a link by scanning rows, so they
+// never touch the stale ID either. Skipping costs nothing: the ID names no row,
+// and the whole key goes at the end of this transaction, so the delete is also
+// the repair.
+func (db *DB) DeleteProject(id int64) error {
+	debug.Logf("db: delete project %d", id)
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	return db.db.Update(func(tx *bolt.Tx) error {
+		projects := tx.Bucket(bucketProjects)
+		byPath := tx.Bucket(bucketProjectsByPath)
+		links := tx.Bucket(bucketLinks)
+		byProject := tx.Bucket(bucketLinksByProject)
+
+		projKey := itob(id)
+
+		// A record that will not parse still has its row and its links deleted;
+		// only the by-path entry it names cannot be found, since the path is
+		// readable from nowhere but the record. Nothing catches that entry -
+		// doctor walks packages, GetLinksForPackage and GetProjectByID, and no
+		// check it runs enumerates projects_by_path at all, so the stale key is
+		// reported by no part of lnpm. What makes leaving it defensible is that
+		// it is inert and self-healing, not that anything finds it. Inert
+		// because it now names an ID no row answers, which is the disagreement
+		// GetProjectByPath documents returning nil and no error for. Self-healing
+		// because InsertProject's update arm needs projects.Get(existingID) to
+		// both exist and parse, and neither holds here, so the next add at that
+		// path falls through to the insert arm and its byPath.Put overwrites the
+		// key. Erroring instead would leave the damaged record as the one thing
+		// forget cannot remove, which is the opposite of what an escape hatch is
+		// for.
+		if data := projects.Get(projKey); data != nil {
+			var proj Project
+			if json.Unmarshal(data, &proj) == nil {
+				if current := byPath.Get([]byte(proj.Path)); current != nil && btoi(current) == id {
+					_ = byPath.Delete([]byte(proj.Path))
+				}
+			}
+		}
+
+		linkIDs, err := indexIDs(byProject, projKey, "project")
+		if err != nil {
+			return err
+		}
+		for _, linkID := range linkIDs {
+			ld := links.Get(itob(linkID))
+			if ld == nil {
+				continue // A dangling ID pre-#355 DeletePackage left behind.
+			}
+			var l Link
+			if err := json.Unmarshal(ld, &l); err != nil {
+				return fmt.Errorf("link %d, which project %d holds, will not parse: %w; run lnpm doctor to see what else the store disagrees about", linkID, id, err)
+			}
+			// The project ID passed is this delete's, not the row's: the row was
+			// found under this key, so this is the entry that has to lose the
+			// ID whatever the row claims about itself.
+			if err := deleteLinkRowTx(tx, linkID, l.PackageID, id); err != nil {
+				return err
+			}
+		}
+		// The loop above empties this key one ID at a time and putIndexIDs
+		// deletes it when the last one goes, so this usually removes nothing.
+		// It is what clears the key when a dangling ID was skipped and left the
+		// entry non-empty.
+		_ = byProject.Delete(projKey)
+
+		_ = projects.Delete(projKey)
+		return nil
 	})
 }
 
@@ -1886,11 +2006,14 @@ func (db *DB) DeleteLink(packageID, projectID int64) error {
 // the repair exists to fix, refusing to run right up to the command that would
 // clear it.
 //
-// Note what is not being claimed. No lnpm flow deletes a project record - there
-// is no DeleteProject - so this is not a state the tool manufactures, and a
-// directory the user removed leaves the record in place and is classified
-// separately, as projectGone. The justification is only that the repair path
-// exists and is reached by carrying on, not that the state is routine.
+// Note what is not being claimed. One lnpm flow deletes a project record, and
+// only one: 'lnpm forget', which #382 added for a project whose filesystem is
+// gone for good. It takes the project's links with it in the same transaction,
+// so it leaves no link naming a record that is not there - the state this
+// tolerates is still one the tool does not manufacture. A directory the user
+// removed leaves the record in place and is classified separately, as
+// projectGone. The justification is only that the repair path exists and is
+// reached by carrying on, not that the state is routine.
 //
 // Returning the projects read so far alongside the error was rejected as in
 // GetLinksForPackage: a short list that looks complete is the bug.
