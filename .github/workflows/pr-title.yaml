@@ -15,6 +15,10 @@ jobs:
   conventional-title:
     name: Conventional Commit
     runs-on: ubuntu-latest
+    # Observed 3-5s. The limit exists so a hung job fails in minutes rather than
+    # holding a runner for GitHub's 360-minute default; ci.yaml's `jobs:` header
+    # records the reasoning and what these limits cannot catch.
+    timeout-minutes: 5
 
     steps:
       # Merges are squashed, so the PR title becomes the commit subject that

@@ -11,6 +11,9 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # Observed 9-30s. ci.yaml's `jobs:` header records why every job carries a
+    # limit and what these limits cannot catch.
+    timeout-minutes: 10
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -25,6 +28,13 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
     runs-on: ubuntu-latest
+    # One sample, not a range: this job runs only when a release actually cuts,
+    # and the last 25 runs contain exactly one — 158s, on run 33051081572, the
+    # v2.4.0 release of 2026-08-27. 20 rather than 10 because that single
+    # measurement is the widest thing here (it re-runs the whole test suite and
+    # the linter, then cross-compiles every platform) and one point says nothing
+    # about the spread. Narrow it once there are several releases to measure.
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -91,6 +101,9 @@ jobs:
     needs: [release-please, goreleaser]
     if: ${{ !cancelled() && needs.release-please.outputs.release_created }}
     runs-on: ubuntu-latest
+    # One sample too, from that same v2.4.0 run: 7s. It is a checkout and one
+    # `gh release edit`, so 5 is generous against the only number there is.
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
