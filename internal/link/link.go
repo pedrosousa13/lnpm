@@ -538,14 +538,15 @@ func (l *Linker) LinkSource(packageName string, sourcePath string) (LinkType, er
 
 // Unlink removes a linked package from the project
 //
-// The name is validated through the removal entry point, which waives three
-// reservations — #325's leading dot, and #326's Windows device names and
-// trailing dot or space — none of which is a path check. A project linked
-// before one of those rules can hold a package it now refuses — ".hidden-pkg",
-// or "con" or "foo." linked on Linux, where both are ordinary directory names —
-// and refusing to unlink it would leave it with no supported way out. Every
-// traversal check still applies: packageName is joined into .lnpm/{name} for a
-// RemoveAll below.
+// The name is validated through the removal entry point, which waives every
+// reservation that is not a path check — ValidatePackageNameForRemoval lists
+// them and argues the waiver. A project linked before one of those rules can
+// hold a package lnpm now refuses — ".hidden-pkg", or "con" or "foo." linked on
+// Linux, where both are ordinary directory names, or "MyPkg" — and refusing to
+// unlink it would leave it with no supported way out. The name is passed through
+// as given and never composed: an entry whose name is decomposed on disk is only
+// reachable by its decomposed name. Every traversal check still applies:
+// packageName is joined into .lnpm/{name} for a RemoveAll below.
 func (l *Linker) Unlink(packageName string) error {
 	if err := pack.ValidatePackageNameForRemoval(packageName); err != nil {
 		return err
@@ -595,9 +596,9 @@ func (l *Linker) Unlink(packageName string) error {
 //
 // The package-name validators guard the segments the package name contributes -
 // ValidatePackageName on the link paths, ValidatePackageNameForRemoval on
-// Unlink, which differ only in the three reservations the removal form waives
-// (#325's leading dot, #326's Windows device names and trailing dot or space)
-// and share every path check. But nothing guarded their ancestors, and a
+// Unlink, which differ only in the reservations the removal form waives (listed
+// on ValidatePackageNameForRemoval) and share every path check. But nothing
+// guarded their ancestors, and a
 // repository can commit .lnpm itself as a symlink at any directory it likes.
 // .gitignore does not save anyone from that: a tracked symlink is checked out
 // regardless. Every path the linker builds under it then lands wherever it

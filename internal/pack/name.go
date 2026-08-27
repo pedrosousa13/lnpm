@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // maxPackageNameLen is npm's documented maximum package name length.
@@ -31,6 +33,22 @@ const maxPackageNameLen = 214
 // trailing-character check in validatePackageName for what each one is and is
 // not backed by.
 //
+// It rejects an uppercase letter, which npm forbids in a new package name, and
+// it rejects a name that is not in Unicode normalization form NFC (both #327).
+// Neither rests on a reproduced failure. That "MyPkg" and "mypkg", and the two
+// spellings of an accented name, were all accepted as distinct was proven by
+// calling this function; that they collide to one directory on a
+// case-insensitive or normalizing filesystem was reasoned and never observed,
+// because no such filesystem was available. Following npm on the case half is
+// what makes the unreproduced consequence moot instead of deferred.
+//
+// The NFC rule is a rejection here and a rewrite one level up, which is not a
+// contradiction: readPackageJSON composes the name it reads before validating
+// it, so a decomposed manifest publishes fine and stores its composed spelling,
+// and what this refuses is a name that never passed through that ingestion.
+// NormalizePackageName documents where the composition may and may not
+// happen.
+//
 // This validates a name at the boundary it is presented at; it revalidates
 // nothing already on disk. A .lnpm or a store populated before these rules can
 // still hold an entry that breaks one, which is why the reap sweeps stay narrow
@@ -39,29 +57,85 @@ func ValidatePackageName(name string) error {
 	return validatePackageName(name, true)
 }
 
-// ValidatePackageNameForRemoval is ValidatePackageName with three reservations
+// ValidatePackageNameForRemoval is ValidatePackageName with five reservations
 // waived and nothing else changed: the leading-dot rule (#325), the Windows
-// device-name rule and the trailing dot-or-space rule (both #326). Use it on
-// paths that take a package away; creation, publish, store and pack paths use
-// the strict form.
+// device-name rule and the trailing dot-or-space rule (both #326), and the
+// uppercase and NFC rules (both #327). Use it on paths that take a package away;
+// creation, publish, store and pack paths use the strict form.
 //
-// The waiver exists because none of the three is retroactive. A project linked
+// The waiver exists because none of the five is retroactive. A project linked
 // before #325 can hold .lnpm/.hidden-pkg and a lock entry naming it; a project
 // linked on Linux before #326 can hold .lnpm/con or .lnpm/foo., which are
-// perfectly ordinary distinct directories there. Enforcing a new rule on the way
-// out would make such an entry permanent: 'lnpm remove' would refuse it and
-// 'lnpm remove --all' would skip it on every future run, with no supported way
-// to get rid of it.
+// perfectly ordinary distinct directories there; a project linked before #327
+// can hold .lnpm/MyPkg, or a .lnpm entry whose name is decomposed, both of which
+// every filesystem lnpm is known to run on treats as ordinary names. Enforcing a
+// new rule on the way out would make such an entry permanent: 'lnpm remove'
+// would refuse it and 'lnpm remove --all' would skip it on every future run,
+// with no supported way to get rid of it.
 //
-// Waiving them cannot widen the path surface, because not one of the three ever
+// The NFC rule carries an obligation the other four do not, and it is the one
+// easiest to get wrong: the removal path must not *compose* the name either.
+// Waiving a rule and applying a transformation are opposite things here. A
+// removal that composed its argument would go looking for a sibling of the entry
+// it was asked to delete, find nothing, and report success - which is worse than
+// the refusal the waiver exists to prevent, because it is silent. Nothing on the
+// removal path calls NormalizePackageName, and nothing on it should.
+//
+// Waiving them cannot widen the path surface, because not one of the five ever
 // guarded that surface. What keeps a removal inside the project is the "."/".."
 // segment check, the absolute-path check, the backslash check and the
 // two-segment limit, and every one of those still runs here. A leading dot, a
-// device name and a trailing dot or space are all names rather than routes:
-// ".hidden-pkg", "con", "foo." and "foo " each resolve to a child of .lnpm
-// exactly like "hidden-pkg" does.
+// device name, a trailing dot or space, an uppercase letter and a decomposed
+// letter are all names rather than routes: ".hidden-pkg", "con", "foo.", "foo ",
+// "MyPkg" and "cafe"+U+0301 each resolve to a child of .lnpm exactly like
+// "hidden-pkg" does.
 //
-// The waiver is wider than those three shapes, though, and the extra case is
+// The two #327 waivers are the easiest of the five to check, and worth checking
+// rather than asserting. The names they newly admit are exactly those that
+// differ from their own lower-cased form, or from their own NFC form. No path
+// metacharacter has a case or a canonical decomposition - "/", "\", "." and ":"
+// are each their own lower-case and their own NFC - so neither rule can be the
+// only thing standing between a name and a traversal. A name either waiver newly
+// admits differs from an already-admitted one only in the spelling of its
+// letters, and has exactly the same segment structure: "C:\evil" is refused by
+// the backslash check exactly as "c:\evil" is, and "@Org/.." is refused by the
+// "."/".." segment check exactly as "@org/.." is.
+//
+// What that last paragraph depends on is worth stating separately from what it
+// concludes, because the dependency is invisible and the conclusion is not. It
+// holds because the normal form in question is NFC. Canonical composition never
+// derives an ASCII character from a non-ASCII one, so "differs from its own NFC
+// form" cannot be the difference between a name and a route.
+//
+// NFKC does derive them, and a maintainer reaching for it - it matches more
+// spellings, which sounds like the stricter choice - would falsify the premise
+// without touching a line of this argument. Measured against
+// golang.org/x/text/unicode/norm rather than assumed:
+//
+//	U+FF0F FULLWIDTH SOLIDUS         NFC unchanged, NFKC "/"
+//	U+FF3C FULLWIDTH REVERSE SOLIDUS NFC unchanged, NFKC "\"
+//	U+FF0E FULLWIDTH FULL STOP       NFC unchanged, NFKC "."
+//	U+2025 TWO DOT LEADER            NFC unchanged, NFKC ".."
+//
+// So under NFKC a name's normal form can hold "/", "\" and "..", and one code
+// point can become a whole ".." segment. Note that U+2044 FRACTION SLASH is NOT
+// one of these - it has no compatibility decomposition and NFKC leaves it alone,
+// which is worth recording because it is the character everyone reaches for
+// first and putting it in this list would make the list wrong.
+//
+// The conclusion would survive the change, but only by accident and only for a
+// reason nothing above says out loud: no caller composes a name before joining
+// it into a path, so what reaches filepath.Join is the raw name, and to the
+// filesystem U+FF0F is an ordinary character in one segment. A name spelled
+// U+FF0E U+FF0E U+FF0F "evil", and one spelled U+2025 U+FF0F "evil", are both
+// accepted by this function today and are inert for exactly that reason - run
+// and confirmed, and both would read as "../evil" under NFKC. Change the
+// normaliser and that unstated assumption becomes the only thing holding, which
+// is a worse place to be than where this comment leaves it. If it is ever
+// changed, this paragraph is what has to be re-checked first.
+// TestNormalizePackageNameIsCanonicalNotCompatibility fails if it is.
+//
+// The waiver is wider than those five shapes, though, and the extra case is
 // worth naming because it is not obvious: "@../pkg" is rejected by the strict
 // form via the dot rule, since the "."/".." segment check sees the segment as
 // "@.." rather than "..". Removal therefore accepts it. It stays
@@ -83,8 +157,9 @@ func ValidatePackageName(name string) error {
 //     and a one-segment name skips this entirely;
 //   - writes it as a package.json dependency key, on retreat's path.
 //
-// None of those is reached by a leading dot, a device name or a trailing dot or
-// space that the other checks would not already have caught.
+// None of those is reached by a leading dot, a device name, a trailing dot or
+// space, an uppercase letter or a decomposed letter that the other checks would
+// not already have caught.
 //
 // That is the whole claim. This is not a "safer because removal is safer"
 // argument — an unlink is a destructive operation and the traversal checks are
@@ -179,10 +254,11 @@ func isWindowsReservedDeviceName(segment string) bool {
 }
 
 // validatePackageName is the single implementation behind both entry points, so
-// the two cannot drift. strict selects the three rules that separate them —
+// the two cannot drift. strict selects the five rules that separate them —
 // the leading dot (#325), the Windows device name and the trailing dot or space
-// (both #326). Every other check runs either way; see
-// ValidatePackageNameForRemoval for why those three and no others are waived.
+// (both #326), and the uppercase letter and the non-NFC spelling (both #327).
+// Every other check runs either way; see ValidatePackageNameForRemoval for why
+// those five and no others are waived.
 func validatePackageName(name string, strict bool) error {
 	if name == "" {
 		return fmt.Errorf("package name is empty")
@@ -269,5 +345,123 @@ func validatePackageName(name string, strict bool) error {
 				p, strings.TrimRight(p, ". "))
 		}
 	}
+
+	// #327's two rules are last, and they are the only ones here that are
+	// properties of the whole name rather than of a segment: neither case nor
+	// composition changes at a "/".
+	//
+	// The uppercase rule is last of all, and both halves of that ordering exist
+	// for one reason: it is the only rule whose message names a replacement to
+	// type, so it has to run where the replacement it names is itself valid.
+	// Every rule above it has already passed by then, and lower-casing cannot
+	// break one of them that the name in hand did not break.
+	//
+	// Put it earlier and the advice fails on re-submission, twice over. Before
+	// the #326 loop, "CON" would be told to use "con" - also refused. Before the
+	// NFC rule, "Cafe"+U+0301 would be told to use "cafe"+U+0301 - also refused.
+	// Neither is hypothetical; both were measured. The NFC rule names no
+	// replacement, so it is safe anywhere and sits first of the two.
+	if !strict {
+		return nil
+	}
+
+	// Unicode first, and the order is load-bearing rather than arbitrary - see
+	// the block comment above. "cafe" with an acute accent written as U+00E9 and
+	// as "e"+U+0301 are distinct byte sequences that render identically, were
+	// both accepted before #327, and would fold to one directory on a filesystem
+	// that normalizes names - HFS+ stores names decomposed. The acceptance was
+	// proven by calling this function; the folding was not observed anywhere.
+	//
+	// This is a rejection and not a rewrite, and the two are not in tension.
+	// readPackageJSON composes the name it reads before it validates it, so a
+	// decomposed manifest publishes fine and stores its NFC spelling; what this
+	// refusal is left for is a name that never went through that ingestion. A
+	// database row written before #327 is the case that matters, and refusing it
+	// is what lets 'lnpm doctor' report the row instead of lnpm quietly writing
+	// a second store entry beside the first.
+	//
+	// The message cannot lean on the name looking wrong, because it does not:
+	// the two spellings are indistinguishable on screen and in a terminal. It
+	// has to say what the defect is. It deliberately offers no replacement to
+	// type, because there is none a terminal could show that the user could tell
+	// from what they already have.
+	if composed := NormalizePackageName(name); composed != name {
+		return fmt.Errorf("invalid package name %q: the name is not in Unicode normalization form NFC; "+
+			"its composed spelling looks identical but is a different byte sequence, and a filesystem "+
+			"that normalizes names would resolve both to one directory; re-publish the package so that "+
+			"lnpm stores its NFC spelling", name)
+	}
+
+	// npm forbids an uppercase letter in a new package name. lnpm follows that
+	// rule rather than inventing one, and the parity is the justification: a
+	// name lnpm refuses here is a name the registry would have refused too.
+	//
+	// What #327 wanted it for is a collision nobody reproduced. "MyPkg" and
+	// "mypkg" were both accepted, which was proven by calling this function, and
+	// on a case-insensitive filesystem - macOS APFS-insensitive or HFS+, or NTFS
+	// - they resolve to one .lnpm directory while the lock file holds two rows,
+	// so unlinking one RemoveAlls the other's content. That second half was
+	// reasoned and never observed: no case-insensitive filesystem was available
+	// to the audit, and none was available where this was written. Following npm
+	// is what makes the question moot rather than deferred - if "MyPkg" is never
+	// a valid name there is no pair to collide - but the rule stands on the
+	// parity, not on the consequence.
+	//
+	// The test is "differs from its own lower-cased form", not "contains A-Z":
+	// U+00C9 and U+00E9 are the same two spellings of one name outside ASCII,
+	// and a character with no lower-case form - a digit, a CJK ideograph - is
+	// untouched by it.
+	//
+	// This is the one rule of the five whose message names a replacement, which
+	// is what makes its position the last of them: everything above has already
+	// passed, so the lower-cased name it offers differs from the name in hand
+	// only in case and cannot break a rule the name in hand did not.
+	// TestValidatePackageNameAdviceIsItselfAValidName pins that.
+	if lower := strings.ToLower(name); lower != name {
+		return fmt.Errorf("invalid package name %q: a package name must not contain uppercase letters; "+
+			"npm forbids them in new package names and lnpm follows the same rule, so that two "+
+			"spellings of one name cannot become two entries on a case-insensitive filesystem; "+
+			"use %q instead", name, lower)
+	}
+
 	return nil
+}
+
+// NormalizePackageName returns name in Unicode normalization form NFC.
+//
+// This is the transformation half of #327, and it is deliberately the only
+// transformation: it composes, it does not lower-case. Lower-casing here would
+// turn the uppercase rule into a silent rewrite, where #327 decided on npm's
+// rule, which is a refusal a user can see.
+//
+// Where it is applied is the whole of the design, so the rule is written down
+// here rather than left to a reader to infer. There are exactly two kinds of
+// place, and the difference between them is whether the composed name is
+// written down anywhere.
+//
+// One place composes a name lnpm goes on to store: readPackageJSON. That is the
+// single point at which a package name enters lnpm's own state. The store path,
+// the database row, and through the row the lock file and the consumer's
+// package.json dependency key all come from the *PackageJSON it returns, and the
+// raw JSON string is discarded, so composing there means every name lnpm writes
+// is composed with no second, uncomposed copy left anywhere.
+//
+// The other kind composes a name it is about to look something up by, and
+// records nothing: parsePackageSpec, so that a spec typed decomposed finds the
+// composed row it names. That strands nothing, and the reason is worth stating
+// rather than assuming. The only row it can step past is a decomposed one
+// written before #327, and such a row cannot be linked by any spelling of the
+// spec, because link.Link validates strictly and refuses it. 'lnpm doctor'
+// reports it and packageNotInStoreError points there.
+//
+// It is emphatically NOT applied to a name on the way out. An entry stored as
+// .lnpm/"cafe"+U+0301 before this rule existed is a directory of that literal
+// name on every filesystem lnpm runs on, and a removal that composed its
+// argument first would look for a sibling that does not exist and report success
+// having deleted nothing. There the decomposed name is the only handle on the
+// entry, which is exactly what a lookup key is not. Composing a name on the way
+// out is the same retroactivity mistake as validating one on the way out,
+// wearing different clothes. See ValidatePackageNameForRemoval.
+func NormalizePackageName(name string) string {
+	return norm.NFC.String(name)
 }

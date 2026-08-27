@@ -378,6 +378,355 @@ func TestValidatePackageNameAllowsInteriorDotsAndSpaces(t *testing.T) {
 	}
 }
 
+// TestValidatePackageNameRejectsUppercase pins the first of #327's two rules.
+// npm forbids an uppercase letter in a new package name, and lnpm now follows
+// that rule.
+//
+// What this rests on is npm parity, not a reproduced failure. #327 reasoned that
+// "MyPkg" and "mypkg" collide to one .lnpm directory on a case-insensitive
+// filesystem — macOS APFS-insensitive or HFS+, or NTFS — while the lock file
+// holds two rows, so unlinking one destroys the other's content. That
+// consequence was never observed: no such filesystem was available to the audit,
+// to the maintainer's environment, or to this one. Only the name acceptance was
+// proven, by calling the validator.
+//
+// The rule stands anyway, and stands on the parity rather than on the
+// consequence: npm would refuse to publish any of the names below, so a package
+// that carries one is already outside what the ecosystem accepts. That the rule
+// also makes the unproven collision impossible to construct is a consequence of
+// it, not the evidence for it.
+//
+// The "MyPkg"/"mypkg" pair is the one the issue body names, and it is asserted
+// as a pair — one rejected, the other accepted — because a rule that refused
+// both would close the collision by making the name unusable, which is not what
+// npm does.
+func TestValidatePackageNameRejectsUppercase(t *testing.T) {
+	rejected := []struct {
+		name string
+		desc string
+	}{
+		{"MyPkg", "the pair from the issue body: MyPkg against mypkg"},
+		{"Lodash", "a single leading capital"},
+		{"my-PKG", "capitals away from the start"},
+		{"myPkg", "an interior capital, which is the common accident"},
+		{"@Org/my-pkg", "scoped, capital in the scope segment"},
+		{"@org/MyPkg", "scoped, capital in the name segment"},
+		// Not an ASCII rule. U+00C9 lower-cases to U+00E9, so the same two
+		// spellings of one name exist outside A-Z and are refused there too.
+		{"caf\u00c9", "a non-ASCII capital: U+00C9 lower-cases to U+00E9"},
+	}
+	for _, tc := range rejected {
+		err := ValidatePackageName(tc.name)
+		if err == nil {
+			t.Errorf("ValidatePackageName(%q) = nil, want error (%s)", tc.name, tc.desc)
+			continue
+		}
+		// Same requirement the #325 and #326 rules carry: the message has to name
+		// the offender, because it comes out of a manifest the reader did not
+		// necessarily write.
+		if !strings.Contains(err.Error(), tc.name) {
+			t.Errorf("ValidatePackageName(%q) error %q does not name the package", tc.name, err)
+		}
+		// And it has to say whose rule this is. Rejecting a name a user has been
+		// publishing for months is only defensible if the message says the
+		// registry would refuse it too.
+		if !strings.Contains(err.Error(), "npm") {
+			t.Errorf("ValidatePackageName(%q) error %q does not cite npm's rule", tc.name, err)
+		}
+	}
+
+	// The other half of the pair. Lower-casing the name is the fix the message
+	// offers, so the lower-cased form has to be accepted for the advice to be
+	// worth anything.
+	valid := []string{
+		"mypkg",
+		"lodash",
+		"my-pkg",
+		"@org/my-pkg",
+		"caf\u00e9", // U+00E9, the lower-case of the rejected row above
+	}
+	for _, name := range valid {
+		if err := ValidatePackageName(name); err != nil {
+			t.Errorf("ValidatePackageName(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
+// TestValidatePackageNameAllowsCharactersThatHaveNoCase guards the uppercase
+// rule from over-reach. It is a rule about letters that have a lower-case form,
+// so digits, punctuation and scripts without a case distinction are untouched.
+// Every row here validates against HEAD before #327 as well: this exists to
+// catch an over-broad fix, not to prove the fix.
+func TestValidatePackageNameAllowsCharactersThatHaveNoCase(t *testing.T) {
+	valid := []string{
+		"pkg2",
+		"my-pkg.v2",
+		"under_score",
+		"@my.scope/pkg-1",
+		// Scripts with no case distinction at all. Left as literals because
+		// neither has an upper-case form for strings.ToLower to reach, so what
+		// bytes an editor saved them as cannot change the answer.
+		"日本語",
+		"שלום",
+	}
+	for _, name := range valid {
+		if err := ValidatePackageName(name); err != nil {
+			t.Errorf("ValidatePackageName(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
+// TestValidatePackageNameRejectsNamesNotInNFC pins the second of #327's two
+// rules, and it is the half a reader cannot check by eye: the two spellings
+// below render identically in every editor and terminal, and differ only in
+// their bytes.
+//
+//   - NFC: "caf" + U+00E9 (LATIN SMALL LETTER E WITH ACUTE), five bytes.
+//   - NFD: "cafe" + U+0301 (COMBINING ACUTE ACCENT), six bytes.
+//
+// Like the case rule, the collision this forecloses is reasoned rather than
+// observed — HFS+ stores names in a decomposed form and would fold both to one
+// directory, and no filesystem that does so was available here. What is proven
+// is the acceptance: before #327 both spellings validated, so two rows could
+// name what a user reads as one package.
+//
+// The two accented spellings are written as escapes on purpose. A literal
+// "café" in this file would be whatever normalisation the editor that saved it
+// applied, which is exactly the ambiguity the rule exists to remove. The rows
+// below that are not escaped are ones where no editor could have introduced the
+// ambiguity, and each says why.
+//
+// The rejection is the validator's guarantee, not the user's experience: a name
+// read out of a package.json is normalised before it is validated, so an NFD
+// manifest publishes fine and stores its NFC spelling. See
+// TestReadPackageJSONNormalizesTheNameToNFC. This rejection is what a name that
+// never went through that ingestion can still hit — a database row written
+// before #327, most of all.
+func TestValidatePackageNameRejectsNamesNotInNFC(t *testing.T) {
+	const nfc = "caf\u00e9"  // "caf" + LATIN SMALL LETTER E WITH ACUTE
+	const nfd = "cafe\u0301" // "cafe" + COMBINING ACUTE ACCENT
+
+	if err := ValidatePackageName(nfc); err != nil {
+		t.Errorf("ValidatePackageName(NFC café) = %v, want nil", err)
+	}
+	err := ValidatePackageName(nfd)
+	if err == nil {
+		t.Fatalf("ValidatePackageName(NFD café) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), nfd) {
+		t.Errorf("ValidatePackageName(NFD café) error %q does not name the package", err)
+	}
+	// The message cannot rely on the name looking wrong, because it does not.
+	// It has to say what is wrong with it.
+	if !strings.Contains(err.Error(), "NFC") {
+		t.Errorf("ValidatePackageName(NFD café) error %q does not say the name is not in NFC", err)
+	}
+
+	// Scoped, on either segment: the rule is about the whole name, so a
+	// decomposed scope is refused as readily as a decomposed name.
+	scoped := []string{
+		"@org/cafe\u0301",
+		"@cafe\u0301/pkg",
+	}
+	for _, name := range scoped {
+		if err := ValidatePackageName(name); err == nil {
+			t.Errorf("ValidatePackageName(%q) = nil, want error", name)
+		}
+	}
+
+	// The other direction: a name with no decomposable character is untouched,
+	// and so is one already composed. Every row validates against HEAD before
+	// #327 as well.
+	valid := []string{
+		"my-pkg",
+		"@org/my-pkg",
+		// Left as a literal, and safe to: Han ideographs have no canonical
+		// decomposition, so U+65E5 U+672C U+8A9E is its own NFC form however
+		// this file was saved.
+		"日本語",
+		"@org/caf\u00e9",
+		// A combining mark with no precomposed form is already NFC: there is no
+		// single character for "b with acute" to compose into. The rule is
+		// "equal to its own NFC form", not "free of combining marks".
+		"pkg-b\u0301",
+	}
+	for _, name := range valid {
+		if err := ValidatePackageName(name); err != nil {
+			t.Errorf("ValidatePackageName(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
+// TestValidatePackageNameAdviceIsItselfAValidName pins the property both #327
+// messages have to have and only one of them can carry on its own: a message
+// that tells the user what to write instead must name something lnpm accepts.
+//
+// The uppercase message is the only one of the five rules that suggests a
+// replacement, and its suggestion is the lower-cased name. That name is refused
+// in turn if the original was also decomposed - "Cafe"+U+0301 lower-cases to
+// "cafe"+U+0301, which the NFC rule then rejects - so the advice would fail on
+// re-submission. The fix is ordering, not wording: the NFC rule runs first and
+// names no replacement, so a decomposed name is reported as decomposed
+// whatever its case, and by the time the uppercase rule fires the name is
+// composed and its lower-cased form is composed too.
+//
+// This is the same defect the ordering against #326's device rule avoids one
+// level up, caught one line later.
+func TestValidatePackageNameAdviceIsItselfAValidName(t *testing.T) {
+	// Uppercase and decomposed at once. The NFC rule owns this, because its
+	// message does not promise a replacement.
+	const upperNFD = "Cafe\u0301"
+	err := ValidatePackageName(upperNFD)
+	if err == nil {
+		t.Fatalf("ValidatePackageName(%q) = nil, want error", upperNFD)
+	}
+	if !strings.Contains(err.Error(), "NFC") {
+		t.Errorf("ValidatePackageName(%q) = %v, want the NFC rule to fire: the case rule would advise %q, which lnpm also refuses",
+			upperNFD, err, strings.ToLower(upperNFD))
+	}
+
+	// And the composed spelling of the same name is then refused by the case
+	// rule, whose advice does validate. Together these are the two steps a user
+	// following the messages actually takes.
+	const upperNFC = "Caf\u00e9"
+	err = ValidatePackageName(upperNFC)
+	if err == nil {
+		t.Fatalf("ValidatePackageName(%q) = nil, want error", upperNFC)
+	}
+	if !strings.Contains(err.Error(), "uppercase") {
+		t.Errorf("ValidatePackageName(%q) = %v, want the case rule to fire", upperNFC, err)
+	}
+	if adviced := strings.ToLower(upperNFC); ValidatePackageName(adviced) != nil {
+		t.Errorf("ValidatePackageName(%q) advises %q, which is itself refused: %v",
+			upperNFC, adviced, ValidatePackageName(adviced))
+	}
+}
+
+// TestNormalizePackageName pins the transformation half of #327 on its own,
+// away from any caller. Composing is the whole of it: NFC is idempotent, it
+// leaves an ASCII name alone byte for byte, and it does not touch case — a
+// normaliser that also lower-cased would turn the uppercase rule from a refusal
+// into a silent rewrite, which is not what was decided.
+func TestNormalizePackageName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		desc string
+	}{
+		{"cafe\u0301", "caf\u00e9", "NFD composes to NFC"},
+		{"caf\u00e9", "caf\u00e9", "NFC is a fixed point"},
+		{"my-pkg", "my-pkg", "ASCII is untouched"},
+		{"@org/cafe\u0301", "@org/caf\u00e9", "scoped, on the name segment"},
+		{"@cafe\u0301/pkg", "@caf\u00e9/pkg", "scoped, on the scope segment"},
+		{"MyPkg", "MyPkg", "case is not normalisation's business"},
+		{"", "", "an empty name is left empty for the validator to reject"},
+	}
+	for _, tc := range cases {
+		if got := NormalizePackageName(tc.in); got != tc.want {
+			t.Errorf("NormalizePackageName(%q) = %q, want %q (%s)", tc.in, got, tc.want, tc.desc)
+		}
+	}
+}
+
+// TestNormalizePackageNameIsCanonicalNotCompatibility is the guard the waiver
+// argument on ValidatePackageNameForRemoval asks for by name, and it exists
+// because that argument depends on a property of NFC that nothing in the code
+// would otherwise state: canonical composition never derives an ASCII character
+// from a non-ASCII one, so "differs from its own NFC form" cannot be the
+// difference between a name and a route.
+//
+// Compatibility composition does derive them. Each row below is a character NFC
+// leaves alone and NFKC turns into a path metacharacter, so swapping the
+// normaliser turns every row red - which is the point. A comment cannot fail a
+// build; this can.
+//
+// The rows are the measured set, not a guessed one. U+2044 FRACTION SLASH is
+// deliberately absent: it is the character the intuition reaches for first, and
+// it has no compatibility decomposition at all, so a row for it would pass under
+// both forms and quietly weaken the guard.
+func TestNormalizePackageNameIsCanonicalNotCompatibility(t *testing.T) {
+	unchangedByNFC := []struct {
+		in   string
+		nfkc string
+		desc string
+	}{
+		{"\uff0f", "/", "U+FF0F FULLWIDTH SOLIDUS"},
+		{"\uff3c", "\\", "U+FF3C FULLWIDTH REVERSE SOLIDUS"},
+		{"\uff0e", ".", "U+FF0E FULLWIDTH FULL STOP"},
+		{"\u2025", "..", "U+2025 TWO DOT LEADER"},
+	}
+	for _, tc := range unchangedByNFC {
+		if got := NormalizePackageName(tc.in); got != tc.in {
+			t.Errorf("NormalizePackageName(%s) = %q, want it unchanged: the removal waiver's "+
+				"path-surface argument holds only while the normaliser is NFC, and NFKC maps this to %q",
+				tc.desc, got, tc.nfkc)
+		}
+	}
+
+	// And the same statement at the level the argument is actually about: a name
+	// built from those characters is one ordinary segment today, and would read
+	// as a traversal if the normaliser ever composed it by compatibility.
+	for _, name := range []string{
+		"\uff0e\uff0e\uff0fevil", // "../evil" under NFKC
+		"\u2025\uff0fevil",       // likewise, with one code point for the two dots
+	} {
+		if err := ValidatePackageNameForRemoval(name); err != nil {
+			t.Errorf("ValidatePackageNameForRemoval(%q) = %v, want nil: these are ordinary "+
+				"letters under NFC and the test's value is that they stay so", name, err)
+		}
+	}
+}
+
+// TestValidatePackageNameForRemovalAcceptsUppercaseAndNonNFCNames is the same
+// argument as the two waivers above it, for #327's two rules. Neither is
+// retroactive and neither is a path-safety rule.
+//
+// A project linked before #327 can hold .lnpm/MyPkg, or a .lnpm entry whose name
+// is decomposed, plus a lock entry naming it. Enforcing the new rules on the way
+// out would make that entry permanent: 'lnpm remove' would refuse it and
+// 'lnpm remove --all' would skip it on every future run, with no supported way
+// to get rid of it.
+//
+// The NFC rule carries a second obligation the other four do not, and it is the
+// one worth stating: the removal path must not *normalise* the name either. An
+// entry stored as .lnpm/"cafe"+U+0301 is a directory of that literal name on
+// every filesystem this repo runs on, and a removal that composed the argument
+// first would go looking for a sibling that does not exist and report success
+// having deleted nothing. Waiving a rule and applying a transformation are
+// opposite things here; only the first is correct.
+//
+// The waiver cannot widen the path surface, because neither rule guarded it.
+// What keeps a removal inside the project is the "."/".." segment check, the
+// absolute-path check, the backslash check and the two-segment limit, and
+// TestValidatePackageNameForRemovalStillRejectsUnsafeNames asserts all four
+// still fire. Neither rule is a route: case and composition are properties of
+// the letters in a segment, and no upper-case form and no canonical
+// decomposition produces "/", "\" or a "." segment — so a name the waiver newly
+// admits differs from an already-admitted one only in the spelling of its
+// letters, and resolves to a child of .lnpm exactly as that one does.
+func TestValidatePackageNameForRemovalAcceptsUppercaseAndNonNFCNames(t *testing.T) {
+	accepted := []string{
+		"MyPkg",
+		"Lodash",
+		"my-PKG",
+		"@Org/my-pkg",
+		"@org/MyPkg",
+		"caf\u00c9",
+		"cafe\u0301",
+		"@org/cafe\u0301",
+		"@cafe\u0301/pkg",
+		// Everything the strict validator accepts is still accepted here: the
+		// removal entry point only waives rules, it never adds any.
+		"my-pkg",
+		"@org/my-pkg",
+	}
+	for _, name := range accepted {
+		if err := ValidatePackageNameForRemoval(name); err != nil {
+			t.Errorf("ValidatePackageNameForRemoval(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
 // TestValidatePackageNameForRemovalAcceptsDotPrefixedNames covers the one thing
 // the removal entry point exists for. #325 made the leading dot invalid, but a
 // project linked before it can still hold .lnpm/.hidden-pkg and a lock entry for
@@ -444,7 +793,7 @@ func TestValidatePackageNameForRemovalAcceptsWindowsUnsafeNames(t *testing.T) {
 // joined into .lnpm/{name} for an os.RemoveAll and into node_modules/{name} for
 // an os.Remove, so a traversal here deletes outside the project.
 //
-// Waiving the three reservations cannot widen that surface, because not one of
+// Waiving the five reservations cannot widen that surface, because not one of
 // them ever guarded it: traversal is stopped by the "."/".." segment check, the
 // absolute path check, the backslash check and the segment count, and this
 // asserts every one of them still fires on the removal path.
@@ -466,6 +815,15 @@ func TestValidatePackageNameForRemovalStillRejectsUnsafeNames(t *testing.T) {
 		{"@/name", "empty scope"},
 		{"name\\with\\backslash", "backslash"},
 		{"with\x00nul", "nul byte"},
+		// The three rows #327's waivers make worth stating. Waiving the case and
+		// NFC rules must not let a traversal through, and the reason it cannot
+		// is that no path metacharacter has a case or a canonical decomposition:
+		// each of these is caught by the same check that catches its all-lower,
+		// composed twin.
+		{"C:\\evil", "uppercase drive letter: still the backslash check"},
+		{"@Org/..", "mixed-case scope: still the \"..\" segment check"},
+		{"@cafe\u0301/..", "decomposed scope: still the \"..\" segment check"},
+		{"../cafe\u0301", "decomposed name behind a traversal: still the scoped-name check"},
 	}
 	for _, tc := range rejected {
 		if err := ValidatePackageNameForRemoval(tc.name); err == nil {

@@ -778,6 +778,46 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	if pkg.Name == "" {
 		return nil, fmt.Errorf("package.json must have a name field")
 	}
+	// Compose the name before validating it, and keep the composed form on the
+	// struct. This is the single place #327's NFC rule is a transformation
+	// rather than a refusal, and it is here because this is where a package name
+	// enters lnpm's own state: the store directory, the database row, and
+	// through the row the lock file and the consumer's package.json dependency
+	// key all read pkg.Name off the value returned here, and the raw JSON string
+	// is dropped. Composing anywhere later would leave two spellings of one name
+	// in flight at once, which is the mismatch the rule exists to close.
+	//
+	// Before the validation, not after, so that what the rules are applied to is
+	// the name lnpm will actually write - the 214-byte limit above all, which
+	// composing can move in either direction.
+	//
+	// What this composes is the name lnpm indexes by, and deliberately not the
+	// "name" field of the manifest that gets packed and stored. Those come apart
+	// for a decomposed package: the store directory and the database row are
+	// composed, and .lnpm/{name}/package.json still declares the decomposed
+	// spelling, because the file is copied byte for byte out of the source. The
+	// consumer's dependency key is composed too, so `npm ls` sees a name that
+	// renders like the key it is under and is not equal to it.
+	//
+	// That gap is left open on purpose, and the reason is not that it is small.
+	// The store is content-addressed: publish hashes the packed files, and the
+	// entry's directory is named after that hash. Composing the manifest would
+	// have to happen after the hash was taken, so the stored bytes would stop
+	// describing the recorded hash. lnpm already does one such rewrite -
+	// store.stripLifecycleScripts, which #447 is filed about - and the price it
+	// pays is visible in doctor: reportContentIntegrity cannot check a rewritten
+	// root manifest at all and reports it as unverified, on the file it calls
+	// the one an attacker would most want to change. Paying that a second time,
+	// for every package with a decomposed name, to correct a field nothing
+	// resolves through, is a bad trade.
+	//
+	// If it is ever wanted anyway, stripLifecycleScripts is where it goes - it
+	// already re-marshals that file - and it would need two things this note
+	// exists to warn about: the early return for a manifest with no scripts has
+	// to stop skipping it, and manifestRewrittenByStore has to learn the second
+	// reason a manifest can differ, or doctor will fault the entry rather than
+	// excuse it.
+	pkg.Name = NormalizePackageName(pkg.Name)
 	if err := ValidatePackageName(pkg.Name); err != nil {
 		return nil, err
 	}

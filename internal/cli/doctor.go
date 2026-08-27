@@ -62,7 +62,7 @@ func RunDoctor(verifyContent bool) error {
 		}
 	}
 
-	// Store entries Check 5 looked at, so that Check 7's store-wide sweep does
+	// Store entries Check 5 looked at, so that Check 8's store-wide sweep does
 	// not report the same directory a second time. Matched by path string: a
 	// store reached through a different spelling of the same directory would be
 	// reported by both checks, which is noise rather than a wrong finding.
@@ -261,7 +261,7 @@ func RunDoctor(verifyContent bool) error {
 			checkedEntries[pkg.StorePath] = true
 			// On an unmigrated store the marker cannot be asked about, so this
 			// falls back to the question doctor asked before it existed: is the
-			// entry there at all. Check 7 reports the migration itself.
+			// entry there at all. Check 8 reports the migration itself.
 			//
 			// The directory is named per package rather than only counted,
 			// because for the entries that are still there the fix below cannot
@@ -345,9 +345,63 @@ func RunDoctor(verifyContent bool) error {
 			fmt.Println("  Run 'lnpm doctor --verify-content' to check it")
 			contentUnchecked = true
 		}
+
+		// Check 7: package names the current rules refuse.
+		//
+		// #327 made an uppercase letter invalid and made NFC the spelling lnpm
+		// stores, and neither rule is retroactive: a store published before them
+		// holds ".../MyPkg" or a decomposed name, and that directory is exactly
+		// what lnpm wrote at the time. Nothing about it is corrupt. What is
+		// wrong is that no path which creates anything will touch it again -
+		// 'lnpm add' and 'lnpm pull' both validate strictly and refuse - so the
+		// entry is dead weight the user has no reason to suspect until a command
+		// fails on it.
+		//
+		// Reported rather than migrated, which was #327's choice to make and is
+		// worth recording where the choice shows. Renaming "MyPkg" to "mypkg" is
+		// a rename differing only in case, which is the one operation the
+		// case-insensitive filesystems this is all about handle unpredictably,
+		// and if "mypkg" already exists the rename destroys one of the two -
+		// the exact failure #327 was filed over, performed by lnpm. The lock
+		// files carrying the old spelling are out of reach besides: they live in
+		// whichever projects linked the package, which lnpm cannot enumerate,
+		// and each of those projects also has file:.lnpm/{name} written into its
+		// package.json.
+		//
+		// The strict validator is what asks the question, so this reports a name
+		// breaking any of the rules a create path enforces, not only #327's two.
+		// A store can hold a ".hidden-pkg" from before #325 or a "con" from
+		// before #326 for the same reason and with the same consequence, and a
+		// check that named only the newest rules would leave those silent.
+		//
+		// Counted per distinct name rather than per row: the name is what has to
+		// be changed, and a package with nine retained versions is one rename.
+		fmt.Print("Checking stored package names... ")
+		namesSeen := make(map[string]bool, len(packages))
+		var refused []string
+		for _, pkg := range packages {
+			if namesSeen[pkg.Name] {
+				continue
+			}
+			namesSeen[pkg.Name] = true
+			if err := pack.ValidatePackageName(pkg.Name); err != nil {
+				refused = append(refused, err.Error())
+			}
+		}
+		if len(refused) > 0 {
+			fmt.Printf("%s %d package(s) with a name lnpm no longer accepts\n", ui.IconWarn(), len(refused))
+			for _, msg := range refused {
+				fmt.Printf("  %s\n", msg)
+			}
+			fmt.Println("  Fix: Rename the package in its own package.json, re-publish it, then run 'lnpm gc' to reclaim the old entry")
+			fmt.Println("       A project already linked to the old name can still 'lnpm remove' it: removal waives these rules on purpose")
+			warnings++
+		} else {
+			fmt.Printf("%s OK\n", ui.IconOK())
+		}
 	}
 
-	// Check 7: store entries that carry no usable completeness marker, swept
+	// Check 8: store entries that carry no usable completeness marker, swept
 	// from the store itself rather than from the database.
 	//
 	// This is the same fault Check 5 reports, reached from the other side, and
