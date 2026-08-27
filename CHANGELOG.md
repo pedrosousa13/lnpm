@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.4.0](https://github.com/pedrosousa13/lnpm/compare/v2.3.0...v2.4.0) (2026-08-27)
+
+
+### Features
+
+* **cli:** add 'lnpm forget' to drop the record of a project whose drive is gone ([#455](https://github.com/pedrosousa13/lnpm/issues/455)) ([9c8d8c2](https://github.com/pedrosousa13/lnpm/commit/9c8d8c208642e1542295a5c8e4429e1c4d12b4c3)), closes [#382](https://github.com/pedrosousa13/lnpm/issues/382)
+* **pin:** keep a rollback until the user moves off it ([#451](https://github.com/pedrosousa13/lnpm/issues/451)) ([b57a06e](https://github.com/pedrosousa13/lnpm/commit/b57a06e102f87bd449290a82ea78eacf6198aa9a))
+
+
+### Bug Fixes
+
+* **ci:** carry a release's upgrade notes into its published body ([#418](https://github.com/pedrosousa13/lnpm/issues/418)) ([3db6df9](https://github.com/pedrosousa13/lnpm/commit/3db6df970e45d17de209c3d89d096ec38416ecba))
+* **cli:** refuse a retreat that would delete through a symlinked node_modules ([#414](https://github.com/pedrosousa13/lnpm/issues/414)) ([31753b2](https://github.com/pedrosousa13/lnpm/commit/31753b21382bd49ec81d8066d285f15f41cb7afb))
+* **db:** leave a link index entry DeleteLink cannot parse alone ([#416](https://github.com/pedrosousa13/lnpm/issues/416)) ([a782c82](https://github.com/pedrosousa13/lnpm/commit/a782c821e966422544245033b3a4552f9f82a378))
+* **db:** stop GetProjectByPath handing back a project it could not parse ([#415](https://github.com/pedrosousa13/lnpm/issues/415)) ([57a2935](https://github.com/pedrosousa13/lnpm/commit/57a2935317f3fa24807aa8fcd162496133d744cb)), closes [#391](https://github.com/pedrosousa13/lnpm/issues/391)
+* **doctor:** re-hash stored content instead of only checking an entry is finished ([#448](https://github.com/pedrosousa13/lnpm/issues/448)) ([2b5b03f](https://github.com/pedrosousa13/lnpm/commit/2b5b03ff7a4ad353d8326353f23a20e8a3c57e2c))
+* **gc:** say what declining the orphaned-link prompt achieves ([#422](https://github.com/pedrosousa13/lnpm/issues/422)) ([789e224](https://github.com/pedrosousa13/lnpm/commit/789e2242ff46d51e04b8aa9a7c9ed9dd6c598065)), closes [#362](https://github.com/pedrosousa13/lnpm/issues/362)
+* **hooks:** run prepack before prepare, as npm does ([#452](https://github.com/pedrosousa13/lnpm/issues/452)) ([14dcf60](https://github.com/pedrosousa13/lnpm/commit/14dcf604d811e327b4f8d12b9281b47d66f2b149))
+* **link:** verify a reuse candidate's content before carrying it over ([#445](https://github.com/pedrosousa13/lnpm/issues/445)) ([b55273b](https://github.com/pedrosousa13/lnpm/commit/b55273be721cc34354abcb2ade63e628080d9ddc))
+* **pack:** expand a directory a wildcard files entry matches, as npm does ([#433](https://github.com/pedrosousa13/lnpm/issues/433)) ([3f1d7ec](https://github.com/pedrosousa13/lnpm/commit/3f1d7ec854f5770a7a48e9d272d71fa5c3021a1c))
+* **pack:** hard-reserve the git metadata files so a files entry warns ([#430](https://github.com/pedrosousa13/lnpm/issues/430)) ([f97e34e](https://github.com/pedrosousa13/lnpm/commit/f97e34ea70d2c223de34401c53d969515f29d617))
+* **pack:** let the files field beat an ignore file in the project-rules check ([#424](https://github.com/pedrosousa13/lnpm/issues/424)) ([ca1c913](https://github.com/pedrosousa13/lnpm/commit/ca1c913b84c57f5130f003b25b09e8b08dea2c92)), closes [#347](https://github.com/pedrosousa13/lnpm/issues/347)
+* **pack:** never publish a lockfile, matching npm's short list ([#417](https://github.com/pedrosousa13/lnpm/issues/417)) ([39f842d](https://github.com/pedrosousa13/lnpm/commit/39f842de634527c2c080419dfa48d3e06714f8c3))
+* **pack:** read a slash run in a files entry the way npm does ([#432](https://github.com/pedrosousa13/lnpm/issues/432)) ([2ff5885](https://github.com/pedrosousa13/lnpm/commit/2ff58857da08c3b18bcf52a531182e1e0ec90170))
+* **pack:** reject Windows-reserved package names and trailing dot or space ([#419](https://github.com/pedrosousa13/lnpm/issues/419)) ([f047e13](https://github.com/pedrosousa13/lnpm/commit/f047e131eb5ef09f2ea8661113d64af4b81a2e61))
+* **pack:** skip an unenterable excluded directory instead of aborting ([#434](https://github.com/pedrosousa13/lnpm/issues/434)) ([06826d7](https://github.com/pedrosousa13/lnpm/commit/06826d75e1bc7f594cb1b7e5cb351ec05f3b89ef))
+* **pack:** stop a root history.db shipping past a files whitelist ([#411](https://github.com/pedrosousa13/lnpm/issues/411)) ([c1e20c5](https://github.com/pedrosousa13/lnpm/commit/c1e20c551e35cf57eccdc8148a68e49d2387701a))
+* **pack:** warn for a nested hard-reserved files entry written with ./ ([#431](https://github.com/pedrosousa13/lnpm/issues/431)) ([07946cb](https://github.com/pedrosousa13/lnpm/commit/07946cb699a233da9d9d691a1483b06ccf228c59))
+* **shellcmd:** make Command and QuoteArg compose on Windows ([#413](https://github.com/pedrosousa13/lnpm/issues/413)) ([32488bb](https://github.com/pedrosousa13/lnpm/commit/32488bb9aee5e51702c4ad98cebb44edd0ecffe8))
+* **store:** preserve the manifest's mode when stripping lifecycle scripts ([#421](https://github.com/pedrosousa13/lnpm/issues/421)) ([09e04f0](https://github.com/pedrosousa13/lnpm/commit/09e04f0d5afce18232a2a7b2e53551cb1580b358))
+* **store:** write protect an entry's content so a consumer cannot rewrite it ([#442](https://github.com/pedrosousa13/lnpm/issues/442)) ([f7c4f14](https://github.com/pedrosousa13/lnpm/commit/f7c4f14f32704755fda7f0529484dc86663b0a50))
+* **tests:** give the turborepo fixtures the entry point they declare ([#425](https://github.com/pedrosousa13/lnpm/issues/425)) ([e6032e8](https://github.com/pedrosousa13/lnpm/commit/e6032e80e8ea6cc57b767c115aabea65fbad0093)), closes [#365](https://github.com/pedrosousa13/lnpm/issues/365)
+* **update:** stop a git describe build offering itself an older release ([#441](https://github.com/pedrosousa13/lnpm/issues/441)) ([3a865c8](https://github.com/pedrosousa13/lnpm/commit/3a865c8580e6405ad5fb6951f372e901b23d1335))
+* **workspace:** refuse members that resolve outside the workspace root ([#420](https://github.com/pedrosousa13/lnpm/issues/420)) ([7e3ef3f](https://github.com/pedrosousa13/lnpm/commit/7e3ef3f41c4ff69ee45c89261a61d0bbc998695a))
+
 ## [2.3.0](https://github.com/pedrosousa13/lnpm/compare/v2.2.1...v2.3.0) (2026-08-24)
 
 > **Using a `files` field?** Three changes land together, and the packed set of an
