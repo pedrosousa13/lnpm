@@ -570,8 +570,11 @@ func fetchSignedChecksums(version string) ([]byte, error) {
 }
 
 // signatureUnavailableError explains a checksums.txt.sig that could not be
-// read, keeping "the release published none" apart from "the fetch failed":
-// the first means do not install, the second means try again.
+// read, keeping three cases apart: "the release published none", "the body was
+// too large to read" and "the fetch failed". Only the last is worth retrying,
+// so only the last says so - a response over the read cap is the same size on
+// every attempt, and telling the user to check their connection would send them
+// after a problem they do not have.
 //
 // A missing signature is refused rather than tolerated. The rule for whether a
 // release is signed is what it publishes: a release is signed if it publishes
@@ -589,6 +592,11 @@ func signatureUnavailableError(version string, err error) error {
 		return fmt.Errorf("release v%s publishes no checksums.txt.sig, so it appears unsigned: it will not be installed. "+
 			"Do not install it by hand either - report it at https://github.com/pedrosousa13/lnpm/issues",
 			strings.TrimPrefix(version, "v"))
+	}
+	var tooLarge *releaseAssetTooLargeError
+	if errors.As(err, &tooLarge) {
+		return fmt.Errorf("the checksums signature is too large to be one, so the release cannot be verified and "+
+			"will not be installed - report it at https://github.com/pedrosousa13/lnpm/issues: %w", err)
 	}
 	return fmt.Errorf("failed to fetch the checksums signature, so the release cannot be verified and "+
 		"will not be installed - check your connection and try again: %w", err)
@@ -612,6 +620,16 @@ func verifySignature(keys []*ecdsa.PublicKey, body, sig []byte) bool {
 // errAssetNotFound reports a release asset the release does not publish, as
 // distinct from one that could not be fetched.
 var errAssetNotFound = errors.New("not published on this release")
+
+// releaseAssetTooLargeError reports a release asset refused for exceeding the
+// metadata read cap. It is a distinct type so a caller can tell it apart from a
+// network failure: retrying a body that is over the cap fetches the same
+// over-cap body again.
+type releaseAssetTooLargeError struct{ limit int64 }
+
+func (e *releaseAssetTooLargeError) Error() string {
+	return fmt.Sprintf("release metadata exceeds the %d-byte read limit", e.limit)
+}
 
 // fetchReleaseAsset reads a small release asset fully into memory, refusing a
 // body larger than maxReleaseMetadataBytes.
@@ -637,7 +655,7 @@ func fetchReleaseAsset(url string) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(body)) > maxReleaseMetadataBytes {
-		return nil, fmt.Errorf("release metadata exceeds the %d-byte read limit", maxReleaseMetadataBytes)
+		return nil, &releaseAssetTooLargeError{limit: maxReleaseMetadataBytes}
 	}
 	return body, nil
 }

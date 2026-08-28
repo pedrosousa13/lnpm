@@ -410,8 +410,15 @@ func TestDownloadToFileNotFound(t *testing.T) {
 }
 
 // TestReleaseSizeLimitDefaults pins the shipped limits, because every other
-// size test lowers them to keep the over-limit body small. Without this row a
-// typo in either default would leave the whole set green.
+// size test lowers them to keep the over-limit body small.
+//
+// What it uniquely catches is a default that is merely *wrong*, in either
+// direction, rather than absurdly small. Measured on 2026-08-28, each direction
+// preceded by a clean 'go vet ./...' and read for the package result line:
+// doubling both defaults turns this test red and nothing else; halving both
+// does the same. Only a drastic lowering is caught elsewhere - at 64 bytes for
+// both, 13 other tests go red alongside this one, every one of them a
+// verifyRelease or downloadAndInstall test whose fixture no longer fits.
 func TestReleaseSizeLimitDefaults(t *testing.T) {
 	if maxReleaseMetadataBytes != 1<<20 {
 		t.Errorf("maxReleaseMetadataBytes = %d, want %d (1 MiB)", maxReleaseMetadataBytes, 1<<20)
@@ -484,8 +491,11 @@ func TestDownloadToFileAcceptsArchiveAtLimit(t *testing.T) {
 // makes the archive cap a refusal rather than a truncation. The release it
 // serves publishes a signed checksums.txt listing the SHA-256 of the *first
 // cap-many bytes* of the archive, so a cap that truncated silently would hand
-// verifyRelease a file that verifies and let the install proceed. The failure
-// must instead name the size limit.
+// verifyRelease a file that verifies - measured on 2026-08-28 under a
+// truncating read, which prints "Signature and checksum verified" - and the
+// failure would then come from extraction rather than from the size limit
+// ("gzip: invalid header", the truncated bytes not being a gzip stream). The
+// failure must instead name the size limit.
 func TestDownloadBinaryRejectsOversizedArchiveBeforeVerification(t *testing.T) {
 	const limit = 64
 	setReleaseSizeLimits(t, 1<<20, limit)
@@ -538,13 +548,29 @@ func TestFetchReleaseAssetAcceptsMetadataAtLimit(t *testing.T) {
 // with a trailing comment line, whose first cap-many bytes are the real, signed
 // listing for the archive. A truncating read would verify; the capped one must
 // fail naming the limit.
+//
+// The padding is appended *after* signing, and that is the whole point of not
+// using startReleaseServer here - that helper signs whatever body it is given,
+// so the signature would cover the padded body and the truncated prefix would
+// be unsigned. Measured on 2026-08-28 with the cap made truncating
+// (io.ReadAll over io.LimitReader at exactly maxReleaseMetadataBytes, no +1 and
+// no error): this test fails on
+//
+//	verifyRelease returned nil for an over-limit checksums.txt, want an error
+//
+// so the truncated prefix really does verify and match, and the refusal is the
+// only thing this test is left resting on. Signing the padded body instead -
+// which is what startReleaseServer does - would fail on "not signed by any
+// trusted key", red for a different reason than the one this test is about.
 func TestVerifyReleaseRejectsOversizedChecksums(t *testing.T) {
 	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
 	path, checksums := archiveWithChecksums(t, filename)
 
 	limit := int64(len(checksums))
 	setReleaseSizeLimits(t, limit, 256<<20)
-	startReleaseServer(t, checksums+strings.Repeat("#", 32)+"\n")
+
+	key := trustNewReleaseKey(t)
+	serveRelease(t, releaseHandler("", nil, checksums+strings.Repeat("#", 32)+"\n", signChecksums(t, key, checksums)))
 
 	err := verifyRelease("1.2.3", filename, path)
 	if err == nil {
@@ -552,6 +578,49 @@ func TestVerifyReleaseRejectsOversizedChecksums(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), strconv.FormatInt(limit, 10)) {
 		t.Errorf("error = %q, want it to name the %d-byte limit it exceeded", err, limit)
+	}
+}
+
+// The metadata cap covers checksums.txt.sig as well as checksums.txt, and the
+// two arrive at the user through different wrappers: the signature's failure
+// goes through signatureUnavailableError, which is where "check your connection
+// and try again" lives. That remedy is right for a dropped connection and wrong
+// for an over-cap body, which is the same size on the next attempt too, so the
+// size failure has to leave that wrapper by a different branch.
+//
+// The signature served here is one byte of filler past the cap rather than a
+// real signature: the size check runs before anything reads the bytes, so a
+// well-formed one would prove nothing extra, and a real ECDSA signature is
+// around 70 bytes, which is under the cap this test can set.
+func TestVerifyReleaseRejectsAnOversizedSignatureWithoutARetryRemedy(t *testing.T) {
+	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
+	path, checksums := archiveWithChecksums(t, filename)
+
+	// The cap has to clear checksums.txt and refuse the signature, so it is set
+	// to the listing's own length and the signature served one byte over it.
+	limit := int64(len(checksums))
+	setReleaseSizeLimits(t, limit, 256<<20)
+
+	trustNewReleaseKey(t)
+	serveRelease(t, releaseHandler("", nil, checksums, bytes.Repeat([]byte("s"), int(limit)+1)))
+
+	err := verifyRelease("1.2.3", filename, path)
+	if err == nil {
+		t.Fatal("verifyRelease returned nil for an over-limit checksums.txt.sig, want an error")
+	}
+	if !strings.Contains(err.Error(), strconv.FormatInt(limit, 10)) {
+		t.Errorf("error = %q, want it to name the %d-byte limit it exceeded", err, limit)
+	}
+	if strings.Contains(err.Error(), "try again") {
+		t.Errorf("error = %q, want no retry remedy for a body that is over the cap on every attempt", err)
+	}
+	// The other two branches of signatureUnavailableError must not claim this
+	// one: it is neither a release publishing no signature nor a fetch that
+	// failed.
+	for _, unwanted := range []string{"unsigned", "failed to fetch"} {
+		if strings.Contains(err.Error(), unwanted) {
+			t.Errorf("error = %q, want it not to contain %q", err, unwanted)
+		}
 	}
 }
 
