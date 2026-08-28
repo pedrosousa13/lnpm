@@ -3,10 +3,13 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -499,5 +502,99 @@ func TestCheckAsyncStillReportsANewerReleaseToAGitDescribeBuild(t *testing.T) {
 	}
 	if got[0].LatestVersion != "v1.13.0" || !got[0].UpdateAvailable {
 		t.Errorf("CheckAsync = %+v, want LatestVersion v1.13.0 with UpdateAvailable true", got[0])
+	}
+}
+
+// setMaxAPIResponseBytes lowers the response cap for the duration of a test, so
+// the over-cap path is exercised without streaming a megabyte through httptest.
+//
+// Don't use t.Parallel() in callers - this swaps a process-wide var.
+func setMaxAPIResponseBytes(t *testing.T, limit int64) {
+	t.Helper()
+
+	prev := maxAPIResponseBytes
+	maxAPIResponseBytes = limit
+	t.Cleanup(func() { maxAPIResponseBytes = prev })
+}
+
+func TestMaxAPIResponseBytesDefault(t *testing.T) {
+	// The tests below lower the cap, so the shipped value is only pinned here.
+	// A real release payload is a few KiB.
+	if want := int64(1 << 20); maxAPIResponseBytes != want {
+		t.Errorf("maxAPIResponseBytes = %d, want %d", maxAPIResponseBytes, want)
+	}
+}
+
+// A body over the cap must be refused by name, not truncated: the first
+// maxAPIResponseBytes of this response are `{"tag_name": "v9.9.9"}` followed by
+// padding, so a cap that cut the body short instead of refusing it would decode
+// a version the server never finished sending.
+func TestFetchLatestVersionRefusesAnOversizedBody(t *testing.T) {
+	const prefix = `{"tag_name": "v9.9.9"}`
+	setMaxAPIResponseBytes(t, int64(len(prefix))+8)
+
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(prefix + "          "))
+	})
+
+	// context.Background() carries no deadline, so nothing here can fire on
+	// time - only on size.
+	got, err := fetchLatestVersion(context.Background())
+	if err == nil {
+		t.Fatalf("fetchLatestVersion = %q, want an error for a body over the cap", got)
+	}
+	if got != "" {
+		t.Errorf("fetchLatestVersion = %q, want empty string on error", got)
+	}
+
+	var tooLarge *apiResponseTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("fetchLatestVersion error = %v (%T), want *apiResponseTooLargeError", err, err)
+	}
+	if !strings.Contains(err.Error(), strconv.FormatInt(maxAPIResponseBytes, 10)) {
+		t.Errorf("error %q does not name the %d-byte limit", err, maxAPIResponseBytes)
+	}
+}
+
+// The cap is a refusal, not a ceiling on what decodes: a body exactly at the
+// limit is still read whole.
+func TestFetchLatestVersionAcceptsABodyExactlyAtTheCap(t *testing.T) {
+	const body = `{"tag_name": "v1.2.3"}`
+	setMaxAPIResponseBytes(t, int64(len(body)))
+
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+
+	got, err := fetchLatestVersion(context.Background())
+	if err != nil {
+		t.Fatalf("fetchLatestVersion returned error: %v", err)
+	}
+	if got != "v1.2.3" {
+		t.Errorf("fetchLatestVersion = %q, want v1.2.3", got)
+	}
+}
+
+// CheckFresh surfaces the cap as an error rather than reporting no update, so
+// the user can tell "could not check" apart from "already current".
+func TestCheckFreshSurfacesTheResponseCap(t *testing.T) {
+	t.Setenv("LNPM_STORE", t.TempDir())
+	setMaxAPIResponseBytes(t, 8)
+
+	startAPIServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"tag_name": "v9.9.9"}`))
+	})
+
+	result, err := CheckFresh("1.0.0")
+	if err == nil {
+		t.Fatalf("CheckFresh = %+v, want an error for a body over the cap", result)
+	}
+	if result != nil {
+		t.Errorf("CheckFresh = %+v, want nil result on error", result)
+	}
+
+	var tooLarge *apiResponseTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Errorf("CheckFresh error = %v (%T), want it to wrap *apiResponseTooLargeError", err, err)
 	}
 }
