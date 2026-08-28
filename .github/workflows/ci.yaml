@@ -16,6 +16,30 @@ on:
       - 'LICENSE'
       - '.gitignore'
 
+# Without this, every job inherits the repository-wide default of `write` and
+# hands a write-scoped GITHUB_TOKEN to six third-party actions. Nothing here
+# writes: no `gh`, no `git push`, no release, no `secrets.` reference, and
+# nothing forwards the token through an `env:`. The `make` steps reach only
+# `go build` and shell scripts that touch nothing outside the checkout and
+# their own temp dirs — no `git`, no network client. So all five jobs need the
+# same thing, reading the checkout, and one grant covers them. GitHub documents
+# that naming any scope narrows the rest — "If you specify the access for any
+# of these permissions, all of those that are not specified are set to none."
+#
+# `Upload artifacts` is the step that looks like it should need more and does
+# not, so it is worth recording rather than rediscovering. Read from
+# @actions/artifact's source: upload-artifact never authenticates with
+# GITHUB_TOKEN, because its Twirp client builds credentials from
+# ACTIONS_RUNTIME_TOKEN instead. The Octokit path that would want
+# `actions: write` is reached only when a `findBy` option is passed, and this
+# action passes none — so not even `overwrite: true` would need the scope.
+# `Upload coverage` likewise passes no token: read from codecov-action's
+# action.yml, its `token` is a Codecov credential rather than a GitHub one, and
+# the `id-token: write` it can want is gated on `use_oidc`, which defaults to
+# false and is not set below.
+permissions:
+  contents: read
+
 # Every job below carries an explicit `timeout-minutes`, because GitHub's
 # default is 360. A deadlocked test or a `go mod download` stalled on a network
 # partition would otherwise hold a runner for six hours and leave the PR

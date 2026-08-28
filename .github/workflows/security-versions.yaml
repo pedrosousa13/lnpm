@@ -20,6 +20,17 @@ on:
   pull_request:
     branches: [main]
 
+# Without this the job would inherit the repository-wide default, which is
+# `write`. Both steps are `make` targets running bash scripts that read files
+# out of the checkout and write only into their own temp dirs:
+# scripts/check-security-versions.sh and scripts/test-check-security-versions.sh
+# call no `gh`, no `git` and no network client, and nothing here references
+# `secrets.` or sets GITHUB_TOKEN. Reading the checkout is the whole need.
+# ci.yaml's block carries the rest of the reasoning, including what GitHub
+# documents about unnamed scopes.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check supported versions
