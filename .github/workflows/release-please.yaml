@@ -118,9 +118,13 @@ jobs:
             echo "RELEASE_SIGNING_KEY is not set; refusing to publish an unsigned release" >&2
             exit 1
           fi
+          # Exported before the file exists rather than after it is written. The
+          # removal step below deletes whatever this variable names, so the other
+          # order leaves a window — a cancellation between the write and the
+          # export strands the key on disk with nothing pointing at it.
+          echo "RELEASE_SIGNING_KEY_PATH=$RUNNER_TEMP/release-signing-key.pem" >> "$GITHUB_ENV"
           install -m 600 /dev/null "$RUNNER_TEMP/release-signing-key.pem"
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
-          echo "RELEASE_SIGNING_KEY_PATH=$RUNNER_TEMP/release-signing-key.pem" >> "$GITHUB_ENV"
 
       # The worst thing this pipeline can do is publish a release signed by a
       # key that no installed binary knows. `lnpm update` verifies
@@ -162,6 +166,28 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Signing is the last thing that needs the private key, so it stops being
+      # on disk here rather than at the end of the job — the verification below
+      # reads only the published checksums and their signature.
+      #
+      # `always()` because a failed build must not be the path that leaves the
+      # key on the runner: the default condition would skip exactly the runs
+      # where a step failed after the key was written. Standing between
+      # GoReleaser and the verification below does not make that verification
+      # run on a failed build — GitHub documents "A default status check of
+      # success() is applied unless you include one of these functions", and
+      # success() as returning true "when none of the previous steps have failed
+      # or been canceled", which an earlier failure has already decided.
+      #
+      # `rm -f` so the step cannot itself turn a run red. Measured on GNU
+      # coreutils 9.4: exit 0 for a missing file, and exit 0 for the empty
+      # operand that an unset RELEASE_SIGNING_KEY_PATH expands to. GitHub's
+      # documented default shell is `bash --noprofile --norc -eo pipefail`,
+      # which does not set -u.
+      - name: Remove the release signing key
+        if: always()
+        run: rm -f "$RELEASE_SIGNING_KEY_PATH"
 
       # The other half of the guard, against the bytes that were really
       # published rather than against the key that was meant to sign them. This
