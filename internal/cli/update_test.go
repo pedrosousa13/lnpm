@@ -416,9 +416,21 @@ func TestDownloadToFileNotFound(t *testing.T) {
 //
 // Every httptest TLS server presents the same built-in certificate, so one
 // server's transport trusts another's too. That is what lets a redirect cross
-// between two of them; TestUpdateClientFollowsAnHTTPSRedirectAcrossHosts is the
-// row that establishes it, since it fails on a bad certificate rather than on
-// the policy.
+// between two of them, and it was run rather than reasoned about, on
+// 2026-08-28, with a scratch pair whose redirector was plaintext http so that
+// only the https destination's certificate was in question:
+//
+//   - trusting no certificate, the destination hop fails on the certificate and
+//     never reaches the policy - Get "https://127.0.0.1:38947/asset": tls:
+//     failed to verify certificate: x509: certificate signed by unknown
+//     authority.
+//   - trusting a third, unrelated httptest server - not the destination and not
+//     the redirector - the same fetch returns the destination's body. One
+//     server's certificate really is every server's.
+//
+// So a cross-host row going green here is evidence about the policy: the
+// certificate cannot be what is carrying it, and an untrusted one would have
+// failed loudly and differently.
 //
 // Don't use t.Parallel() in callers - this swaps a field of a package-wide var.
 func trustTestServerCert(t *testing.T, srv *httptest.Server) {
@@ -429,19 +441,16 @@ func trustTestServerCert(t *testing.T, srv *httptest.Server) {
 	t.Cleanup(func() { updateHTTPClient.Transport = prev })
 }
 
-// redirectTo starts a server answering every request with a 302 to target.
-func redirectTo(t *testing.T, target string, tls bool) *httptest.Server {
+// redirectTo starts an https server answering every request with a 302 to
+// target. It is https because the policy under test only refuses a destination
+// that is not https - the hop it came from is never consulted - so a plaintext
+// redirector would test nothing the destination does not already decide.
+func redirectTo(t *testing.T, target string) *httptest.Server {
 	t.Helper()
 
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, target, http.StatusFound)
-	})
-	srv := httptest.NewUnstartedServer(h)
-	if tls {
-		srv.StartTLS()
-	} else {
-		srv.Start()
-	}
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -467,7 +476,7 @@ func TestUpdateClientRefusesARedirectThatDowngradesToHTTP(t *testing.T) {
 	}))
 	t.Cleanup(plain.Close)
 
-	srv := redirectTo(t, plain.URL+"/checksums.txt", true)
+	srv := redirectTo(t, plain.URL+"/checksums.txt")
 	trustTestServerCert(t, srv)
 
 	assertRefused := func(t *testing.T, err error) {
@@ -511,7 +520,7 @@ func TestUpdateClientRefusesARedirectThatDowngradesToHTTP(t *testing.T) {
 // follows this redirect too. What it catches is the fix over-restricting -
 // measured on 2026-08-28 by adding a via[0].URL.Host != req.URL.Host refusal to
 // checkUpdateRedirect, which turns both rows here red on "refused this
-// redirect: it leaves 127.0.0.1:45987" along with the DNS-name row below, with
+// redirect: it leaves 127.0.0.1:<port>" along with the DNS-name row below, with
 // go vet clean and internal/cli printing FAIL with a duration.
 //
 // Don't use t.Parallel() here - trustTestServerCert swaps a package-wide field.
@@ -522,7 +531,7 @@ func TestUpdateClientFollowsAnHTTPSRedirectAcrossHosts(t *testing.T) {
 	}))
 	t.Cleanup(dest.Close)
 
-	srv := redirectTo(t, dest.URL+"/asset", true)
+	srv := redirectTo(t, dest.URL+"/asset")
 	trustTestServerCert(t, srv)
 	if srv.URL == dest.URL {
 		t.Fatalf("both test servers share the URL %q, so no host is crossed", srv.URL)
@@ -565,10 +574,10 @@ func TestUpdateClientFollowsAnHTTPSRedirectAcrossHosts(t *testing.T) {
 //
 // Don't use t.Parallel() here - trustTestServerCert swaps a package-wide field.
 func TestUpdateClientBoundsTheRedirectChain(t *testing.T) {
-	var hops int
+	var requests int
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hops++
-		http.Redirect(w, r, fmt.Sprintf("/hop%d", hops), http.StatusFound)
+		requests++
+		http.Redirect(w, r, fmt.Sprintf("/hop%d", requests), http.StatusFound)
 	}))
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
@@ -581,14 +590,26 @@ func TestUpdateClientBoundsTheRedirectChain(t *testing.T) {
 	if !strings.Contains(err.Error(), "redirect") {
 		t.Errorf("error = %q, want it to say the redirect chain was stopped", err)
 	}
-	if hops > maxUpdateRedirects {
-		t.Errorf("server saw %d requests, want at most the %d-hop bound", hops, maxUpdateRedirects)
+	// maxUpdateRedirects bounds len(via), which counts requests rather than
+	// redirects, so the server may answer that many - the original plus the
+	// maxUpdateRedirects-1 redirects that were followed. Measured on 2026-08-28:
+	// exactly 10 requests, 9 redirects followed.
+	if requests > maxUpdateRedirects {
+		t.Errorf("server answered %d requests, want at most %d", requests, maxUpdateRedirects)
 	}
 }
 
 // The real chain 'lnpm update' follows leaves github.com for the asset host, so
 // the policy is asked about that exact pair directly - httptest's single-name
 // certificate cannot express it end to end.
+//
+// Like the row above, this cannot go red against the unfixed code - net/http's
+// default policy allows the hop too - and what it catches is the fix
+// over-restricting. Measured on 2026-08-28 by adding a
+// via[0].URL.Host != req.URL.Host refusal to checkUpdateRedirect: this goes red
+// on "CheckRedirect refused the https asset-host hop: refused this redirect: it
+// leaves github.com", with go vet clean and internal/cli printing FAIL with a
+// duration rather than [build failed].
 func TestUpdateRedirectPolicyAllowsTheGitHubAssetHostHop(t *testing.T) {
 	if updateHTTPClient.CheckRedirect == nil {
 		t.Fatal("updateHTTPClient carries no redirect policy, so neither fetch path is governed by one")

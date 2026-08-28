@@ -43,6 +43,12 @@ var updateHTTPClient = &http.Client{
 // defaultCheckRedirect, which this replaces and whose bound it keeps. Read from
 // client.go in Go 1.26.7 rather than inferred: reqs is appended to after the
 // check, and defaultCheckRedirect refuses at len(via) >= 10.
+//
+// Confirmed by running it on 2026-08-28 against an endlessly redirecting test
+// server: the server answered 10 requests and the refusal carried len(via) 10,
+// so 9 redirects were followed. The message below therefore counts requests,
+// not redirects - net/http's own says "stopped after 10 redirects" for this
+// same len(via), which is one more redirect than it followed.
 const maxUpdateRedirects = 10
 
 // checkUpdateRedirect refuses a redirect whose destination is not https, and
@@ -72,7 +78,7 @@ func checkUpdateRedirect(req *http.Request, via []*http.Request) error {
 		return fmt.Errorf("refused this redirect: an update download must stay on https, not %s", req.URL.Scheme)
 	}
 	if len(via) >= maxUpdateRedirects {
-		return fmt.Errorf("stopped after %d redirects while fetching a release asset", len(via))
+		return fmt.Errorf("stopped after %d requests while following redirects for a release asset", len(via))
 	}
 	return nil
 }
