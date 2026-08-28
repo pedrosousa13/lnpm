@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -405,6 +406,152 @@ func TestDownloadToFileNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("error = %q, want it to mention status 404", err)
+	}
+}
+
+// TestReleaseSizeLimitDefaults pins the shipped limits, because every other
+// size test lowers them to keep the over-limit body small. Without this row a
+// typo in either default would leave the whole set green.
+func TestReleaseSizeLimitDefaults(t *testing.T) {
+	if maxReleaseMetadataBytes != 1<<20 {
+		t.Errorf("maxReleaseMetadataBytes = %d, want %d (1 MiB)", maxReleaseMetadataBytes, 1<<20)
+	}
+	if maxReleaseArchiveBytes != 256<<20 {
+		t.Errorf("maxReleaseArchiveBytes = %d, want %d (256 MiB)", maxReleaseArchiveBytes, 256<<20)
+	}
+}
+
+// setReleaseSizeLimits lowers both caps for the duration of the test, so an
+// over-limit body can be a few hundred bytes instead of hundreds of megabytes.
+//
+// Don't use t.Parallel() in callers - these are process-wide vars.
+func setReleaseSizeLimits(t *testing.T, metadata, archive int64) {
+	t.Helper()
+
+	prevMetadata, prevArchive := maxReleaseMetadataBytes, maxReleaseArchiveBytes
+	maxReleaseMetadataBytes, maxReleaseArchiveBytes = metadata, archive
+	t.Cleanup(func() {
+		maxReleaseMetadataBytes, maxReleaseArchiveBytes = prevMetadata, prevArchive
+	})
+}
+
+// serveBody starts a test server answering every request with body, and returns
+// its base URL.
+func serveBody(t *testing.T, body []byte) string {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestDownloadToFileRejectsOversizedArchive(t *testing.T) {
+	setReleaseSizeLimits(t, 1<<20, 64)
+	url := serveBody(t, bytes.Repeat([]byte("a"), 65))
+
+	dst := filepath.Join(t.TempDir(), "archive.tar.gz")
+	err := downloadToFile(url+"/archive.tar.gz", dst)
+	if err == nil {
+		t.Fatal("downloadToFile returned nil for a body one byte over the cap, want an error")
+	}
+	if !strings.Contains(err.Error(), "64") {
+		t.Errorf("error = %q, want it to name the 64-byte limit it exceeded", err)
+	}
+}
+
+func TestDownloadToFileAcceptsArchiveAtLimit(t *testing.T) {
+	setReleaseSizeLimits(t, 1<<20, 64)
+	payload := bytes.Repeat([]byte("a"), 64)
+	url := serveBody(t, payload)
+
+	dst := filepath.Join(t.TempDir(), "archive.tar.gz")
+	if err := downloadToFile(url+"/archive.tar.gz", dst); err != nil {
+		t.Fatalf("downloadToFile returned error for a body exactly at the cap: %v", err)
+	}
+
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Errorf("downloaded %d bytes, want the whole %d-byte body", len(data), len(payload))
+	}
+}
+
+// TestDownloadBinaryRejectsOversizedArchiveBeforeVerification is the row that
+// makes the archive cap a refusal rather than a truncation. The release it
+// serves publishes a signed checksums.txt listing the SHA-256 of the *first
+// cap-many bytes* of the archive, so a cap that truncated silently would hand
+// verifyRelease a file that verifies and let the install proceed. The failure
+// must instead name the size limit.
+func TestDownloadBinaryRejectsOversizedArchiveBeforeVerification(t *testing.T) {
+	const limit = 64
+	setReleaseSizeLimits(t, 1<<20, limit)
+
+	filename := "lnpm_1.2.3_test_amd64.tar.gz"
+	archive := bytes.Repeat([]byte("a"), limit+1)
+	startReleaseArchiveServer(t, filename, archive, archiveChecksums(filename, archive[:limit]))
+
+	_, tmpDir, err := downloadBinary("1.2.3", fmt.Sprintf("%s/v1.2.3/%s", releaseBaseURL, filename), filename)
+	if err == nil {
+		t.Fatal("downloadBinary returned nil for an over-limit archive, want an error")
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(limit)) {
+		t.Errorf("error = %q, want it to name the %d-byte limit rather than fail verification", err, limit)
+	}
+	if _, statErr := os.Stat(tmpDir); !os.IsNotExist(statErr) {
+		t.Errorf("temp dir %q survived the failed download (stat err %v)", tmpDir, statErr)
+	}
+}
+
+func TestFetchReleaseAssetRejectsOversizedMetadata(t *testing.T) {
+	setReleaseSizeLimits(t, 64, 256<<20)
+	url := serveBody(t, bytes.Repeat([]byte("a"), 65))
+
+	_, err := fetchReleaseAsset(url + "/checksums.txt")
+	if err == nil {
+		t.Fatal("fetchReleaseAsset returned nil for a body one byte over the cap, want an error")
+	}
+	if !strings.Contains(err.Error(), "64") {
+		t.Errorf("error = %q, want it to name the 64-byte limit it exceeded", err)
+	}
+}
+
+func TestFetchReleaseAssetAcceptsMetadataAtLimit(t *testing.T) {
+	setReleaseSizeLimits(t, 64, 256<<20)
+	payload := bytes.Repeat([]byte("a"), 64)
+	url := serveBody(t, payload)
+
+	got, err := fetchReleaseAsset(url + "/checksums.txt")
+	if err != nil {
+		t.Fatalf("fetchReleaseAsset returned error for a body exactly at the cap: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("fetched %d bytes, want the whole %d-byte body", len(got), len(payload))
+	}
+}
+
+// TestVerifyReleaseRejectsOversizedChecksums establishes that the metadata cap
+// refuses rather than truncates: it serves a checksums.txt padded past the cap
+// with a trailing comment line, whose first cap-many bytes are the real, signed
+// listing for the archive. A truncating read would verify; the capped one must
+// fail naming the limit.
+func TestVerifyReleaseRejectsOversizedChecksums(t *testing.T) {
+	const filename = "lnpm_1.2.3_linux_amd64.tar.gz"
+	path, checksums := archiveWithChecksums(t, filename)
+
+	limit := int64(len(checksums))
+	setReleaseSizeLimits(t, limit, 256<<20)
+	startReleaseServer(t, checksums+strings.Repeat("#", 32)+"\n")
+
+	err := verifyRelease("1.2.3", filename, path)
+	if err == nil {
+		t.Fatal("verifyRelease returned nil for an over-limit checksums.txt, want an error")
+	}
+	if !strings.Contains(err.Error(), strconv.FormatInt(limit, 10)) {
+		t.Errorf("error = %q, want it to name the %d-byte limit it exceeded", err, limit)
 	}
 }
 
