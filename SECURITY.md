@@ -224,20 +224,32 @@ Nothing is stranded by the cutover. `lnpm update` only ever installs the latest
 release, never an older one, so once the first signed release exists the only
 release it will try to install is a signed one.
 
-**What signature verification covers.** `lnpm update` and only `lnpm update`.
-The bootstrap path — `install.sh` and `install.ps1` — verifies checksums alone.
-That catches a corrupted download or an archive altered in transit; it does not
-catch a release where an attacker replaced the archive and `checksums.txt`
-together. A first install is not signature-protected.
+**What signature verification covers.** One path only: the branch of
+`lnpm update` that downloads a release archive. There it downloads both files,
+verifies the signature against the keys built into the binary you are running
+now, and only then checks the archive against `checksums.txt`. A signature that
+is missing, invalid, or made by a key your binary does not trust aborts the
+update and leaves the existing binary in place. This is what checksum-only
+verification cannot do: `checksums.txt` is served from the same release as the
+binaries it describes, so alone it proves only that the download matches *some*
+checksum file, not that the checksum file came from the maintainer.
 
-Under `lnpm update`, lnpm downloads both files, verifies the signature against
-the keys built into the binary you are running now, and only then checks the
-archive against `checksums.txt`. A signature that is missing, invalid, or made by
-a key your binary does not trust aborts the update and leaves the existing binary
-in place. This is what checksum-only verification cannot do: `checksums.txt` is
-served from the same release as the binaries it describes, so alone it proves
-only that the download matches *some* checksum file, not that the checksum file
-came from the maintainer.
+**What it does not cover.** Two paths, neither of them signature-protected:
+
+- `install.sh` and `install.ps1`, the bootstrap installers. They verify
+  checksums alone, which catches a corrupted download or an archive altered in
+  transit but not a release where an attacker replaced the archive and
+  `checksums.txt` together. A first install is not signature-protected.
+- The other branch of `lnpm update`. `lnpm update` picks its method from where
+  the running binary sits: a binary in `GOBIN`, `GOPATH/bin` or `~/go/bin` is
+  updated by delegating to `go install`, which builds from the Go module proxy
+  and never fetches the release archive, `checksums.txt` or its signature at
+  all. That update's integrity rests on the Go module checksum database, which
+  `GOSUMDB=off` disables outright and which `GONOSUMDB` or `GOPRIVATE` disable
+  for module paths they match. It is not refused — `go install` is a supported
+  way to have installed lnpm — but it prints a warning saying it is unverified,
+  so you can tell which of the two you got. To be signature-verified, install
+  lnpm from a release archive instead.
 
 **Verifying by hand.** Substitute the tag and archive you are checking for the
 placeholders. This works only from the first signed release onward — against an

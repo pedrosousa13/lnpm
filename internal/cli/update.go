@@ -22,6 +22,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/debug"
 	"github.com/pedrosousa13/lnpm/internal/releasekeys"
+	"github.com/pedrosousa13/lnpm/internal/ui"
 	"github.com/pedrosousa13/lnpm/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -192,6 +193,8 @@ func isInBinDir(binPath, binDir string) bool {
 func installLatestViaGo() error {
 	installURL := "github.com/pedrosousa13/lnpm/cmd/lnpm@latest"
 
+	warnGoInstallIsUnverified()
+
 	debug.Logf("update: installing via go install from %s", installURL)
 
 	cmd := exec.Command("go", "install", installURL)
@@ -211,6 +214,28 @@ func installLatestViaGo() error {
 	fmt.Printf("✓ Successfully updated to latest version\n")
 	fmt.Printf("  Binary location: %s\n", binPath)
 	return nil
+}
+
+// warnGoInstallIsUnverified tells the user that the update about to run is not
+// the signature-verified one, and why.
+//
+// Only this branch prints it. The download branch reaches verifyRelease, which
+// refuses to install anything whose checksums.txt is not signed by a key this
+// binary trusts; delegating to 'go install' reaches none of that code, so the
+// only integrity check left is whatever the Go toolchain applies to the module -
+// the checksum database, which GOSUMDB=off disables outright and which
+// GONOSUMDB or GOPRIVATE disable for module paths they match.
+//
+// It warns rather than refuses: 'go install' is a legitimate way to have
+// installed lnpm, and refusing would leave those users with no update path at
+// all. Nothing here changes the exit code - the install proceeds exactly as it
+// did before this warning existed.
+func warnGoInstallIsUnverified() {
+	fmt.Printf("%s This update is not signature-verified.\n", ui.IconWarn())
+	fmt.Printf("  lnpm was installed with 'go install', so the update is delegated to 'go install' too.\n")
+	fmt.Printf("  That builds lnpm from the Go module proxy rather than from the signed release archive,\n")
+	fmt.Printf("  so its integrity rests on the Go module checksum database and not on lnpm's release signature.\n")
+	fmt.Printf("  For a signature-verified update, install lnpm from a release archive instead.\n")
 }
 
 // installLatestViaBinary downloads and replaces the binary directly

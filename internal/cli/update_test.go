@@ -804,6 +804,65 @@ func TestWasInstalledViaGoFoldsCaseOnlyOnWindows(t *testing.T) {
 	}
 }
 
+// unverifiedUpdateWarning names the phrases the go-install path's warning has
+// to carry: that this update is not signature-verified, which mechanism was
+// used instead, and where the binary comes from. They are asserted as separate
+// substrings rather than as one whole line so the wording can be reflowed
+// without the test being about the line breaks.
+var unverifiedUpdateWarning = []string{"not signature-verified", "go install", "module proxy"}
+
+// The go-install branch of 'lnpm update' reaches no verification code at all:
+// it shells out to 'go install', which builds from the module proxy rather than
+// from the signed release asset the download branch checks. #475 settled that it
+// warns and still proceeds, so this warning is the only thing that tells a user
+// which of the two trust models their update got.
+//
+// PATH is emptied so that no 'go' can be found and nothing is really installed
+// by the test. That makes the install fail, which is why the error is asserted
+// too: the warning has to be printed before 'go install' is attempted, not after
+// it has succeeded.
+func TestInstallLatestViaGoWarnsThatItIsNotSignatureVerified(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	out := captureStdout(t, func() {
+		if err := installLatestViaGo(); err == nil {
+			t.Error("installLatestViaGo() = nil error with no 'go' on PATH, want the install to fail")
+		}
+	})
+
+	for _, want := range unverifiedUpdateWarning {
+		if !strings.Contains(out, want) {
+			t.Errorf("installLatestViaGo() printed %q, which does not mention %q", out, want)
+		}
+	}
+}
+
+// The download branch does verify the signature, so it must not carry the
+// warning that says nothing was verified.
+//
+// This assertion passes both before and after the warning was added - it is a
+// control on where the warning is printed, not on whether it exists. Measured:
+// hoisting the warning into downloadAndInstall turns it red, so it is not
+// vacuous. Hoisting it into RunUpdate does not, because this test calls
+// downloadAndInstall directly and never reaches RunUpdate - so the control
+// covers the call site below it and nothing above.
+func TestDownloadAndInstallDoesNotWarnThatItIsUnverified(t *testing.T) {
+	const version = "1.2.3"
+	filename, archive := releaseFixture(t, version, "new-binary")
+	startReleaseArchiveServer(t, filename, archive, archiveChecksums(filename, archive))
+	_, dst := newUpdateTarget(t)
+
+	out := captureStdout(t, func() {
+		if err := downloadAndInstall(version, dst); err != nil {
+			t.Errorf("downloadAndInstall returned error: %v", err)
+		}
+	})
+
+	if strings.Contains(out, unverifiedUpdateWarning[0]) {
+		t.Errorf("downloadAndInstall printed %q, which claims the verified path is %q", out, unverifiedUpdateWarning[0])
+	}
+}
+
 // writeInstallFixture lays down a source file in its own directory and a
 // destination file in another, returning both paths.
 func writeInstallFixture(t *testing.T, srcContent, dstContent string) (string, string) {
