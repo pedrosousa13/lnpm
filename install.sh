@@ -135,7 +135,11 @@ install() {
 
     # Create temp directory
     TMP_DIR=$(mktemp -d)
-    trap "rm -rf $TMP_DIR" EXIT
+    # Single-quoted so the trap body is expanded when it fires rather than
+    # substituted into the trap string now. mktemp -d honours TMPDIR, so with
+    # double quotes an untrusted TMPDIR reaches a command line at exit: a space
+    # word-splits and the removal misses, and a command substitution runs.
+    trap 'rm -rf "$TMP_DIR"' EXIT
 
     info "Downloading from $URL..."
 
