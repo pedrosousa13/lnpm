@@ -521,7 +521,7 @@ func TestMaxAPIResponseBytesDefault(t *testing.T) {
 	// The tests below lower the cap, so the shipped value is only pinned here.
 	// A real release payload is a few KiB.
 	if want := int64(1 << 20); maxAPIResponseBytes != want {
-		t.Errorf("maxAPIResponseBytes = %d, want %d", maxAPIResponseBytes, want)
+		t.Errorf("maxAPIResponseBytes = %d, want %d (1 MiB)", maxAPIResponseBytes, want)
 	}
 }
 
