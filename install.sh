@@ -9,6 +9,28 @@ REPO="pedrosousa13/lnpm"
 BINARY="lnpm"
 INSTALL_DIR="${LNPM_INSTALL_DIR:-$HOME/.local/bin}"
 
+# install() cd's into the temp directory to extract, and only creates the
+# install directory afterwards, so a relative INSTALL_DIR would resolve inside
+# the directory the EXIT trap erases. Resolve it against the caller's working
+# directory here, at the top of the script, before anything cd's. install.ps1
+# never cd's, so a relative LNPM_INSTALL_DIR already lands in the caller's
+# directory there; this keeps the two installers in agreement.
+# Done lexically rather than with realpath or `cd ... && pwd`: the directory
+# does not exist yet at this point, and realpath is not on every POSIX system.
+case "$INSTALL_DIR" in
+    /*) ;;
+    *)
+        # Trim the "./bin" and "bin/" spellings before prefixing, so the
+        # PATH check at the end of install() - an exact match of INSTALL_DIR
+        # against a PATH entry - is not defeated by a "<cwd>/./bin" or
+        # "<cwd>/bin/" that names the same directory as the PATH entry
+        # "<cwd>/bin" but does not equal it.
+        INSTALL_DIR="${INSTALL_DIR#./}"
+        INSTALL_DIR="${INSTALL_DIR%/}"
+        INSTALL_DIR="$(pwd)/$INSTALL_DIR"
+        ;;
+esac
+
 # Colors (if terminal supports it)
 if [ -t 1 ]; then
     RED='\033[0;31m'
@@ -169,15 +191,36 @@ install() {
     # Create install directory
     mkdir -p "$INSTALL_DIR"
 
-    # Install binary
+    # Install binary. INSTALLED_BIN carries the name that was actually moved, so
+    # the check and the message below both name the real file rather than
+    # assuming the unsuffixed one.
     if [ "$OS" = "windows" ]; then
+        INSTALLED_BIN="$INSTALL_DIR/${BINARY}.exe"
         mv "${BINARY}.exe" "$INSTALL_DIR/" || error "Installation failed"
     else
+        INSTALLED_BIN="$INSTALL_DIR/$BINARY"
         mv "$BINARY" "$INSTALL_DIR/" || error "Installation failed"
-        chmod +x "$INSTALL_DIR/$BINARY"
+        chmod +x "$INSTALLED_BIN"
     fi
 
-    success "Installed lnpm v$VERSION to $INSTALL_DIR/$BINARY"
+    # Verify before claiming anything. INSTALL_DIR is absolute by the time we
+    # get here, so it no longer resolves inside TMP_DIR and this tests a file
+    # that outlives the EXIT trap. A missing binary is a failed install, not a
+    # silent exit 0: a provisioning script reads exit 0 as installed.
+    #
+    # The two branches assert different things on purpose. On Unix this script
+    # sets the executable bit itself, so it can require it back. On Windows it
+    # never runs chmod, so requiring -x would be asserting something about how
+    # the host reports permissions on a .exe - untested here, and a wrong guess
+    # would fail an install that actually worked. Presence is what this script
+    # put there, so presence is what it checks.
+    if [ "$OS" = "windows" ]; then
+        [ -s "$INSTALLED_BIN" ] || error "Installation failed: $INSTALLED_BIN is missing or empty"
+    else
+        [ -x "$INSTALLED_BIN" ] || error "Installation failed: $INSTALLED_BIN is missing or not executable"
+    fi
+
+    success "Installed lnpm v$VERSION to $INSTALLED_BIN"
 
     # Check if install dir is in PATH
     case ":$PATH:" in
@@ -192,13 +235,10 @@ install() {
             ;;
     esac
 
-    # Verify installation
-    if [ -x "$INSTALL_DIR/$BINARY" ]; then
-        echo ""
-        success "Installation complete!"
-        echo ""
-        echo "Run 'lnpm --help' to get started"
-    fi
+    echo ""
+    success "Installation complete!"
+    echo ""
+    echo "Run 'lnpm --help' to get started"
 }
 
 # Main
