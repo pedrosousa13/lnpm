@@ -253,18 +253,26 @@ checksum file, not that the checksum file came from the maintainer.
 
 **Verifying by hand.** Substitute the tag and archive you are checking for the
 placeholders. This works only from the first signed release onward — against an
-earlier tag both the `.sig` asset and the key file return 404.
+earlier tag both the `.sig` asset and the key file return 404. What you see then
+is the download step stopping and naming the asset it could not fetch, such as
+`cannot download:
+https://github.com/pedrosousa13/lnpm/releases/download/v2.4.0/checksums.txt.sig`.
+That is a missing file, not a bad signature: the recipe never reaches `openssl`,
+so a signature failure keeps its one meaning.
 
 ```sh
 TAG=v0.0.0                              # the release you are verifying
 FILE=lnpm_0.0.0_linux_amd64.tar.gz      # the archive you downloaded
 BASE=https://github.com/pedrosousa13/lnpm/releases/download/$TAG
 
-curl -sSLO "$BASE/checksums.txt"
-curl -sSLO "$BASE/checksums.txt.sig"
-curl -sSLO "$BASE/$FILE"
-curl -sSLO "https://raw.githubusercontent.com/pedrosousa13/lnpm/$TAG/internal/releasekeys/keys/release.pem"
+# -f makes curl fail on a non-2xx response instead of saving the error page
+# under the asset's name — without it a 404 page becomes your checksums.txt.
+fetch() { curl -fsSLO "$1" || { echo "cannot download: $1" >&2; return 1; }; }
 
+fetch "$BASE/checksums.txt" &&
+fetch "$BASE/checksums.txt.sig" &&
+fetch "$BASE/$FILE" &&
+fetch "https://raw.githubusercontent.com/pedrosousa13/lnpm/$TAG/internal/releasekeys/keys/release.pem" &&
 openssl dgst -sha256 -verify release.pem -signature checksums.txt.sig checksums.txt
 
 # sha256sum is GNU coreutils; macOS ships shasum instead. Run whichever you have
