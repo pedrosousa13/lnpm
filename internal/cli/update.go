@@ -31,6 +31,22 @@ import (
 // hung connection can't block the updater indefinitely.
 var updateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 
+// maxReleaseMetadataBytes and maxReleaseArchiveBytes bound how much of a
+// release asset the updater will read. Both reads happen before verifyRelease
+// has established anything, so the only thing standing between a hostile server
+// and the updater's memory or disk is these caps and the client timeout above.
+//
+// Exceeding either is an error, never a truncation: a truncated checksums.txt
+// or archive handed on to verification would fail as a signature or checksum
+// problem, which is a different diagnosis from the one the user needs.
+//
+// They are vars so tests can lower them, rather than stream 256 MiB to exercise
+// the over-limit path.
+var (
+	maxReleaseMetadataBytes int64 = 1 << 20   // checksums.txt and its signature
+	maxReleaseArchiveBytes  int64 = 256 << 20 // the release archive
+)
+
 // releaseBaseURL is the root under which release assets are published. It is a
 // var so tests can point it at a local httptest server instead of GitHub.
 var releaseBaseURL = "https://github.com/pedrosousa13/lnpm/releases/download"
@@ -457,7 +473,8 @@ func downloadBinary(version, url, filename string) (binaryPath, tmpDir string, e
 	return binaryPath, tmpDir, nil
 }
 
-// downloadToFile downloads url into dst using the timeout-bounded client.
+// downloadToFile downloads url into dst using the timeout-bounded client,
+// refusing a body larger than maxReleaseArchiveBytes.
 func downloadToFile(url, dst string) error {
 	resp, err := updateHTTPClient.Get(url)
 	if err != nil {
@@ -473,9 +490,16 @@ func downloadToFile(url, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	// Copy one byte past the cap, so a body that is exactly at it still lands
+	// whole and anything larger is detectable rather than silently cut short.
+	n, err := io.Copy(file, io.LimitReader(resp.Body, maxReleaseArchiveBytes+1))
+	if err != nil {
 		_ = file.Close()
 		return err
+	}
+	if n > maxReleaseArchiveBytes {
+		_ = file.Close()
+		return fmt.Errorf("release archive exceeds the %d-byte download limit", maxReleaseArchiveBytes)
 	}
 	return file.Close()
 }
@@ -546,8 +570,11 @@ func fetchSignedChecksums(version string) ([]byte, error) {
 }
 
 // signatureUnavailableError explains a checksums.txt.sig that could not be
-// read, keeping "the release published none" apart from "the fetch failed":
-// the first means do not install, the second means try again.
+// read, keeping three cases apart: "the release published none", "the body was
+// too large to read" and "the fetch failed". Only the last is worth retrying,
+// so only the last says so - a response over the read cap is the same size on
+// every attempt, and telling the user to check their connection would send them
+// after a problem they do not have.
 //
 // A missing signature is refused rather than tolerated. The rule for whether a
 // release is signed is what it publishes: a release is signed if it publishes
@@ -565,6 +592,11 @@ func signatureUnavailableError(version string, err error) error {
 		return fmt.Errorf("release v%s publishes no checksums.txt.sig, so it appears unsigned: it will not be installed. "+
 			"Do not install it by hand either - report it at https://github.com/pedrosousa13/lnpm/issues",
 			strings.TrimPrefix(version, "v"))
+	}
+	var tooLarge *releaseAssetTooLargeError
+	if errors.As(err, &tooLarge) {
+		return fmt.Errorf("the checksums signature is too large to be one, so the release cannot be verified and "+
+			"will not be installed - report it at https://github.com/pedrosousa13/lnpm/issues: %w", err)
 	}
 	return fmt.Errorf("failed to fetch the checksums signature, so the release cannot be verified and "+
 		"will not be installed - check your connection and try again: %w", err)
@@ -589,7 +621,18 @@ func verifySignature(keys []*ecdsa.PublicKey, body, sig []byte) bool {
 // distinct from one that could not be fetched.
 var errAssetNotFound = errors.New("not published on this release")
 
-// fetchReleaseAsset reads a small release asset fully into memory.
+// releaseAssetTooLargeError reports a release asset refused for exceeding the
+// metadata read cap. It is a distinct type so a caller can tell it apart from a
+// network failure: retrying a body that is over the cap fetches the same
+// over-cap body again.
+type releaseAssetTooLargeError struct{ limit int64 }
+
+func (e *releaseAssetTooLargeError) Error() string {
+	return fmt.Sprintf("release metadata exceeds the %d-byte read limit", e.limit)
+}
+
+// fetchReleaseAsset reads a small release asset fully into memory, refusing a
+// body larger than maxReleaseMetadataBytes.
 func fetchReleaseAsset(url string) ([]byte, error) {
 	resp, err := updateHTTPClient.Get(url)
 	if err != nil {
@@ -603,7 +646,18 @@ func fetchReleaseAsset(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	// Read one byte past the cap, so a body that is exactly at it still comes
+	// back whole and anything larger is detectable rather than silently cut
+	// short - a truncated checksums.txt would fail signature verification
+	// instead of reporting its real problem.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseMetadataBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxReleaseMetadataBytes {
+		return nil, &releaseAssetTooLargeError{limit: maxReleaseMetadataBytes}
+	}
+	return body, nil
 }
 
 // sha256File returns the hex-encoded SHA-256 of a file.
