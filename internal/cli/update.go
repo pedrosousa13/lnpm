@@ -28,8 +28,60 @@ import (
 )
 
 // updateHTTPClient is used for downloading release assets, with a timeout so a
-// hung connection can't block the updater indefinitely.
-var updateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
+// hung connection can't block the updater indefinitely and a redirect policy so
+// a redirect can't take the download off https. Both fetch paths -
+// fetchReleaseAsset and downloadToFile - share this one client, so neither can
+// be moved off the policy on its own.
+var updateHTTPClient = &http.Client{
+	Timeout:       2 * time.Minute,
+	CheckRedirect: checkUpdateRedirect,
+}
+
+// maxUpdateRedirects bounds the redirect chain. net/http passes CheckRedirect
+// every request already made, the original included, so this permits nine
+// redirects to be followed - the same arithmetic as net/http's own
+// defaultCheckRedirect, which this replaces and whose bound it keeps. Read from
+// client.go in Go 1.26.7 rather than inferred: reqs is appended to after the
+// check, and defaultCheckRedirect refuses at len(via) >= 10.
+//
+// Confirmed by running it on 2026-08-28 against an endlessly redirecting test
+// server: the server answered 10 requests and the refusal carried len(via) 10,
+// so 9 redirects were followed. The message below therefore counts requests,
+// not redirects - net/http's own says "stopped after 10 redirects" for this
+// same len(via), which is one more redirect than it followed.
+const maxUpdateRedirects = 10
+
+// checkUpdateRedirect refuses a redirect whose destination is not https, and
+// bounds the chain.
+//
+// Cross-host hops stay allowed: a release download legitimately redirects to a
+// separate asset host, so refusing those would break every real update.
+//
+// This is defence in depth, not an integrity guarantee. verifyRelease runs
+// before anything is extracted and refuses an archive whose checksums.txt is
+// not signed by an embedded trusted key, so a redirect cannot cause a bad
+// install on its own. What it does change is who can feed bytes to the reads
+// that happen before that check: without it, anyone on the network path can
+// answer them, rather than only whoever serves the release assets.
+//
+// releaseBaseURL is https, so in practice a refusal here is always a downgrade
+// off it. The message does not say so, because the rule is the destination's
+// scheme alone and does not consult the hop it came from.
+//
+// Neither message repeats the destination URL: net/http wraps whatever this
+// returns in a *url.Error whose URL is the refused Location, so the user is
+// shown 'Get "http://host/path": refused this redirect: ...'. Measured on
+// 2026-08-28 by logging the error TestUpdateClientRefusesARedirectThatDowngradesToHTTP
+// receives, not read from the docs.
+func checkUpdateRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refused this redirect: an update download must stay on https, not %s", req.URL.Scheme)
+	}
+	if len(via) >= maxUpdateRedirects {
+		return fmt.Errorf("stopped after %d requests while following redirects for a release asset", len(via))
+	}
+	return nil
+}
 
 // maxReleaseMetadataBytes and maxReleaseArchiveBytes bound how much of a
 // release asset the updater will read. Both reads happen before verifyRelease
