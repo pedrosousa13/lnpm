@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.1.0](https://github.com/pedrosousa13/lnpm/compare/v3.0.0...v3.1.0) (2026-08-28)
+
+
+### Features
+
+* **release:** sign release artifacts with a maintainer-held key ([#467](https://github.com/pedrosousa13/lnpm/issues/467)) ([2446032](https://github.com/pedrosousa13/lnpm/commit/2446032ca1787f3b73b1c741c4982935c8252e9b))
+
+
+### Bug Fixes
+
+* **install:** resolve a relative install directory before anything cd's ([#486](https://github.com/pedrosousa13/lnpm/issues/486)) ([f963c64](https://github.com/pedrosousa13/lnpm/commit/f963c640b32986565571cba58664f9b347d72747)), closes [#477](https://github.com/pedrosousa13/lnpm/issues/477)
+* **install:** stop the cleanup trap re-evaluating the temp directory path ([#485](https://github.com/pedrosousa13/lnpm/issues/485)) ([ab14514](https://github.com/pedrosousa13/lnpm/commit/ab1451423d1ed897db293577e4869bf84b360d8e)), closes [#476](https://github.com/pedrosousa13/lnpm/issues/476)
+* **update:** bound release asset reads before verification ([#487](https://github.com/pedrosousa13/lnpm/issues/487)) ([d3bcde0](https://github.com/pedrosousa13/lnpm/commit/d3bcde0f7b6b94fc3ae776b7b694e938957a5d68)), closes [#478](https://github.com/pedrosousa13/lnpm/issues/478)
+* **update:** cap the release API response before decoding it ([#495](https://github.com/pedrosousa13/lnpm/issues/495)) ([1bacca6](https://github.com/pedrosousa13/lnpm/commit/1bacca63d75ce428ab1db6cdb6a4e910fc3223d8)), closes [#488](https://github.com/pedrosousa13/lnpm/issues/488)
+* **update:** refuse a release redirect that leaves https ([#489](https://github.com/pedrosousa13/lnpm/issues/489)) ([2e13b03](https://github.com/pedrosousa13/lnpm/commit/2e13b033cd6a2140e19fd46942e334222949113f)), closes [#479](https://github.com/pedrosousa13/lnpm/issues/479)
+* **update:** warn that the go-install update path is not signature-verified ([#484](https://github.com/pedrosousa13/lnpm/issues/484)) ([7027958](https://github.com/pedrosousa13/lnpm/commit/7027958104eb9e9623fdbb5be7fa9ea079911a20)), closes [#475](https://github.com/pedrosousa13/lnpm/issues/475)
+
 ## [3.0.0](https://github.com/pedrosousa13/lnpm/compare/v2.4.0...v3.0.0) (2026-08-27)
 
 
