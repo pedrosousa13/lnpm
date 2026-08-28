@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +29,41 @@ const (
 // githubAPIBaseURL is the GitHub API root. It is a var so tests can point it at
 // a local httptest server instead of the real API.
 var githubAPIBaseURL = "https://api.github.com"
+
+// maxAPIResponseBytes bounds how much of the releases API response the check
+// will read. A real payload is a few KiB, so 1 MiB is generous.
+//
+// The check is bounded in time already - every production caller passes a
+// context with a deadline (requestTimeout or freshRequestTimeout) and that
+// deadline covers the body read - but it was not bounded in bytes:
+// json.Decoder.Decode buffers the whole JSON value, so memory grew with
+// whatever an attacker could push inside the window. Measured during triage on
+// #488, on 2026-08-28 on Linux over loopback, a flood of 1 MiB chunks peaked at
+// 1793 MiB of heap in five seconds.
+//
+// Tests below pass context.Background() deliberately, so a refusal there can
+// only be on size.
+//
+// Exceeding the cap is an error, never a truncation: a body cut short here
+// would be reported as a JSON syntax problem, which is a different diagnosis
+// from the one the user needs.
+//
+// internal/cli/update.go has its own maxReleaseMetadataBytes for release assets.
+// The two are deliberately separate - internal/cli imports this package, so
+// sharing one would be an import cycle, and they bound different resources.
+//
+// It is a var so tests can lower it rather than stream a megabyte.
+var maxAPIResponseBytes int64 = 1 << 20
+
+// apiResponseTooLargeError reports a releases API response refused for
+// exceeding maxAPIResponseBytes. It is a distinct type so a caller can tell it
+// apart from a network failure: retrying an over-cap body fetches the same
+// over-cap body again.
+type apiResponseTooLargeError struct{ limit int64 }
+
+func (e *apiResponseTooLargeError) Error() string {
+	return fmt.Sprintf("release API response exceeds the %d-byte read limit", e.limit)
+}
 
 type cacheFile struct {
 	LastCheck     time.Time `json:"last_check"`
@@ -190,8 +226,21 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
 
+	// Read one byte past the cap, so a body exactly at it still comes back whole
+	// and anything larger is detectable rather than silently cut short. Reading
+	// and then unmarshalling, rather than decoding through the LimitReader,
+	// keeps the diagnosis: a decoder that runs out of body reports "unexpected
+	// EOF" instead of naming the limit.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(body)) > maxAPIResponseBytes {
+		return "", &apiResponseTooLargeError{limit: maxAPIResponseBytes}
+	}
+
 	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.Unmarshal(body, &release); err != nil {
 		return "", err
 	}
 
