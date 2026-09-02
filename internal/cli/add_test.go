@@ -713,3 +713,62 @@ func TestResolveAddSpecOnAnUnknownNameResolvesNothing(t *testing.T) {
 		t.Errorf("resolveAddSpec on an unknown name resolved %v", pkg)
 	}
 }
+
+// TestPackageNotInStoreErrorNamesTheBuildGCKept covers #450. gc collects the
+// version 'latest' names once nothing links it, so a project pinned to an older
+// build can leave the store holding a package that a lookup by name no longer
+// finds. The ordinary message tells that user to publish, which is false twice
+// over: they did publish, and the build they are pinned to is still there.
+//
+// The state is reached the way gc reaches it, through DeletePackage on the
+// record the name index points at, rather than by writing the index by hand. A
+// seeded index and the real one can disagree; the bug lives in what gc leaves
+// behind.
+func TestPackageNotInStoreErrorNamesTheBuildGCKept(t *testing.T) {
+	_, database := newGCStore(t)
+	seedVersion(t, database, "demo", "1.0.0", "aaa111")
+	current := seedVersion(t, database, "demo", "1.1.0", "bbb222")
+
+	if err := database.DeletePackage(current.ID); err != nil {
+		t.Fatalf("collect demo@1.1.0: %v", err)
+	}
+
+	err := packageNotInStoreError(database, "demo")
+
+	if err == nil {
+		t.Fatalf("packageNotInStoreError = nil, want an error")
+	}
+	if strings.Contains(err.Error(), "Did you run") {
+		t.Errorf("packageNotInStoreError = %v, want no accusation of not publishing", err)
+	}
+	if !strings.Contains(err.Error(), "lnpm gc") {
+		t.Errorf("packageNotInStoreError = %v, want it to say gc collected the build", err)
+	}
+	if !strings.Contains(err.Error(), "lnpm add demo@1.0.0") {
+		t.Errorf("packageNotInStoreError = %v, want the surviving build spelled out as a command", err)
+	}
+	if !strings.Contains(err.Error(), "aaa111") {
+		t.Errorf("packageNotInStoreError = %v, want the retained build's hash", err)
+	}
+}
+
+// TestPackageNotInStoreErrorKeepsTheOrdinaryAdviceForAnAbsentName is what stops
+// the #450 wording becoming the message a typo gets. Retained versions are the
+// whole separation, so a store that holds other packages but nothing under this
+// name still gets the publish question.
+func TestPackageNotInStoreErrorKeepsTheOrdinaryAdviceForAnAbsentName(t *testing.T) {
+	_, database := newGCStore(t)
+	seedVersion(t, database, "demo", "1.0.0", "aaa111")
+
+	err := packageNotInStoreError(database, "dem0")
+
+	if err == nil {
+		t.Fatalf("packageNotInStoreError = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "Did you run") {
+		t.Errorf("packageNotInStoreError = %v, want the ordinary publish question", err)
+	}
+	if strings.Contains(err.Error(), "lnpm gc") {
+		t.Errorf("packageNotInStoreError = %v, want no gc hint for a name the store never held", err)
+	}
+}
