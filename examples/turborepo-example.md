@@ -68,7 +68,7 @@ No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the direct
 ```json
 {
   "$schema": "https://turbo.build/schema.json",
-  "pipeline": {
+  "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]

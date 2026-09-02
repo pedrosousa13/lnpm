@@ -150,7 +150,7 @@ lnpm push
 ```json
 {
   "$schema": "https://turbo.build/schema.json",
-  "pipeline": {
+  "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**"]
@@ -166,6 +166,8 @@ lnpm push
   }
 }
 ```
+
+`tasks` is the Turborepo 2.x name for this key. It was `pipeline` in 1.x, and 2.x refuses to run against the old name rather than falling back. `npx @turbo/codemod migrate` renames it for you.
 
 Add the matching script to **the package's own `package.json`** — `packages/ui/package.json`, not the root one. Turborepo runs each task with that package's directory as the working directory, which is what makes `lnpm push` act on `@my/ui`:
 
