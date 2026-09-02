@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/pedrosousa13/lnpm/compare/v4.0.0...v4.1.0) (2026-09-02)
+
+
+### Features
+
+* **release:** publish a Homebrew cask and a Scoop manifest ([#509](https://github.com/pedrosousa13/lnpm/issues/509)) ([b242f0b](https://github.com/pedrosousa13/lnpm/commit/b242f0b17788ab672d44fbd7f8e2f12da8193190))
+
 ## [4.0.0](https://github.com/pedrosousa13/lnpm/compare/v3.1.1...v4.0.0) (2026-09-02)
 
 
