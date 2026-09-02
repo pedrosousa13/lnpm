@@ -880,9 +880,31 @@ literals outside the edited entry are left exactly as the author wrote them.
 
 ### Cleanup Before Publish
 
-Before publishing to npm registry, run:
+An `npm publish` from a project lnpm has touched would ship the
+`file:.lnpm/{package}` specifiers to the registry. Undo them first:
+
 ```bash
-lnpm retreat  # or: lnpm remove --all
+lnpm retreat --force   # or: lnpm remove --all
 ```
 
-This restores original version specifiers in `package.json`.
+`--force` is required. Bare `lnpm retreat` is a preview. It prints the
+specifiers it would restore, changes nothing and exits zero, which is easy to
+mistake for a completed cleanup.
+
+`lnpm check` is the guard against making that mistake. It fails when a
+`package.json` still carries an lnpm reference, and it names the command that
+clears it:
+
+```
+✗ Found 2 lnpm reference(s) in package.json:
+  dependencies.my-package -> file:.lnpm/my-package
+  dependencies.other-pkg -> file:.lnpm/other-pkg
+
+  💡 Run 'lnpm retreat --force' to restore original dependencies before publishing
+Error: 2 lnpm reference(s) found in package.json
+```
+
+It exits non-zero on a finding, so `lnpm check && npm publish` is safe to
+script. It also faults the `lnpm.lock.retreat` snapshot a retreat leaves in the
+project root, which carries an absolute path per package and is not otherwise
+kept out of a tarball.
