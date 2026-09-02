@@ -1,0 +1,93 @@
+name: Bug report
+description: Something lnpm does is wrong.
+labels: ["Bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities do not belong here. Use GitHub's private
+        vulnerability reporting instead, as described in
+        [SECURITY.md](https://github.com/pedrosousa13/lnpm/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+      placeholder: |
+        Ran `lnpm push` in ~/apps/mylib. Expected the consumer at ~/apps/myapp
+        to pick up the new build. node_modules/mylib still held the old files.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The shortest sequence that shows the problem, starting from an empty
+        directory where you can manage it.
+      placeholder: |
+        1. mkdir lib && cd lib && npm init -y
+        2. lnpm publish
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: lnpm version
+      description: Output of `lnpm --version`.
+      placeholder: lnpm version 4.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+    validations:
+      required: true
+
+  - type: dropdown
+    id: package-manager
+    attributes:
+      label: Package manager
+      description: The one the affected project uses.
+      options:
+        - npm
+        - pnpm
+        - yarn
+        - bun
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: lnpm doctor
+      description: >
+        Output of `lnpm doctor`. This command exists to diagnose exactly this,
+        and its output answers most of what a triager would otherwise ask.
+        Add `lnpm doctor --verify-content` if the report mentions store
+        integrity.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >
+        Debug output (`lnpm --debug <command>`, or `LNPM_DEBUG=1`), a relevant
+        `package.json`, the monorepo tool in use, a non-default store location.
+    validations:
+      required: false

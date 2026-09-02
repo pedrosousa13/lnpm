@@ -157,6 +157,7 @@ lnpm push
 - **[Changelog](CHANGELOG.md)** — Version history and updates
 - **[Releasing](docs/releasing.md)** — How a release is cut, and the two steps that need a person
 - **[Roadmap](ROADMAP.md)** — What lnpm does today, and where planned work is tracked
+- **[Contributing](CONTRIBUTING.md)** — Dev setup, the three test tiers, and what CI enforces
 
 ## Commands
 
@@ -711,56 +712,9 @@ lnpm automatically detects the best method and falls back gracefully with helpfu
 
 ## Contributing
 
-Contributions are welcome!
-
-### Prerequisites
-
-- Go 1.26+
-- Node.js (for integration tests that invoke npm)
-
-### Setup & Testing
-
-**Linux / macOS:**
-
-```bash
-git clone https://github.com/pedrosousa13/lnpm.git
-cd lnpm
-make deps
-make build
-make test              # all tests
-make test-coverage     # with coverage report
-make lint              # golangci-lint (falls back to go vet)
-```
-
-**Windows (PowerShell):**
-
-```powershell
-git clone https://github.com/pedrosousa13/lnpm.git
-cd lnpm
-go mod download
-go build ./cmd/lnpm
-go test -v ./...
-go vet ./...
-```
-
-### Cross-compile check
-
-Verify your changes compile for all platforms:
-
-```bash
-GOOS=linux go build ./...
-GOOS=darwin go build ./...
-GOOS=windows go build ./...
-```
-
-### Running specific test suites
-
-```bash
-go test -v -race ./internal/...   # unit tests
-go test -v -race ./tests/...      # integration tests
-```
-
-> **Windows note:** Some symlink tests are skipped on Windows since lnpm uses NTFS junctions (absolute paths) instead of relative symlinks. This is expected.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the toolchain, the Makefile targets, the three test
+tiers and what each one proves, the conventional-commit title rule and why a release depends
+on it, and when a change needs an ADR.
 
 ## License
 

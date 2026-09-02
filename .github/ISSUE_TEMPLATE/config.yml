@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/pedrosousa13/lnpm/security/advisories/new
+    about: >
+      Report privately through GitHub's advisory form, not the issue tracker.
+      SECURITY.md describes what to include and what happens next.
+  - name: Security policy
+    url: https://github.com/pedrosousa13/lnpm/blob/main/SECURITY.md
+    about: Supported versions, the threat model, and how a report is handled.
+  - name: Contributing guide
+    url: https://github.com/pedrosousa13/lnpm/blob/main/CONTRIBUTING.md
+    about: Development setup, the test tiers, and what CI enforces.
