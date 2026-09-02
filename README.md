@@ -1,14 +1,74 @@
 # lnpm
 
-> Fast, reliable local npm package development tool — a better alternative to yalc.
+> Work on a library and test it inside a real app, before either one is published.
 
 [![CI](https://github.com/pedrosousa13/lnpm/actions/workflows/ci.yaml/badge.svg)](https://github.com/pedrosousa13/lnpm/actions/workflows/ci.yaml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/pedrosousa13/lnpm)](https://goreportcard.com/report/github.com/pedrosousa13/lnpm)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+lnpm is one Go binary for the loop where you edit a library and check it against
+an app that depends on it. `lnpm publish` files a copy of the package in a store
+on your machine. `lnpm add` puts that copy into the consuming project as a real
+directory of files rather than a symlink into your working tree, so the app
+resolves it much the way it will resolve the package off npm. `lnpm push`
+updates every project you have linked. It works with npm, yarn, pnpm and bun, on
+Linux, macOS and Windows.
+
+If you use yalc today, this is the same workflow with a store you can list, tag
+and roll back through, and it is faster because there is no Node process in it.
+
+## Benchmarks
+
+Intel N150, 4 cores, Linux. A package of 101 files, 10 iterations per figure.
+Both tools are built and run as subprocesses, so each pays its own process
+startup. yalc 1.0.0-pre.53 on Node v24.18.1.
+
+| operation | lnpm | yalc | speedup |
+|---|---|---|---|
+| `publish` | 181.7ms | 1137.6ms | 6.3x |
+| `add` | 33.9ms | 398.5ms | 11.8x |
+
+That is one run of [`scripts/bench-vs-yalc.sh`](scripts/bench-vs-yalc.sh),
+reproduced with `ITERATIONS=10 ./scripts/bench-vs-yalc.sh`. Three runs on this
+machine gave publish speedups of 5.1x, 6.3x and 7.9x, and add speedups of 11.8x,
+16.6x and 18.4x. The absolute times moved a lot between runs, yalc's most of
+all, so read the ratio and not the milliseconds, then run the script on your own
+hardware.
+
+Much of the gap is process startup. Here `lnpm --version` takes 10ms to 30ms and
+`node -e ''` takes 230ms to 340ms. `tests/bench_test.go` also times yalc, but it
+calls lnpm in-process while spawning yalc as a command, so its ratios come out
+too high. [ARCHITECTURE.md](ARCHITECTURE.md#benchmarks) says which script
+measures what.
+
+## How it differs from yalc
+
+**Earlier builds stay addressable, and a consumer can go back to one.** The
+store keeps a package's previous builds. `lnpm list mylib --versions` prints
+them with their content hashes, and `lnpm add mylib@9f8e7d6c` rolls one project
+back to the build that worked, with no republishing of an old source tree. The
+pin holds until you move it. See [Version history and rollback](#version-history-and-rollback).
+
+**Dist-tags.** `lnpm publish --tag beta` puts a build in the store without
+moving `latest`, and `lnpm add mylib@beta` follows that channel while everyone
+else stays on the stable release. `lnpm tag` moves a tag with no republish.
+
+**Reflink and hard links instead of a copy.** Store to project uses copy-on-write
+cloning where the filesystem offers it (APFS, Btrfs, XFS), a hard link where it
+does not, and a parallel copy otherwise. Linked files arrive read-only, so a
+consumer cannot write through the link into the store.
+
+**The store is collectable.** `lnpm gc` reclaims builds that no link and no tag
+of yours reaches, with `--dry-run` and `--older-than 30d`. `lnpm doctor` checks
+that the store is writable, that the database is intact and that no link is
+orphaned, and `--verify-content` re-hashes every stored file.
+
+**Workspaces are handled on publish.** `lnpm publish --all` publishes every
+package of a workspace, and `workspace:` specifiers are resolved to real ranges
+in the stored `package.json` while yours is left byte for byte as you wrote it.
+
 ## Features
 
-- **Blazing fast** — Reflink/CoW + hard links for instant operations on large packages
 - **Smart linking** — Automatically uses the fastest method: reflink → hardlink → parallel copy (store → project); reflink → parallel copy into the store
 - **Monorepo support** — Publish all workspace packages at once
 - **Cross-platform** — Works on Linux, macOS, and Windows
