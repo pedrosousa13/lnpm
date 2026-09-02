@@ -98,6 +98,25 @@ scoop bucket add pedrosousa13 https://github.com/pedrosousa13/scoop-bucket
 scoop install lnpm
 ```
 
+Upgrade a Homebrew or Scoop install with that package manager, not with
+`lnpm update`:
+
+```
+brew upgrade lnpm      # not `lnpm update`
+scoop update lnpm      # not `lnpm update`
+```
+
+`lnpm update` replaces the binary in place and does not yet know it is running
+under a package manager, so Homebrew and Scoop go on reporting the version they
+installed while the binary on `PATH` is a newer one. The next `brew upgrade`
+then overwrites the self-updated binary and puts you back on the version brew
+recorded. [#508](https://github.com/pedrosousa13/lnpm/issues/508) tracks
+teaching `lnpm update` to refuse instead.
+
+On macOS the cask clears the quarantine attribute on install, because the
+binaries are not signed or notarized and the first run would otherwise report
+lnpm as damaged. That gives up the Gatekeeper check on this binary.
+
 ### Quick Install (Linux/macOS)
 
 ```bash
