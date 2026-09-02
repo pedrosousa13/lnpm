@@ -31,6 +31,7 @@ Six files, and the count matters later: `lnpm push` from the root packs all of t
   "name": "my-turborepo",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "npm@11.6.2",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -45,6 +46,8 @@ Six files, and the count matters later: `lnpm push` from the root packs all of t
   }
 }
 ```
+
+Two fields carry weight here. `workspaces` is how `lnpm publish --all` finds your packages. `packageManager` is how Turborepo 2.x identifies the package manager. Leave it out, with no `devEngines.packageManager` block either, and every `turbo` command stops at `Could not resolve workspace`. Set it to the version you actually use.
 
 No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the directory it runs from, so from the root it would pack `my-turborepo` instead of `@my/ui`. Push from `packages/ui`, or via the `lnpm:push` script below, which Turborepo runs with that package's directory as its cwd.
 
@@ -68,7 +71,7 @@ No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the direct
 ```json
 {
   "$schema": "https://turbo.build/schema.json",
-  "pipeline": {
+  "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
@@ -121,7 +124,7 @@ Run Turborepo's own watch mode to rebuild on change, then push when you're ready
 ```bash
 # Terminal 1: watch and rebuild on changes
 cd ~/projects/my-turborepo
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 
 # Terminal 2: push built output to linked projects
 cd ~/projects/my-turborepo/packages/ui
@@ -164,10 +167,16 @@ turbo run build --filter=@my/ui...
 
 ```bash
 # Terminal 1: rebuild on change (from the workspace root)
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 
 # Terminal 2: push built output when ready (from the package)
 cd packages/ui && lnpm push
+```
+
+Or run the `lnpm:push` task under watch and get both in one command:
+
+```bash
+turbo watch lnpm:push --filter=@my/ui
 ```
 
 **3. Multiple packages:**
@@ -209,7 +218,7 @@ turbo run build --filter=@my/ui
 
 Then run it (optionally in watch) before pushing:
 ```bash
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 ```
 
 **Issue: Changes not picked up after a push**

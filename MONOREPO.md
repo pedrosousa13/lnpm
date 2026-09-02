@@ -43,7 +43,7 @@ lnpm integrates seamlessly with monorepo tools by:
 lnpm is a **system-wide binary** that can link packages from any workspace to any project (inside or outside the monorepo).
 
 ```
-lnpm ← one binary on your PATH (e.g. /usr/local/bin/lnpm), never in node_modules
+lnpm ← one binary on your PATH (e.g. ~/.local/bin/lnpm), never in node_modules
 
 my-monorepo/                    external-app/
 ├── package.json                ├── package.json
@@ -150,7 +150,7 @@ lnpm push
 ```json
 {
   "$schema": "https://turbo.build/schema.json",
-  "pipeline": {
+  "tasks": {
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**"]
@@ -166,6 +166,8 @@ lnpm push
   }
 }
 ```
+
+`tasks` is the Turborepo 2.x name for this key. It was `pipeline` in 1.x, and 2.x refuses to run against the old name rather than falling back. `npx @turbo/codemod migrate` renames it for you.
 
 Add the matching script to **the package's own `package.json`** — `packages/ui/package.json`, not the root one. Turborepo runs each task with that package's directory as the working directory, which is what makes `lnpm push` act on `@my/ui`:
 
@@ -199,15 +201,20 @@ curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.sh |
 go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest
 ```
 
-**2. Add convenience scripts to root `package.json` (optional):**
+**2. Declare your libraries in the root `package.json`:**
 
 ```json
 {
+  "workspaces": [
+    "libs/*"
+  ],
   "scripts": {
     "lnpm:publish": "lnpm publish --all"
   }
 }
 ```
+
+The `workspaces` field is what makes `lnpm publish --all` work. lnpm finds workspace members through that field or through `pnpm-workspace.yaml`, and it never reads `nx.json`. A workspace whose layout is described only to Nx gives lnpm nothing to walk, and `--all` stops with `no workspace found. --all requires a monorepo with workspaces configured`. The `lnpm:publish` script is the optional part.
 
 As in the Turborepo section, there is no root push script: `lnpm push` acts on whichever `package.json` is in the current directory. Push a single library either from inside it (`cd libs/feature-auth && lnpm push`) or through the Nx target below, which sets `cwd` for you.
 
@@ -220,7 +227,7 @@ lnpm publish --all
 npm run lnpm:publish
 ```
 
-This publishes all buildable libraries in your Nx workspace to lnpm store.
+This publishes every library the root `workspaces` globs match, buildable or not. `--all` takes no filter, and `lnpm publish` has no flag for one. To leave a library out, publish the ones you want by name instead, each from its own directory.
 
 ### Workflow: Linking to External Project
 
@@ -500,24 +507,22 @@ For active development, use your build tool's watch mode combined with `lnpm pus
 
 ```bash
 # Terminal 1: Watch and build with turbo/nx
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 
 # Terminal 2: Push when ready, from the package directory
 cd packages/ui
 lnpm push
 ```
 
-Or integrate into the package's own `package.json` — never the root one, since the script's working directory is what push acts on:
+`turbo watch` is a subcommand, not a flag. Turborepo 2.x answers `turbo run build --watch` with `unexpected argument '--watch' found`.
 
-```json
-{
-  "name": "@my/ui",
-  "version": "1.0.0",
-  "scripts": {
-    "build:dev": "tsc --watch --onSuccess \"lnpm push\""
-  }
-}
+Or let Turborepo drive both halves. With the `lnpm:push` task from [Integration with turbo.json](#integration-with-turbojson) in place, one command rebuilds and pushes on every save:
+
+```bash
+turbo watch lnpm:push --filter=@my/ui
 ```
+
+There is no package-script equivalent. `tsc` has no run-on-success hook, so a `build:dev` script cannot chain the push itself.
 
 ---
 
@@ -619,10 +624,17 @@ Make sure store and source are on same filesystem for instant reflinks:
 # Check if different filesystems
 df -h ~/my-monorepo
 df -h ~/.lnpm
-
-# If different, move store to same filesystem
-lnpm config store_path /Users/you/dev-store
 ```
+
+If they differ, move the store yourself and then point lnpm at where you put it. The store is `lnpm.db` and the `store/` directory beside it, both under `~/.lnpm` by default. Move those two and leave `config.yaml` where it is:
+
+```bash
+mkdir -p ~/dev-store
+mv ~/.lnpm/lnpm.db ~/.lnpm/store ~/dev-store/
+lnpm config store_path ~/dev-store
+```
+
+`lnpm config store_path` records a path. It moves nothing. Set it on its own and lnpm opens a fresh, empty database at the new location. `lnpm list --store` then reports no packages, `lnpm status` shows nothing published and no active links, and the next `lnpm push` republishes the package as if it were new and updates none of the projects that link it. Carry `lnpm.db` across with the content and all of that survives the move, links included.
 
 ### Issue: Nx/Turbo cache conflicts
 
@@ -660,15 +672,28 @@ lnpm push
 
 ### CI/CD Integration
 
-In CI, restore original dependencies before publishing to npm:
+In CI, put the registry versions back before publishing to npm, then check that nothing of lnpm's is left:
 
 ```bash
-# Before npm publish
+# Restore the original dependencies in package.json
 lnpm retreat --force
 
-# Now safe to publish to npm registry
+# Fail the build if anything lnpm left behind would ship
+lnpm check
+
 npm publish
 ```
+
+`lnpm retreat` does not leave the directory clean. It writes `lnpm.lock.retreat` in the project root, the snapshot `lnpm restore` reads back, and that file holds an absolute path per package. npm packs it into the tarball unless something keeps it out, so `lnpm check` fails the build with exit 1:
+
+```
+x lnpm.lock.retreat is in the project root and nothing here keeps it out of a tarball
+  It is lnpm's record of what 'lnpm retreat' unlinked, and it holds an absolute path per package
+```
+
+Keep it out whichever way suits the repo. Add `lnpm.lock.retreat` to `.npmignore` or `.gitignore`, or list only what you ship in the package.json `files` field. On a CI runner you can also delete it, since nothing there is going to run `lnpm restore`.
+
+`lnpm check` catches the other half too, a `file:.lnpm/` or `link:.lnpm/` dependency still sitting in a manifest. In a workspace it scans the root and every member, not only the directory you run it from.
 
 ### Debugging Monorepo Issues
 
