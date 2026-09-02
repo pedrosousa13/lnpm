@@ -106,6 +106,44 @@ nfpms:
       - apk
     bindir: /usr/bin
 
+# `homebrew_casks` rather than `brews`. `brews` is hard-deprecated, and
+# `goreleaser check` exits non-zero on a config that uses it. The release job
+# pins `~> v2`, so a `brews` block would fail the release rather than warn.
+homebrew_casks:
+  - binaries:
+      - lnpm
+    repository:
+      owner: pedrosousa13
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/pedrosousa13/lnpm"
+    description: "Fast local npm package development tool"
+    license: "MIT"
+    caveats: |
+      Update a Homebrew install with `brew upgrade lnpm`. `lnpm update` replaces
+      the binary underneath Homebrew, which leaves brew's record of the version
+      wrong.
+    # The macOS binaries are unsigned and un-notarized, so Homebrew's download
+    # carries the quarantine bit and the first run reports that lnpm is damaged
+    # and cannot be opened. Clearing the attribute also gives up the Gatekeeper
+    # check on this binary; signing and notarizing would remove the need for
+    # both halves.
+    hooks:
+      post:
+        install: |
+          if OS.mac? && File.exist?("#{staged_path}/lnpm")
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lnpm"]
+          end
+
+scoops:
+  - repository:
+      owner: pedrosousa13
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/pedrosousa13/lnpm"
+    description: "Fast local npm package development tool"
+    license: "MIT"
+
 release:
   github:
     owner: pedrosousa13
