@@ -299,9 +299,11 @@ uploaded as release assets.
 `pedrosousa13/scoop-bucket` holds `lnpm.json` at `"version": "4.1.0"`. Both read back from the
 GitHub contents API after the run.
 
-What that run does not cover is a failure. Nothing below about a stale tap credential has been seen
-happen, so those parts stay reasoned from GoReleaser's and GitHub's documentation, from
-`goreleaser check`, and from reading the two tap repositories. Each is labelled where it appears.
+What that run does not cover is a failure. No tap credential has been seen go stale here, so
+[What the taps need](#what-the-taps-need) and
+[What breaks when the tap credential goes stale](#what-breaks-when-the-tap-credential-goes-stale)
+stay reasoned from GoReleaser's and GitHub's documentation, from `goreleaser check`, and from
+reading the two tap repositories.
 
 Both taps are shared with `onda`, the maintainer's other project. `homebrew-tap` already holds a
 `Casks/onda.rb` written by GoReleaser's `homebrew_casks`, and `scoop-bucket` already holds
