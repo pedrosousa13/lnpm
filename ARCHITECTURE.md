@@ -172,6 +172,42 @@ lnpm intelligently handles edge cases:
 
 ---
 
+## Benchmarks
+
+Three benchmark scripts live in this repository, and they do not measure the
+same thing.
+
+`scripts/bench-vs-yalc.sh` is the comparison against yalc, and the one to quote.
+It builds the lnpm binary and runs both tools as subprocesses, so each pays its
+own process startup. That matters more than it sounds. On the machine the
+README's table came from, `lnpm --version` takes 10ms to 30ms and `node -e ''`
+takes 230ms to 340ms, so a Node startup is most of what a small `yalc add`
+costs. Charging that startup to one side only does not measure the tools.
+`ITERATIONS` and `FILES` change the shape of the run.
+
+```bash
+ITERATIONS=10 FILES=100 ./scripts/bench-vs-yalc.sh
+```
+
+The script seeds a fresh package for every iteration. lnpm's store is
+content-addressed, so re-publishing bytes it already holds would time the cache
+rather than the work.
+
+`tests/bench_test.go` is a Go benchmark suite. Its lnpm cases are the ones to
+track lnpm against itself across releases. Its `BenchmarkYalcPublish` and
+`BenchmarkYalcAdd` cases are not a fair comparison. They call lnpm's `cli.Run*`
+functions in-process while spawning `yalc` as a command, so yalc is charged for
+a Node startup lnpm never pays and the ratio comes out larger than the truth.
+They stay for the absolute yalc timings.
+
+`scripts/benchmark-compare.sh` predates both. It does run both tools as
+subprocesses, but it publishes the same package on every iteration, so all but
+the first run time the store cache. It also passes `--skip-hooks
+--skip-validation` to lnpm alone. Treat its output as a smoke test, not a
+number to publish.
+
+---
+
 ## Database Schema (bbolt)
 
 lnpm uses [bbolt](https://github.com/etcd-io/bbolt), an embedded key-value database (same as used by etcd).
