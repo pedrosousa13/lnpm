@@ -735,7 +735,7 @@ lnpm automatically detects the best method and falls back gracefully with helpfu
 
 - **Linux** — amd64, arm64
 - **macOS** — amd64 (Intel), arm64 (Apple Silicon)
-- **Windows** — amd64
+- **Windows** — amd64, arm64
 
 ## Requirements
 
