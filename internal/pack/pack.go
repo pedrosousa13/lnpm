@@ -8,6 +8,7 @@
 package pack
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -801,22 +802,18 @@ func readPackageJSON(dir string) (*PackageJSON, error) {
 	//
 	// That gap is left open on purpose, and the reason is not that it is small.
 	// The store is content-addressed: publish hashes the packed files, and the
-	// entry's directory is named after that hash. Composing the manifest would
-	// have to happen after the hash was taken, so the stored bytes would stop
-	// describing the recorded hash. lnpm already does one such rewrite -
-	// store.stripLifecycleScripts, which #447 is filed about - and the price it
-	// pays is visible in doctor: reportContentIntegrity cannot check a rewritten
-	// root manifest at all and reports it as unverified, on the file it calls
-	// the one an attacker would most want to change. Paying that a second time,
-	// for every package with a decomposed name, to correct a field nothing
-	// resolves through, is a bad trade.
+	// entry's directory is named after that hash, so any rewrite of the manifest
+	// has to happen before the hash is taken or the stored bytes stop describing
+	// it. lnpm used to get that wrong - the lifecycle-script strip ran inside
+	// store.Store, after the hash, and doctor had to carve the root manifest out
+	// of verification because of it. That was #447, and it is fixed: every
+	// rewrite now runs in PrepareManifest, in front of the hash.
 	//
-	// If it is ever wanted anyway, stripLifecycleScripts is where it goes - it
-	// already re-marshals that file - and it would need two things this note
-	// exists to warn about: the early return for a manifest with no scripts has
-	// to stop skipping it, and manifestRewrittenByStore has to learn the second
-	// reason a manifest can differ, or doctor will fault the entry rather than
-	// excuse it.
+	// So composing the name here is not blocked on correctness any more, only on
+	// worth. If it is ever wanted, PrepareManifest is where it goes, beside the
+	// strip and the workspace-specifier resolution, and it would have to run for
+	// every package rather than only the ones carrying a decomposed name. Doing
+	// that to correct a field nothing resolves through is still a bad trade.
 	pkg.Name = NormalizePackageName(pkg.Name)
 	if err := ValidatePackageName(pkg.Name); err != nil {
 		return nil, err
@@ -2806,6 +2803,18 @@ func HashFile(path string) (string, error) {
 }
 
 // HashFiles calculates a combined hash of all files
+//
+// Each field goes in length-prefixed rather than raw, so the boundary between
+// one file's record and the next is recoverable from the stream. Written back
+// to back they were not: ContentHash is a fixed sixteen characters but RelPath
+// is arbitrary and the permission field is one to three octal digits, so a
+// filename could be chosen to contain a record boundary and two genuinely
+// different packages hashed identically - with no cryptanalysis and no search.
+// TestHashFilesFramesFields carries the construction; ADR-0007 carries why
+// framing is the fix here rather than a wider hash.
+//
+// The prefix changes every package hash ever computed, which is why this
+// landed in 4.0.0 with #447 rather than on its own. See #453.
 func HashFiles(files []*FileInfo) string {
 	// Sort by path so the hash is independent of collection/cache order, and
 	// include the file mode so permission changes (e.g. chmod +x on a bin)
@@ -2817,10 +2826,16 @@ func HashFiles(files []*FileInfo) string {
 	})
 
 	h := xxhash.New()
+	var length [8]byte
+	field := func(s string) {
+		binary.LittleEndian.PutUint64(length[:], uint64(len(s)))
+		_, _ = h.Write(length[:])
+		_, _ = h.Write([]byte(s))
+	}
 	for _, f := range sorted {
-		_, _ = h.Write([]byte(f.RelPath))
-		_, _ = h.Write([]byte(f.ContentHash))
-		_, _ = fmt.Fprintf(h, "%o", f.Mode.Perm())
+		field(f.RelPath)
+		field(f.ContentHash)
+		field(fmt.Sprintf("%o", f.Mode.Perm()))
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
 }

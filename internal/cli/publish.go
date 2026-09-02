@@ -223,11 +223,11 @@ func publishSingle(pkgPath string, opts PublishOptions) error {
 	// taken, so the hash covers the bytes consumers actually install. The
 	// cleanup must outlive the store copy, so it is deferred to the end of the
 	// publish rather than released here.
-	cleanup, err := pack.RewriteWorkspaceDeps(pkgPath, files)
+	cleanup, err := pack.PrepareManifest(pkgPath, files)
 	defer cleanup()
 	if err != nil {
 		// Deliberately unwrapped, against the "always wrap" convention: every
-		// error out of RewriteWorkspaceDeps already names the specifier, the
+		// error out of PrepareManifest already names the specifier, the
 		// dependency and the workspace, so a "failed to resolve workspace
 		// dependencies:" prefix would only stutter in front of it.
 		return err

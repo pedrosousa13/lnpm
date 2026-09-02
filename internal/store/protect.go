@@ -25,7 +25,7 @@ import (
 // It holds on every materialisation path because all three end up with the
 // source's mode — but they arrive there by three different mechanisms, which is
 // worth naming because a reader checking one will not find the same code in the
-// others. stripLifecycleScripts in store.go documents the same split for the
+// others. pack.PrepareManifest documents the same split for the
 // same reason. link.copyFile chmods the destination explicitly (#139).
 // fsutil.Reflink chmods the clone on Linux (reflink_linux.go) but not on darwin,
 // where unix.Clonefile carries the mode across as part of the metadata it

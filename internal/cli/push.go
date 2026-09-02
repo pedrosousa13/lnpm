@@ -171,10 +171,10 @@ func RunPushTagged(skipHooks bool, tag string) error {
 		if err != nil {
 			return fmt.Errorf("failed to pack: %w", err)
 		}
-		cleanup, err := pack.RewriteWorkspaceDeps(cwd, files)
+		cleanup, err := pack.PrepareManifest(cwd, files)
 		defer cleanup()
 		if err != nil {
-			// Deliberately unwrapped: RewriteWorkspaceDeps' errors are already
+			// Deliberately unwrapped: PrepareManifest' errors are already
 			// self-contained, so wrapping them here would only stutter.
 			return err
 		}
@@ -199,7 +199,7 @@ func RunPushTagged(skipHooks bool, tag string) error {
 
 	// Resolve any workspace: dependency specifiers before hashing, so a push
 	// stores the same resolved package.json a publish would.
-	cleanup, err := pack.RewriteWorkspaceDeps(cwd, files)
+	cleanup, err := pack.PrepareManifest(cwd, files)
 	defer cleanup()
 	if err != nil {
 		// Deliberately unwrapped, as above.

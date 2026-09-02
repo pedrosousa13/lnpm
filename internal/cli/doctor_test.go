@@ -492,15 +492,10 @@ func TestRunDoctorReportsAnEntryStoredUnderAnotherHash(t *testing.T) {
 	}
 }
 
-// TestRunDoctorFaultsATamperedRootManifest keeps the carve-out for lnpm's own
-// rewrite as narrow as the rewrite is.
-//
-// store.stripLifecycleScripts returns without writing anything unless the
-// manifest has a scripts map holding prepare or prepublish, and what it does
-// write is a re-marshalled document. So a stored manifest that is not in that
-// form was never rewritten, and a mismatch on it is damage - on the one file
-// worth tampering with, since main, bin and postinstall survive the strip
-// untouched.
+// TestRunDoctorFaultsATamperedRootManifest checks the file worth tampering
+// with. main, bin and postinstall all reach a consumer through the stored
+// manifest, and since #447 the entry holds the bytes its hash describes, so a
+// mismatch on package.json is damage with nothing left to excuse it.
 func TestRunDoctorFaultsATamperedRootManifest(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
 	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
@@ -519,16 +514,21 @@ func TestRunDoctorFaultsATamperedRootManifest(t *testing.T) {
 	}
 }
 
-// TestRunDoctorExcusesAManifestTheStripCouldHaveWritten is the same carve-out
-// read the other way: a stored manifest that is exactly what the strip emits -
-// a re-marshalled document with a scripts map and neither prepare nor
-// prepublish left in it - is the one case doctor cannot tell from damage, so it
-// is reported as unchecked rather than faulted.
+// TestRunDoctorFaultsAManifestTheStripWouldOnceHaveExcused is #447 closed,
+// asserted on the exact bytes that used to buy an exemption.
 //
-// The expected bytes are spelled out rather than produced with encoding/json,
-// so a change to how the store re-marshals a manifest has to be made here too
-// and cannot quietly stop this test exercising the excusing branch.
-func TestRunDoctorExcusesAManifestTheStripCouldHaveWritten(t *testing.T) {
+// Before #447 the strip ran inside store.Store, after publish had hashed the
+// packed files, so a stored manifest in the shape that rewrite emits - a
+// re-marshalled document with a scripts map and neither prepare nor prepublish
+// left in it - was indistinguishable from damage and was reported as unchecked.
+// The strip now runs before the hash is taken, so the entry holds what its hash
+// describes and that shape is no longer special: it is a mismatch on
+// package.json like any other, and doctor faults it.
+//
+// The bytes are spelled out rather than produced with encoding/json, so this
+// keeps testing the case the old carve-out recognised rather than whatever the
+// current marshaller happens to emit.
+func TestRunDoctorFaultsAManifestTheStripWouldOnceHaveExcused(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
 	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
 		"package.json": `{"name":"left-pad","version":"1.2.3","scripts":{"prepare":"build","test":"t"}}`,
@@ -537,15 +537,15 @@ func TestRunDoctorExcusesAManifestTheStripCouldHaveWritten(t *testing.T) {
 	tamperWithStoreFile(t, pkg.StorePath, "package.json", "{\n  \"name\": \"left-pad\",\n  \"scripts\": {\n    \"test\": \"t\"\n  },\n  \"version\": \"1.2.3\"\n}\n")
 
 	out, err := runDoctor(t, true)
-	if err != nil {
-		t.Errorf("RunDoctor() = %v for a manifest the store's own rewrite could have written, want nil", err)
+	if err == nil {
+		t.Errorf("RunDoctor() = nil for a manifest that no longer has an exemption, want an error; output was:\n%s", out)
 	}
 
-	if strings.Contains(out, "do not hold the content recorded for them") {
-		t.Errorf("RunDoctor faulted a manifest lnpm rewrote itself, output was:\n%s", out)
+	if !strings.Contains(out, "do not hold the content recorded for them") {
+		t.Errorf("RunDoctor still excused a rewritten-looking manifest, output was:\n%s", out)
 	}
-	if !strings.Contains(out, "could not be checked") {
-		t.Errorf("RunDoctor passed over the manifest it could not check instead of naming it, output was:\n%s", out)
+	if strings.Contains(out, "could not be checked") {
+		t.Errorf("RunDoctor reported the manifest as unchecked; #447 removed that carve-out, output was:\n%s", out)
 	}
 }
 
@@ -619,11 +619,10 @@ func misrecordFileSize(t *testing.T, packageName, relPath string, size int64) {
 	}
 }
 
-// TestRunDoctorChecksANestedManifest keeps the carve-out for lnpm's own rewrite
-// as narrow as the rewrite is. store.stripLifecycleScripts opens exactly one
-// path, the entry's root package.json, so a package.json shipped inside the
-// package is an ordinary file and a change to it is damage. Matching on the
-// base name instead of the whole relative path would excuse it.
+// TestRunDoctorChecksANestedManifest is here from when the root manifest had a
+// carve-out and a base-name match would have spread it to every nested
+// package.json. #447 removed the carve-out, so what this now pins is the plain
+// statement that a package.json shipped inside a package is an ordinary file.
 func TestRunDoctorChecksANestedManifest(t *testing.T) {
 	dir := newDoctorStoreConfig(t)
 	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{

@@ -1,8 +1,6 @@
 package store
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -281,18 +279,11 @@ func (s *Store) Store(name, hash string, files []*pack.FileInfo, sourceDir strin
 
 	debug.Logf("store: reflinked %d, copied %d files", reflinkCount, copyCount)
 
-	// Strip lifecycle scripts from package.json to prevent npm from running them
-	// when installed as file: dependency (matches yalc behavior)
-	if err := stripLifecycleScripts(destPath); err != nil {
-		return "", fmt.Errorf("failed to strip lifecycle scripts: %w", err)
-	}
-
 	// Take the write bits off the content before it is committed, so the entry
 	// is never observable at a mode a consumer could write through. writeBits'
 	// comment carries the reasoning; what matters to the order here is that this
-	// runs after stripLifecycleScripts, which rewrites package.json by renaming
-	// a temp file onto it, and before writeMarker, whose file the protection
-	// leaves out and which is easier to keep out by not having written it yet.
+	// runs before writeMarker, whose file the protection leaves out and which is
+	// easier to keep out by not having written it yet.
 	if err := protectTree(destPath); err != nil {
 		return "", fmt.Errorf("failed to write protect store content: %w", err)
 	}
@@ -440,182 +431,4 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 
 	return dstFile.Sync()
-}
-
-// strippedScripts are the lifecycle scripts stripLifecycleScripts removes from a
-// stored manifest. Named once so that ManifestStrippedInStore, which has to
-// recognise this function's output, cannot come to disagree with it about which
-// scripts that is.
-var strippedScripts = []string{"prepare", "prepublish"}
-
-// marshalManifest renders a parsed package.json the way a stored one is written.
-//
-// Extracted for the same reason as strippedScripts: recognising the rewrite
-// after the fact means reproducing it byte for byte, and two copies of
-// "MarshalIndent with two spaces and a trailing newline" would eventually stop
-// being the same thing.
-func marshalManifest(manifest map[string]interface{}) ([]byte, error) {
-	output, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(output, '\n'), nil
-}
-
-// ManifestStrippedInStore reports whether data could be a manifest that
-// stripLifecycleScripts wrote.
-//
-// It exists because that rewrite happens after publish has hashed the packed
-// files, so a stored package.json legitimately fails to match the content hash
-// recorded for it — but only for a package that had one of those scripts.
-// doctor cannot ask the store which packages those were, so it asks this
-// instead: is what is on disk in the shape the rewrite produces?
-//
-// Three things have to hold, and each of them is a branch stripLifecycleScripts
-// returns early from. The document must parse. It must carry a scripts map, or
-// the rewrite returned without writing. And neither stripped script may remain
-// in it, because removing them is the only reason it writes at all. Then the
-// bytes must equal their own re-marshalled form, which is what the rewrite
-// emits and what a hand-edited manifest almost never is.
-//
-// That last test is what keeps this narrow, and it is worth being plain about
-// its limit: a tampered manifest that happens to be canonical JSON with a
-// scripts map and neither script in it is indistinguishable from a stripped
-// one. What this rules out is the ordinary edit, not a forgery built to match.
-func ManifestStrippedInStore(data []byte) bool {
-	var manifest map[string]interface{}
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return false
-	}
-
-	scripts, ok := manifest["scripts"].(map[string]interface{})
-	if !ok || scripts == nil {
-		return false
-	}
-	for _, script := range strippedScripts {
-		if _, exists := scripts[script]; exists {
-			return false
-		}
-	}
-
-	output, err := marshalManifest(manifest)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(data, output)
-}
-
-// stripLifecycleScripts removes prepare/prepublish scripts from package.json
-// This prevents npm from running these scripts when the package is installed as a file: dependency
-// Matches yalc behavior: https://github.com/wclr/yalc
-func stripLifecycleScripts(destPath string) error {
-	pkgJSONPath := filepath.Join(destPath, "package.json")
-
-	// Read package.json
-	data, err := os.ReadFile(pkgJSONPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// No package.json (shouldn't happen but be defensive)
-			return nil
-		}
-		return fmt.Errorf("failed to read package.json: %w", err)
-	}
-
-	// Handle empty file (race condition with concurrent publish)
-	if len(data) == 0 {
-		debug.Log("store: package.json is empty, skipping script stripping")
-		return nil
-	}
-
-	var pkgJSON map[string]interface{}
-	if err := json.Unmarshal(data, &pkgJSON); err != nil {
-		// Could be a race condition with concurrent writes, skip gracefully
-		debug.Logf("store: failed to parse package.json, skipping script stripping: %v", err)
-		return nil
-	}
-
-	// Check if scripts field exists
-	scripts, ok := pkgJSON["scripts"].(map[string]interface{})
-	if !ok || scripts == nil {
-		// No scripts, nothing to strip
-		return nil
-	}
-
-	// Track if we made changes
-	modified := false
-
-	// Remove lifecycle scripts that cause issues with file: dependencies
-	// - prepare/prepublish: run during npm install of file: deps, can fail (e.g., husky)
-	// Matches yalc behavior: https://github.com/wclr/yalc/blob/master/src/copy.ts
-	for _, script := range strippedScripts {
-		if _, exists := scripts[script]; exists {
-			delete(scripts, script)
-			modified = true
-			debug.Logf("store: stripped %s script from package.json", script)
-		}
-	}
-
-	if !modified {
-		return nil
-	}
-
-	// Write modified package.json atomically using temp file + rename
-	output, err := marshalManifest(pkgJSON)
-	if err != nil {
-		return fmt.Errorf("failed to marshal package.json: %w", err)
-	}
-
-	// The rewrite replaces the store's own package.json, and every path that puts
-	// it there has already given it the source file's mode, so that mode is what
-	// the temp file has to carry over the rename. A hard-coded mode here leaves
-	// the manifest disagreeing with its siblings in the same package - in which
-	// direction depends on the umask, so neither "wider" nor "narrower" is the
-	// right word: 0644 written under umask 0022 widens a 0600 manifest, and the
-	// same write under 0077 lands at 0600 and narrows a 0644 one.
-	//
-	// The paths that set that mode arrive at it differently, which is worth
-	// naming because a reader checking one of them will not find the same
-	// mechanism in the others. copyFile above chmods the destination explicitly.
-	// fsutil.Reflink chmods on Linux (reflink_linux.go) but not on darwin, where
-	// unix.Clonefile carries the mode across as part of the metadata it clones.
-	// reflink_other.go has no clone path at all - Reflink always fails there, and
-	// the caller falls back to copyFile.
-	//
-	// Perm() masks off setuid, setgid and sticky, which copyFile does preserve.
-	// The claim that supports dropping them is narrow, so state it narrowly: pack
-	// folds only Mode.Perm() into the content hash (internal/pack/pack.go), so
-	// the permission bits are the ones the *hash* is taken over. The database row
-	// is a different matter - it records the full info.Mode() from the pack walk,
-	// so after this rewrite a manifest carrying setgid disagrees with its own
-	// row. Nothing reads that back today (fileManifestHash re-hashes with Perm()),
-	// which makes it harmless rather than intended, and it is recorded here so a
-	// later reader does not have to rediscover it.
-	info, err := os.Stat(pkgJSONPath)
-	if err != nil {
-		return fmt.Errorf("failed to stat package.json: %w", err)
-	}
-	mode := info.Mode().Perm()
-
-	// Write to temp file first
-	tmpPath := pkgJSONPath + ".tmp"
-	if err := os.WriteFile(tmpPath, output, mode); err != nil {
-		return fmt.Errorf("failed to write temp package.json: %w", err)
-	}
-
-	// WriteFile's mode argument is masked by the process umask, for the reason
-	// copyFile's comment above spells out. Set the bits explicitly. Doing it on
-	// the temp file rather than after the rename keeps the mode part of what the
-	// rename commits, so package.json is never observable at the masked mode.
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		_ = os.Remove(tmpPath) // Clean up on failure (error ignored)
-		return fmt.Errorf("failed to set temp package.json mode: %w", err)
-	}
-
-	// Atomic rename (overwrites existing)
-	if err := os.Rename(tmpPath, pkgJSONPath); err != nil {
-		_ = os.Remove(tmpPath) // Clean up on failure (error ignored)
-		return fmt.Errorf("failed to rename package.json: %w", err)
-	}
-
-	return nil
 }

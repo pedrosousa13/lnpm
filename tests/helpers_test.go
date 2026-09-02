@@ -842,10 +842,11 @@ func (te *TestEnvironment) AssertLinkedFileContent(projectDir, pkg, rel, want st
 // rewrite, say - has to be reflected in both or the store entry is addressed by
 // a hash of content it does not hold.
 //
-// The invariant only holds for packages without a prepare or prepublish script:
-// store.stripLifecycleScripts re-marshals the stored package.json after the
-// hash is taken, so for those the stored bytes legitimately differ from the
-// hashed ones and this helper would report a mismatch it did not cause.
+// It holds for every package since #447. The lifecycle-script strip used to run
+// inside the store, after the hash was taken, so a package with a prepare or
+// prepublish script was an exception to this helper; the strip now runs in
+// pack.PrepareManifest before the packed set is hashed, so there is no longer a
+// class of package whose stored bytes legitimately differ from its hash.
 func (te *TestEnvironment) AssertStoredContentHash(packageName string) {
 	te.t.Helper()
 

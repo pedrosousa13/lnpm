@@ -530,10 +530,8 @@ func RunDoctor(verifyContent bool) error {
 //     damage, and add tolerates every one of these by relinking the entry in
 //     full, so it is a warning; but it is a part of the store this check could
 //     not speak for, so it is named rather than passed over.
-//   - rewritten: the one file lnpm changes behind the hash's back. See
-//     manifestRewrittenByStore below.
 func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntries map[string]bool) (issues, warnings int) {
-	var altered, unverified, rewritten []string
+	var altered, unverified []string
 	verified, filesRead, bytesRead := 0, 0, int64(0)
 	skipped := 0
 
@@ -619,10 +617,6 @@ func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntr
 			if hash == entry.ContentHash {
 				continue
 			}
-			if manifestRewrittenByStore(entry.RelativePath, file.Path) {
-				rewritten = append(rewritten, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, entry.RelativePath))
-				continue
-			}
 			altered = append(altered, fmt.Sprintf("%s@%s  %s  holds %s, not the recorded %s",
 				pkg.Name, pkg.Version, entry.RelativePath, shortHash(hash), shortHash(entry.ContentHash)))
 		}
@@ -671,53 +665,6 @@ func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntr
 		// excused by it, so they add nothing to the tally here.
 		fmt.Printf("  %d entry(ies) were not re-hashed: Check 5 already reported them as missing or incomplete\n", skipped)
 	}
-	if len(rewritten) > 0 {
-		fmt.Printf("  %s %d manifest(s) could not be checked, because lnpm rewrote them after hashing them:\n", ui.IconWarn(), len(rewritten))
-		for _, finding := range rewritten {
-			fmt.Printf("    %s\n", finding)
-		}
-		fmt.Println("    A stored package.json has its prepare and prepublish scripts removed once the content hash has been taken, so the recorded hash does not describe the stored bytes")
-		// A warning and not an issue. This is lnpm's own doing on a healthy
-		// store, so failing the command for it would make
-		// `lnpm doctor --verify-content && ...` unusable against any package
-		// with a build step in it. It is still said out loud, because the file
-		// it covers is the one an attacker would most want to change.
-		warnings++
-	}
 
 	return issues, warnings
-}
-
-// manifestRewrittenByStore reports whether a mismatch on relPath is explained
-// by lnpm's own rewrite of the file at path, rather than by damage.
-//
-// store.stripLifecycleScripts re-marshals the entry's root package.json to
-// remove prepare and prepublish, and it runs after publish has hashed the packed
-// files, so for a package that had either script the store legitimately holds a
-// manifest the database's hash does not describe. Nothing records which packages
-// those were, so that mismatch cannot be told from damage and is reported as
-// unchecked rather than as either.
-//
-// Two things narrow that excuse, and both matter, because the file it covers is
-// the one worth tampering with - main, bin and postinstall all survive the strip
-// untouched.
-//
-// The path, because the strip opens exactly destPath/package.json: a
-// package.json nested inside the package is an ordinary file and is compared
-// like one.
-//
-// The bytes, because the rewrite is conditional. It returns without writing
-// unless the manifest carries a scripts map holding one of the scripts it
-// removes, and what it does write is a re-marshalled document. So the stored
-// bytes have to be in that shape for the excuse to apply, and the store answers
-// that question itself rather than doctor keeping a second copy of the format.
-func manifestRewrittenByStore(relPath, path string) bool {
-	if relPath != "package.json" {
-		return false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return store.ManifestStrippedInStore(data)
 }
