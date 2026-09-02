@@ -12,14 +12,23 @@ import (
 // content, and it is removed before the tree when an entry is deleted.
 const markerName = ".lnpm-complete"
 
-// markerSchemaVersion identifies the marker payload's shape.
-const markerSchemaVersion = 1
+// markerSchemaVersion identifies the marker payload's shape, and with it the
+// hash format the entry is addressed by.
+//
+//	1 — xxhash64 over unframed per-file fields, with the root package.json
+//	    rewritten after the hash was taken. Written by lnpm 3.x and earlier.
+//	2 — the fields length-prefixed (#453) and every manifest rewrite moved in
+//	    front of the hash (#447). Written by 4.0.0 and later.
+//
+// An entry carrying an older version is refused rather than read: see
+// checkEntry, and TestCheckCompleteRefusesAnOlderMarkerSchema for why the hash
+// change alone does not retire one.
+const markerSchemaVersion = 2
 
 // marker is what a completeness marker holds: the content hash the entry is
 // addressed by, and a schema version. CheckComplete reads the hash back and
-// compares it against the directory the marker sits in; the schema version is
-// recorded for a future reader that has to tell payload shapes apart, and
-// nothing decides anything on it yet.
+// compares it against the directory the marker sits in, and refuses a schema
+// version it does not write - which is what the field was recorded for.
 type marker struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Hash          string `json:"hash"`
@@ -157,6 +166,14 @@ func checkEntry(entryPath, name string) error {
 	var m marker
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return fail(fmt.Sprintf("its completeness marker could not be decoded (%v)", err))
+	}
+	// Before the hash comparison, because for an entry written by 3.x the hash
+	// agrees with its directory perfectly well - it is the format both are in
+	// that this build cannot use, and saying "the marker records a hash which is
+	// not the directory it sits in" about a sound 3.x entry would send the user
+	// looking for damage that is not there.
+	if m.SchemaVersion < markerSchemaVersion {
+		return fail(fmt.Sprintf("it was written by an older lnpm (marker schema %d; this build writes %d), whose package hashes this build does not use: re-publish the package", m.SchemaVersion, markerSchemaVersion))
 	}
 	if m.Hash != filepath.Base(entryPath) {
 		return fail(fmt.Sprintf("its completeness marker records the hash %q, which is not the directory it sits in", m.Hash))

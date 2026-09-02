@@ -341,7 +341,7 @@ func seedUnmarkedEntry(t *testing.T, dir, name, hash string) string {
 func writeCompletenessMarker(t *testing.T, entry, hash string) {
 	t.Helper()
 
-	payload := []byte(`{"schemaVersion":1,"hash":"` + hash + `"}` + "\n")
+	payload := []byte(`{"schemaVersion":2,"hash":"` + hash + `"}` + "\n")
 	if err := os.WriteFile(filepath.Join(entry, ".lnpm-complete"), payload, 0644); err != nil {
 		t.Fatalf("write completeness marker: %v", err)
 	}

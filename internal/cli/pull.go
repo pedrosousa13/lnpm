@@ -40,6 +40,12 @@ func RunPull(packageNames []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load lock file: %w", err)
 	}
+	// An empty lock file has no hash to resolve, so its format cannot be wrong
+	// in any way that matters - and a project with nothing linked should hear
+	// that rather than a re-publish instruction it cannot act on.
+	if len(lock.Packages) > 0 && lock.PredatesCurrentFormat() {
+		return errLockPredatesFormat("lnpm.lock")
+	}
 
 	// Named packages must already be linked here - pull refreshes links, it does
 	// not create them. Check them all before any linking so a typo cannot leave

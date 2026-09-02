@@ -396,6 +396,12 @@ func TestSaveRetreatReplacesTheSnapshotRatherThanTruncatingIt(t *testing.T) {
 // "version:" key. It unmarshals as version 0, which is not a format anything
 // ever wrote, and a merging retreat writes what it read straight back - so
 // without normalising, the 0 would be persisted as if it meant something.
+//
+// It normalises to the oldest format rather than the current one, which only
+// became a distinction in 4.0.0. Every file that omits the key was written
+// before the key existed, so its hashes are 3.x hashes; calling such a file
+// current would tell restore to resolve those hashes against a 4.x store and
+// leave it with no way to say why nothing matched.
 func TestReadNormalisesAMissingVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -407,8 +413,8 @@ func TestReadNormalisesAMissingVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if lock.Version != currentVersion {
-		t.Errorf("Version = %d, want %d", lock.Version, currentVersion)
+	if lock.Version != oldestVersion {
+		t.Errorf("Version = %d, want %d", lock.Version, oldestVersion)
 	}
 }
 

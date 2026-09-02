@@ -75,7 +75,10 @@ func tagPrefix(name string) []byte {
 //	1 — packages, one live record per name, no tags bucket.
 //	2 — a tags bucket, with the latest tag naming the record bucketPackagesByName
 //	    points at.
-const schemaVersion = 2
+//	3 — the same buckets, holding 4.0.0's package hashes: the per-file fields
+//	    length-prefixed (#453) and every manifest rewrite moved in front of the
+//	    hash (#447).
+const schemaVersion = 3
 
 var keySchemaVersion = []byte("schema_version")
 
@@ -277,6 +280,18 @@ func migrateTx(tx *bolt.Tx) error {
 			return nil
 		}
 	}
+
+	// 2 -> 3 is a change of hash format, not of bucket shape, so there is
+	// nothing here to rewrite. The rows are deliberately kept: they carry the
+	// project-to-package links, which is the one part of a user's state a
+	// re-publish cannot reconstruct. What makes the stale hashes in them
+	// harmless is the store refusing an entry whose completeness marker records
+	// an older schema, so a row pointing at 3.x content resolves to nothing
+	// rather than to the wrong bytes. `lnpm gc` reclaims those entries.
+	//
+	// The version is still recorded, at the bottom of this function, so a 3.x
+	// binary run afterwards meets the "written by a newer lnpm" refusal above
+	// rather than reading 4.0.0 hashes as its own.
 
 	packages := tx.Bucket(bucketPackages)
 	tags := tx.Bucket(bucketTags)

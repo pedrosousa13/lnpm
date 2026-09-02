@@ -249,7 +249,7 @@ func (te *TestEnvironment) retagStoreMarker(packageName, hash string) string {
 	if err != nil || pkg == nil {
 		te.t.Fatalf("look up %s: pkg = %v, err = %v", packageName, pkg, err)
 	}
-	payload := []byte(`{"schemaVersion":1,"hash":"` + hash + `"}` + "\n")
+	payload := []byte(`{"schemaVersion":2,"hash":"` + hash + `"}` + "\n")
 	if err := os.WriteFile(filepath.Join(pkg.StorePath, ".lnpm-complete"), payload, 0644); err != nil {
 		te.t.Fatalf("rewrite completeness marker: %v", err)
 	}
