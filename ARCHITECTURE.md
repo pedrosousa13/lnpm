@@ -279,7 +279,15 @@ named was that package's latest by definition.
 
 ---
 
-## CLI Commands
+## Command Design Notes
+
+The [command table in the README](README.md#commands) is the list of commands and
+their flags. This section is not a second copy of it. It records the decisions
+behind the commands whose behaviour is not obvious from the flag, and the
+invariants those decisions rest on, with the ADRs cross-referenced where one
+exists. Commands absent from here are either covered by the README alone, or
+described where their state is. `retreat` and `restore` sit under the lock file
+format, `check` under cleanup before publish.
 
 ### `lnpm publish`
 
@@ -641,26 +649,32 @@ lnpm status
 
 # Output:
 # 📦 Published Packages
-# ┌──────────────┬──────────────┬──────────┬──────────┬───────────────┐
-# │ Package      │ Version      │ Hash     │ Tags     │ Published     │
-# ├──────────────┼──────────────┼──────────┼──────────┼───────────────┤
-# │ my-package   │ 1.0.0        │ abc123   │ latest   │ 2 minutes ago │
-# │ my-package   │ 2.0.0-beta.1 │ abc789   │ beta     │ 1 minute ago  │
-# │ other-pkg    │ 2.1.0        │ def456   │ latest   │ 1 hour ago    │
-# └──────────────┴──────────────┴──────────┴──────────┴───────────────┘
+#   NAME                      VERSION        HASH       TAGS                 PUBLISHED
+#   ─────────────────────────────────────────────────────────────────────────────────────────────
+#   my-package                1.0.0          d1a74401   latest               2 minutes ago
+#   my-package                2.0.0-beta.1   4d961f3f   beta                 2 minutes ago
+#   other-pkg                 2.1.0          caf28dd4   latest               2 minutes ago
 #
 # 🔗 Active Links
-# ┌──────────────┬─────────────────────────┬──────────┐
-# │ Package      │ Project                 │ Type     │
-# ├──────────────┼─────────────────────────┼──────────┤
-# │ my-package   │ ~/code/my-app           │ hardlink │
-# │ my-package   │ ~/code/other-app        │ hardlink │
-# └──────────────┴─────────────────────────┴──────────┘
+#   PROJECT                                  PM       PACKAGES
+#   ────────────────────────────────────────────────────────────────────────────────
+#   /home/you/code/other-app                 npm      my-package
+#   /home/you/code/my-app                    pnpm     my-package
+#
+# 📍 Current Project
+#   /home/you/code/my-app
+#   Linked packages:
+#     • my-package@1.0.0 (hash: d1a74401)
 ```
 
 The published table lists one row per retained version, so it carries the tags
 naming each of them. Without that column two rows of one name say nothing about
 which build a plain `lnpm add` would give you.
+
+Active links are grouped by project rather than by package, and each row names
+the package manager detected there. The third block singles the current
+directory out of that list, and names the version and the content hash behind
+each of its links.
 
 ### `lnpm list`
 
@@ -763,16 +777,18 @@ lnpm doctor
 #
 # Checking store directory... ✓ OK
 # Checking database... ✓ OK
-# Checking for orphaned packages... ✓ OK
-# Checking for orphaned links... ⚠ 1 orphaned link(s)
-#   Fix: Run 'lnpm gc --fix-links' to clean up
+# Checking for orphaned packages... ⚠ 1 orphaned package(s)
+#   Fix: Run 'lnpm gc' to remove unused packages
+# Checking for orphaned links... ✓ OK
 # Checking store entries... ✓ OK
 # Checking store file integrity... SKIPPED
 #   Stored content was not re-hashed: that costs one read of the whole store
 #   Run 'lnpm doctor --verify-content' to check it
+# Checking stored package names... ✓ OK
 # Checking store completeness markers... ✓ OK
 #
 # ⚠ Found 1 warning(s)
+#   Store file integrity was not among them: run 'lnpm doctor --verify-content' to check the stored content too
 ```
 
 The two store checks answer different questions, and only one of them is free.
@@ -797,6 +813,12 @@ What the content check detects is corruption and accident. The store hashes with
 a 64-bit non-cryptographic function, which is not evidence against someone who
 chose the replacement bytes.
 
+`stored package names` re-runs the strict name validator over every distinct
+name in the store. lnpm has tightened what it accepts more than once, so a store
+can still hold a name a publish would refuse today. Doctor reports one rather
+than renaming it, because the lock files and `package.json` entries carrying the
+old spelling live in projects lnpm cannot enumerate.
+
 Doctor separates issues from warnings, and so does its exit code: it exits
 non-zero once it has reported an issue, and zero otherwise. Warnings alone —
 the run above among them — still exit zero, because they describe cleanup worth
@@ -814,34 +836,56 @@ instead, like the rest of the CLI.
 
 ### Global Config (`~/.lnpm/config.yaml`)
 
-```yaml
-# Store location (default: ~/.lnpm)
-store_path: ~/.lnpm
+One file, five keys. The last of them is a block of five more.
 
-# Default link mode: "hardlink" | "copy"
-link_mode: hardlink
-```
+| Key | What it settles |
+|-----|-----------------|
+| `store_path` | Where the store lives. `LNPM_STORE` wins over it. |
+| `link_mode` | `hardlink` to try reflink then hard link, `copy` to force a copy. |
+| `manage_gitignore` | Whether lnpm keeps the `.lnpm/` entry in a project's `.gitignore`. On by default. |
+| `follow_symlinked_node_modules` | Whether lnpm will write through a `node_modules`, or a scope directory beneath it, that is not a real directory. Off by default, because a repository can commit a link at either name and aim lnpm's writes and its recursive delete at whatever it points at. |
+| `hooks` | The five keys below. |
+
+| Hook key | What it settles |
+|----------|-----------------|
+| `pre_publish` | Command run before `publish` and `push` pack files. |
+| `post_publish` | Command run after they complete. |
+| `post_add` | Command run after `lnpm add --install`. Plain `add` does not install. |
+| `skip_prepare` | Skip the `prepare`, `prepublishOnly` and `prepack` scripts on publish and push. |
+| `skip_post_add` | Skip the `post_add` hook. |
+
+`LNPM_CONFIG` points at a different config file. The [README's configuration
+section](README.md#configuration) is the reference for the values, the defaults
+and the annotated file.
 
 ---
 
 ## Lock File Format (`lnpm.lock`)
 
 ```yaml
-version: 1
+version: 2
 packages:
-  my-package:
-    version: 1.0.0
-    hash: abc123def456
-    source: ~/code/my-package
-    linked: 2024-01-15T10:30:00Z
-    originalVersion: ^1.0.0   # original specifier, restored on retreat/remove
-  other-pkg:
-    version: 2.1.0
-    hash: 789xyz000111
-    source: ~/code/other-pkg
-    linked: 2024-01-15T09:00:00Z
-    pinned: true              # linked to this build, not to a channel
+    my-package:
+        version: 1.0.0
+        hash: d1a744010a32221a
+        source: /home/you/src/my-package
+        linked: 2026-09-02T16:05:45.636601618+02:00
+        originalVersion: ^1.0.0
+    other-pkg:
+        version: 2.1.0
+        hash: caf28dd48ee66c8e
+        source: /home/you/src/other-pkg
+        linked: 2026-09-02T16:05:57.937628411+02:00
+        pinned: true
 ```
+
+`originalVersion` is the specifier `add` displaced, and is what `retreat` and
+`remove` put back.
+
+`version` is the format the file is in, and 4.0.0 moved it to 2. Every hash
+changed in that release, so a version 1 file names builds no 4.x store holds.
+`restore` and `pull` refuse such a file outright rather than reporting each of
+its packages as missing.
 
 `pinned` is optional and absent from every lock file written before it existed,
 which reads as unpinned. The database's link row is the authority on it — that is
@@ -855,11 +899,15 @@ what `pull`, `push` and `gc` read — and the entry here is transport, exactly a
 
 ### Detection
 
-lnpm auto-detects package manager by checking for:
-1. `bun.lockb` → bun
-2. `pnpm-lock.yaml` → pnpm
-3. `yarn.lock` → yarn
-4. `package-lock.json` → npm
+lnpm auto-detects the package manager from the first lock file it finds:
+
+1. `bun.lockb` → bun (Bun before 1.2, binary)
+2. `bun.lock` → bun (Bun 1.2 and later, text)
+3. `pnpm-lock.yaml` → pnpm
+4. `yarn.lock` → yarn
+5. `package-lock.json` → npm
+
+A project with no lock file is treated as npm.
 
 ### package.json Modification
 
@@ -880,9 +928,31 @@ literals outside the edited entry are left exactly as the author wrote them.
 
 ### Cleanup Before Publish
 
-Before publishing to npm registry, run:
+An `npm publish` from a project lnpm has touched would ship the
+`file:.lnpm/{package}` specifiers to the registry. Undo them first:
+
 ```bash
-lnpm retreat  # or: lnpm remove --all
+lnpm retreat --force   # or: lnpm remove --all
 ```
 
-This restores original version specifiers in `package.json`.
+`--force` is required. Bare `lnpm retreat` is a preview. It prints the
+specifiers it would restore, changes nothing and exits zero, which is easy to
+mistake for a completed cleanup.
+
+`lnpm check` is the guard against making that mistake. It fails when a
+`package.json` still carries an lnpm reference, and it names the command that
+clears it:
+
+```
+✗ Found 2 lnpm reference(s) in package.json:
+  dependencies.my-package -> file:.lnpm/my-package
+  dependencies.other-pkg -> file:.lnpm/other-pkg
+
+  💡 Run 'lnpm retreat --force' to restore original dependencies before publishing
+Error: 2 lnpm reference(s) found in package.json
+```
+
+It exits non-zero on a finding, so `lnpm check && npm publish` is safe to
+script. It also faults the `lnpm.lock.retreat` snapshot a retreat leaves in the
+project root, which carries an absolute path per package and is not otherwise
+kept out of a tarball.
