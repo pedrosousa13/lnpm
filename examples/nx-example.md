@@ -201,7 +201,7 @@ If you have non-buildable libs (just TypeScript, no build step), publish only bu
 ```json
 {
   "scripts": {
-    "lnpm:pub:buildable": "nx run-many --target=build --all && (cd libs/feature-auth && lnpm publish) && (cd libs/ui && lnpm publish)"
+    "lnpm:pub:buildable": "nx run-many --target=build --all && (cd libs/feature-auth && lnpm publish) && (cd libs/ui && lnpm publish) && (cd libs/data-access && lnpm publish)"
   }
 }
 ```
