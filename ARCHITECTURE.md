@@ -769,16 +769,18 @@ lnpm doctor
 #
 # Checking store directory... ✓ OK
 # Checking database... ✓ OK
-# Checking for orphaned packages... ✓ OK
-# Checking for orphaned links... ⚠ 1 orphaned link(s)
-#   Fix: Run 'lnpm gc --fix-links' to clean up
+# Checking for orphaned packages... ⚠ 1 orphaned package(s)
+#   Fix: Run 'lnpm gc' to remove unused packages
+# Checking for orphaned links... ✓ OK
 # Checking store entries... ✓ OK
 # Checking store file integrity... SKIPPED
 #   Stored content was not re-hashed: that costs one read of the whole store
 #   Run 'lnpm doctor --verify-content' to check it
+# Checking stored package names... ✓ OK
 # Checking store completeness markers... ✓ OK
 #
 # ⚠ Found 1 warning(s)
+#   Store file integrity was not among them: run 'lnpm doctor --verify-content' to check the stored content too
 ```
 
 The two store checks answer different questions, and only one of them is free.
@@ -802,6 +804,12 @@ it did not run as one that passed.
 What the content check detects is corruption and accident. The store hashes with
 a 64-bit non-cryptographic function, which is not evidence against someone who
 chose the replacement bytes.
+
+`stored package names` re-runs the strict name validator over every distinct
+name in the store. lnpm has tightened what it accepts more than once, so a store
+can still hold a name a publish would refuse today. Doctor reports one rather
+than renaming it, because the lock files and `package.json` entries carrying the
+old spelling live in projects lnpm cannot enumerate.
 
 Doctor separates issues from warnings, and so does its exit code: it exits
 non-zero once it has reported an issue, and zero otherwise. Warnings alone —
