@@ -672,15 +672,28 @@ lnpm push
 
 ### CI/CD Integration
 
-In CI, restore original dependencies before publishing to npm:
+In CI, put the registry versions back before publishing to npm, then check that nothing of lnpm's is left:
 
 ```bash
-# Before npm publish
+# Restore the original dependencies in package.json
 lnpm retreat --force
 
-# Now safe to publish to npm registry
+# Fail the build if anything lnpm left behind would ship
+lnpm check
+
 npm publish
 ```
+
+`lnpm retreat` does not leave the directory clean. It writes `lnpm.lock.retreat` in the project root, the snapshot `lnpm restore` reads back, and that file holds an absolute path per package. npm packs it into the tarball unless something keeps it out, so `lnpm check` fails the build with exit 1:
+
+```
+x lnpm.lock.retreat is in the project root and nothing here keeps it out of a tarball
+  It is lnpm's record of what 'lnpm retreat' unlinked, and it holds an absolute path per package
+```
+
+Keep it out whichever way suits the repo. Add `lnpm.lock.retreat` to `.npmignore` or `.gitignore`, or list only what you ship in the package.json `files` field. On a CI runner you can also delete it, since nothing there is going to run `lnpm restore`.
+
+`lnpm check` catches the other half too, a `file:.lnpm/` or `link:.lnpm/` dependency still sitting in a manifest. In a workspace it scans the root and every member, not only the directory you run it from.
 
 ### Debugging Monorepo Issues
 
