@@ -1156,22 +1156,47 @@ func getProjectName(projectPath string) string {
 // packageNotInStoreError words the failure of a lookup that resolved nothing.
 //
 // The ordinary wording asks whether the user ran 'lnpm publish', which is the
-// right question almost always and the wrong one in exactly one case: a store
-// published before #327 can hold a row whose name is not composed, and
-// parsePackageSpec composes what it is asked for, so no spelling anyone can type
-// reaches that row. The two names render identically, so the ordinary message
-// would accuse a user of not publishing a package they can see the name of.
+// right question almost always and the wrong one in exactly two cases.
+//
+// The first is #450. gc collects the version 'latest' names once nothing links
+// it, because 'latest' is not a collection root (ADR-0002), and DeletePackage
+// then clears the name index. A project pinned to an older build keeps that
+// build alive, so the store still holds the package while a lookup by name alone
+// finds nothing - the state ADR-0002 already names as a consequence. The user
+// is then told to publish a package whose files are in the store and which
+// 'lnpm list <pkg> --versions' still shows. Retained versions are what separate
+// this from a name that really is absent, and the two hints cannot both fire. A
+// decomposed row carries a different name, so GetPackageVersions misses it.
+//
+// The message refuses rather than resolving. Pointing the bare spec at the
+// pinned build would either resurrect 'latest' onto a build no publish put
+// there, which is what ADR-0002 says 'latest' does not mean, or leave the
+// project unpinned and following a channel that names nothing, which moves the
+// same hole to the next 'lnpm pull'. So the fix is an accurate refusal, and the
+// two ways out it names are the two that exist.
+//
+// The second is #327. A store published before it can hold a row whose name is
+// not composed, and parsePackageSpec composes what it is asked for, so no
+// spelling anyone can type reaches that row. The two names render identically,
+// so the ordinary message would accuse a user of not publishing a package they
+// can see the name of.
 //
 // The remedy is doctor and not a name to retype, because there is no name to
 // retype. The row cannot be linked whatever it is called - link.Link validates
 // strictly and refuses it - so it has to be re-published before it is reachable
 // at all, and doctor is what lists it and says that.
 //
-// The scan costs a ListPackages, which is affordable here because this path is
-// already failing and about to stop. An unreadable database is not reported: the
-// caller is being told its package is missing either way, and a second failure
-// wedged into that sentence would obscure it.
+// The lookups cost a GetPackageVersions and a ListPackages, which are affordable
+// here because this path is already failing and about to stop. An unreadable
+// database is not reported: the caller is being told its package is missing
+// either way, and a second failure wedged into that sentence would obscure it.
 func packageNotInStoreError(database *db.DB, name string) error {
+	if retained, err := database.GetPackageVersions(name); err == nil && len(retained) > 0 {
+		return fmt.Errorf("package %s has nothing under 'latest' any more. 'lnpm gc' collected the build "+
+			"it named, and kept %s. Run 'lnpm add %s@%s' to add a build the store still holds, or publish "+
+			"%s again to restore 'latest', which is what an add with no version follows",
+			name, describeVersions(retained), name, retained[0].Version, name)
+	}
 	if packages, err := database.ListPackages(); err == nil {
 		for _, pkg := range packages {
 			if pkg.Name != name && pack.NormalizePackageName(pkg.Name) == name {
