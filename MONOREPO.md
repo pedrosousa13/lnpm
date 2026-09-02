@@ -43,7 +43,7 @@ lnpm integrates seamlessly with monorepo tools by:
 lnpm is a **system-wide binary** that can link packages from any workspace to any project (inside or outside the monorepo).
 
 ```
-lnpm ← one binary on your PATH (e.g. /usr/local/bin/lnpm), never in node_modules
+lnpm ← one binary on your PATH (e.g. ~/.local/bin/lnpm), never in node_modules
 
 my-monorepo/                    external-app/
 ├── package.json                ├── package.json
