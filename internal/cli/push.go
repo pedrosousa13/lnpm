@@ -163,7 +163,7 @@ func RunPushTagged(skipHooks bool, tag string) error {
 		fmt.Printf("Package %s not published yet, publishing...\n", pkgJSON.Name)
 
 		// Run prepare scripts before packing
-		if err := hooks.RunPrepare(cwd, skipHooks); err != nil {
+		if err := hooks.RunPrepareForPack(cwd, skipHooks); err != nil {
 			return fmt.Errorf("prepare hook failed: %w", err)
 		}
 
@@ -186,8 +186,9 @@ func RunPushTagged(skipHooks bool, tag string) error {
 		return finishPublish(cwd, pkgJSON, files, database, false, tag)
 	}
 
-	// Always run prepare scripts before packing
-	if err := hooks.RunPrepare(cwd, skipHooks); err != nil {
+	// Always run the pack lifecycle scripts before packing. Not publish's
+	// set: a push is a pack, so prepublishOnly stays out (see hooks.packScripts).
+	if err := hooks.RunPrepareForPack(cwd, skipHooks); err != nil {
 		return fmt.Errorf("prepare hook failed: %w", err)
 	}
 

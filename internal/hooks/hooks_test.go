@@ -96,6 +96,30 @@ func TestRunPrepareFollowsNpmScriptOrder(t *testing.T) {
 	}
 }
 
+// TestRunPrepareForPackSkipsPrepublishOnly pins the set push runs: what
+// `npm pack` runs, which is prepack and prepare. prepublishOnly is npm's
+// publish-only script, so a package that keeps a registry-only build or a slow
+// gate there must not see it fire on every push.
+func TestRunPrepareForPackSkipsPrepublishOnly(t *testing.T) {
+	requireNpm(t)
+
+	dir := t.TempDir()
+	writePackageJSON(t, dir, map[string]string{
+		"prepack":        logFor("prepack"),
+		"prepare":        logFor("prepare"),
+		"prepublishOnly": logFor("prepublishOnly"),
+	})
+
+	if err := RunPrepareForPack(dir, false); err != nil {
+		t.Fatalf("RunPrepareForPack returned an error: %v", err)
+	}
+
+	want := []string{"prepack", "prepare"}
+	if got := readOrderLog(t, dir); !slices.Equal(got, want) {
+		t.Errorf("scripts ran %v, want %v", got, want)
+	}
+}
+
 func TestRunPrepare(t *testing.T) {
 	requireNpm(t)
 

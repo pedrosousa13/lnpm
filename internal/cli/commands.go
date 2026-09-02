@@ -490,7 +490,7 @@ func init() {
 	removeCmd.Flags().Bool("install", false, "Run npm install after removing (default: no)")
 
 	// push flags
-	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts before push")
+	pushCmd.Flags().Bool("skip-hooks", false, "Skip prepare scripts (prepack, prepare) and re-push what is on disk")
 	pushCmd.Flags().String("tag", "", "Channel to push to (default: the channel the build already in the store carries)")
 
 	// list flags
