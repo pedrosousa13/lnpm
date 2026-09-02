@@ -12,6 +12,7 @@ import (
 
 	"github.com/pedrosousa13/lnpm/internal/config"
 	"github.com/pedrosousa13/lnpm/internal/debug"
+	"github.com/pedrosousa13/lnpm/internal/installmethod"
 	"golang.org/x/mod/semver"
 )
 
@@ -284,10 +285,40 @@ func compareVersions(current, latest string) *Result {
 
 // PrintUpdateNotice prints an update notice to stderr
 func PrintUpdateNotice(r *Result) {
+	printUpdateNotice(os.Stderr, r, installmethod.Current())
+}
+
+// printUpdateNotice writes the notice for a binary installed by method m.
+//
+// It takes the writer and the method rather than reading os.Stderr and the
+// running binary itself, so both branches of the command line below can be
+// asserted; PrintUpdateNotice supplies both.
+//
+// The install method is resolved on every notice rather than once per process.
+// Current() runs at most twice in a process - here and in 'lnpm update' - so
+// the saving would be one os.Executable and one EvalSymlinks, and caching it in
+// a package-level value would make the environment-dependent Scoop branch
+// untestable.
+func printUpdateNotice(w io.Writer, r *Result, m installmethod.Method) {
 	if r == nil || !r.UpdateAvailable {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "\nUpdate available: %s → %s\n", r.CurrentVersion, r.LatestVersion)
-	fmt.Fprintf(os.Stderr, "Run: lnpm update\n")
+	fmt.Fprintf(w, "\nUpdate available: %s → %s\n", r.CurrentVersion, r.LatestVersion)
+	fmt.Fprintf(w, "Run: %s\n", updateCommandHint(m))
+}
+
+// updateCommandHint names the command that upgrades an lnpm installed by m.
+//
+// A Homebrew or Scoop install is named its own manager's command, because
+// 'lnpm update' refuses to replace a binary either of them owns and does
+// nothing but print that command back (internal/cli's managedInstallError).
+// Sending a managed user through it is one command's delay for no gain, and
+// this notice fires on ordinary commands far more often than 'lnpm update' is
+// ever run.
+func updateCommandHint(m installmethod.Method) string {
+	if _, upgradeCommand, ok := m.Manager(); ok {
+		return upgradeCommand
+	}
+	return "lnpm update"
 }

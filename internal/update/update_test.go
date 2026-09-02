@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pedrosousa13/lnpm/internal/installmethod"
 )
 
 func TestCompareVersions(t *testing.T) {
@@ -596,5 +599,56 @@ func TestCheckFreshSurfacesTheResponseCap(t *testing.T) {
 	var tooLarge *apiResponseTooLargeError
 	if !errors.As(err, &tooLarge) {
 		t.Errorf("CheckFresh error = %v (%T), want it to wrap *apiResponseTooLargeError", err, err)
+	}
+}
+
+// A managed install is told the command that actually works. 'lnpm update'
+// refuses on a Homebrew or Scoop binary and names 'brew upgrade lnpm' or
+// 'scoop update lnpm' instead (#508), so a notice pointing at 'lnpm update'
+// sends a managed user to a command whose only job is to redirect them - and
+// the notice fires far more often than the command is run (#519).
+//
+// The message is asserted through printUpdateNotice rather than
+// PrintUpdateNotice because the exported one writes to os.Stderr and reads the
+// running binary's own install method, neither of which a test can choose.
+func TestPrintUpdateNoticeNamesTheManagerCommandForAManagedInstall(t *testing.T) {
+	tests := []struct {
+		method installmethod.Method
+		want   string
+	}{
+		{installmethod.Homebrew, "Run: brew upgrade lnpm\n"},
+		{installmethod.Scoop, "Run: scoop update lnpm\n"},
+		{installmethod.Go, "Run: lnpm update\n"},
+		{installmethod.Binary, "Run: lnpm update\n"},
+	}
+
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		printUpdateNotice(&buf, &Result{
+			CurrentVersion:  "1.0.0",
+			LatestVersion:   "2.0.0",
+			UpdateAvailable: true,
+		}, tt.method)
+
+		got := buf.String()
+		if !strings.Contains(got, "Update available: 1.0.0 → 2.0.0\n") {
+			t.Errorf("printUpdateNotice for method %d = %q, want it to carry the version line", tt.method, got)
+		}
+		if !strings.Contains(got, tt.want) {
+			t.Errorf("printUpdateNotice for method %d = %q, want it to contain %q", tt.method, got, tt.want)
+		}
+	}
+}
+
+// Nothing is printed when there is no update, and nothing is printed for a nil
+// result - the notice runs on every command, so a background check that failed
+// or found nothing must stay silent.
+func TestPrintUpdateNoticeStaysSilentWithoutAnUpdate(t *testing.T) {
+	for _, r := range []*Result{nil, {CurrentVersion: "2.0.0", LatestVersion: "2.0.0"}} {
+		var buf bytes.Buffer
+		printUpdateNotice(&buf, r, installmethod.Homebrew)
+		if buf.Len() != 0 {
+			t.Errorf("printUpdateNotice(%+v) wrote %q, want nothing", r, buf.String())
+		}
 	}
 }
