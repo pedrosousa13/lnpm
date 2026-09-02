@@ -39,6 +39,9 @@ Twelve files, and the count matters later: `lnpm push` from the root packs all o
   "name": "my-nx-workspace",
   "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "libs/*"
+  ],
   "scripts": {
     "lnpm:pub": "lnpm publish --all"
   },
@@ -48,6 +51,8 @@ Twelve files, and the count matters later: `lnpm push` from the root packs all o
   }
 }
 ```
+
+`lnpm publish --all` reads the `workspaces` field, or `pnpm-workspace.yaml`. It does not read `nx.json`. Leave the field out and every `--all` in this file fails with `no workspace found. --all requires a monorepo with workspaces configured`.
 
 No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the directory it runs from, so from the root it would pack `my-nx-workspace` instead of your library. Push from `libs/feature-auth`, or via the `lnpm-push` target below, which sets `cwd` for you.
 

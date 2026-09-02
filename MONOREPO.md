@@ -199,15 +199,20 @@ curl -fsSL https://raw.githubusercontent.com/pedrosousa13/lnpm/main/install.sh |
 go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest
 ```
 
-**2. Add convenience scripts to root `package.json` (optional):**
+**2. Declare your libraries in the root `package.json`:**
 
 ```json
 {
+  "workspaces": [
+    "libs/*"
+  ],
   "scripts": {
     "lnpm:publish": "lnpm publish --all"
   }
 }
 ```
+
+The `workspaces` field is what makes `lnpm publish --all` work. lnpm finds workspace members through that field or through `pnpm-workspace.yaml`, and it never reads `nx.json`. A workspace whose layout is described only to Nx gives lnpm nothing to walk, and `--all` stops with `no workspace found. --all requires a monorepo with workspaces configured`. The `lnpm:publish` script is the optional part.
 
 As in the Turborepo section, there is no root push script: `lnpm push` acts on whichever `package.json` is in the current directory. Push a single library either from inside it (`cd libs/feature-auth && lnpm push`) or through the Nx target below, which sets `cwd` for you.
 
