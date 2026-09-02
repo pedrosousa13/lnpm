@@ -121,19 +121,22 @@ var updateCmd = &cobra.Command{
 
 This command automatically detects how lnpm was installed and uses the appropriate method:
   - If installed via 'go install': Uses 'go install' to update
+  - If installed via Homebrew or Scoop: Refuses, and names the command to run instead
   - If installed via install script: Downloads and replaces the binary
 
 Examples:
   lnpm update           # Update to latest version
-  lnpm update --check   # Only check for updates, don't install`,
+  lnpm update --check   # Only check for updates, don't install
+  lnpm update --force   # Replace a Homebrew or Scoop binary anyway`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		checkOnly, _ := cmd.Flags().GetBool("check")
-		return RunUpdate(checkOnly, version)
+		force, _ := cmd.Flags().GetBool("force")
+		return RunUpdate(checkOnly, force, version)
 	},
 }
 
 // RunUpdate handles the update logic
-func RunUpdate(checkOnly bool, currentVersion string) error {
+func RunUpdate(checkOnly, force bool, currentVersion string) error {
 	// Refuse builds that name no release to update from. A `git describe` build
 	// is deliberately not one of them: it names the tag it was built from, so it
 	// is checked like any other version - see update.Baseline.
@@ -167,23 +170,29 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 
 	fmt.Printf("Update available: %s → %s\n", result.CurrentVersion, result.LatestVersion)
 
+	method := currentInstallMethod()
+
 	if checkOnly {
+		if _, upgradeCommand, ok := method.manager(); ok {
+			fmt.Printf("Run '%s' to install\n", upgradeCommand)
+			return nil
+		}
 		fmt.Printf("Run 'lnpm update' to install\n")
 		return nil
 	}
 
-	// Install latest version
-	fmt.Printf("Installing %s...\n", result.LatestVersion)
-
-	// Detect installation method and update accordingly. A binary whose path
-	// cannot be resolved is not treated as go-installed: installLatestViaBinary
-	// resolves it again and reports the failure to the user.
-	if binPath, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(binPath); err == nil && wasInstalledViaGo(resolved) {
-			return installLatestViaGo()
-		}
+	// The refusal is asked for before anything is printed as being installed,
+	// and after the version check, so a managed user still learns that a newer
+	// release exists and is then told how to get it.
+	if name, upgradeCommand, ok := method.manager(); ok && !force {
+		return managedInstallError(name, upgradeCommand)
 	}
 
+	fmt.Printf("Installing %s...\n", result.LatestVersion)
+
+	if method == installedViaGo {
+		return installLatestViaGo()
+	}
 	return installLatestViaBinary(result.LatestVersion)
 }
 
@@ -255,6 +264,166 @@ func isInBinDir(binPath, binDir string) bool {
 		return strings.EqualFold(dir, binDir)
 	}
 	return dir == binDir
+}
+
+// installMethod names how the running lnpm binary got onto the machine. The
+// set is closed because every caller has to answer the same question about
+// each one, and a boolean per package manager threaded through the update
+// dispatch would let two of them be true at once.
+type installMethod int
+
+const (
+	installedViaBinary installMethod = iota
+	installedViaGo
+	installedViaHomebrew
+	installedViaScoop
+)
+
+// detectInstallMethod classifies the binary at binPath. It takes the path
+// rather than reading os.Executable() itself, so the rules below can be tested
+// against real macOS and Windows path shapes on any host.
+func detectInstallMethod(binPath string) installMethod {
+	if wasInstalledViaGo(binPath) {
+		return installedViaGo
+	}
+
+	segs := containingDirSegments(binPath)
+	if isHomebrewPath(segs) {
+		return installedViaHomebrew
+	}
+	if isScoopPath(segs) {
+		return installedViaScoop
+	}
+	return installedViaBinary
+}
+
+// pathSegments splits p into its path components.
+//
+// Splitting on '\' as well as '/' is what lets the rules below be checked on a
+// Linux host. filepath treats a backslash as an ordinary character off Windows,
+// so a real Scoop path would otherwise arrive as one segment.
+func pathSegments(p string) []string {
+	return strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' })
+}
+
+// containingDirSegments splits binPath and drops the last segment, which names
+// the binary rather than a directory it sits under. A file someone named Cellar
+// is not a Homebrew install.
+func containingDirSegments(binPath string) []string {
+	segs := pathSegments(binPath)
+	if len(segs) == 0 {
+		return nil
+	}
+	return segs[:len(segs)-1]
+}
+
+// isHomebrewPath reports whether segs walks through Homebrew's Cellar or
+// Caskroom.
+//
+// brew --prefix is deliberately not consulted and <prefix>/bin is deliberately
+// not tested. The cask symlinks <prefix>/bin/lnpm into the Caskroom, so the
+// resolved path carries the Caskroom segment already, while a prefix test would
+// claim the binary of anyone who installed with LNPM_INSTALL_DIR=/usr/local/bin.
+//
+// The comparison folds case here and in isScoopPath, on every GOOS. These are
+// macOS and Windows path shapes, and both filesystems are case-insensitive by
+// default, so a fold that depended on runtime.GOOS would answer differently for
+// the same path.
+func isHomebrewPath(segs []string) bool {
+	for _, seg := range segs {
+		if strings.EqualFold(seg, "Cellar") || strings.EqualFold(seg, "Caskroom") {
+			return true
+		}
+	}
+	return false
+}
+
+// isScoopPath reports whether segs walks through a Scoop apps directory.
+//
+// Whole-segment matching on apps under scoop covers both the per-user root
+// %USERPROFILE%\scoop\apps and the global C:\ProgramData\scoop\apps. Scoop also
+// lets its root be moved, and a moved root leaves no scoop segment on the path
+// at all, so SCOOP and SCOOP_GLOBAL are read for that case.
+func isScoopPath(segs []string) bool {
+	for i, seg := range segs {
+		if i > 0 && strings.EqualFold(seg, "apps") && strings.EqualFold(segs[i-1], "scoop") {
+			return true
+		}
+	}
+
+	for _, env := range []string{"SCOOP", "SCOOP_GLOBAL"} {
+		root := os.Getenv(env)
+		if root == "" {
+			continue
+		}
+		if hasSegmentPrefix(segs, append(pathSegments(root), "apps")) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSegmentPrefix reports whether segs starts with prefix, comparing segment
+// by segment so that a scoop root of C:\my is not read as a prefix of
+// C:\mystuff.
+func hasSegmentPrefix(segs, prefix []string) bool {
+	if len(prefix) == 0 || len(segs) < len(prefix) {
+		return false
+	}
+	for i, want := range prefix {
+		if !strings.EqualFold(segs[i], want) {
+			return false
+		}
+	}
+	return true
+}
+
+// manager names the package manager that owns an install and the command that
+// upgrades it. ok is false for the two methods 'lnpm update' handles itself.
+func (m installMethod) manager() (name, upgradeCommand string, ok bool) {
+	switch m {
+	case installedViaHomebrew:
+		return "Homebrew", "brew upgrade lnpm", true
+	case installedViaScoop:
+		return "Scoop", "scoop update lnpm", true
+	}
+	return "", "", false
+}
+
+// currentInstallMethod classifies the running binary, asking about the resolved
+// path first and the unresolved one second.
+//
+// The resolved path is what Homebrew needs, because <prefix>/bin/lnpm is a
+// symlink into the Caskroom. Resolution cannot be relied on, though. Scoop's
+// apps\lnpm\current is an NTFS junction, which os.Executable's path runs
+// through, and a junction is neither a symlink nor a directory to Go
+// (src/os/types_windows.go, fileStat.mode under the default winsymlink=1,
+// reports ModeIrregular), so filepath.EvalSymlinks fails with ENOTDIR on it
+// (src/path/filepath/symlink.go, walkSymlinks, Go 1.26.7).
+func currentInstallMethod() installMethod {
+	binPath, err := os.Executable()
+	if err != nil {
+		return installedViaBinary
+	}
+	if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
+		if m := detectInstallMethod(resolved); m != installedViaBinary {
+			return m
+		}
+	}
+	return detectInstallMethod(binPath)
+}
+
+// managedInstallError refuses to replace a binary a package manager owns.
+//
+// The refusal is not about the replacement failing. It succeeds, and that is
+// the problem. The package manager goes on recording the version it installed,
+// so its next upgrade overwrites the newer binary with the older one it
+// believes is current, and the user is silently rolled back.
+func managedInstallError(name, upgradeCommand string) error {
+	return fmt.Errorf("this lnpm was installed with %s, so it will not be replaced here. "+
+		"Replacing it leaves %s recording the version it installed, and the next upgrade rolls you back to it. "+
+		"Run '%s' instead, or 'lnpm update --force' to replace it anyway",
+		name, name, upgradeCommand)
 }
 
 // installLatestViaGo uses 'go install' to update
@@ -821,4 +990,5 @@ func extractZip(zipPath, tmpDir string) (string, error) {
 
 func init() {
 	updateCmd.Flags().BoolP("check", "c", false, "Only check for updates without installing")
+	updateCmd.Flags().Bool("force", false, "Update a Homebrew or Scoop install anyway, replacing the package manager's binary")
 }

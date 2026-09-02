@@ -106,12 +106,11 @@ brew upgrade lnpm      # not `lnpm update`
 scoop update lnpm      # not `lnpm update`
 ```
 
-`lnpm update` replaces the binary in place and does not yet know it is running
-under a package manager, so Homebrew and Scoop go on reporting the version they
-installed while the binary on `PATH` is a newer one. The next `brew upgrade`
-then overwrites the self-updated binary and puts you back on the version brew
-recorded. [#508](https://github.com/pedrosousa13/lnpm/issues/508) tracks
-teaching `lnpm update` to refuse instead.
+`lnpm update` detects a Homebrew or Scoop install and refuses, naming the
+command above instead. Replacing the binary in place would leave the package
+manager reporting the version it installed while the binary on `PATH` is a
+newer one, and the next upgrade would overwrite the self-updated binary and put
+you back on the recorded version. `lnpm update --force` replaces it anyway.
 
 On macOS the cask clears the quarantine attribute on install, because the
 binaries are not signed or notarized and the first run would otherwise report
