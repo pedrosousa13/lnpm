@@ -31,6 +31,7 @@ Six files, and the count matters later: `lnpm push` from the root packs all of t
   "name": "my-turborepo",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "npm@11.6.2",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -45,6 +46,8 @@ Six files, and the count matters later: `lnpm push` from the root packs all of t
   }
 }
 ```
+
+Two fields carry weight here. `workspaces` is how `lnpm publish --all` finds your packages. `packageManager` is how Turborepo 2.x identifies the package manager. Leave it out, with no `devEngines.packageManager` block either, and every `turbo` command stops at `Could not resolve workspace`. Set it to the version you actually use.
 
 No root `lnpm:push` script: `lnpm push` acts on the `package.json` in the directory it runs from, so from the root it would pack `my-turborepo` instead of `@my/ui`. Push from `packages/ui`, or via the `lnpm:push` script below, which Turborepo runs with that package's directory as its cwd.
 
