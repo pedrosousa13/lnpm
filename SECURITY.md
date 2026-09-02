@@ -218,9 +218,10 @@ download against `checksums.txt`.
 
 **Which releases are signed.** A release is signed if and only if it publishes a
 `checksums.txt.sig` asset — that is the test to apply, because it stays true as
-versions move on. Releases up to and including **v3.0.0 publish no signature**;
-signing begins with the first release after this change lands. That version is
-not named here because release-please chooses it, not this document.
+versions move on. Releases up to and including **v3.0.0 publish no signature**.
+**Signing begins with v3.1.0**, which is the version release-please chose for
+the release the change landed in. v3.0.0 publishes no `checksums.txt.sig` asset
+and v3.1.0 does; both read from the GitHub releases API.
 
 Nothing is stranded by the cutover. `lnpm update` only ever installs the latest
 release, never an older one, so once the first signed release exists the only
