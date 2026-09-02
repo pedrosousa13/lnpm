@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose a new capability, or a change to an existing one.
+labels: ["Feature", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you were trying to do, and where lnpm got in the way. Describe the
+        situation rather than the fix you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you want it to do
+      description: >
+        The behaviour you are asking for. A command line and its output is the
+        clearest form this can take.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today
+      description: >
+        The workaround you are living with, or the other tool that handles it.
+        What that costs you is the strongest argument for the change.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before filing
+      options:
+        - label: >
+            I checked [ROADMAP.md](https://github.com/pedrosousa13/lnpm/blob/main/ROADMAP.md)
+            and the open issues.
+          required: true
