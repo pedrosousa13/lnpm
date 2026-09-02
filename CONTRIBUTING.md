@@ -150,13 +150,18 @@ compile at all.
 
 ## What CI runs
 
-Six required checks on every pull request.
+Seven required checks on every pull request.
 
 `ci.yaml` gives five. Test, Test (Windows) and Test (macOS) each run `go test -v -race` over
 `./internal/... ./pkg/... ./cmd/...` and then over `./tests/...`. Lint runs golangci-lint
 v2.12.2. Build runs `make release` and uploads the binaries, and it waits on the other four.
 
 `pr-title.yaml` gives the sixth, Conventional Commit.
+
+`security-versions.yaml` gives the seventh, Check supported versions. It compares `SECURITY.md`'s
+supported-versions table against the version being released, and fails when a major release has
+left the table behind. It runs on every pull request, not only the release one, and passes silently
+when the table already matches.
 
 The Test job also runs `make test-changelog-section` before it sets Go up at all. That target
 drives the shell script the release workflow uses to cut release notes out of `CHANGELOG.md`.
@@ -167,9 +172,6 @@ The whole matrix runs on documentation-only pull requests too. `ci.yaml` deliber
 never reports leaves a pull request blocked forever rather than passing it. The header comment
 in that file records the release pull request that proved it.
 
-One more check appears on the release pull request only. `security-versions.yaml` compares
-`SECURITY.md`'s supported-versions table against the version being released, and fails when a
-major release has left the table behind.
 
 ## Reporting things
 
