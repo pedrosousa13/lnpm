@@ -624,10 +624,17 @@ Make sure store and source are on same filesystem for instant reflinks:
 # Check if different filesystems
 df -h ~/my-monorepo
 df -h ~/.lnpm
-
-# If different, move store to same filesystem
-lnpm config store_path /Users/you/dev-store
 ```
+
+If they differ, move the store yourself and then point lnpm at where you put it. The store is `lnpm.db` and the `store/` directory beside it, both under `~/.lnpm` by default. Move those two and leave `config.yaml` where it is:
+
+```bash
+mkdir -p ~/dev-store
+mv ~/.lnpm/lnpm.db ~/.lnpm/store ~/dev-store/
+lnpm config store_path ~/dev-store
+```
+
+`lnpm config store_path` records a path. It moves nothing. Set it on its own and lnpm opens a fresh, empty database at the new location. `lnpm list --store` then reports no packages, `lnpm status` shows nothing published and no active links, and the next `lnpm push` republishes the package as if it were new and updates none of the projects that link it. Carry `lnpm.db` across with the content and all of that survives the move, links included.
 
 ### Issue: Nx/Turbo cache conflicts
 
