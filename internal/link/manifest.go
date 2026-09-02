@@ -255,6 +255,19 @@ var hashLinkedFile = pack.HashFile
 // second concurrent pass over the consumer's tree into a fix whose whole point
 // is correctness, for that.
 //
+// Giving the reads up on the filesystems where materialising is nearly free is
+// the shape #446 proposed and it is not available, which is worth stating here
+// rather than leaving to be rediscovered from the benchmark. The set this
+// returns is not only a per-file optimisation: Link's up-to-date shortcut
+// decides from it, so a relink that skips verification finds nothing reusable
+// and rebuilds and swaps the whole tree - on every push, including the ones
+// where nothing changed. Deciding that shortcut from the unverified candidates
+// instead is the bug #332 was reported against. So the choice is these reads or
+// no shortcut, not these reads or the same behaviour cheaper, and #446 was
+// closed on that. The measurement above is also hardware: on a slower host the
+// run-to-run spread is wider than the gap it describes, and reuse comes out
+// ahead.
+//
 // A candidate that cannot be hashed is not reusable. It is not an error either:
 // a file that has gone, or turned unreadable, between scanLinked and here is a
 // damaged .lnpm/{package}, and relinking has always been the way to repair one.
