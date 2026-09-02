@@ -284,7 +284,7 @@ lnpm/
 
 **Release process:**
 - Tool: GoReleaser (`.goreleaser.yaml`)
-- Platforms: Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64)
+- Platforms: Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64, arm64)
 
 ---
 

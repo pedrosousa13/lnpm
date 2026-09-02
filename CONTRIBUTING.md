@@ -30,7 +30,7 @@ The Makefile is GNU make. On Windows the same work is `go mod download`, `go bui
 | `make test-coverage` | the same, plus `coverage.html` |
 | `make lint` | `golangci-lint run ./...`, or `go vet ./...` when golangci-lint is not installed |
 | `make fmt` | `go fmt ./...`, plus `goimports` when it is installed |
-| `make release` | cross-compiles all five release targets into `bin/` |
+| `make release` | cross-compiles all six release targets into `bin/` |
 | `make hooks-enable` | points `core.hooksPath` at `.githooks` |
 
 `make help` lists the rest. The benchmark targets (`make bench`, `make bench-compare`) are there

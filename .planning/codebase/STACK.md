@@ -78,7 +78,7 @@
 - Git hooks support via `.githooks/`
 
 **Production:**
-- Cross-platform binaries: Linux (amd64, arm64), macOS (Intel, Apple Silicon), Windows (amd64)
+- Cross-platform binaries: Linux (amd64, arm64), macOS (Intel, Apple Silicon), Windows (amd64, arm64)
 - Distributed via: GitHub releases, `go install`, shell installer (`install.sh`)
 - No runtime dependencies beyond the binary
 
