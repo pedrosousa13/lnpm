@@ -17,7 +17,7 @@ this document is most concerned a reader gets right.
 There is one key. `internal/releasekeys/keys/` holds a single file,
 `release.pem`, and `openssl pkey -pubin -in internal/releasekeys/keys/release.pem
 -noout -text` reports a 256-bit key on `prime256v1` — P-256, which is what
-`TestTrustedYieldsP256KeysOnly` in `internal/releasekeys/releasekeys_test.go:16`
+`TestTrustedYieldsP256KeysOnly` in `internal/releasekeys/releasekeys_test.go:15`
 asserts of every embedded key. Its private half is the `RELEASE_SIGNING_KEY`
 repository secret, written to the runner at
 `.github/workflows/release-please.yaml:103` and handed to goreleaser through
@@ -56,20 +56,20 @@ The release pipeline already treats that directory as a set. The pre-flight step
 at `.github/workflows/release-please.yaml:147` derives the public half of
 `RELEASE_SIGNING_KEY` and fails the release unless it matches *some*
 `internal/releasekeys/keys/*.pem`; the post-sign step at
-`.github/workflows/release-please.yaml:201` re-checks the signature goreleaser
+`.github/workflows/release-please.yaml:224` re-checks the signature goreleaser
 actually produced against the same set. The comment at
 `.github/workflows/release-please.yaml:142` states the intent outright: "that
 directory is a set for rotation and any one of them verifying is a release the
 fleet can consume."
 
 `SECURITY.md` already tells users to read it that way. Its Release Integrity
-section, at `SECURITY.md:296`, says more than one key may be present while a key
+section, at `SECURITY.md:299`, says more than one key may be present while a key
 is being rotated, that a release is valid if any one of them verifies it, and
 that a reader verifying a download by hand should list the keys for the tag they
 are verifying at
 `https://github.com/pedrosousa13/lnpm/tree/$TAG/internal/releasekeys/keys` — at
 that tag, "not from `main`, which may already have rotated". The hand-verification
-recipe at `SECURITY.md:285` fetches `release.pem` by name, which is why
+recipe at `SECURITY.md:288` fetches `release.pem` by name, which is why
 `internal/releasekeys/releasekeys.go:6` tells anyone touching the package to
 keep that filename;
 nothing in the code depends on it, only the documented URL does.
