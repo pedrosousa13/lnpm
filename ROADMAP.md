@@ -20,9 +20,9 @@ going through a registry. The shipped commands cover:
 
 The [command table in the README](README.md#commands) is the authoritative list,
 with the flags for each command. [ARCHITECTURE.md](ARCHITECTURE.md) covers the
-storage layout, the linking strategy and the data flow; its command and
-configuration sections are older than some of what shipped, so use the README
-for those.
+storage layout, the linking strategy and the data flow, and its Command Design
+Notes record why particular commands behave as they do rather than repeating
+that table.
 
 Where state lives:
 
