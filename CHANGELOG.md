@@ -3,8 +3,15 @@
 ## [4.1.0](https://github.com/pedrosousa13/lnpm/compare/v4.0.0...v4.1.0) (2026-09-02)
 
 > **Installing with Homebrew or Scoop?** 4.1.0 publishes a Homebrew cask and a
-> Scoop manifest, so `brew install pedrosousa13/tap/lnpm` and `scoop install
-> lnpm` now work alongside the install scripts and `go install`.
+> Scoop manifest, so both now work alongside the install scripts and
+> `go install`. Homebrew is one command,
+> `brew install pedrosousa13/tap/lnpm`. Scoop resolves only against buckets you
+> have added, so it is two:
+>
+> ```
+> scoop bucket add pedrosousa13 https://github.com/pedrosousa13/scoop-bucket
+> scoop install lnpm
+> ```
 >
 > Do not run `lnpm update` on an install that came from either one. It replaces
 > the binary in place and has no notion of a package manager, so Homebrew and
