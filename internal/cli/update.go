@@ -170,7 +170,13 @@ func RunUpdate(checkOnly, force bool, currentVersion string) error {
 
 	fmt.Printf("Update available: %s → %s\n", result.CurrentVersion, result.LatestVersion)
 
+	method := currentInstallMethod()
+
 	if checkOnly {
+		if _, upgradeCommand, ok := method.manager(); ok {
+			fmt.Printf("Run '%s' to install\n", upgradeCommand)
+			return nil
+		}
 		fmt.Printf("Run 'lnpm update' to install\n")
 		return nil
 	}
@@ -178,7 +184,6 @@ func RunUpdate(checkOnly, force bool, currentVersion string) error {
 	// The refusal is asked for before anything is printed as being installed,
 	// and after the version check, so a managed user still learns that a newer
 	// release exists and is then told how to get it.
-	method := currentInstallMethod()
 	if name, upgradeCommand, ok := method.manager(); ok && !force {
 		return managedInstallError(name, upgradeCommand)
 	}
