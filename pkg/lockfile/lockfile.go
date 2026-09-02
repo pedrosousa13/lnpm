@@ -51,7 +51,19 @@ const (
 	// anything that decides what belongs to a project - packing a publish, above
 	// all - has to be able to recognise without spelling the name again.
 	RetreatFileName = lockFileName + ".retreat"
-	currentVersion  = 1
+	// currentVersion is the lock file format this build writes.
+	//
+	//	1 — package hashes as lnpm 3.x computed them.
+	//	2 — 4.0.0's hashes: the per-file fields length-prefixed (#453) and every
+	//	    manifest rewrite moved in front of the hash (#447).
+	//
+	// The Hash of a version 1 entry names a build no 4.x store holds, so restore
+	// and pull refuse such a file rather than reporting each of its packages as
+	// missing.
+	currentVersion = 2
+	// oldestVersion is the format a file that records no version at all is in.
+	// See read.
+	oldestVersion = 1
 )
 
 // Path returns the lock file path for a project directory.
@@ -126,11 +138,28 @@ func read(path string) (*LockFile, error) {
 	// format anything ever wrote. Normalising here rather than at the call sites
 	// keeps a file that is read and written back - a merging retreat writes the
 	// snapshot it just read - from persisting that 0 as if it meant something.
+	//
+	// It normalises to the oldest format, not the current one. Every file that
+	// omits the key predates the key, so calling it current would relabel a 3.x
+	// lock file as one carrying 4.0.0 hashes and hand restore a hash it would
+	// then fail to resolve, with nothing left to explain why.
 	if lock.Version == 0 {
-		lock.Version = currentVersion
+		lock.Version = oldestVersion
 	}
 
 	return &lock, nil
+}
+
+// PredatesCurrentFormat reports whether the file records package hashes in a
+// format this build does not compute.
+//
+// 4.0.0 changed every hash - the per-file fields are length-prefixed (#453) and
+// every manifest rewrite moved in front of the hash (#447) - so a Hash written
+// by 3.x names a build no 4.x store holds. Resolving one would report every
+// package as missing from the store, which is true but says nothing about why;
+// callers use this to say the useful thing instead.
+func (l *LockFile) PredatesCurrentFormat() bool {
+	return l.Version < currentVersion
 }
 
 // Save writes the lock file to a project directory

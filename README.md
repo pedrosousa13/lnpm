@@ -17,6 +17,16 @@
 
 ## Installation
 
+> **Upgrading from 3.x to 4.0.0? Re-publish your packages once.** 4.0.0 changes
+> how a package's content hash is computed, so entries published by 3.x can no
+> longer be served. Nothing is deleted and nothing is corrupted: `lnpm add`,
+> `lnpm pull` and `lnpm restore` refuse the old entries and tell you which
+> package to re-publish. Run `lnpm publish` in each of your library packages,
+> then `lnpm gc` to reclaim the old entries. A `lnpm.lock` committed to a
+> repository is rewritten by that publish. `lnpm doctor` reports the pending
+> ones as a warning, not an error. See
+> [ADR-0009](docs/adr/0009-4-0-0-invalidates-pre-4-0-0-state-rather-than-rewriting-it.md).
+
 > **On lnpm 1.9.x or older? Reinstall manually.** Those versions compare versions
 > byte-wise, so `lnpm update` reports `Already up to date` and never upgrades you.
 > Run `lnpm --version` to check, then reinstall with the script below or with

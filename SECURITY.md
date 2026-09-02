@@ -174,15 +174,14 @@ What it does not give you:
 
 - **It is not tamper evidence.** xxhash is not collision resistant and is not
   designed to be. A 64-bit digest puts a birthday collision at roughly 2^32
-  hashed inputs, but that is an upper bound on the work rather than the cost to
-  expect: the package-level hash concatenates its fields with no lengths and no
-  separators, so two different file sets can be made to produce the same input
-  to the hash with no cryptanalysis and no search at all. The reach is one
-  package name, not the store: an entry lives at `{name}/{hash}` and its
-  database record is keyed the same way, so two differently-named packages never
-  meet. What someone who publishes under a name can do is make two of their own
-  publishes collapse into one entry. That framing defect is tracked in
-  [#453](https://github.com/pedrosousa13/lnpm/issues/453).
+  hashed inputs, which is the figure that applies as of 4.0.0. Before it, the
+  package-level hash concatenated its fields with no lengths and no separators,
+  so a filename could absorb a record boundary and two different file sets could
+  be made to hash identically with no cryptanalysis and no search at all
+  ([#453](https://github.com/pedrosousa13/lnpm/issues/453), fixed in 4.0.0 by
+  length-prefixing each field). The reach was one package name, not the store:
+  an entry lives at `{name}/{hash}` and its database record is keyed the same
+  way, so two differently-named packages never meet.
 - What the hash detects is corruption and accident — a truncated write, a bad
   disk, an edit by someone not trying to hide it. What resists deliberate
   tampering is the write protection described above, not the hash.
@@ -190,12 +189,14 @@ What it does not give you:
   returns the existing entry when the hash is already present and never
   overwrites or deletes one, so the bytes that were there stay there and the
   colliding publish is the one that gets ignored.
-- One file sits outside the guarantee today. lnpm removes `prepare` and
-  `prepublish` from a stored `package.json` after the content hash has been
-  taken, so for a package defining either, the entry does not hold what its hash
-  describes, and `doctor --verify-content` reports that manifest as unchecked
-  rather than as sound. Tracked in
-  [#447](https://github.com/pedrosousa13/lnpm/issues/447).
+- Every file is inside the guarantee as of 4.0.0. lnpm removes `prepare` and
+  `prepublish` from the stored `package.json`, and that rewrite used to run
+  *after* the content hash was taken, so for a package defining either the entry
+  did not hold what its hash described and `doctor --verify-content` had to
+  report that manifest as unchecked rather than as sound
+  ([#447](https://github.com/pedrosousa13/lnpm/issues/447)). The strip now runs
+  before the packed set is hashed, so the exception is gone and the root
+  manifest is verified like any other file.
 
 The decision to accept a non-cryptographic hash here, and the route to tamper
 evidence if it is ever needed, are recorded in

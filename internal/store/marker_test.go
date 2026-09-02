@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -172,5 +173,58 @@ func TestGetFilesExcludesMarker(t *testing.T) {
 	}
 	if len(got) != len(files) {
 		t.Errorf("GetFiles returned %d files, want the %d stored files", len(got), len(files))
+	}
+}
+
+// TestCheckCompleteRefusesAnOlderMarkerSchema is half of 4.0.0's invalidation
+// of 3.x state.
+//
+// Framing the hash fields and stripping lifecycle scripts before hashing (#453,
+// #447) changed every package hash, so a 4.x publish writes its entries at new
+// paths and never looks at the old ones. That alone does not retire them: a
+// database row written by 3.x still carries its old ContentHash and a StorePath
+// pointing at a directory that is still on disk and still marked complete, so a
+// 4.x add resolving through that row would serve 3.x bytes under 4.x rules and
+// silently mix the two formats.
+//
+// The marker's schema version is what tells them apart, so an entry carrying an
+// older one is refused. The entry is left where it is - gc reclaims it, and
+// nothing here deletes a user's content.
+func TestCheckCompleteRefusesAnOlderMarkerSchema(t *testing.T) {
+	s := newTestStore(t)
+
+	entry := s.PackagePath("old-pkg", "abc123")
+	if err := os.MkdirAll(entry, 0755); err != nil {
+		t.Fatalf("create entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "package.json"), []byte(`{"name":"old-pkg"}`), 0644); err != nil {
+		t.Fatalf("write content: %v", err)
+	}
+	// The payload a 3.x store wrote: schema 1, and a hash that does agree with
+	// the directory, so nothing but the version can be what fails the check.
+	if err := os.WriteFile(filepath.Join(entry, markerName), []byte(`{"schemaVersion":1,"hash":"abc123"}`+"\n"), 0644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	err := s.CheckComplete("old-pkg", "abc123")
+	if err == nil {
+		t.Fatalf("CheckComplete passed an entry written by 3.x at %s", entry)
+	}
+
+	var incomplete *IncompleteEntryError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("CheckComplete returned %T, want *IncompleteEntryError so callers can tell it from a read failure", err)
+	}
+	// Outdated and not damaged, which is what decides the remedy the CLI
+	// offers: gc reclaims this entry, and telling the user to delete it by hand
+	// would be advice about a fault they do not have.
+	if !incomplete.Outdated {
+		t.Errorf("the entry was reported as damaged rather than outdated: %q", incomplete.Reason)
+	}
+	if incomplete.Present != true {
+		t.Errorf("Present = false for an entry that is still on disk")
+	}
+	if _, statErr := os.Stat(entry); statErr != nil {
+		t.Errorf("CheckComplete removed the entry it refused; gc reclaims 3.x entries, this does not: %v", statErr)
 	}
 }

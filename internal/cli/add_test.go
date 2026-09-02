@@ -30,7 +30,7 @@ func seedStoreEntry(t *testing.T, storeRoot, name, hash, relPath, content string
 	if err := os.WriteFile(filepath.Join(entry, relPath), []byte(content), 0644); err != nil {
 		t.Fatalf("seed store file: %v", err)
 	}
-	marker := []byte(`{"schemaVersion":1,"hash":"` + hash + `"}` + "\n")
+	marker := []byte(`{"schemaVersion":2,"hash":"` + hash + `"}` + "\n")
 	if err := os.WriteFile(filepath.Join(entry, ".lnpm-complete"), marker, 0644); err != nil {
 		t.Fatalf("seed completeness marker: %v", err)
 	}

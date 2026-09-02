@@ -1,5 +1,23 @@
 # The store's content hash is a consistency control, not tamper evidence
 
+> **Superseded in part by 4.0.0.** The decision this document makes — keep
+> xxhash64 for addressing, do not migrate to a cryptographic hash — still
+> stands. Two things it describes as open have since been fixed, and the text
+> below is left as it was written rather than edited in place, because the
+> reasoning is what the later issues cite. Read it with these corrections:
+>
+> - **#453 is fixed.** `HashFiles` length-prefixes each field as of 4.0.0, so
+>   the free collision described under *The birthday bound is not the binding
+>   constraint* is closed. The 2^32 birthday bound is now the operative figure.
+> - **#447 is fixed.** The lifecycle-script strip runs before the packed set is
+>   hashed, so the exception described under *Content addressing already has one
+>   exception* is gone, and `doctor --verify-content` verifies the root manifest
+>   like any other file.
+> - **The migration was paid.** Both fixes changed every package hash. What a
+>   4.x binary does with 3.x state is ADR-0009.
+> - **The metadata digest is still unbuilt**, and its precondition — that #447
+>   be closed first — is now met.
+
 lnpm addresses store entries by a 64-bit xxhash and keeps doing so. `HashFile`
 is xxhash over a file's bytes; `HashFiles` sorts the packed set by `RelPath` and
 folds each file's path, that per-file hash and its `Mode.Perm()` into a second
@@ -257,8 +275,13 @@ before the migration is actually wanted. 3.0.0 shipped earlier the same day and
 the decision came after it, so the carrier is the next major rather than that
 one.
 
-What makes deferring a flaw this cheap to exploit and this cheap to fix
-defensible is the failure direction rather than any difficulty, and the
+**Both landed in 4.0.0, together, as this section said they would.** The fields
+are length-prefixed and every manifest rewrite now runs in front of the hash.
+ADR-0009 records what a 4.x binary does with the state a 3.x binary wrote, and
+why that is a refusal rather than a rewrite.
+
+The deferral ended in 4.0.0. What made it defensible while it lasted was the
+failure direction rather than any difficulty, and the
 distinction is worth keeping straight: framing costs nothing to break, but
 `Store()` returns the existing entry when the hash is already present and never
 overwrites, so a collision still serves stale content rather than

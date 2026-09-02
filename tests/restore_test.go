@@ -385,6 +385,39 @@ func TestRestoreRemovesAnEmptySnapshot(t *testing.T) {
 	env.AssertFileExists(lockfile.RetreatPath(projectDir), false)
 }
 
+// TestRestoreRefusesASnapshotFromBeforeTheHashChange covers the case a real
+// user hits after upgrading to 4.0.0 with a retreat outstanding.
+//
+// 4.0.0 changed every package hash (#453, #447), so the hash a 3.x snapshot
+// records names a build no 4.x store holds. Restoring package by package would
+// report each one as "no longer in the store" - true, and useless: the store is
+// intact and the packages are still published, it is the snapshot that is in
+// the old format. The refusal names the file and the remedy instead, and it
+// happens before anything is put back, so the snapshot is not left half spent.
+//
+// The empty-snapshot case above is deliberately not covered by it: nothing in
+// that file resolves through a hash, so refusing it would strand it.
+func TestRestoreRefusesASnapshotFromBeforeTheHashChange(t *testing.T) {
+	env := setupTest(t)
+
+	projectDir := env.newProject("old-format-project")
+	env.writeFile(lockfile.RetreatPath(projectDir),
+		"version: 1\npackages:\n  left-pad:\n    version: 1.2.3\n    hash: 858b1150d7814175\n")
+
+	err := cli.RunRestore()
+	if err == nil {
+		t.Fatalf("restore of a 3.x snapshot succeeded, want a refusal naming the format")
+	}
+	for _, want := range []string{lockfile.RetreatFileName, "3.x", "re-publish"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("restore error %q does not mention %q", err.Error(), want)
+		}
+	}
+
+	// Nothing was consumed, so the user can act on the message and re-run.
+	env.AssertFileExists(lockfile.RetreatPath(projectDir), true)
+}
+
 // TestRestoreNamesTheSnapshotInAReadError covers the wording of a corrupt
 // snapshot's error. The snapshot and the lock file share a format and a reader,
 // so a message that says "lock file" gives one artifact two names and sends the

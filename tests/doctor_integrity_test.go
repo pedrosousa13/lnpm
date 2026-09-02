@@ -55,13 +55,20 @@ func TestDoctorReportsPoisonedStoreContent(t *testing.T) {
 	}
 }
 
-// TestDoctorDoesNotFaultAManifestTheStoreRewrote covers lnpm's own rewrite of a
-// stored package.json. store.stripLifecycleScripts removes prepare and
-// prepublish after the content hash has been taken, so for a package that has
-// one the stored bytes legitimately differ from the hash recorded for them - the
-// same carve-out AssertStoredContentHash has to make. A content check that read
-// that as damage would fault every package with a build step in it.
-func TestDoctorDoesNotFaultAManifestTheStoreRewrote(t *testing.T) {
+// TestDoctorVerifiesAStrippedManifest is #447 closed, end to end and from the
+// outside.
+//
+// prepare and prepublish are removed from the manifest that reaches the store.
+// That strip used to run inside store.Store, after publish had hashed the
+// packed files, so for any package defining one of those scripts the store held
+// bytes its own content hash did not describe: doctor had to excuse the
+// mismatch and AssertStoredContentHash had to skip such packages entirely.
+//
+// The strip now runs in pack.PrepareManifest, before the hash is taken. So this
+// asserts the strong form rather than the absence of a complaint - the entry
+// hashes to what is recorded for it, on the one file that used to be the
+// exception, with the script really gone.
+func TestDoctorVerifiesAStrippedManifest(t *testing.T) {
 	env := setupTest(t)
 
 	pkgDir := env.CreateTestPackage("prepare-pkg", "1.0.0", map[string]string{
@@ -74,14 +81,34 @@ func TestDoctorDoesNotFaultAManifestTheStoreRewrote(t *testing.T) {
 		t.Fatalf("publish prepare-pkg: %v", err)
 	}
 
+	// The strip really happened, so what follows is not passing because there
+	// was nothing to strip.
+	stored, err := os.ReadFile(env.storedPackageJSONPath("prepare-pkg"))
+	if err != nil {
+		t.Fatalf("read the stored manifest: %v", err)
+	}
+	// Matched as a JSON key, not as a substring: the package is called
+	// prepare-pkg, so a bare "prepare" search matches its own name.
+	if strings.Contains(string(stored), `"prepare":`) {
+		t.Fatalf("the stored manifest still carries its prepare script, so this test proves nothing: %s", stored)
+	}
+
+	// The claim #447 was filed about: the entry holds what its hash describes.
+	// Before the fix this call was not available for a package with a prepare
+	// script - the helper documented it as an exception.
+	env.AssertStoredContentHash("prepare-pkg")
+
 	out := captureStdout(t, func() {
 		if err := cli.RunDoctor(true); err != nil {
-			t.Errorf("RunDoctor(true) = %v for a manifest lnpm rewrote itself, want nil", err)
+			t.Errorf("RunDoctor(true) = %v for a package with a prepare script, want nil", err)
 		}
 	})
 
 	if strings.Contains(out, "do not hold the content recorded for them") {
-		t.Errorf("RunDoctor reported lnpm's own rewrite of package.json as damage, output was:\n%s", out)
+		t.Errorf("RunDoctor reported the stripped manifest as damage, output was:\n%s", out)
+	}
+	if strings.Contains(out, "could not be checked") {
+		t.Errorf("RunDoctor left the manifest unchecked; #447 removed that carve-out, output was:\n%s", out)
 	}
 }
 

@@ -47,6 +47,16 @@ import (
 // A pin is not a fourth. The lock file records one, so the snapshot does too,
 // and a project that retreated pinned comes back pinned - see ADR-0006, and
 // recordRestoredLink for why that is not the same call as guessing a channel.
+// errLockPredatesFormat is what a project holding a 3.x lock file gets from any
+// command that resolves through the hashes in it.
+//
+// Named once and shared by restore and pull because the two would otherwise
+// drift: the fault is the same, the remedy is the same, and only the file
+// differs. See lockfile.PredatesCurrentFormat.
+func errLockPredatesFormat(fileName string) error {
+	return fmt.Errorf("%s was written by lnpm 3.x and records package hashes this build does not use: re-publish the packages it names with `lnpm publish`, which rewrites it", fileName)
+}
+
 func RunRestore() error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -85,6 +95,15 @@ func RunRestore() error {
 		}
 		fmt.Printf("Nothing to restore: the last 'lnpm retreat' recorded no packages\n")
 		return nil
+	}
+
+	// After the empty-snapshot path above, and before anything is put back.
+	// Every entry in a 3.x snapshot resolves through a hash no 4.x store holds,
+	// so restoring one package at a time would report all of them missing; but
+	// a snapshot with nothing in it has no hash to resolve, and refusing that
+	// one would strand a spent file no later retreat can write over.
+	if snapshot.PredatesCurrentFormat() {
+		return errLockPredatesFormat(lockfile.RetreatFileName)
 	}
 
 	database, err := db.GetDB()

@@ -96,7 +96,7 @@ func libManifest(spec string) string {
 `
 }
 
-func TestRewriteWorkspaceDepsResolvesSpecifierForms(t *testing.T) {
+func TestPrepareManifestResolvesSpecifierForms(t *testing.T) {
 	tests := []struct {
 		spec string
 		want string
@@ -121,10 +121,10 @@ func TestRewriteWorkspaceDepsResolvesSpecifierForms(t *testing.T) {
 			libDir := addTestPackage(t, root, "lib", libManifest(tt.spec))
 
 			files := packWorkspacePkg(t, libDir)
-			cleanup, err := RewriteWorkspaceDeps(libDir, files)
+			cleanup, err := PrepareManifest(libDir, files)
 			defer cleanup()
 			if err != nil {
-				t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+				t.Fatalf("PrepareManifest failed: %v", err)
 			}
 
 			entry := packageJSONEntry(t, files)
@@ -137,7 +137,7 @@ func TestRewriteWorkspaceDepsResolvesSpecifierForms(t *testing.T) {
 
 // pnpm accepts the workspace: protocol in all four dependency maps, and a
 // specifier left in any of them reaches consumers through the stored manifest.
-func TestRewriteWorkspaceDepsRewritesEveryDependencyField(t *testing.T) {
+func TestPrepareManifestRewritesEveryDependencyField(t *testing.T) {
 	for _, field := range []string{"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"} {
 		t.Run(field, func(t *testing.T) {
 			root := newTestWorkspace(t)
@@ -152,10 +152,10 @@ func TestRewriteWorkspaceDepsRewritesEveryDependencyField(t *testing.T) {
 `)
 
 			files := packWorkspacePkg(t, libDir)
-			cleanup, err := RewriteWorkspaceDeps(libDir, files)
+			cleanup, err := PrepareManifest(libDir, files)
 			defer cleanup()
 			if err != nil {
-				t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+				t.Fatalf("PrepareManifest failed: %v", err)
 			}
 
 			entry := packageJSONEntry(t, files)
@@ -204,7 +204,7 @@ func TestFindWorkspaceDepsSortsByFieldThenName(t *testing.T) {
 
 // The content hash must cover the rewritten bytes, otherwise the hash and the
 // file consumers install would disagree.
-func TestRewriteWorkspaceDepsRehashesRewrittenBytes(t *testing.T) {
+func TestPrepareManifestRehashesRewrittenBytes(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
@@ -214,10 +214,10 @@ func TestRewriteWorkspaceDepsRehashesRewrittenBytes(t *testing.T) {
 	entry := packageJSONEntry(t, files)
 	sourceHash := entry.ContentHash
 
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("PrepareManifest failed: %v", err)
 	}
 
 	rewritten, err := HashFile(entry.Path)
@@ -250,7 +250,7 @@ func TestRewriteWorkspaceDepsRehashesRewrittenBytes(t *testing.T) {
 }
 
 // AC 4: the developer's own package.json must come out byte-identical.
-func TestRewriteWorkspaceDepsLeavesSourceUntouched(t *testing.T) {
+func TestPrepareManifestLeavesSourceUntouched(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
@@ -262,10 +262,10 @@ func TestRewriteWorkspaceDepsLeavesSourceUntouched(t *testing.T) {
 	}
 
 	files := packWorkspacePkg(t, libDir)
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("PrepareManifest failed: %v", err)
 	}
 
 	after, err := os.ReadFile(sourcePath)
@@ -287,7 +287,7 @@ func TestRewriteWorkspaceDepsLeavesSourceUntouched(t *testing.T) {
 
 // The whole point of splicing rather than re-marshalling: every byte outside
 // the rewritten value survives, so key order and indentation are preserved.
-func TestRewriteWorkspaceDepsPreservesFormatting(t *testing.T) {
+func TestPrepareManifestPreservesFormatting(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	manifest := `{
@@ -302,10 +302,10 @@ func TestRewriteWorkspaceDepsPreservesFormatting(t *testing.T) {
 	libDir := addTestPackage(t, root, "lib", manifest)
 
 	files := packWorkspacePkg(t, libDir)
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("PrepareManifest failed: %v", err)
 	}
 
 	entry := packageJSONEntry(t, files)
@@ -321,7 +321,7 @@ func TestRewriteWorkspaceDepsPreservesFormatting(t *testing.T) {
 }
 
 // AC 3: a package with no workspace: specifiers is left completely alone.
-func TestRewriteWorkspaceDepsWithoutWorkspaceSpecifiers(t *testing.T) {
+func TestPrepareManifestWithoutWorkspaceSpecifiers(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("^2.0.0"))
@@ -330,10 +330,10 @@ func TestRewriteWorkspaceDepsWithoutWorkspaceSpecifiers(t *testing.T) {
 	entry := packageJSONEntry(t, files)
 	beforePath, beforeHash, beforeSize := entry.Path, entry.ContentHash, entry.Size
 
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("PrepareManifest failed: %v", err)
 	}
 
 	if entry.Path != beforePath {
@@ -346,25 +346,25 @@ func TestRewriteWorkspaceDepsWithoutWorkspaceSpecifiers(t *testing.T) {
 
 // AC 3 again, for the case Detect reports no workspace at all: a package with
 // no workspace: specifiers outside a workspace must still publish.
-func TestRewriteWorkspaceDepsOutsideWorkspaceWithoutSpecifiers(t *testing.T) {
+func TestPrepareManifestOutsideWorkspaceWithoutSpecifiers(t *testing.T) {
 	pkgDir := t.TempDir()
 	writeTestFile(t, filepath.Join(pkgDir, "package.json"), `{"name":"lonely","version":"1.0.0"}`)
 
 	files := packWorkspacePkg(t, pkgDir)
-	cleanup, err := RewriteWorkspaceDeps(pkgDir, files)
+	cleanup, err := PrepareManifest(pkgDir, files)
 	defer cleanup()
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("PrepareManifest failed: %v", err)
 	}
 }
 
 // AC 5, first case: a workspace: specifier outside any workspace.
-func TestRewriteWorkspaceDepsOutsideWorkspaceFails(t *testing.T) {
+func TestPrepareManifestOutsideWorkspaceFails(t *testing.T) {
 	pkgDir := t.TempDir()
 	writeTestFile(t, filepath.Join(pkgDir, "package.json"), libManifest("workspace:*"))
 
 	files := packWorkspacePkg(t, pkgDir)
-	cleanup, err := RewriteWorkspaceDeps(pkgDir, files)
+	cleanup, err := PrepareManifest(pkgDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected an error for a workspace: specifier outside a workspace, got nil")
@@ -377,12 +377,12 @@ func TestRewriteWorkspaceDepsOutsideWorkspaceFails(t *testing.T) {
 }
 
 // AC 5, second case: the sibling is not a package of the detected workspace.
-func TestRewriteWorkspaceDepsUnknownSiblingFails(t *testing.T) {
+func TestPrepareManifestUnknownSiblingFails(t *testing.T) {
 	root := newTestWorkspace(t)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
 
 	files := packWorkspacePkg(t, libDir)
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected an error for a sibling missing from the workspace, got nil")
@@ -396,13 +396,13 @@ func TestRewriteWorkspaceDepsUnknownSiblingFails(t *testing.T) {
 
 // A bare "workspace:" carries no range to strip down to, so there is nothing to
 // publish: it must fail rather than ship an empty specifier.
-func TestRewriteWorkspaceDepsBareProtocolFails(t *testing.T) {
+func TestPrepareManifestBareProtocolFails(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:"))
 
 	files := packWorkspacePkg(t, libDir)
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected an error for a bare workspace: specifier, got nil")
@@ -415,15 +415,15 @@ func TestRewriteWorkspaceDepsBareProtocolFails(t *testing.T) {
 }
 
 // The temporary file must not outlive the publish that created it.
-func TestRewriteWorkspaceDepsCleanupRemovesTempFile(t *testing.T) {
+func TestPrepareManifestCleanupRemovesTempFile(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
 
 	files := packWorkspacePkg(t, libDir)
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	if err != nil {
-		t.Fatalf("RewriteWorkspaceDeps failed: %v", err)
+		t.Fatalf("PrepareManifest failed: %v", err)
 	}
 
 	entry := packageJSONEntry(t, files)
@@ -442,7 +442,7 @@ func TestRewriteWorkspaceDepsCleanupRemovesTempFile(t *testing.T) {
 // created, so the packed entry must still point at the source tree - publish
 // deferred the cleanup before checking the error, and the entry it hands to the
 // store has to be the untouched one.
-func TestRewriteWorkspaceDepsFailingResolutionKeepsPackedEntry(t *testing.T) {
+func TestPrepareManifestFailingResolutionKeepsPackedEntry(t *testing.T) {
 	root := newTestWorkspace(t)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
 
@@ -450,7 +450,7 @@ func TestRewriteWorkspaceDepsFailingResolutionKeepsPackedEntry(t *testing.T) {
 	entry := packageJSONEntry(t, files)
 	sourcePath, sourceHash, sourceSize := entry.Path, entry.ContentHash, entry.Size
 
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected an error for a sibling missing from the workspace, got nil")
@@ -466,7 +466,7 @@ func TestRewriteWorkspaceDepsFailingResolutionKeepsPackedEntry(t *testing.T) {
 // The genuine leak path: a failure raised after the temporary file exists must
 // still remove it. Mode 0 is what gets it there - materialization gives the
 // temporary file the packed entry's mode, and hashing an unreadable file fails.
-func TestRewriteWorkspaceDepsRemovesTempFileWhenMaterializationFails(t *testing.T) {
+func TestPrepareManifestRemovesTempFileWhenMaterializationFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows leaves a mode 0 file readable, so hashing it would not fail")
 	}
@@ -487,7 +487,7 @@ func TestRewriteWorkspaceDepsRemovesTempFileWhenMaterializationFails(t *testing.
 	entry := packageJSONEntry(t, files)
 	entry.Mode = 0
 
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected hashing an unreadable rewritten package.json to fail, got nil")
@@ -516,11 +516,11 @@ func TestRewriteWorkspaceDepsRemovesTempFileWhenMaterializationFails(t *testing.
 // cannot now — collectFiles force-includes it and Pack refuses a set without it —
 // so the old fixture asserted a behaviour that no longer exists.
 //
-// RewriteWorkspaceDeps takes the file slice as a parameter, so filtering it is
+// PrepareManifest takes the file slice as a parameter, so filtering it is
 // not a seam invented for the test: it is the same value any caller hands over,
 // and the guard under test is a defensive check on that parameter rather than on
 // anything Pack decided.
-func TestRewriteWorkspaceDepsWithoutPackedManifestFails(t *testing.T) {
+func TestPrepareManifestWithoutPackedManifestFails(t *testing.T) {
 	root := newTestWorkspace(t)
 	addTestPackage(t, root, "util", `{"name":"@ws/util","version":"2.3.0"}`)
 	libDir := addTestPackage(t, root, "lib", libManifest("workspace:*"))
@@ -535,7 +535,7 @@ func TestRewriteWorkspaceDepsWithoutPackedManifestFails(t *testing.T) {
 		t.Fatal("Expected the filtered set to hold no package.json")
 	}
 
-	cleanup, err := RewriteWorkspaceDeps(libDir, files)
+	cleanup, err := PrepareManifest(libDir, files)
 	defer cleanup()
 	if err == nil {
 		t.Fatal("Expected an error when package.json is not among the packed files, got nil")

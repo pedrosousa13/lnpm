@@ -1,6 +1,7 @@
 package pack
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,9 +38,32 @@ type workspaceIndex struct {
 	versions map[string]string
 }
 
-// RewriteWorkspaceDeps resolves the workspace: dependency specifiers of the
-// package at pkgDir against the other packages of its workspace, so consumers
-// receive a specifier npm can install.
+// strippedScripts are the lifecycle scripts PrepareManifest removes from the
+// manifest that reaches the store. They run during `npm install` of a file:
+// dependency and can fail there - husky's prepare being the usual one - so a
+// consumer installing a linked package would run a build the publisher already
+// ran. Matches yalc: https://github.com/wclr/yalc/blob/master/src/copy.ts
+var strippedScripts = []string{"prepare", "prepublish"}
+
+// PrepareManifest applies every transform the stored package.json needs, before
+// publish hashes the packed set, and repoints the package.json entry of files at
+// the result.
+//
+// Two transforms, and the order between them does not matter because they touch
+// different fields:
+//
+//   - workspace: dependency specifiers are resolved against the other packages
+//     of the workspace, so consumers receive a specifier npm can install (#192).
+//   - prepare and prepublish are removed from the scripts map, so npm does not
+//     run them when the package is installed as a file: dependency.
+//
+// Doing the strip here rather than in the store is #447. It used to run inside
+// store.Store, after publish had already hashed the packed files, so for any
+// package defining one of those scripts the bytes in the store were not the
+// bytes the entry's content hash described - and `doctor --verify-content` had
+// to carve the root manifest out of verification, on the one file most worth
+// verifying. Hashing what will actually be stored removes the exception rather
+// than reconstructing an expectation around it.
 //
 // The developer's own package.json is never modified. The rewritten document is
 // written to a temporary file outside the source tree and the package.json entry
@@ -50,7 +74,7 @@ type workspaceIndex struct {
 // The returned cleanup removes that temporary file. It is never nil, so it can
 // be deferred before the error is checked, and it must not run until the files
 // have been stored.
-func RewriteWorkspaceDeps(pkgDir string, files []*FileInfo) (func(), error) {
+func PrepareManifest(pkgDir string, files []*FileInfo) (func(), error) {
 	noop := func() {}
 
 	src, err := os.ReadFile(filepath.Join(pkgDir, "package.json"))
@@ -62,33 +86,89 @@ func RewriteWorkspaceDeps(pkgDir string, files []*FileInfo) (func(), error) {
 	if err != nil {
 		return noop, err
 	}
-	if len(deps) == 0 {
-		return noop, nil
+
+	out := src
+	if len(deps) > 0 {
+		index, err := indexWorkspace(pkgDir, deps[0])
+		if err != nil {
+			return noop, err
+		}
+		for _, dep := range deps {
+			resolved, err := resolveWorkspaceSpec(dep, index)
+			if err != nil {
+				return noop, err
+			}
+			if out, err = pkgjson.SetDep(out, dep.field, dep.name, resolved); err != nil {
+				return noop, fmt.Errorf("failed to rewrite %s in package.json: %w", dep.name, err)
+			}
+			debug.Logf("pack: resolved %s %s -> %s", dep.name, dep.spec, resolved)
+		}
 	}
 
-	index, err := indexWorkspace(pkgDir, deps[0])
+	stripped, err := stripLifecycleScripts(out)
 	if err != nil {
 		return noop, err
+	}
+	if stripped != nil {
+		out = stripped
+	}
+
+	// Nothing to materialise: no workspace specifier was resolved and no script
+	// was stripped, so the file on disk is already the file the store will hold.
+	if len(out) == len(src) && bytes.Equal(out, src) {
+		return noop, nil
 	}
 
 	entry := packedPackageJSON(files)
 	if entry == nil {
-		return noop, fmt.Errorf("cannot resolve workspace dependencies: package.json is excluded from the published files")
-	}
-
-	out := src
-	for _, dep := range deps {
-		resolved, err := resolveWorkspaceSpec(dep, index)
-		if err != nil {
-			return noop, err
-		}
-		if out, err = pkgjson.SetDep(out, dep.field, dep.name, resolved); err != nil {
-			return noop, fmt.Errorf("failed to rewrite %s in package.json: %w", dep.name, err)
-		}
-		debug.Logf("pack: resolved %s %s -> %s", dep.name, dep.spec, resolved)
+		// ADR-0005 makes the manifest unexcludable, so reaching this means the
+		// packed set was built by something that does not enforce it.
+		return noop, fmt.Errorf("cannot rewrite package.json: it is excluded from the published files")
 	}
 
 	return materializePackageJSON(entry, out)
+}
+
+// stripLifecycleScripts removes strippedScripts from src, returning the
+// rewritten document, or nil when there was nothing to remove.
+//
+// A document it cannot parse, or one carrying no scripts map, is left alone
+// rather than reported: this runs over the developer's own package.json on
+// every publish, and a manifest lnpm cannot read is the packer's problem to
+// report, in the packer's own words, not this function's to fail the publish on.
+func stripLifecycleScripts(src []byte) ([]byte, error) {
+	if len(src) == 0 {
+		return nil, nil
+	}
+
+	var manifest map[string]interface{}
+	if err := json.Unmarshal(src, &manifest); err != nil {
+		debug.Logf("pack: cannot parse package.json, leaving its scripts alone: %v", err)
+		return nil, nil
+	}
+
+	scripts, ok := manifest["scripts"].(map[string]interface{})
+	if !ok || scripts == nil {
+		return nil, nil
+	}
+
+	modified := false
+	for _, script := range strippedScripts {
+		if _, exists := scripts[script]; exists {
+			delete(scripts, script)
+			modified = true
+			debug.Logf("pack: stripped %s script from package.json", script)
+		}
+	}
+	if !modified {
+		return nil, nil
+	}
+
+	out, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal package.json: %w", err)
+	}
+	return append(out, '\n'), nil
 }
 
 // findWorkspaceDeps returns the workspace: entries of src, sorted by field and

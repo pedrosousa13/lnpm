@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -254,6 +255,12 @@ func RunDoctor(verifyContent bool) error {
 		// already reported here, and re-hashing one would list every file in it
 		// a second time under a different heading.
 		damagedEntries := make(map[string]bool)
+		// Entries that are sound but were written before 4.0.0 changed the hash
+		// format. Kept apart from damaged: an upgraded store holds one of these
+		// for every package the user ever published, and reporting all of them
+		// as damage would make `lnpm doctor` fail on a store with nothing wrong
+		// with it - and send the user deleting directories to fix it.
+		var outdated []string
 		for _, pkg := range packages {
 			if pkg.StorePath == "" {
 				continue
@@ -275,8 +282,16 @@ func RunDoctor(verifyContent bool) error {
 				err = store.CheckComplete(pkg.StorePath)
 			}
 			if err != nil {
-				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
+				// Both kinds are skipped by the content check below - neither
+				// can be re-hashed against a record this build understands.
 				damagedEntries[pkg.StorePath] = true
+
+				var incomplete *store.IncompleteEntryError
+				if errors.As(err, &incomplete) && incomplete.Outdated {
+					outdated = append(outdated, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
+					continue
+				}
+				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
 			}
 		}
 		if len(damaged) > 0 {
@@ -286,8 +301,24 @@ func RunDoctor(verifyContent bool) error {
 			}
 			fmt.Println("  Fix: Re-publish the affected packages; delete any directory listed above that is still there first, since lnpm will not overwrite or remove one")
 			issues++
-		} else {
+		} else if len(outdated) == 0 {
 			fmt.Printf("%s OK\n", ui.IconOK())
+		}
+		if len(outdated) > 0 {
+			fmt.Printf("%s %d package(s) stored by an lnpm before 4.0.0\n", ui.IconWarn(), len(outdated))
+			for _, entry := range outdated {
+				fmt.Printf("  %s\n", entry)
+			}
+			// A warning and not an issue. Nothing is wrong with these entries;
+			// 4.0.0 addresses packages differently (#453, #447), so they can no
+			// longer be served. Failing the command for them would fail it on
+			// every store that predates the upgrade.
+			//
+			// And no instruction to delete anything: a re-publish hashes to a
+			// different directory, so it does not collide with these, and gc is
+			// what reclaims them once nothing points at them.
+			fmt.Println("  Fix: Re-publish the affected packages, then run 'lnpm gc' to reclaim the old entries")
+			warnings++
 		}
 
 		// Check 6: Re-hash stored content and compare it against the hashes the
@@ -530,10 +561,8 @@ func RunDoctor(verifyContent bool) error {
 //     damage, and add tolerates every one of these by relinking the entry in
 //     full, so it is a warning; but it is a part of the store this check could
 //     not speak for, so it is named rather than passed over.
-//   - rewritten: the one file lnpm changes behind the hash's back. See
-//     manifestRewrittenByStore below.
 func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntries map[string]bool) (issues, warnings int) {
-	var altered, unverified, rewritten []string
+	var altered, unverified []string
 	verified, filesRead, bytesRead := 0, 0, int64(0)
 	skipped := 0
 
@@ -619,10 +648,6 @@ func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntr
 			if hash == entry.ContentHash {
 				continue
 			}
-			if manifestRewrittenByStore(entry.RelativePath, file.Path) {
-				rewritten = append(rewritten, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, entry.RelativePath))
-				continue
-			}
 			altered = append(altered, fmt.Sprintf("%s@%s  %s  holds %s, not the recorded %s",
 				pkg.Name, pkg.Version, entry.RelativePath, shortHash(hash), shortHash(entry.ContentHash)))
 		}
@@ -671,53 +696,6 @@ func reportContentIntegrity(database *db.DB, packages []*db.Package, damagedEntr
 		// excused by it, so they add nothing to the tally here.
 		fmt.Printf("  %d entry(ies) were not re-hashed: Check 5 already reported them as missing or incomplete\n", skipped)
 	}
-	if len(rewritten) > 0 {
-		fmt.Printf("  %s %d manifest(s) could not be checked, because lnpm rewrote them after hashing them:\n", ui.IconWarn(), len(rewritten))
-		for _, finding := range rewritten {
-			fmt.Printf("    %s\n", finding)
-		}
-		fmt.Println("    A stored package.json has its prepare and prepublish scripts removed once the content hash has been taken, so the recorded hash does not describe the stored bytes")
-		// A warning and not an issue. This is lnpm's own doing on a healthy
-		// store, so failing the command for it would make
-		// `lnpm doctor --verify-content && ...` unusable against any package
-		// with a build step in it. It is still said out loud, because the file
-		// it covers is the one an attacker would most want to change.
-		warnings++
-	}
 
 	return issues, warnings
-}
-
-// manifestRewrittenByStore reports whether a mismatch on relPath is explained
-// by lnpm's own rewrite of the file at path, rather than by damage.
-//
-// store.stripLifecycleScripts re-marshals the entry's root package.json to
-// remove prepare and prepublish, and it runs after publish has hashed the packed
-// files, so for a package that had either script the store legitimately holds a
-// manifest the database's hash does not describe. Nothing records which packages
-// those were, so that mismatch cannot be told from damage and is reported as
-// unchecked rather than as either.
-//
-// Two things narrow that excuse, and both matter, because the file it covers is
-// the one worth tampering with - main, bin and postinstall all survive the strip
-// untouched.
-//
-// The path, because the strip opens exactly destPath/package.json: a
-// package.json nested inside the package is an ordinary file and is compared
-// like one.
-//
-// The bytes, because the rewrite is conditional. It returns without writing
-// unless the manifest carries a scripts map holding one of the scripts it
-// removes, and what it does write is a re-marshalled document. So the stored
-// bytes have to be in that shape for the excuse to apply, and the store answers
-// that question itself rather than doctor keeping a second copy of the format.
-func manifestRewrittenByStore(relPath, path string) bool {
-	if relPath != "package.json" {
-		return false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return store.ManifestStrippedInStore(data)
 }
