@@ -814,13 +814,27 @@ instead, like the rest of the CLI.
 
 ### Global Config (`~/.lnpm/config.yaml`)
 
-```yaml
-# Store location (default: ~/.lnpm)
-store_path: ~/.lnpm
+One file, five keys. The last of them is a block of five more.
 
-# Default link mode: "hardlink" | "copy"
-link_mode: hardlink
-```
+| Key | What it settles |
+|-----|-----------------|
+| `store_path` | Where the store lives. `LNPM_STORE` wins over it. |
+| `link_mode` | `hardlink` to try reflink then hard link, `copy` to force a copy. |
+| `manage_gitignore` | Whether lnpm keeps the `.lnpm/` entry in a project's `.gitignore`. On by default. |
+| `follow_symlinked_node_modules` | Whether lnpm will write through a `node_modules`, or a scope directory beneath it, that is not a real directory. Off by default, because a repository can commit a link at either name and aim lnpm's writes and its recursive delete at whatever it points at. |
+| `hooks` | The five keys below. |
+
+| Hook key | What it settles |
+|----------|-----------------|
+| `pre_publish` | Command run before `publish` and `push` pack files. |
+| `post_publish` | Command run after they complete. |
+| `post_add` | Command run after `lnpm add --install`. Plain `add` does not install. |
+| `skip_prepare` | Skip the `prepare`, `prepublishOnly` and `prepack` scripts on publish and push. |
+| `skip_post_add` | Skip the `post_add` hook. |
+
+`LNPM_CONFIG` points at a different config file. The [README's configuration
+section](README.md#configuration) is the reference for the values, the defaults
+and the annotated file.
 
 ---
 
