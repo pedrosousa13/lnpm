@@ -8,13 +8,23 @@ on:
       - 'docs/**'
       - 'LICENSE'
       - '.gitignore'
+  # No paths-ignore here, deliberately, and it is not an oversight: the five
+  # jobs below are required checks on main, and a required check that never
+  # reports blocks a pull request forever rather than passing it.
+  #
+  # Measured, not reasoned about. Release PRs are the case that proves it:
+  # release-please's PR changes CHANGELOG.md and nothing else, so with
+  # `paths-ignore: '**.md'` the workflow did not start, Test, Test (Windows),
+  # Test (macOS), Lint and Build never reported at all, and #499 sat MERGEABLE
+  # BLOCKED with two of seven checks green and no way to get the other five.
+  # Every release PR this project will ever cut has that exact shape.
+  #
+  # The cost of dropping it is one full matrix (~3 minutes of runners) on a
+  # documentation-only pull request. The cost of keeping it was that no release
+  # could be merged. `push` keeps its filter below, where nothing is gated on
+  # the result.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
 
 # Without this, every job inherits the repository-wide default of `write` and
 # hands a write-scoped GITHUB_TOKEN to six third-party actions. Nothing here
