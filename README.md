@@ -129,7 +129,8 @@ make install
 
 > **On lnpm 1.9.x or older? Reinstall manually.** Those versions compare versions
 > byte-wise, so `lnpm update` reports `Already up to date` and never upgrades you.
-> Run `lnpm --version` to check, then reinstall with the script below or with
+> Run `lnpm --version` to check, then reinstall with one of the methods under
+> [Installation](#installation), or with
 > `go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest`. 1.10.0 and later are
 > unaffected.
 
