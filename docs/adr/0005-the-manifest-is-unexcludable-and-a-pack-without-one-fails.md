@@ -95,11 +95,14 @@ It is anchored at the package root by exact equality, not by basename. A
 patterns still govern it — the same anchoring `isDefaultInclude` applies after
 #320. `TestPackManifestForceIncludeIsRootAnchored` pins it.
 
-One test fixture depended on the bug. `TestRewriteWorkspaceDepsWithoutPackedManifestFails`
-built its manifest-free set by writing an `.npmignore` naming `package.json`,
-which worked only because the manifest really was droppable. It now filters the
-slice `Pack` returned, which is the same value any caller of
-`RewriteWorkspaceDeps` hands over.
+One test fixture depended on the bug.
+`TestPrepareManifestWithoutPackedManifestFails` built its manifest-free set by
+writing an `.npmignore` naming `package.json`, which worked only because the
+manifest really was droppable. It now filters the slice `Pack` returned, which
+is the same value any caller of `PrepareManifest` hands over. Both names are
+what 4.0.0 renamed them to; the test is at
+`internal/pack/workspacedeps_test.go:523` and the function at
+`internal/pack/workspacedeps.go:77`.
 
 ## Considered options
 
