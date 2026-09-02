@@ -641,26 +641,32 @@ lnpm status
 
 # Output:
 # 📦 Published Packages
-# ┌──────────────┬──────────────┬──────────┬──────────┬───────────────┐
-# │ Package      │ Version      │ Hash     │ Tags     │ Published     │
-# ├──────────────┼──────────────┼──────────┼──────────┼───────────────┤
-# │ my-package   │ 1.0.0        │ abc123   │ latest   │ 2 minutes ago │
-# │ my-package   │ 2.0.0-beta.1 │ abc789   │ beta     │ 1 minute ago  │
-# │ other-pkg    │ 2.1.0        │ def456   │ latest   │ 1 hour ago    │
-# └──────────────┴──────────────┴──────────┴──────────┴───────────────┘
+#   NAME                      VERSION        HASH       TAGS                 PUBLISHED
+#   ─────────────────────────────────────────────────────────────────────────────────────────────
+#   my-package                1.0.0          d1a74401   latest               2 minutes ago
+#   my-package                2.0.0-beta.1   4d961f3f   beta                 2 minutes ago
+#   other-pkg                 2.1.0          caf28dd4   latest               2 minutes ago
 #
 # 🔗 Active Links
-# ┌──────────────┬─────────────────────────┬──────────┐
-# │ Package      │ Project                 │ Type     │
-# ├──────────────┼─────────────────────────┼──────────┤
-# │ my-package   │ ~/code/my-app           │ hardlink │
-# │ my-package   │ ~/code/other-app        │ hardlink │
-# └──────────────┴─────────────────────────┴──────────┘
+#   PROJECT                                  PM       PACKAGES
+#   ────────────────────────────────────────────────────────────────────────────────
+#   /home/you/code/other-app                 npm      my-package
+#   /home/you/code/my-app                    pnpm     my-package
+#
+# 📍 Current Project
+#   /home/you/code/my-app
+#   Linked packages:
+#     • my-package@1.0.0 (hash: d1a74401)
 ```
 
 The published table lists one row per retained version, so it carries the tags
 naming each of them. Without that column two rows of one name say nothing about
 which build a plain `lnpm add` would give you.
+
+Active links are grouped by project rather than by package, and each row names
+the package manager detected there. The third block singles the current
+directory out of that list, and names the version and the content hash behind
+each of its links.
 
 ### `lnpm list`
 
