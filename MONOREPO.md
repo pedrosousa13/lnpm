@@ -225,7 +225,7 @@ lnpm publish --all
 npm run lnpm:publish
 ```
 
-This publishes all buildable libraries in your Nx workspace to lnpm store.
+This publishes every library the root `workspaces` globs match, buildable or not. `--all` takes no filter, and `lnpm publish` has no flag for one. To leave a library out, publish the ones you want by name instead, each from its own directory.
 
 ### Workflow: Linking to External Project
 

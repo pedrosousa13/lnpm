@@ -196,12 +196,12 @@ If you have non-buildable libs (just TypeScript, no build step), publish only bu
 (cd libs/data-access && lnpm publish)
 ```
 
-Or create a script:
+`--all` will not do this. It publishes every package the root `workspaces` globs match, and neither it nor `lnpm publish` takes a filter, so a lib with no build step goes to the store as it sits on disk. A script has to name the same directories:
 
 ```json
 {
   "scripts": {
-    "lnpm:pub:buildable": "nx run-many --target=build --all && lnpm publish --all"
+    "lnpm:pub:buildable": "nx run-many --target=build --all && (cd libs/feature-auth && lnpm publish) && (cd libs/ui && lnpm publish)"
   }
 }
 ```
