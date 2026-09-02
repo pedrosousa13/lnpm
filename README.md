@@ -157,6 +157,7 @@ lnpm push
 - **[Changelog](CHANGELOG.md)** — Version history and updates
 - **[Releasing](docs/releasing.md)** — How a release is cut, and the two steps that need a person
 - **[Roadmap](ROADMAP.md)** — What lnpm does today, and where planned work is tracked
+- **[Contributing](CONTRIBUTING.md)**. Dev setup, the three test tiers, and what CI enforces
 
 ## Commands
 
