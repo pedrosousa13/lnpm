@@ -267,13 +267,22 @@ a parked run observed since the filter came off. That is the fallback, not the f
 
 ## The taps
 
-`.goreleaser.yaml` publishes two more things than the archives. A Homebrew cask goes to
-`pedrosousa13/homebrew-tap` and a Scoop manifest goes to `pedrosousa13/scoop-bucket`, committed
-straight to the default branch of each on every release.
+`.goreleaser.yaml` publishes more than the archives. `checksums.txt` and its detached
+`checksums.txt.sig`, deb, rpm and apk packages from the `nfpms` block, a Homebrew cask to
+`pedrosousa13/homebrew-tap`, and a Scoop manifest to `pedrosousa13/scoop-bucket`. The cask and the
+manifest are committed straight to the default branch of each tap on every release. The rest are
+uploaded as release assets.
 
-Everything in this section is reasoned from GoReleaser's and GitHub's documentation, from
-`goreleaser check`, and from reading the two tap repositories. **No lnpm release has published to a
-tap yet.** There are no run IDs or timings to cite here, unlike the sections above.
+**4.1.0 is the first lnpm release that published to a tap, and it worked.** Run
+[33638186070](https://github.com/pedrosousa13/lnpm/actions/runs/33638186070) on sha `5690e32`, with
+`release-please`, `goreleaser` and `sync-release-notes` all green and `goreleaser` taking 2m50s.
+`pedrosousa13/homebrew-tap` now holds `Casks/lnpm.rb` at `version "4.1.0"` and
+`pedrosousa13/scoop-bucket` holds `lnpm.json` at `"version": "4.1.0"`. Both read back from the
+GitHub contents API after the run.
+
+What that run does not cover is a failure. Nothing below about a stale tap credential has been seen
+happen, so those parts stay reasoned from GoReleaser's and GitHub's documentation, from
+`goreleaser check`, and from reading the two tap repositories. Each is labelled where it appears.
 
 Both taps are shared with `onda`, the maintainer's other project. `homebrew-tap` already holds a
 `Casks/onda.rb` written by GoReleaser's `homebrew_casks`, and `scoop-bucket` already holds
