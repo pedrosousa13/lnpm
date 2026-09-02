@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,17 @@ type IncompleteEntryError struct {
 	// and the user has to remove it first. A directory that is simply gone
 	// needs nothing but the re-publish.
 	Present bool
+	// Outdated reports whether the entry failed only because it was written by
+	// an older lnpm, rather than because anything is wrong with it.
+	//
+	// It changes the remedy, so callers offering one have to tell the two
+	// apart. A damaged entry is the residue of an interrupted gc or publish and
+	// has to be removed by hand before a re-publish can land on it; an entry in
+	// the previous format is intact, was left behind on purpose, and is gc's to
+	// reclaim - a re-publish lands at a different path and never collides with
+	// it. Telling the user to delete that one is advice about a fault they do
+	// not have.
+	Outdated bool
 }
 
 func (e *IncompleteEntryError) Error() string {
@@ -173,7 +185,12 @@ func checkEntry(entryPath, name string) error {
 	// not the directory it sits in" about a sound 3.x entry would send the user
 	// looking for damage that is not there.
 	if m.SchemaVersion < markerSchemaVersion {
-		return fail(fmt.Sprintf("it was written by an older lnpm (marker schema %d; this build writes %d), whose package hashes this build does not use: re-publish the package", m.SchemaVersion, markerSchemaVersion))
+		err := fail(fmt.Sprintf("it was written by an older lnpm (marker schema %d; this build writes %d), whose package hashes this build does not use", m.SchemaVersion, markerSchemaVersion))
+		var incomplete *IncompleteEntryError
+		if errors.As(err, &incomplete) {
+			incomplete.Outdated = true
+		}
+		return err
 	}
 	if m.Hash != filepath.Base(entryPath) {
 		return fail(fmt.Sprintf("its completeness marker records the hash %q, which is not the directory it sits in", m.Hash))

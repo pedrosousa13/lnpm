@@ -470,6 +470,14 @@ func storeReadError(pkg *db.Package, err error) error {
 	if !errors.As(err, &incomplete) {
 		return fmt.Errorf("%s@%s: %w", pkg.Name, pkg.Version, err)
 	}
+	if incomplete.Outdated {
+		// No instruction to delete anything. The entry is intact; this build
+		// simply does not address packages the way the lnpm that wrote it did,
+		// and `lnpm gc` is what reclaims it. A re-publish hashes to a different
+		// path, so it never collides with the entry still sitting there - which
+		// is what makes the Present branch below the wrong advice here.
+		return fmt.Errorf("%s@%s: %w; re-publish %s to store it under this version's hashes, then run 'lnpm gc' to reclaim the old entry", pkg.Name, pkg.Version, err, pkg.Name)
+	}
 	if !incomplete.Present {
 		return fmt.Errorf("%s@%s: %w; re-publish %s to rebuild it", pkg.Name, pkg.Version, err, pkg.Name)
 	}

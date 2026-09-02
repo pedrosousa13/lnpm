@@ -1256,3 +1256,46 @@ func runDoctor(t *testing.T, verifyContent bool) (string, error) {
 	out := captureStdout(t, func() { err = RunDoctor(verifyContent) })
 	return out, err
 }
+
+// TestRunDoctorWarnsRatherThanFailsForAPre4Entry covers the store every user
+// has on the morning after upgrading to 4.0.0.
+//
+// #453 and #447 changed every package hash, so an entry written before them
+// cannot be served and the store refuses it. Nothing is wrong with it: it is
+// intact, it was left behind on purpose, and `lnpm gc` reclaims it once the
+// package is published again. Reporting it as damage would make `lnpm doctor`
+// fail on every store that predates the upgrade - once per package - and the
+// fix it prints for real damage ("delete any directory listed above") is the
+// wrong instruction here, because a re-publish hashes to a different directory
+// and never collides with this one.
+func TestRunDoctorWarnsRatherThanFailsForAPre4Entry(t *testing.T) {
+	dir := newDoctorStoreConfig(t)
+	pkg := seedVerifiableEntry(t, dir, "left-pad", "1.2.3", map[string]string{
+		"package.json": `{"name":"left-pad","version":"1.2.3"}`,
+	})
+
+	// The marker a 3.x store wrote: an older schema, and a hash that agrees
+	// with the directory, so only the format is what fails the check.
+	payload := []byte(`{"schemaVersion":1,"hash":"` + pkg.ContentHash + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(pkg.StorePath, ".lnpm-complete"), payload, 0644); err != nil {
+		t.Fatalf("write pre-4.0.0 marker: %v", err)
+	}
+
+	out, err := runDoctor(t, false)
+	if err != nil {
+		t.Errorf("RunDoctor() = %v for a store holding a pre-4.0.0 entry, want nil: an unmigrated store is not a broken one", err)
+	}
+
+	if !strings.Contains(out, "before 4.0.0") {
+		t.Errorf("RunDoctor did not say the entry predates 4.0.0, output was:\n%s", out)
+	}
+	if !strings.Contains(out, "lnpm gc") {
+		t.Errorf("RunDoctor did not point at gc, which is what reclaims the entry, output was:\n%s", out)
+	}
+	if strings.Contains(out, "delete any directory listed above") {
+		t.Errorf("RunDoctor told the user to delete an entry a re-publish will not collide with, output was:\n%s", out)
+	}
+	if strings.Contains(out, "missing or incomplete store entries") {
+		t.Errorf("RunDoctor reported a sound pre-4.0.0 entry as damage, output was:\n%s", out)
+	}
+}

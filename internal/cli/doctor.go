@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -254,6 +255,12 @@ func RunDoctor(verifyContent bool) error {
 		// already reported here, and re-hashing one would list every file in it
 		// a second time under a different heading.
 		damagedEntries := make(map[string]bool)
+		// Entries that are sound but were written before 4.0.0 changed the hash
+		// format. Kept apart from damaged: an upgraded store holds one of these
+		// for every package the user ever published, and reporting all of them
+		// as damage would make `lnpm doctor` fail on a store with nothing wrong
+		// with it - and send the user deleting directories to fix it.
+		var outdated []string
 		for _, pkg := range packages {
 			if pkg.StorePath == "" {
 				continue
@@ -275,8 +282,16 @@ func RunDoctor(verifyContent bool) error {
 				err = store.CheckComplete(pkg.StorePath)
 			}
 			if err != nil {
-				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
+				// Both kinds are skipped by the content check below - neither
+				// can be re-hashed against a record this build understands.
 				damagedEntries[pkg.StorePath] = true
+
+				var incomplete *store.IncompleteEntryError
+				if errors.As(err, &incomplete) && incomplete.Outdated {
+					outdated = append(outdated, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
+					continue
+				}
+				damaged = append(damaged, fmt.Sprintf("%s@%s  %s", pkg.Name, pkg.Version, pkg.StorePath))
 			}
 		}
 		if len(damaged) > 0 {
@@ -286,8 +301,24 @@ func RunDoctor(verifyContent bool) error {
 			}
 			fmt.Println("  Fix: Re-publish the affected packages; delete any directory listed above that is still there first, since lnpm will not overwrite or remove one")
 			issues++
-		} else {
+		} else if len(outdated) == 0 {
 			fmt.Printf("%s OK\n", ui.IconOK())
+		}
+		if len(outdated) > 0 {
+			fmt.Printf("%s %d package(s) stored by an lnpm before 4.0.0\n", ui.IconWarn(), len(outdated))
+			for _, entry := range outdated {
+				fmt.Printf("  %s\n", entry)
+			}
+			// A warning and not an issue. Nothing is wrong with these entries;
+			// 4.0.0 addresses packages differently (#453, #447), so they can no
+			// longer be served. Failing the command for them would fail it on
+			// every store that predates the upgrade.
+			//
+			// And no instruction to delete anything: a re-publish hashes to a
+			// different directory, so it does not collide with these, and gc is
+			// what reclaims them once nothing points at them.
+			fmt.Println("  Fix: Re-publish the affected packages, then run 'lnpm gc' to reclaim the old entries")
+			warnings++
 		}
 
 		// Check 6: Re-hash stored content and compare it against the hashes the

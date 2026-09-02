@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -216,8 +215,14 @@ func TestCheckCompleteRefusesAnOlderMarkerSchema(t *testing.T) {
 	if !errors.As(err, &incomplete) {
 		t.Fatalf("CheckComplete returned %T, want *IncompleteEntryError so callers can tell it from a read failure", err)
 	}
-	if !strings.Contains(incomplete.Reason, "re-publish") {
-		t.Errorf("the reason does not tell the user what to do: %q", incomplete.Reason)
+	// Outdated and not damaged, which is what decides the remedy the CLI
+	// offers: gc reclaims this entry, and telling the user to delete it by hand
+	// would be advice about a fault they do not have.
+	if !incomplete.Outdated {
+		t.Errorf("the entry was reported as damaged rather than outdated: %q", incomplete.Reason)
+	}
+	if incomplete.Present != true {
+		t.Errorf("Present = false for an entry that is still on disk")
 	}
 	if _, statErr := os.Stat(entry); statErr != nil {
 		t.Errorf("CheckComplete removed the entry it refused; gc reclaims 3.x entries, this does not: %v", statErr)
