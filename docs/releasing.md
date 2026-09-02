@@ -213,12 +213,18 @@ touch workflow files, or read Actions state.
 
 The token is minted per run and revoked when the job ends. It is not stored anywhere.
 
-One check does not come back with the others, and that is expected rather than a symptom. `ci.yaml`
-carries `paths-ignore: '**.md'`, so a release pull request whose only change is `CHANGELOG.md`
-starts no `CI` run at all — not a parked one, none. What the App token restores is the checks that
-would otherwise be parked, `PR Title` and `Security Versions` among them. An absent `CI` on a
-markdown-only release pull request is the path filter doing its job; an absent `PR Title` is the
-credential having gone stale.
+**Every check reports on a release pull request now, `CI` included.** `ci.yaml` used to carry
+`paths-ignore: '**.md'` on `pull_request`, and a release pull request whose only change is
+`CHANGELOG.md` started no `CI` run at all. Not a parked one, none.
+[#500](https://github.com/pedrosousa13/lnpm/pull/500) removed that filter, because `CI`'s five jobs
+are required checks and a required check that never reports blocks a pull request forever rather
+than passing it. The header comment in `ci.yaml` records the release pull request that proved it,
+#499, which sat blocked with two of seven checks green and no way to get the other five.
+
+So an absent `CI` on a markdown-only release pull request is now a symptom rather than the path
+filter doing its job. What the App token restores is the checks that would otherwise sit parked
+awaiting approval, and that is all of them. An absent or parked `PR Title` is the credential having
+gone stale. So is an absent or parked `CI`.
 
 ### What breaks when it goes stale, and what that looks like
 
@@ -254,8 +260,10 @@ diagnosis is the run log of the `release-please` job.
 
 If the token cannot be restored quickly, the release is not blocked: remove the `token:` line and
 the mint step, and the pipeline reverts to the behaviour above — a release pull request that works,
-at the cost of one approval click per parked run, which today means two per commit pushed to the
-release branch. That is the fallback, not the fix.
+at the cost of one approval click per parked run. Three workflows trigger on `pull_request` today,
+`ci.yaml`, `pr-title.yaml` and `security-versions.yaml`, so that is three per commit pushed to the
+release branch rather than the two it was before #500. Counted from the workflow triggers, not from
+a parked run observed since the filter came off. That is the fallback, not the fix.
 
 ## The taps
 
@@ -419,10 +427,14 @@ the fix is a one-line edit to the table. Step 4 above is that edit.
 The unsupported rows are not checked. Whether a major moves from supported to unsupported is a
 policy judgement about how long you intend to support it, and it stays with the maintainer.
 
-This runs in `.github/workflows/security-versions.yaml` rather than in `ci.yaml`, and the separation
-is load-bearing: `ci.yaml` carries `paths-ignore` with `'**.md'` on both its triggers, so a pull
-request touching only `SECURITY.md` or only `CHANGELOG.md` does not start CI at all — which is
-exactly the release pull request this check exists for. The new workflow has no `paths-ignore`.
+This runs in `.github/workflows/security-versions.yaml` rather than in `ci.yaml`. The separation was
+load-bearing when `ci.yaml` carried `paths-ignore` with `'**.md'` on both its triggers. A pull
+request touching only `SECURITY.md` or only `CHANGELOG.md` started no CI run then, and that is
+exactly the shape of the release pull request this check exists for. #500 removed that filter from
+`pull_request`, so the check would now run either way. What the separation still buys is a stale
+table failing under its own check name rather than as one job inside a red `CI`. Neither workflow
+carries `paths-ignore` on `pull_request` today. `ci.yaml` keeps its filter on `push`, where nothing
+is gated on the result.
 
 ## Backfilling a published release
 
