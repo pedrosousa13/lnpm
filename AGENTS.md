@@ -12,7 +12,7 @@ Canonical label names, as repo labels on pedrosousa13/lnpm — plus `in-progress
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context. `docs/adr/` at the repo root holds the decisions; there is no `CONTEXT.md`, and `docs/agents/domain.md` says to proceed without one rather than create it upfront.
 
 ### Verification discipline
 
