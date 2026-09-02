@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/pedrosousa13/lnpm/compare/v3.1.0...v3.1.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **push:** run the scripts npm pack runs, and say how to skip them ([#496](https://github.com/pedrosousa13/lnpm/issues/496)) ([1e6aba8](https://github.com/pedrosousa13/lnpm/commit/1e6aba876a4e38fb028185ba29dcfccb8d948721))
+
 ## [3.1.0](https://github.com/pedrosousa13/lnpm/compare/v3.0.0...v3.1.0) (2026-08-28)
 
 
