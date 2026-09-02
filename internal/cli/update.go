@@ -121,19 +121,22 @@ var updateCmd = &cobra.Command{
 
 This command automatically detects how lnpm was installed and uses the appropriate method:
   - If installed via 'go install': Uses 'go install' to update
+  - If installed via Homebrew or Scoop: Refuses, and names the command to run instead
   - If installed via install script: Downloads and replaces the binary
 
 Examples:
   lnpm update           # Update to latest version
-  lnpm update --check   # Only check for updates, don't install`,
+  lnpm update --check   # Only check for updates, don't install
+  lnpm update --force   # Replace a Homebrew or Scoop binary anyway`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		checkOnly, _ := cmd.Flags().GetBool("check")
-		return RunUpdate(checkOnly, version)
+		force, _ := cmd.Flags().GetBool("force")
+		return RunUpdate(checkOnly, force, version)
 	},
 }
 
 // RunUpdate handles the update logic
-func RunUpdate(checkOnly bool, currentVersion string) error {
+func RunUpdate(checkOnly, force bool, currentVersion string) error {
 	// Refuse builds that name no release to update from. A `git describe` build
 	// is deliberately not one of them: it names the tag it was built from, so it
 	// is checked like any other version - see update.Baseline.
@@ -172,18 +175,19 @@ func RunUpdate(checkOnly bool, currentVersion string) error {
 		return nil
 	}
 
-	// Install latest version
-	fmt.Printf("Installing %s...\n", result.LatestVersion)
-
-	// Detect installation method and update accordingly. A binary whose path
-	// cannot be resolved is not treated as go-installed: installLatestViaBinary
-	// resolves it again and reports the failure to the user.
-	if binPath, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(binPath); err == nil && wasInstalledViaGo(resolved) {
-			return installLatestViaGo()
-		}
+	// The refusal is asked for before anything is printed as being installed,
+	// and after the version check, so a managed user still learns that a newer
+	// release exists and is then told how to get it.
+	method := currentInstallMethod()
+	if name, upgradeCommand, ok := method.manager(); ok && !force {
+		return managedInstallError(name, upgradeCommand)
 	}
 
+	fmt.Printf("Installing %s...\n", result.LatestVersion)
+
+	if method == installedViaGo {
+		return installLatestViaGo()
+	}
 	return installLatestViaBinary(result.LatestVersion)
 }
 
@@ -379,6 +383,42 @@ func (m installMethod) manager() (name, upgradeCommand string, ok bool) {
 		return "Scoop", "scoop update lnpm", true
 	}
 	return "", "", false
+}
+
+// currentInstallMethod classifies the running binary, asking about the resolved
+// path first and the unresolved one second.
+//
+// The resolved path is what Homebrew needs, because <prefix>/bin/lnpm is a
+// symlink into the Caskroom. Resolution cannot be relied on, though. Scoop's
+// apps\lnpm\current is an NTFS junction, which os.Executable's path runs
+// through, and a junction is neither a symlink nor a directory to Go
+// (src/os/types_windows.go, fileStat.mode under the default winsymlink=1,
+// reports ModeIrregular), so filepath.EvalSymlinks fails with ENOTDIR on it
+// (src/path/filepath/symlink.go, walkSymlinks, Go 1.26.7).
+func currentInstallMethod() installMethod {
+	binPath, err := os.Executable()
+	if err != nil {
+		return installedViaBinary
+	}
+	if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
+		if m := detectInstallMethod(resolved); m != installedViaBinary {
+			return m
+		}
+	}
+	return detectInstallMethod(binPath)
+}
+
+// managedInstallError refuses to replace a binary a package manager owns.
+//
+// The refusal is not about the replacement failing. It succeeds, and that is
+// the problem. The package manager goes on recording the version it installed,
+// so its next upgrade overwrites the newer binary with the older one it
+// believes is current, and the user is silently rolled back.
+func managedInstallError(name, upgradeCommand string) error {
+	return fmt.Errorf("this lnpm was installed with %s, so it will not be replaced here. "+
+		"Replacing it leaves %s recording the version it installed, and the next upgrade rolls you back to it. "+
+		"Run '%s' instead, or 'lnpm update --force' to replace it anyway",
+		name, name, upgradeCommand)
 }
 
 // installLatestViaGo uses 'go install' to update
@@ -945,4 +985,5 @@ func extractZip(zipPath, tmpDir string) (string, error) {
 
 func init() {
 	updateCmd.Flags().BoolP("check", "c", false, "Only check for updates without installing")
+	updateCmd.Flags().Bool("force", false, "Update a Homebrew or Scoop install anyway, replacing the package manager's binary")
 }

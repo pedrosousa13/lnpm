@@ -88,7 +88,7 @@ func TestRunUpdateReportsCheckFailure(t *testing.T) {
 	http.DefaultTransport = failingTransport{}
 	t.Cleanup(func() { http.DefaultTransport = prev })
 
-	err := RunUpdate(true, "1.0.0")
+	err := RunUpdate(true, false, "1.0.0")
 	if err == nil {
 		t.Fatal("RunUpdate = nil, want an error when the update check cannot reach GitHub")
 	}
@@ -110,9 +110,9 @@ func TestRunUpdateRefusesBuildsWithNoRelease(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = prev })
 
 	for _, v := range []string{"dev", "", "v1.12.1-0.20260819061412-6d9902254937", "7079f81-dirty"} {
-		err := RunUpdate(true, v)
+		err := RunUpdate(true, false, v)
 		if err == nil || !strings.Contains(err.Error(), "not supported for dev builds") {
-			t.Errorf("RunUpdate(true, %q) error = %v, want the dev-build refusal", v, err)
+			t.Errorf("RunUpdate(true, false, %q) error = %v, want the dev-build refusal", v, err)
 		}
 	}
 }
@@ -131,9 +131,9 @@ func TestRunUpdateChecksDevBuildsThatNameARelease(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = prev })
 
 	for _, v := range []string{"v1.12.0-53-g7079f81-dirty", "v1.11.0+dirty"} {
-		err := RunUpdate(true, v)
+		err := RunUpdate(true, false, v)
 		if err == nil || !strings.Contains(err.Error(), "failed to check for updates") {
-			t.Errorf("RunUpdate(true, %q) error = %v, want the update check to have run", v, err)
+			t.Errorf("RunUpdate(true, false, %q) error = %v, want the update check to have run", v, err)
 		}
 	}
 }
@@ -1750,6 +1750,26 @@ func TestInstallMethodManager(t *testing.T) {
 		if name != tt.wantName || upgradeCommand != tt.wantUpgradeCommand || ok != tt.wantOK {
 			t.Errorf("installMethod(%d).manager() = (%q, %q, %v), want (%q, %q, %v)",
 				tt.method, name, upgradeCommand, ok, tt.wantName, tt.wantUpgradeCommand, tt.wantOK)
+		}
+	}
+}
+
+// The refusal is only useful if it names the command that does work, so that is
+// what is asserted. RunUpdate's own dispatch is not reached from a test:
+// currentInstallMethod reads os.Executable(), which is the test binary, and the
+// non-refusing branches would replace it.
+func TestManagedInstallErrorNamesTheUpgradeCommand(t *testing.T) {
+	for _, method := range []installMethod{installedViaHomebrew, installedViaScoop} {
+		name, upgradeCommand, ok := method.manager()
+		if !ok {
+			t.Fatalf("installMethod(%d).manager() reported no manager", method)
+		}
+
+		err := managedInstallError(name, upgradeCommand)
+		for _, want := range []string{name, upgradeCommand, "lnpm update --force"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("managedInstallError(%q, %q) = %q, want it to contain %q", name, upgradeCommand, err, want)
+			}
 		}
 	}
 }
