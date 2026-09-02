@@ -136,11 +136,10 @@ Two consequences to know about:
 
 - **Linked packages really are read-only now.** Anything that writes into a
   dependency under `.lnpm` starts failing. That is the point: those writes were
-  the poisoning path. `link_mode: copy` and `lnpm add --link` are the modes for
-  a dependency you need to write to, and only `--link` gives you a writable
-  tree — the copy inherits the store's stripped mode, it just does not share the
-  store's inode, so a write there cannot reach the store even if you restore the
-  bits yourself.
+  the poisoning path. `lnpm add --link` is the mode for a dependency you need to
+  write to. `link_mode: copy` is not one: the copy inherits the store's stripped
+  mode, it just does not share the store's inode, so a write there cannot reach
+  the store even if you restore the bits yourself.
 - **The protection is a lock, not a repair.** An entry poisoned before the
   upgrade stays as it is, protected in its tampered state. Catching one takes a
   check that re-reads the entry, which is what `lnpm doctor --verify-content`
