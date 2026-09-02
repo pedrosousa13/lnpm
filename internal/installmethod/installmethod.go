@@ -14,10 +14,10 @@ import (
 	"strings"
 )
 
-// Method names how the running lnpm binary got onto the machine. The
-// set is closed because every caller has to answer the same question about
-// each one, and a boolean per package manager threaded through the update
-// dispatch would let two of them be true at once.
+// Method names how the running lnpm binary got onto the machine. The set is
+// closed because every caller has to answer the same question about each one,
+// and a boolean per package manager threaded through the update dispatch would
+// let two of them be true at once.
 type Method int
 
 const (
@@ -90,10 +90,10 @@ func isInBinDir(binPath, binDir string) bool {
 	return dir == binDir
 }
 
-// Detect classifies the binary at binPath. It takes the path
-// rather than reading os.Executable() itself, so the rules below can be tested
-// against real macOS and Windows path shapes on any host.
-func Detect(binPath string) Method {
+// detect classifies the binary at binPath. It takes the path rather than
+// reading os.Executable() itself, so the rules below can be tested against real
+// macOS and Windows path shapes on any host.
+func detect(binPath string) Method {
 	if wasInstalledViaGo(binPath) {
 		return Go
 	}
@@ -201,8 +201,8 @@ func (m Method) Manager() (name, upgradeCommand string, ok bool) {
 	return "", "", false
 }
 
-// Current classifies the running binary, asking about the resolved
-// path first and the unresolved one second.
+// Current classifies the running binary, asking about the resolved path first
+// and the unresolved one second.
 //
 // The resolved path is what Homebrew needs, because <prefix>/bin/lnpm is a
 // symlink into the Caskroom. Resolution cannot be relied on, though. Scoop's
@@ -217,9 +217,9 @@ func Current() Method {
 		return Binary
 	}
 	if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
-		if m := Detect(resolved); m != Binary {
+		if m := detect(resolved); m != Binary {
 			return m
 		}
 	}
-	return Detect(binPath)
+	return detect(binPath)
 }

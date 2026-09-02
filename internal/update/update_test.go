@@ -628,7 +628,7 @@ func TestPrintUpdateNoticeNamesTheManagerCommandForAManagedInstall(t *testing.T)
 			CurrentVersion:  "1.0.0",
 			LatestVersion:   "2.0.0",
 			UpdateAvailable: true,
-		}, tt.method)
+		}, func() installmethod.Method { return tt.method })
 
 		got := buf.String()
 		if !strings.Contains(got, "Update available: 1.0.0 → 2.0.0\n") {
@@ -646,9 +646,42 @@ func TestPrintUpdateNoticeNamesTheManagerCommandForAManagedInstall(t *testing.T)
 func TestPrintUpdateNoticeStaysSilentWithoutAnUpdate(t *testing.T) {
 	for _, r := range []*Result{nil, {CurrentVersion: "2.0.0", LatestVersion: "2.0.0"}} {
 		var buf bytes.Buffer
-		printUpdateNotice(&buf, r, installmethod.Homebrew)
+		printUpdateNotice(&buf, r, func() installmethod.Method { return installmethod.Homebrew })
 		if buf.Len() != 0 {
 			t.Errorf("printUpdateNotice(%+v) wrote %q, want nothing", r, buf.String())
 		}
+	}
+}
+
+// The install method is resolved only for a notice that is actually printed.
+// PrintUpdateNotice runs in PersistentPostRun on every command, and resolving
+// the method costs an os.Executable plus a filepath.EvalSymlinks walk, so the
+// common no-update path must not pay for it (#519).
+func TestPrintUpdateNoticeResolvesTheInstallMethodOnlyWhenItPrints(t *testing.T) {
+	tests := []struct {
+		name  string
+		r     *Result
+		calls int
+	}{
+		{"nil result", nil, 0},
+		{"no update", &Result{CurrentVersion: "2.0.0", LatestVersion: "2.0.0"}, 0},
+		{"update available", &Result{CurrentVersion: "1.0.0", LatestVersion: "2.0.0", UpdateAvailable: true}, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			method := func() installmethod.Method {
+				calls++
+				return installmethod.Binary
+			}
+
+			var buf bytes.Buffer
+			printUpdateNotice(&buf, tt.r, method)
+
+			if calls != tt.calls {
+				t.Errorf("printUpdateNotice resolved the install method %d times, want %d", calls, tt.calls)
+			}
+		})
 	}
 }

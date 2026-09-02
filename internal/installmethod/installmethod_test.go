@@ -134,8 +134,8 @@ func TestDetect(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := Detect(tt.binPath); got != tt.want {
-				t.Errorf("Detect(%q) = %d, want %d", tt.binPath, got, tt.want)
+			if got := detect(tt.binPath); got != tt.want {
+				t.Errorf("detect(%q) = %d, want %d", tt.binPath, got, tt.want)
 			}
 		})
 	}
@@ -149,11 +149,11 @@ func TestDetectWithRelocatedScoopRoot(t *testing.T) {
 			isolateInstallEnv(t)
 			t.Setenv(env, `D:\tools\sc`)
 
-			if got := Detect(`D:\tools\sc\apps\lnpm\current\lnpm.exe`); got != Scoop {
-				t.Errorf("Detect under %s = %d, want Scoop", env, got)
+			if got := detect(`D:\tools\sc\apps\lnpm\current\lnpm.exe`); got != Scoop {
+				t.Errorf("detect under %s = %d, want Scoop", env, got)
 			}
-			if got := Detect(`D:\tools\scratch\apps\lnpm\lnpm.exe`); got != Binary {
-				t.Errorf("Detect of a sibling of the %s root = %d, want Binary", env, got)
+			if got := detect(`D:\tools\scratch\apps\lnpm\lnpm.exe`); got != Binary {
+				t.Errorf("detect of a sibling of the %s root = %d, want Binary", env, got)
 			}
 		})
 	}

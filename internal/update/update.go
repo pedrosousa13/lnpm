@@ -285,37 +285,39 @@ func compareVersions(current, latest string) *Result {
 
 // PrintUpdateNotice prints an update notice to stderr
 func PrintUpdateNotice(r *Result) {
-	printUpdateNotice(os.Stderr, r, installmethod.Current())
+	printUpdateNotice(os.Stderr, r, installmethod.Current)
 }
 
-// printUpdateNotice writes the notice for a binary installed by method m.
+// printUpdateNotice writes the notice for the binary that method classifies.
 //
-// It takes the writer and the method rather than reading os.Stderr and the
+// It takes the writer and a resolver rather than reading os.Stderr and the
 // running binary itself, so both branches of the command line below can be
 // asserted; PrintUpdateNotice supplies both.
 //
+// The resolver is a function rather than an already-resolved method because
+// this runs in PersistentPostRun on every command, and Current() costs an
+// os.Executable plus a filepath.EvalSymlinks walk. Calling it after the guard
+// keeps the common no-update path free of both.
+//
 // The install method is resolved on every notice rather than once per process.
 // Current() runs at most twice in a process - here and in 'lnpm update' - so
-// the saving would be one os.Executable and one EvalSymlinks, and caching it in
-// a package-level value would make the environment-dependent Scoop branch
-// untestable.
-func printUpdateNotice(w io.Writer, r *Result, m installmethod.Method) {
+// the saving would be one os.Executable and one EvalSymlinks.
+func printUpdateNotice(w io.Writer, r *Result, method func() installmethod.Method) {
 	if r == nil || !r.UpdateAvailable {
 		return
 	}
 
 	fmt.Fprintf(w, "\nUpdate available: %s → %s\n", r.CurrentVersion, r.LatestVersion)
-	fmt.Fprintf(w, "Run: %s\n", updateCommandHint(m))
+	fmt.Fprintf(w, "Run: %s\n", updateCommandHint(method()))
 }
 
 // updateCommandHint names the command that upgrades an lnpm installed by m.
 //
 // A Homebrew or Scoop install is named its own manager's command, because
 // 'lnpm update' refuses to replace a binary either of them owns and does
-// nothing but print that command back (internal/cli's managedInstallError).
-// Sending a managed user through it is one command's delay for no gain, and
-// this notice fires on ordinary commands far more often than 'lnpm update' is
-// ever run.
+// nothing but print that command back. Sending a managed user through it is
+// one command's delay for no gain, and this notice fires on ordinary commands
+// far more often than 'lnpm update' is ever run.
 func updateCommandHint(m installmethod.Method) string {
 	if _, upgradeCommand, ok := m.Manager(); ok {
 		return upgradeCommand
