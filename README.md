@@ -33,6 +33,19 @@
 > `go install github.com/pedrosousa13/lnpm/cmd/lnpm@latest`. 1.10.0 and later are
 > unaffected.
 
+### Homebrew
+
+```bash
+brew install pedrosousa13/tap/lnpm
+```
+
+### Scoop
+
+```powershell
+scoop bucket add pedrosousa13 https://github.com/pedrosousa13/scoop-bucket
+scoop install lnpm
+```
+
 ### Quick Install (Linux/macOS)
 
 ```bash
