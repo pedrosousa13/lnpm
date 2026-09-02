@@ -271,8 +271,18 @@ otherwise leave the tag unmoved.
 2. Determine files to include (respects `.npmignore`, `files` field — see the
    README's "File Filtering" section for the rules and where they part company
    with `npm publish`)
-3. Calculate content hash of all files
-4. Reflink or copy files into a temporary directory alongside
+3. Rewrite `package.json` — resolve any `workspace:` specifiers, and remove the
+   `prepare` and `prepublish` scripts so npm does not run them when the package
+   is installed as a `file:` dependency. The developer's own file is untouched;
+   the rewritten document goes to a temporary file and the packed entry points
+   at it.
+
+   This happens **before** step 4 on purpose. The store is content-addressed, so
+   a rewrite after hashing would leave the entry holding bytes its own hash does
+   not describe. It used to, which is why `doctor --verify-content` once had to
+   exempt the root manifest — see ADR-0009.
+4. Calculate content hash of all files
+5. Reflink or copy files into a temporary directory alongside
    `~/.lnpm/store/{name}/{hash}/`, then rename it into place
 
    The store commit is atomic: `~/.lnpm/store/{name}/{hash}/` appears all at
@@ -284,11 +294,12 @@ otherwise leave the tag unmoved.
 
    Every entry carries a `.lnpm-complete` marker, written as the last file
    inside the temporary directory and removed before the tree when `lnpm gc`
-   deletes the entry. The marker records the entry's content hash. An entry
-   counts as complete only when the marker is there and names the directory it
-   sits in, so a deletion interrupted partway reads as *incomplete* — the
-   directory is still there and lnpm says so, rather than serving a truncated
-   package or pretending it was never published.
+   deletes the entry. The marker records the entry's content hash and a schema
+   version. An entry counts as complete only when the marker is there, names the
+   directory it sits in, and records a schema this build writes — so a deletion
+   interrupted partway reads as *incomplete*, and an entry written before 4.0.0
+   changed the hash format reads as unusable rather than being served under
+   rules it was not stored under. Neither is deleted; `lnpm gc` reclaims them.
 
    Both the write path and the read paths check it: `lnpm add`, `lnpm pull` and
    the relink after `lnpm publish --push` refuse an entry that fails, naming the
@@ -306,8 +317,8 @@ otherwise leave the tag unmoved.
    the next open, so the store stays recognisably un-migrated. `lnpm doctor`
    reports an un-migrated store as pending rather than listing every entry.
 
-5. Record in bbolt database
-6. If `--push`, update all linked projects
+6. Record in bbolt database
+7. If `--push`, update all linked projects
 
 ### `lnpm add <package>`
 
