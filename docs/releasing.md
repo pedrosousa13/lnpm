@@ -257,6 +257,90 @@ the mint step, and the pipeline reverts to the behaviour above — a release pul
 at the cost of one approval click per parked run, which today means two per commit pushed to the
 release branch. That is the fallback, not the fix.
 
+## The taps
+
+`.goreleaser.yaml` publishes two more things than the archives. A Homebrew cask goes to
+`pedrosousa13/homebrew-tap` and a Scoop manifest goes to `pedrosousa13/scoop-bucket`, committed
+straight to the default branch of each on every release.
+
+Everything in this section is reasoned from GoReleaser's and GitHub's documentation, from
+`goreleaser check`, and from reading the two tap repositories. **No lnpm release has published to a
+tap yet.** There are no run IDs or timings to cite here, unlike the sections above.
+
+Both taps are shared with `onda`, the maintainer's other project. `homebrew-tap` already holds a
+`Casks/onda.rb` written by GoReleaser's `homebrew_casks`, and `scoop-bucket` already holds
+`onda.json` at its root. Two consequences. A token scoped to these two repositories can also write
+onda's cask and manifest, which is what sharing a tap costs in least privilege. And the install line
+is `brew install pedrosousa13/tap/lnpm`, where the `tap` segment comes from the repository name
+`homebrew-tap` rather than from the project name.
+
+### Why `homebrew_casks` and not `brews`
+
+`brews` is hard-deprecated. On goreleaser v2.18.0, the version the workflow's `~> v2` line resolves
+to today, `goreleaser check` on a config using it prints
+`DEPRECATED: brews should not be used anymore`, then `configuration is valid, but uses deprecated
+properties`, and exits non-zero. The release job would fail on that rather than warn, so `brews` is
+not an option. `homebrew_casks` is also what wrote the `onda` cask already in the tap, so the schema
+is in production use in this org.
+
+The cask has **no `test do` block**, and cannot have one. The Homebrew Cask DSL has no test stanza
+at all; only formulae do. The goreleaser block that accepted a `test` key was the deprecated `brews`.
+What covers that gap is thin and worth naming honestly. `brew audit` is what a tap runs against a
+cask, and it checks the cask's shape rather than the program. Nothing in this pipeline executes the
+published binary.
+
+### What the taps need
+
+A second installation token, minted by the `Mint a GitHub App installation token for the taps` step
+in the `goreleaser` job and handed to GoReleaser as `TAP_GITHUB_TOKEN`. It exists because neither
+credential can do the other's job. `secrets.GITHUB_TOKEN` is scoped to this repository alone and
+cannot push to another one, so it cannot write a tap. The App token is scoped to `homebrew-tap` and
+`scoop-bucket` only, so it cannot upload this repository's release assets. That is why there are two
+tokens rather than one broader credential.
+
+It reuses `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, so the same App must be **installed on
+both tap repositories**, with these repository permissions and no others:
+
+| Permission | Level        | Why                                                    |
+| ---------- | ------------ | ------------------------------------------------------ |
+| `Contents` | read + write | Commit the cask and the manifest to the default branch |
+
+`Metadata: read` comes with every installation and is not something you grant. No `Pull requests`
+permission is needed, because GoReleaser commits to the default branch directly rather than opening
+a pull request. The step narrows the token further with `permission-contents: write`, which can only
+subtract from what the installation already has.
+
+A permission added to an App after installation is not granted until the installation is reviewed
+and accepted, exactly as described in
+[What breaks when it goes stale](#what-breaks-when-it-goes-stale-and-what-that-looks-like) above.
+Installing the App on a tap repository is subject to the same review.
+
+### What breaks when the tap credential goes stale
+
+The tap push happens **after** the release is published. GoReleaser's publish pipeline runs
+`release.Pipe` before `cask.Pipe` and `scoop.Pipe`, and says why in a comment on the slice itself in
+`internal/pipe/publish/publish.go`: "brew et al use the release URL, so, they should be last". Read
+from the v2.18.0 source, not executed. So the tag exists, the GitHub release is published, and the
+archives are uploaded before the tap is touched. A stale credential produces a release that is
+entirely fine to download and a `brew install` that keeps serving the previous version. The
+`goreleaser` job goes red, but the release itself is complete.
+
+Recovery is **re-running the `goreleaser` job**, not re-cutting the release. Fix the App
+installation or the secret first, then re-run. Nothing about the published release needs to change.
+
+Two ways it goes stale, both of them quiet from the tap side:
+
+- **The App is not installed on a tap repository**, or was removed from it. GitHub refuses to scope
+  an installation token to a repository the installation does not cover, so the mint step fails.
+  This is the loud one, and it fails before GoReleaser runs at all. Do not expect the error to say
+  which of the two repositories is at fault; that was not checked against a real failure.
+- **The App is installed but `Contents` has been narrowed to read.** The mint step succeeds and hands
+  GoReleaser a token that cannot commit. The failure then surfaces inside the GoReleaser step as a
+  push rejection, after the release is already published.
+
+Nothing checks this automatically. The diagnosis is the `goreleaser` job's log, and the symptom a
+user sees is `brew install` handing them an old version with no error anywhere.
+
 ## The extractor
 
 `scripts/changelog-section.sh` prints one version's `CHANGELOG.md` section: the `## ` heading line

@@ -85,6 +85,19 @@ in the stored `package.json` while yours is left byte for byte as you wrote it.
 
 Coming from an older lnpm? See [Upgrading](#upgrading) first.
 
+### Homebrew
+
+```bash
+brew install pedrosousa13/tap/lnpm
+```
+
+### Scoop
+
+```powershell
+scoop bucket add pedrosousa13 https://github.com/pedrosousa13/scoop-bucket
+scoop install lnpm
+```
+
 ### Quick Install (Linux/macOS)
 
 ```bash

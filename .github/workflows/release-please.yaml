@@ -158,6 +158,28 @@ jobs:
           echo "Publishing would produce a release that no installed lnpm can update from." >&2
           exit 1
 
+      # Two credentials, because neither can do the other's job.
+      # `secrets.GITHUB_TOKEN` is scoped to this repository alone, so it can
+      # upload this release's assets but cannot push a commit to the tap
+      # repositories. This App token is scoped to only `homebrew-tap` and
+      # `scoop-bucket`, so it can write the cask and the manifest but cannot
+      # touch this repository's release. `.goreleaser.yaml` picks it up through
+      # `repository.token` in the `homebrew_casks` and `scoops` blocks.
+      #
+      # docs/releasing.md records which App permissions this depends on and what
+      # it looks like when they go stale.
+      - name: Mint a GitHub App installation token for the taps
+        id: tap-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: pedrosousa13
+          repositories: |
+            homebrew-tap
+            scoop-bucket
+          permission-contents: write
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -166,6 +188,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ steps.tap-token.outputs.token }}
 
       # Signing is the last thing that needs the private key, so it stops being
       # on disk here rather than at the end of the job — the verification below
