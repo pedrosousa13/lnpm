@@ -38,7 +38,7 @@ the maintainer.
 
 ### Lifecycle Scripts
 
-lnpm runs `package.json` lifecycle scripts (`prepare`, `prepublishOnly`, `prepack`) during `publish` and `push`, similar to npm. Users should:
+lnpm runs `package.json` lifecycle scripts during `publish` (`prepublishOnly`, `prepack`, `prepare`) and `push` (`prepack`, `prepare`), similar to npm. Users should:
 
 - Only `publish`/`push` packages whose scripts they trust
 - Be aware that scripts run with the same permissions as the user
