@@ -51,11 +51,29 @@ where to look when checks stop reporting on a release pull request again.
    backstop for forgetting, not the prompt. It fails deliberately, and only on this pull request.
    See the check below.
 
-5. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release; the
-   `goreleaser` job builds and uploads the archives; the `sync-release-notes` job then overwrites
-   the release body with the version's `CHANGELOG.md` section, hand-written notes included. That
-   last job is ordered after `goreleaser` but does not depend on it succeeding: the `goreleaser`
-   job re-runs the test suite and the linter, and a flake there costs the archives, not the notes.
+5. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release. The
+   `goreleaser` job builds, signs and uploads the archives, then pushes the taps. The
+   `sync-release-notes` job overwrites the release body with the version's `CHANGELOG.md` section,
+   hand-written notes included. That last job is ordered after `goreleaser` but does not depend on
+   it succeeding: the `goreleaser` job re-runs the test suite and the linter, and a flake there
+   costs the archives, not the notes.
+
+   **The signing key can fail the release, and it is worth knowing that before it does.** Four
+   steps in the `goreleaser` job exist for it, all in `.github/workflows/release-please.yaml`.
+   `Write release signing key` at `:103` writes the `RELEASE_SIGNING_KEY` repository secret to the
+   runner, and refuses to publish an unsigned release if the secret is empty. `Check the signing
+   key matches an embedded public key` at `:147` derives its public half and fails before anything
+   is built unless it matches some `internal/releasekeys/keys/*.pem`. `Remove the release signing
+   key` at `:211` deletes it, under `if: always()`. `Verify the release signature against the
+   embedded public keys` at `:224` re-checks the `dist/checksums.txt.sig` GoReleaser actually
+   produced against that same key set.
+
+   **A `RELEASE_SIGNING_KEY` that matches no embedded public key stops the release, deliberately.**
+   `lnpm update` verifies `checksums.txt.sig` against the keys compiled into the running binary, so
+   a rotated or mistyped secret would otherwise publish a green release that every existing install
+   then refuses to update from, recoverable only by reinstalling by hand. That is what
+   [#297](https://github.com/pedrosousa13/lnpm/issues/297) cost. Rotating the key is ADR-0008. Line
+   numbers read from the workflow at 4.1.0, not executed.
 
 ## Why the notes need a job to reach the release body
 
@@ -99,7 +117,8 @@ Two things that look like fixes and are not:
   `target-branch`, `config-file`, `manifest-file`, `repo-url`, `github-api-url`,
   `github-graphql-url`, `fork`, `include-component-in-tag`, `proxy-server`, `skip-github-release`,
   `skip-github-pull-request`, `skip-labeling`, `changelog-host`, `versioning-strategy` and
-  `release-as` — all eighteen of them, read from `action.yml` on the `v4` tag.
+  `release-as` — all eighteen of them, read from `action.yml` on the `v5` tag, which is what the
+  workflow pins. The same eighteen are on `v4`, so the conclusion below did not turn on the tag.
 
   A config file could be passed even though none is, so its keys were read from release-please's
   `schemas/config.json` on `main` rather than from memory. It declares 46 properties. Nine of them
