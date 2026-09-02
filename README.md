@@ -41,6 +41,12 @@ calls lnpm in-process while spawning yalc as a command, so its ratios come out
 too high. [ARCHITECTURE.md](ARCHITECTURE.md#benchmarks) says which script
 measures what.
 
+```bash
+./scripts/bench-vs-yalc.sh   # lnpm against yalc, both as subprocesses
+make bench                   # Go benchmarks, lnpm against itself
+make bench-mem               # The same, with allocation stats
+```
+
 ## How it differs from yalc
 
 **Earlier builds stay addressable, and a consumer can go back to one.** The
@@ -690,47 +696,6 @@ already filed under its content hash. The store keeps a private copy instead.
 - 💾 **Space efficient** — No duplication on modern filesystems
 
 lnpm automatically detects the best method and falls back gracefully with helpful warnings.
-
-## Comparison with yalc
-
-| Feature | lnpm | yalc |
-|---------|------|------|
-| Link method | Reflink → Hard link → Parallel copy (reflink or copy into the store) | Sequential copy only |
-| Large packages (10k+ files) | Instant (~5ms) on APFS/Btrfs | Slow (~5s+) |
-| State tracking | bbolt database | Hash files |
-| Monorepo | Native support | Manual |
-| Speed | ~10ms startup | ~100ms startup |
-| Cross-filesystem | Parallel copy (4-8x faster) | Sequential copy |
-| Visibility | `lnpm status` | Limited |
-
-## Benchmarks
-
-### lnpm vs yalc (100 files)
-
-| Operation | lnpm | yalc | Speedup |
-|-----------|------|------|---------|
-| `publish` | **75ms** | 164ms | 2.2x |
-| `add` | **71ms** | 251ms | 3.5x |
-| `push` | **90ms** | 385ms | 4.3x |
-
-### Detailed benchmarks (Apple M1 Pro, APFS)
-
-| Operation | Files | Time | Memory |
-|-----------|-------|------|--------|
-| `publish` | 100 | **17ms** | 3.5 MB |
-| `add` | 100 | **48ms** | 340 KB |
-| `push` (1 project) | 100 | **146ms** | 3.8 MB |
-| `push` (5 projects) | 100 | **183ms** | 4.5 MB |
-| `publish` | 500 | **41ms** | 17 MB |
-
-> **Note:** These figures are illustrative — measured once on the machine above. The `vs yalc` and memory numbers are not reproduced by the committed `scripts/benchmark-compare.sh` (which measures wall-clock only). Run the benchmarks yourself for numbers on your hardware.
-
-Run benchmarks yourself:
-```bash
-make bench          # Go benchmarks
-make bench-mem      # With memory stats
-make bench-compare  # Compare vs yalc (if installed)
-```
 
 ## Platform Support
 
