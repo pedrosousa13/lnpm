@@ -1,5 +1,30 @@
 # A pinned link follows no channel, and nothing but the user moves it off
 
+> **Amended by ADR-0009, and #300 has since landed.** The four decisions this
+> document makes still stand, and the text below is left as it was written
+> rather than edited in place, because the reasoning is what the later work
+> cites. Two things it asserts are no longer true. Read it with these
+> corrections:
+>
+> - **A pre-4.0.0 lock file no longer reads fine.** Under *The snapshot is not a
+>   separate format*, the pin field is argued safe to add because `Load` reads a
+>   file with no `version:` key as `currentVersion`. It does not any more.
+>   `pkg/lockfile/lockfile.go:146` normalises such a file to `oldestVersion`,
+>   and `pull` and `restore` then refuse it through `PredatesCurrentFormat`
+>   (`internal/cli/pull.go:46`, `internal/cli/restore.go:105`). ADR-0009 is the
+>   decision that did that and why. The field being additive is unaffected; only
+>   the claim about old files reading fine is.
+> - **The README sentence is already gone.** *What this ADR raises but does not
+>   settle* predicts that "There is no pinned link yet: re-run `lnpm add
+>   mylib@<hash>` to go back." goes when #300 lands. #300 is closed and the
+>   section now reads "A rollback pins the link, and nothing but you moves it
+>   off."
+>
+> One function was renamed after this was written.
+> `warnIfOffTheDefaultChannel` is now `reportWhatTheRestoredLinkFollows`
+> (`internal/cli/restore.go:416`). That is a reference rather than reasoning, so
+> it is corrected in place below rather than listed here.
+
 `lnpm add mylib@9f8e7d6c` links a project to one build of `mylib` rather than to
 a channel. That link is pinned, and a pin is a fifth thing a link can say
 alongside the four `db.Link` already records. `lnpm pull` leaves a pinned link
@@ -153,7 +178,7 @@ that name the build today would be a guess about a decision made months ago. The
 file-header comment on `restore.go` lists a pin's three siblings — whether the
 package was added with `--link`, which dependency field it was in, and the
 channel — as the parts of the pre-retreat state the lock file does not record
-and restore therefore cannot rebuild; `warnIfOffTheDefaultChannel`'s comment
+and restore therefore cannot rebuild; `reportWhatTheRestoredLinkFollows`'s comment
 restates the list. (`recordRestoredLink`'s own comment argues only the channel,
 which is why it is the wrong place to read the set from.) Without this decision
 a pin becomes a fourth, and a project comes back following `latest` after being
@@ -177,7 +202,7 @@ that lets `restore` rebuild the row, exactly as the content hash already is.
 pin from there, which is fine for a display and is not a licence for any command
 that acts to read it from there.
 
-`warnIfOffTheDefaultChannel` needs to know about pins too. It fires after a
+`reportWhatTheRestoredLinkFollows` needs to know about pins too. It fires after a
 restore when the restored build is not the one `latest` names, and when no tag
 names that build it prints *has been published since the retreat* and tells the
 user to run `lnpm pull`. For a restored pin that advice is exactly backwards —

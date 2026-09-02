@@ -51,11 +51,29 @@ where to look when checks stop reporting on a release pull request again.
    backstop for forgetting, not the prompt. It fails deliberately, and only on this pull request.
    See the check below.
 
-5. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release; the
-   `goreleaser` job builds and uploads the archives; the `sync-release-notes` job then overwrites
-   the release body with the version's `CHANGELOG.md` section, hand-written notes included. That
-   last job is ordered after `goreleaser` but does not depend on it succeeding: the `goreleaser`
-   job re-runs the test suite and the linter, and a flake there costs the archives, not the notes.
+5. **Merge, squashed.** release-please tags `vX.Y.Z` and creates the GitHub release. The
+   `goreleaser` job builds, signs and uploads the archives, then pushes the taps. The
+   `sync-release-notes` job overwrites the release body with the version's `CHANGELOG.md` section,
+   hand-written notes included. That last job is ordered after `goreleaser` but does not depend on
+   it succeeding: the `goreleaser` job re-runs the test suite and the linter, and a flake there
+   costs the archives, not the notes.
+
+   **The signing key can fail the release, and it is worth knowing that before it does.** Four
+   steps in the `goreleaser` job exist for it, all in `.github/workflows/release-please.yaml`.
+   `Write release signing key` at `:103` writes the `RELEASE_SIGNING_KEY` repository secret to the
+   runner, and refuses to publish an unsigned release if the secret is empty. `Check the signing
+   key matches an embedded public key` at `:147` derives its public half and fails before anything
+   is built unless it matches some `internal/releasekeys/keys/*.pem`. `Remove the release signing
+   key` at `:211` deletes it, under `if: always()`. `Verify the release signature against the
+   embedded public keys` at `:224` re-checks the `dist/checksums.txt.sig` GoReleaser actually
+   produced against that same key set.
+
+   **A `RELEASE_SIGNING_KEY` that matches no embedded public key stops the release, deliberately.**
+   `lnpm update` verifies `checksums.txt.sig` against the keys compiled into the running binary, so
+   a rotated or mistyped secret would otherwise publish a green release that every existing install
+   then refuses to update from, recoverable only by reinstalling by hand. That is what
+   [#297](https://github.com/pedrosousa13/lnpm/issues/297) cost. Rotating the key is ADR-0008. Line
+   numbers read from the workflow at 4.1.0, not executed.
 
 ## Why the notes need a job to reach the release body
 
@@ -99,7 +117,8 @@ Two things that look like fixes and are not:
   `target-branch`, `config-file`, `manifest-file`, `repo-url`, `github-api-url`,
   `github-graphql-url`, `fork`, `include-component-in-tag`, `proxy-server`, `skip-github-release`,
   `skip-github-pull-request`, `skip-labeling`, `changelog-host`, `versioning-strategy` and
-  `release-as` — all eighteen of them, read from `action.yml` on the `v4` tag.
+  `release-as` — all eighteen of them, read from `action.yml` on the `v5` tag, which is what the
+  workflow pins. The same eighteen are on `v4`, so the conclusion below did not turn on the tag.
 
   A config file could be passed even though none is, so its keys were read from release-please's
   `schemas/config.json` on `main` rather than from memory. It declares 46 properties. Nine of them
@@ -213,12 +232,18 @@ touch workflow files, or read Actions state.
 
 The token is minted per run and revoked when the job ends. It is not stored anywhere.
 
-One check does not come back with the others, and that is expected rather than a symptom. `ci.yaml`
-carries `paths-ignore: '**.md'`, so a release pull request whose only change is `CHANGELOG.md`
-starts no `CI` run at all — not a parked one, none. What the App token restores is the checks that
-would otherwise be parked, `PR Title` and `Security Versions` among them. An absent `CI` on a
-markdown-only release pull request is the path filter doing its job; an absent `PR Title` is the
-credential having gone stale.
+**Every check reports on a release pull request now, `CI` included.** `ci.yaml` used to carry
+`paths-ignore: '**.md'` on `pull_request`, and a release pull request whose only change is
+`CHANGELOG.md` started no `CI` run at all. Not a parked one, none.
+[#500](https://github.com/pedrosousa13/lnpm/pull/500) removed that filter, because `CI`'s five jobs
+are required checks and a required check that never reports blocks a pull request forever rather
+than passing it. The header comment in `ci.yaml` records the release pull request that proved it,
+#499, which sat blocked with two of seven checks green and no way to get the other five.
+
+So an absent `CI` on a markdown-only release pull request is now a symptom rather than the path
+filter doing its job. What the App token restores is the checks that would otherwise sit parked
+awaiting approval, and that is all of them. An absent or parked `PR Title` is the credential having
+gone stale. So is an absent or parked `CI`.
 
 ### What breaks when it goes stale, and what that looks like
 
@@ -254,18 +279,31 @@ diagnosis is the run log of the `release-please` job.
 
 If the token cannot be restored quickly, the release is not blocked: remove the `token:` line and
 the mint step, and the pipeline reverts to the behaviour above — a release pull request that works,
-at the cost of one approval click per parked run, which today means two per commit pushed to the
-release branch. That is the fallback, not the fix.
+at the cost of one approval click per parked run. Three workflows trigger on `pull_request` today,
+`ci.yaml`, `pr-title.yaml` and `security-versions.yaml`, so that is three per commit pushed to the
+release branch rather than the two it was before #500. Counted from the workflow triggers, not from
+a parked run observed since the filter came off. That is the fallback, not the fix.
 
 ## The taps
 
-`.goreleaser.yaml` publishes two more things than the archives. A Homebrew cask goes to
-`pedrosousa13/homebrew-tap` and a Scoop manifest goes to `pedrosousa13/scoop-bucket`, committed
-straight to the default branch of each on every release.
+`.goreleaser.yaml` publishes more than the archives. `checksums.txt` and its detached
+`checksums.txt.sig`, deb, rpm and apk packages from the `nfpms` block, a Homebrew cask to
+`pedrosousa13/homebrew-tap`, and a Scoop manifest to `pedrosousa13/scoop-bucket`. The cask and the
+manifest are committed straight to the default branch of each tap on every release. The rest are
+uploaded as release assets.
 
-Everything in this section is reasoned from GoReleaser's and GitHub's documentation, from
-`goreleaser check`, and from reading the two tap repositories. **No lnpm release has published to a
-tap yet.** There are no run IDs or timings to cite here, unlike the sections above.
+**4.1.0 is the first lnpm release that published to a tap, and it worked.** Run
+[33638186070](https://github.com/pedrosousa13/lnpm/actions/runs/33638186070) on sha `5690e32`, with
+`release-please`, `goreleaser` and `sync-release-notes` all green and `goreleaser` taking 2m50s.
+`pedrosousa13/homebrew-tap` now holds `Casks/lnpm.rb` at `version "4.1.0"` and
+`pedrosousa13/scoop-bucket` holds `lnpm.json` at `"version": "4.1.0"`. Both read back from the
+GitHub contents API after the run.
+
+What that run does not cover is a failure. No tap credential has been seen go stale here, so
+[What the taps need](#what-the-taps-need) and
+[What breaks when the tap credential goes stale](#what-breaks-when-the-tap-credential-goes-stale)
+stay reasoned from GoReleaser's and GitHub's documentation, from `goreleaser check`, and from
+reading the two tap repositories.
 
 Both taps are shared with `onda`, the maintainer's other project. `homebrew-tap` already holds a
 `Casks/onda.rb` written by GoReleaser's `homebrew_casks`, and `scoop-bucket` already holds
@@ -419,10 +457,14 @@ the fix is a one-line edit to the table. Step 4 above is that edit.
 The unsupported rows are not checked. Whether a major moves from supported to unsupported is a
 policy judgement about how long you intend to support it, and it stays with the maintainer.
 
-This runs in `.github/workflows/security-versions.yaml` rather than in `ci.yaml`, and the separation
-is load-bearing: `ci.yaml` carries `paths-ignore` with `'**.md'` on both its triggers, so a pull
-request touching only `SECURITY.md` or only `CHANGELOG.md` does not start CI at all — which is
-exactly the release pull request this check exists for. The new workflow has no `paths-ignore`.
+This runs in `.github/workflows/security-versions.yaml` rather than in `ci.yaml`. The separation was
+load-bearing when `ci.yaml` carried `paths-ignore` with `'**.md'` on both its triggers. A pull
+request touching only `SECURITY.md` or only `CHANGELOG.md` started no CI run then, and that is
+exactly the shape of the release pull request this check exists for. #500 removed that filter from
+`pull_request`, so the check would now run either way. What the separation still buys is a stale
+table failing under its own check name rather than as one job inside a red `CI`. Neither workflow
+carries `paths-ignore` on `pull_request` today. `ci.yaml` keeps its filter on `push`, where nothing
+is gated on the result.
 
 ## Backfilling a published release
 

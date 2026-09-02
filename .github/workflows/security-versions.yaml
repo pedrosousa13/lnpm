@@ -2,16 +2,20 @@
 # the current release, and that the script doing the checking works. Both are
 # scripts/check-security-versions.sh; its header carries the reasoning.
 #
-# This is a separate workflow rather than a job in ci.yaml, and the separation
-# is load-bearing rather than tidiness. ci.yaml carries `paths-ignore` on both
-# its triggers, with `'**.md'` and `'docs/**'` among the entries, so a pull
-# request touching only SECURITY.md or only CHANGELOG.md does not start CI at
-# all. Those are exactly the two files this check reads, and a release-please
-# PR that bumps the major touches one of them — so a check placed in ci.yaml
-# would simply not run in precisely the case it exists to catch. A filtered
-# workflow creates no check run at all, so what a reader sees is an absence,
-# and docs/releasing.md records how easily an absent required check is read as
-# a passing one. There is no `paths-ignore` here on purpose: do not add one.
+# This is a separate workflow rather than a job in ci.yaml. The separation was
+# load-bearing when ci.yaml carried `paths-ignore` on both its triggers, with
+# `'**.md'` and `'docs/**'` among the entries. A pull request touching only
+# SECURITY.md or only CHANGELOG.md started no CI run then, and those are exactly
+# the two files this check reads. A release-please PR that bumps the major
+# touches one of them, so a check placed in ci.yaml would not have run in
+# precisely the case it exists to catch.
+#
+# #500 removed that filter from `pull_request`, so the check would now run
+# either way. ci.yaml keeps its filter on `push`, where nothing is gated on the
+# result. What the separation still buys is a stale table failing under its own
+# check name rather than as one job inside a red CI.
+#
+# There is no `paths-ignore` here on purpose. Do not add one.
 name: Security Versions
 
 on:

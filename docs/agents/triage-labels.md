@@ -53,10 +53,11 @@ frontier is in `docs/agents/issue-tracker.md`, under "Wayfinding
 operations".
 
 The reserved planning namespace is every label that starts with
-`wayfinder:` or `planning:`. Today that is `wayfinder:map`,
-`wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`,
-`wayfinder:task`, and `planning:prd`. The match is on the prefix, so a new
-artifact kind inherits the exclusion by naming itself in the namespace.
+`wayfinder:` or `planning:`. On this repo today that is `planning:epic` and
+nothing else. No `wayfinder:` label exists here and neither does `planning:prd`;
+both namespaces are reserved against the kinds this repo has not created. The
+match is on the prefix, so a new artifact kind inherits the exclusion by naming
+itself in the namespace, and nothing above depends on which labels exist.
 
 ## Labels that stand in for a missing field
 
