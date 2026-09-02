@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.1.0](https://github.com/pedrosousa13/lnpm/compare/v4.0.0...v4.1.0) (2026-09-02)
+
+> **Installing with Homebrew or Scoop?** 4.1.0 publishes a Homebrew cask and a
+> Scoop manifest, so `brew install pedrosousa13/tap/lnpm` and `scoop install
+> lnpm` now work alongside the install scripts and `go install`.
+>
+> Do not run `lnpm update` on an install that came from either one. It replaces
+> the binary in place and has no notion of a package manager, so Homebrew and
+> Scoop go on reporting the version they installed while the binary on `PATH` is
+> a newer one, and the next `brew upgrade` overwrites the self-updated binary and
+> puts you back on the version brew recorded. Both commands report success
+> throughout. Use `brew upgrade lnpm` or `scoop update lnpm` instead.
+> [#508](https://github.com/pedrosousa13/lnpm/issues/508) tracks teaching
+> `lnpm update` to detect a managed install and refuse.
+>
+> The macOS binaries are not signed or notarized, so the cask clears the
+> quarantine attribute on install. Without that, the first run reports lnpm as
+> damaged. It also gives up the Gatekeeper check on this binary.
+>
+> Nothing changes for an existing install. The store format, the database and
+> `lnpm.lock` are all unchanged from 4.0.0.
+
+
+### Features
+
+* **release:** publish a Homebrew cask and a Scoop manifest ([#509](https://github.com/pedrosousa13/lnpm/issues/509)) ([b242f0b](https://github.com/pedrosousa13/lnpm/commit/b242f0b17788ab672d44fbd7f8e2f12da8193190))
+
 ## [4.0.0](https://github.com/pedrosousa13/lnpm/compare/v3.1.1...v4.0.0) (2026-09-02)
 
 
