@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/pedrosousa13/lnpm/compare/v3.1.1...v4.0.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* every package hash changes. Store entries, database rows and lnpm.lock entries written by 3.x no longer resolve.
+
+### Features
+
+* 4.0.0 store-format migration — frame the hash, strip before hashing, refuse 3.x state ([#498](https://github.com/pedrosousa13/lnpm/issues/498)) ([8d15f74](https://github.com/pedrosousa13/lnpm/commit/8d15f74e8cd0b68f40d129cdc75bd39d909a1630))
+
 ## [3.1.1](https://github.com/pedrosousa13/lnpm/compare/v3.1.0...v3.1.1) (2026-09-02)
 
 
