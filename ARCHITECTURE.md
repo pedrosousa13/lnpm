@@ -877,11 +877,15 @@ what `pull`, `push` and `gc` read — and the entry here is transport, exactly a
 
 ### Detection
 
-lnpm auto-detects package manager by checking for:
-1. `bun.lockb` → bun
-2. `pnpm-lock.yaml` → pnpm
-3. `yarn.lock` → yarn
-4. `package-lock.json` → npm
+lnpm auto-detects the package manager from the first lock file it finds:
+
+1. `bun.lockb` → bun (Bun before 1.2, binary)
+2. `bun.lock` → bun (Bun 1.2 and later, text)
+3. `pnpm-lock.yaml` → pnpm
+4. `yarn.lock` → yarn
+5. `package-lock.json` → npm
+
+A project with no lock file is treated as npm.
 
 ### package.json Modification
 
