@@ -257,6 +257,130 @@ func isInBinDir(binPath, binDir string) bool {
 	return dir == binDir
 }
 
+// installMethod names how the running lnpm binary got onto the machine. The
+// set is closed because every caller has to answer the same question about
+// each one, and a boolean per package manager threaded through the update
+// dispatch would let two of them be true at once.
+type installMethod int
+
+const (
+	installedViaBinary installMethod = iota
+	installedViaGo
+	installedViaHomebrew
+	installedViaScoop
+)
+
+// detectInstallMethod classifies the binary at binPath. It takes the path
+// rather than reading os.Executable() itself, so the rules below can be tested
+// against real macOS and Windows path shapes on any host.
+func detectInstallMethod(binPath string) installMethod {
+	if wasInstalledViaGo(binPath) {
+		return installedViaGo
+	}
+
+	segs := containingDirSegments(binPath)
+	if isHomebrewPath(segs) {
+		return installedViaHomebrew
+	}
+	if isScoopPath(segs) {
+		return installedViaScoop
+	}
+	return installedViaBinary
+}
+
+// pathSegments splits p into its path components.
+//
+// Splitting on '\' as well as '/' is what lets the rules below be checked on a
+// Linux host. filepath treats a backslash as an ordinary character off Windows,
+// so a real Scoop path would otherwise arrive as one segment.
+func pathSegments(p string) []string {
+	return strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' })
+}
+
+// containingDirSegments splits binPath and drops the last segment, which names
+// the binary rather than a directory it sits under. A file someone named Cellar
+// is not a Homebrew install.
+func containingDirSegments(binPath string) []string {
+	segs := pathSegments(binPath)
+	if len(segs) == 0 {
+		return nil
+	}
+	return segs[:len(segs)-1]
+}
+
+// isHomebrewPath reports whether segs walks through Homebrew's Cellar or
+// Caskroom.
+//
+// brew --prefix is deliberately not consulted and <prefix>/bin is deliberately
+// not tested. The cask symlinks <prefix>/bin/lnpm into the Caskroom, so the
+// resolved path carries the Caskroom segment already, while a prefix test would
+// claim the binary of anyone who installed with LNPM_INSTALL_DIR=/usr/local/bin.
+//
+// The comparison folds case here and in isScoopPath, on every GOOS. These are
+// macOS and Windows path shapes, and both filesystems are case-insensitive by
+// default, so a fold that depended on runtime.GOOS would answer differently for
+// the same path.
+func isHomebrewPath(segs []string) bool {
+	for _, seg := range segs {
+		if strings.EqualFold(seg, "Cellar") || strings.EqualFold(seg, "Caskroom") {
+			return true
+		}
+	}
+	return false
+}
+
+// isScoopPath reports whether segs walks through a Scoop apps directory.
+//
+// Whole-segment matching on apps under scoop covers both the per-user root
+// %USERPROFILE%\scoop\apps and the global C:\ProgramData\scoop\apps. Scoop also
+// lets its root be moved, and a moved root leaves no scoop segment on the path
+// at all, so SCOOP and SCOOP_GLOBAL are read for that case.
+func isScoopPath(segs []string) bool {
+	for i, seg := range segs {
+		if i > 0 && strings.EqualFold(seg, "apps") && strings.EqualFold(segs[i-1], "scoop") {
+			return true
+		}
+	}
+
+	for _, env := range []string{"SCOOP", "SCOOP_GLOBAL"} {
+		root := os.Getenv(env)
+		if root == "" {
+			continue
+		}
+		if hasSegmentPrefix(segs, append(pathSegments(root), "apps")) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSegmentPrefix reports whether segs starts with prefix, comparing segment
+// by segment so that a scoop root of C:\my is not read as a prefix of
+// C:\mystuff.
+func hasSegmentPrefix(segs, prefix []string) bool {
+	if len(prefix) == 0 || len(segs) < len(prefix) {
+		return false
+	}
+	for i, want := range prefix {
+		if !strings.EqualFold(segs[i], want) {
+			return false
+		}
+	}
+	return true
+}
+
+// manager names the package manager that owns an install and the command that
+// upgrades it. ok is false for the two methods 'lnpm update' handles itself.
+func (m installMethod) manager() (name, upgradeCommand string, ok bool) {
+	switch m {
+	case installedViaHomebrew:
+		return "Homebrew", "brew upgrade lnpm", true
+	case installedViaScoop:
+		return "Scoop", "scoop update lnpm", true
+	}
+	return "", "", false
+}
+
 // installLatestViaGo uses 'go install' to update
 func installLatestViaGo() error {
 	installURL := "github.com/pedrosousa13/lnpm/cmd/lnpm@latest"

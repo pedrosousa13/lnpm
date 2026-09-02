@@ -1663,3 +1663,93 @@ func TestDownloadAndInstallRemovesTheTempDirWhenExtractionFails(t *testing.T) {
 
 	assertFailedUpdateCleanedUp(t, systemTemp, dst)
 }
+
+// isolateInstallEnv pins every variable the install-method rules read, so a
+// path in the table below cannot be claimed by the go-install rules through the
+// developer's own GOBIN, GOPATH or $HOME, and so a Scoop root set on the host
+// cannot answer for the relocated-root cases.
+func isolateInstallEnv(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("GOBIN", filepath.Join(dir, "gobin"))
+	t.Setenv("GOPATH", filepath.Join(dir, "gopath"))
+	t.Setenv("HOME", dir)
+	t.Setenv("SCOOP", "")
+	t.Setenv("SCOOP_GLOBAL", "")
+}
+
+// Replacing a Homebrew or Scoop binary in place leaves the package manager
+// recording the version it installed, and its next upgrade rolls the user back
+// (#508). Detection therefore has to hold on the real path shapes of both, from
+// a Linux test.
+func TestDetectInstallMethod(t *testing.T) {
+	isolateInstallEnv(t)
+
+	tests := []struct {
+		name    string
+		binPath string
+		want    installMethod
+	}{
+		{"apple silicon cask", "/opt/homebrew/Caskroom/lnpm/4.1.0/lnpm", installedViaHomebrew},
+		{"intel cask", "/usr/local/Caskroom/lnpm/4.1.0/lnpm", installedViaHomebrew},
+		{"cellar", "/opt/homebrew/Cellar/lnpm/4.1.0/bin/lnpm", installedViaHomebrew},
+		{"lowercase caskroom", "/opt/homebrew/caskroom/lnpm/4.1.0/lnpm", installedViaHomebrew},
+		{"caskroom prefix of another directory", "/home/u/Caskroomish/bin/lnpm", installedViaBinary},
+		{"cellar inside another directory name", "/home/u/mycellar/bin/lnpm", installedViaBinary},
+		{"binary named cellar", "/home/u/bin/Cellar", installedViaBinary},
+		{"scoop current", `C:\Users\u\scoop\apps\lnpm\current\lnpm.exe`, installedViaScoop},
+		{"scoop versioned", `C:\Users\u\scoop\apps\lnpm\4.1.0\lnpm.exe`, installedViaScoop},
+		{"scoop global", `C:\ProgramData\scoop\apps\lnpm\current\lnpm.exe`, installedViaScoop},
+		{"apps under a directory ending in scoop", `C:\Users\u\notscoop\apps\lnpm\lnpm.exe`, installedViaBinary},
+		{"apps with no scoop parent", `C:\apps\lnpm\lnpm.exe`, installedViaBinary},
+		{"plain binary", "/usr/local/bin/lnpm", installedViaBinary},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectInstallMethod(tt.binPath); got != tt.want {
+				t.Errorf("detectInstallMethod(%q) = %d, want %d", tt.binPath, got, tt.want)
+			}
+		})
+	}
+}
+
+// Scoop's root can be moved, and a moved root leaves no scoop segment on the
+// path for the segment rule to find.
+func TestDetectInstallMethodWithRelocatedScoopRoot(t *testing.T) {
+	for _, env := range []string{"SCOOP", "SCOOP_GLOBAL"} {
+		t.Run(env, func(t *testing.T) {
+			isolateInstallEnv(t)
+			t.Setenv(env, `D:\tools\sc`)
+
+			if got := detectInstallMethod(`D:\tools\sc\apps\lnpm\current\lnpm.exe`); got != installedViaScoop {
+				t.Errorf("detectInstallMethod under %s = %d, want installedViaScoop", env, got)
+			}
+			if got := detectInstallMethod(`D:\tools\scratch\apps\lnpm\lnpm.exe`); got != installedViaBinary {
+				t.Errorf("detectInstallMethod of a sibling of the %s root = %d, want installedViaBinary", env, got)
+			}
+		})
+	}
+}
+
+func TestInstallMethodManager(t *testing.T) {
+	tests := []struct {
+		method             installMethod
+		wantName           string
+		wantUpgradeCommand string
+		wantOK             bool
+	}{
+		{installedViaHomebrew, "Homebrew", "brew upgrade lnpm", true},
+		{installedViaScoop, "Scoop", "scoop update lnpm", true},
+		{installedViaGo, "", "", false},
+		{installedViaBinary, "", "", false},
+	}
+
+	for _, tt := range tests {
+		name, upgradeCommand, ok := tt.method.manager()
+		if name != tt.wantName || upgradeCommand != tt.wantUpgradeCommand || ok != tt.wantOK {
+			t.Errorf("installMethod(%d).manager() = (%q, %q, %v), want (%q, %q, %v)",
+				tt.method, name, upgradeCommand, ok, tt.wantName, tt.wantUpgradeCommand, tt.wantOK)
+		}
+	}
+}
