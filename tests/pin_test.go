@@ -791,3 +791,54 @@ func TestAddMultiplePinsOnlyTheSpecThatNamedABuild(t *testing.T) {
 		t.Error("the batched add by hash did not record the pin in the lock file")
 	}
 }
+
+// TestUnpinAfterGCCollectedLatestSaysWhatHappened is #450, end to end. A pin is
+// the only thing that detaches a consumer from 'latest' while leaving the
+// project in place, so gc can collect the build 'latest' names and clear the
+// name index while the pinned build stays. The unpin is then the one command
+// that cannot run, and it is the command 'lnpm pull' points the user at.
+//
+// It still refuses, and that is the decision rather than a gap. What it must not
+// do is claim the package was never published, because the pinned build is in
+// the store and 'lnpm add <pkg>@<version>' still reaches it, as this test also
+// checks.
+func TestUnpinAfterGCCollectedLatestSaysWhatHappened(t *testing.T) {
+	env := setupTest(t)
+
+	pkgDir := env.publishPkg("unpin-lib", "1.0.0", map[string]string{
+		"index.js": "module.exports = 'v1';",
+	})
+	env.republish(pkgDir, "unpin-lib", "1.1.0", "module.exports = 'v2';")
+
+	projectDir := env.newProject("unpinner")
+	env.addPkg(projectDir, "unpin-lib@1.0.0", false, false)
+
+	if err := cli.RunGC(false, "", false, true); err != nil {
+		t.Fatalf("Failed to run GC: %v", err)
+	}
+	pinned, err := env.Database.GetPackageByName("unpin-lib")
+	if err != nil {
+		t.Fatalf("Failed to look up unpin-lib: %v", err)
+	}
+	if pinned != nil {
+		t.Fatalf("gc left unpin-lib resolving by name to %s, so the state #450 reports was not reached", pinned.Version)
+	}
+
+	env.chdir(projectDir)
+	err = cli.RunAdd("unpin-lib", false, false, false)
+
+	if err == nil {
+		t.Fatal("the unpin succeeded; it is expected to refuse while 'latest' names nothing")
+	}
+	if strings.Contains(err.Error(), "Did you run") {
+		t.Errorf("the unpin accused the user of not publishing: %v", err)
+	}
+	if !strings.Contains(err.Error(), "lnpm add unpin-lib@1.0.0") {
+		t.Errorf("the unpin did not name the build the store still holds: %v", err)
+	}
+
+	env.chdir(projectDir)
+	if err := cli.RunAdd("unpin-lib@1.0.0", false, false, false); err != nil {
+		t.Fatalf("the build the message names does not add: %v", err)
+	}
+}
