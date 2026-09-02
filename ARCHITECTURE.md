@@ -827,21 +827,29 @@ link_mode: hardlink
 ## Lock File Format (`lnpm.lock`)
 
 ```yaml
-version: 1
+version: 2
 packages:
-  my-package:
-    version: 1.0.0
-    hash: abc123def456
-    source: ~/code/my-package
-    linked: 2024-01-15T10:30:00Z
-    originalVersion: ^1.0.0   # original specifier, restored on retreat/remove
-  other-pkg:
-    version: 2.1.0
-    hash: 789xyz000111
-    source: ~/code/other-pkg
-    linked: 2024-01-15T09:00:00Z
-    pinned: true              # linked to this build, not to a channel
+    my-package:
+        version: 1.0.0
+        hash: d1a744010a32221a
+        source: /home/you/src/my-package
+        linked: 2026-09-02T16:05:45.636601618+02:00
+        originalVersion: ^1.0.0
+    other-pkg:
+        version: 2.1.0
+        hash: caf28dd48ee66c8e
+        source: /home/you/src/other-pkg
+        linked: 2026-09-02T16:05:57.937628411+02:00
+        pinned: true
 ```
+
+`originalVersion` is the specifier `add` displaced, and is what `retreat` and
+`remove` put back.
+
+`version` is the format the file is in, and 4.0.0 moved it to 2. Every hash
+changed in that release, so a version 1 file names builds no 4.x store holds.
+`restore` and `pull` refuse such a file outright rather than reporting each of
+its packages as missing.
 
 `pinned` is optional and absent from every lock file written before it existed,
 which reads as unpinned. The database's link row is the authority on it — that is
