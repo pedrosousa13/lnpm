@@ -279,7 +279,15 @@ named was that package's latest by definition.
 
 ---
 
-## CLI Commands
+## Command Design Notes
+
+The [command table in the README](README.md#commands) is the list of commands and
+their flags. This section is not a second copy of it. It records the decisions
+behind the commands whose behaviour is not obvious from the flag, and the
+invariants those decisions rest on, with the ADRs cross-referenced where one
+exists. Commands absent from here are either covered by the README alone, or
+described where their state is. `retreat` and `restore` sit under the lock file
+format, `check` under cleanup before publish.
 
 ### `lnpm publish`
 
