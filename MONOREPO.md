@@ -507,24 +507,22 @@ For active development, use your build tool's watch mode combined with `lnpm pus
 
 ```bash
 # Terminal 1: Watch and build with turbo/nx
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 
 # Terminal 2: Push when ready, from the package directory
 cd packages/ui
 lnpm push
 ```
 
-Or integrate into the package's own `package.json` — never the root one, since the script's working directory is what push acts on:
+`turbo watch` is a subcommand, not a flag. Turborepo 2.x answers `turbo run build --watch` with `unexpected argument '--watch' found`.
 
-```json
-{
-  "name": "@my/ui",
-  "version": "1.0.0",
-  "scripts": {
-    "build:dev": "tsc --watch --onSuccess \"lnpm push\""
-  }
-}
+Or let Turborepo drive both halves. With the `lnpm:push` task from [Integration with turbo.json](#integration-with-turbojson) in place, one command rebuilds and pushes on every save:
+
+```bash
+turbo watch lnpm:push --filter=@my/ui
 ```
+
+There is no package-script equivalent. `tsc` has no run-on-success hook, so a `build:dev` script cannot chain the push itself.
 
 ---
 

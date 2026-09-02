@@ -124,7 +124,7 @@ Run Turborepo's own watch mode to rebuild on change, then push when you're ready
 ```bash
 # Terminal 1: watch and rebuild on changes
 cd ~/projects/my-turborepo
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 
 # Terminal 2: push built output to linked projects
 cd ~/projects/my-turborepo/packages/ui
@@ -167,10 +167,16 @@ turbo run build --filter=@my/ui...
 
 ```bash
 # Terminal 1: rebuild on change (from the workspace root)
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 
 # Terminal 2: push built output when ready (from the package)
 cd packages/ui && lnpm push
+```
+
+Or run the `lnpm:push` task under watch and get both in one command:
+
+```bash
+turbo watch lnpm:push --filter=@my/ui
 ```
 
 **3. Multiple packages:**
@@ -212,7 +218,7 @@ turbo run build --filter=@my/ui
 
 Then run it (optionally in watch) before pushing:
 ```bash
-turbo run build --filter=@my/ui --watch
+turbo watch build --filter=@my/ui
 ```
 
 **Issue: Changes not picked up after a push**
