@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.2.0](https://github.com/pedrosousa13/lnpm/compare/v4.1.0...v4.2.0) (2026-09-02)
+
+
+### Features
+
+* **update:** point the update notice at the owning package manager ([#525](https://github.com/pedrosousa13/lnpm/issues/525)) ([d5d422b](https://github.com/pedrosousa13/lnpm/commit/d5d422b7ead1da74152e5080c8d09756cb06ae8a)), closes [#519](https://github.com/pedrosousa13/lnpm/issues/519)
+
+
+### Bug Fixes
+
+* **add:** say gc collected the channel instead of blaming the user ([#515](https://github.com/pedrosousa13/lnpm/issues/515)) ([15a29b7](https://github.com/pedrosousa13/lnpm/commit/15a29b7228de51a6983931e9f6d59e5777af561d)), closes [#450](https://github.com/pedrosousa13/lnpm/issues/450)
+* **build:** add windows/arm64 to the make release target ([#524](https://github.com/pedrosousa13/lnpm/issues/524)) ([e07af8c](https://github.com/pedrosousa13/lnpm/commit/e07af8c4c433db6dd98396062b66c37a20da5f81)), closes [#517](https://github.com/pedrosousa13/lnpm/issues/517)
+* **update:** refuse to replace a Homebrew or Scoop install ([#518](https://github.com/pedrosousa13/lnpm/issues/518)) ([02f5c09](https://github.com/pedrosousa13/lnpm/commit/02f5c09ed8c4c55b9f64d6254af1654ecff9a78b))
+
 ## [4.1.0](https://github.com/pedrosousa13/lnpm/compare/v4.0.0...v4.1.0) (2026-09-02)
 
 > **Installing with Homebrew or Scoop?** 4.1.0 publishes a Homebrew cask and a
