@@ -1,6 +1,6 @@
 module github.com/pedrosousa13/lnpm
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
@@ -8,7 +8,7 @@ require (
 	github.com/panjf2000/ants/v2 v2.12.1
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/mod v0.40.0
+	golang.org/x/mod v0.41.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
