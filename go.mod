@@ -3,7 +3,7 @@ module github.com/pedrosousa13/lnpm
 go 1.26
 
 require (
-	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/bmatcuk/doublestar/v4 v4.10.1
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/panjf2000/ants/v2 v2.12.1
 	github.com/spf13/cobra v1.10.2
